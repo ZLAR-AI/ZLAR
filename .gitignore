@@ -1,0 +1,17 @@
+# Runtime
+var/
+*.log
+
+# Keys (generated at install)
+etc/keys/
+
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~
+
+# Environment (may contain Telegram tokens)
+.env

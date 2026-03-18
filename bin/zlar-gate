@@ -1,0 +1,1011 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR Gate — Core Engine v2
+#
+# THE gate. Runs synchronously on every hook invocation (any framework).
+# Reads tool call from stdin, classifies, evaluates policy, asks Telegram if
+# needed, writes audit trail, returns allow/deny on stdout.
+#
+# No daemon. No server. No database. The process IS the pending state.
+#
+# Framework-agnostic: adapters translate framework-specific input/output.
+#
+# v2 changes (25 findings fixed):
+#   S1:  Newline injection in grep matching — now rejected at extraction
+#   S3:  Telegram token in process table — now passed via curl -K
+#   S5:  jq field injection in detail matching — now uses --arg bracket access
+#   S9:  No input size limit — now capped at 1MB
+#   S14: .env sourcing arbitrary code — now parsed safely
+#   A1:  60+ jq forks per call — collapsed to ~12-15 via batch extraction
+#   A2:  Hash chain race + slow tail — cached within invocation
+#   A3:  Temp files leak on ERR — now uses mktemp -d with cleanup
+#   A4:  echo|grep fails on newlines/dashes — uses printf '%s' + single-line
+#   A8:  hostname/whoami forked every event — cached at startup
+#   A9:  date forked 3-5 times — cached at startup
+#   A10: gen_id forks 3 procs — uses startup base + counter
+#   A11: Deny re-parses rules JSON — captures description in _set_matched
+#   A13: gate.json read 5 times — single jq call
+#   A17: jq checked 3 times — single check at startup
+#   A20: Unquoted jq field access — bracket notation with --arg
+#   A21: respond_deny forks jq+sed — single jq call
+#   A7:  ERR trap hardcodes PreToolUse — uses variable
+#   A12: Step comments out of sync — renumbered
+#   S6:  Unquoted MATCHED_RULE in jq select — uses --arg
+#   S7:  Telegram display text injection — sanitized
+#   S10: echo with leading dash — uses printf
+#   S11: ERR trap doesn't audit — now writes raw audit line
+#   S15: respond_deny fragile escaping — uses jq end-to-end
+#   A18: No audit rotation — size check at startup
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# ─── Preflight: jq is required ──────────────────────────────────────────────
+if ! command -v jq &>/dev/null; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"jq not found — install jq to use ZLAR Gate"}}'
+    exit 1
+fi
+
+# ─── Cached constants (computed once, not per-event) ─────────────────────────
+GATE_HOST="$(hostname -s 2>/dev/null || echo unknown)"
+GATE_USER="$(whoami 2>/dev/null || echo unknown)"
+GATE_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+_ID_BASE="$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p 2>/dev/null || echo "$$$(date +%s)")"
+_ID_SEQ=0
+
+# Hook event name — adapters can override via env var
+HOOK_EVENT="${ZLAR_HOOK_EVENT:-PreToolUse}"
+
+# ─── ERR trap: fail-closed on any unhandled error ───────────────────────────
+_err_trap() {
+    # S11: Attempt to audit the error (best-effort, may fail)
+    local audit_file="${PROJECT_DIR}/var/log/audit.jsonl"
+    echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)\",\"outcome\":\"deny\",\"rule\":\"ERR-trap\",\"source\":\"gate\"}" >> "${audit_file}" 2>/dev/null || true
+    echo "{\"hookSpecificOutput\":{\"hookEventName\":\"${HOOK_EVENT}\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"ZLAR gate internal error\"}}"
+}
+trap '_err_trap' ERR
+
+# ─── Load .env safely (S14: parse, don't source) ────────────────────────────
+if [ -f "${PROJECT_DIR}/.env" ]; then
+    while IFS='=' read -r key value; do
+        # Skip comments and empty lines
+        [[ -z "${key}" || "${key}" =~ ^[[:space:]]*# ]] && continue
+        # Strip leading/trailing whitespace from key
+        key=$(printf '%s' "${key}" | tr -d '[:space:]')
+        # Only export valid env var names
+        if [[ "${key}" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+            # Strip optional quotes from value
+            value="${value#\"}"
+            value="${value%\"}"
+            value="${value#\'}"
+            value="${value%\'}"
+            export "${key}=${value}"
+        fi
+    done < "${PROJECT_DIR}/.env"
+fi
+
+# ─── Configuration ──────────────────────────────────────────────────────────
+
+# Framework identifier — set by adapter via env var (default: claude-code)
+ZLAR_ADAPTER="${ZLAR_ADAPTER:-claude-code}"
+
+GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
+POLICY_FILE="${PROJECT_DIR}/etc/policies/active.policy.json"
+POLICY_PUBKEY="${PROJECT_DIR}/etc/keys/policy-signing.pub"
+AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+AVAILABILITY_STATE="${PROJECT_DIR}/var/log/availability.state"
+AWAY_QUEUE="${PROJECT_DIR}/var/log/away-queue.jsonl"
+LOCKDOWN_FILE="${PROJECT_DIR}/var/log/watchdog.lock"
+SESSION_DIR="${PROJECT_DIR}/var/log/sessions"
+LOG_FILE="${PROJECT_DIR}/var/log/gate.log"
+
+# A13: Load ALL config from gate.json in a single jq call
+TELEGRAM_CHAT_ID=""
+TELEGRAM_TIMEOUT_S="300"
+AWAY_THRESHOLD="30"
+SESSION_WRITE_LIMIT="50"
+TELEGRAM_FLOOD_GUARD_MS="1500"
+
+if [ -f "${GATE_CONFIG}" ]; then
+    IFS=$'\t' read -r _chat _timeout _away _wlimit _flood < <(
+        jq -r '[
+            (.telegram.chat_id // ""),
+            (.telegram.timeout_s // ""),
+            (.availability.away_auto_allow_threshold // ""),
+            (.session_write_limit // ""),
+            (.telegram.flood_guard_ms // "")
+        ] | join("\t")' "${GATE_CONFIG}" 2>/dev/null || echo ""
+    )
+    [ -n "${_chat}" ] && TELEGRAM_CHAT_ID="${_chat}"
+    [ -n "${_timeout}" ] && TELEGRAM_TIMEOUT_S="${_timeout}"
+    [ -n "${_away}" ] && AWAY_THRESHOLD="${_away}"
+    [ -n "${_wlimit}" ] && SESSION_WRITE_LIMIT="${_wlimit}"
+    [ -n "${_flood}" ] && TELEGRAM_FLOOD_GUARD_MS="${_flood}"
+fi
+
+# Env var overrides
+TELEGRAM_TOKEN="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+TELEGRAM_TIMEOUT_S="${TELEGRAM_TIMEOUT_S:-300}"
+AWAY_THRESHOLD="${AWAY_THRESHOLD:-30}"
+SESSION_WRITE_LIMIT="${SESSION_WRITE_LIMIT:-50}"
+
+RATE_LIMIT_FILE="${PROJECT_DIR}/var/log/.telegram-rate"
+
+# Karma thresholds integration
+KARMA_THRESHOLDS="${PROJECT_DIR}/var/log/karma-thresholds.json"
+if [ -f "${KARMA_THRESHOLDS}" ]; then
+    local_threshold=$(jq -r '.effective_thresholds.allow // empty' "${KARMA_THRESHOLDS}" 2>/dev/null)
+    if [ -n "${local_threshold}" ]; then
+        AWAY_THRESHOLD="${local_threshold}"
+    fi
+fi
+
+# Ensure log directory exists
+mkdir -p "$(dirname "${AUDIT_FILE}")"
+
+# A18: Audit file rotation — rotate if over 10MB
+if [ -f "${AUDIT_FILE}" ]; then
+    _audit_size=$(wc -c < "${AUDIT_FILE}" 2>/dev/null || echo 0)
+    if [ "${_audit_size}" -gt 10485760 ]; then
+        mv "${AUDIT_FILE}" "${AUDIT_FILE}.$(date +%s)" 2>/dev/null || true
+    fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STARTUP — handled by wrapper (~/.claude/zlar-gate.sh).
+# The gate runs inside a $() subshell (thin hook line 21), so notifications
+# sent here would be killed when the subshell exits. All startup notification
+# logic lives in the wrapper, which runs as the top-level process.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Sequence counter (per invocation, starts at 0)
+SEQ=0
+
+# A2: Hash chain — cache last hash within this invocation
+_LAST_HASH=""
+
+# ─── Logging ────────────────────────────────────────────────────────────────
+
+log() {
+    echo "[${GATE_TS}] $*" >> "${LOG_FILE}" 2>/dev/null || true
+}
+
+# ─── Response Helpers ───────────────────────────────────────────────────────
+
+respond_allow() {
+    printf '{"hookSpecificOutput":{"hookEventName":"%s","permissionDecision":"allow"}}\n' "${HOOK_EVENT}"
+}
+
+# S15/A21: Use jq end-to-end for safe JSON construction
+respond_deny() {
+    local reason="${1:-Policy denied}"
+    reason="${reason:0:200}"
+    jq -n -c --arg r "${reason}" --arg e "${HOOK_EVENT}" \
+        '{hookSpecificOutput:{hookEventName:$e,permissionDecision:"deny",permissionDecisionReason:$r}}'
+}
+
+# ─── ID Generation (A10: startup base + counter, no per-call forks) ────────
+
+gen_id() {
+    _ID_SEQ=$((_ID_SEQ + 1))
+    printf '%x-%s-%04d' "$(date +%s)" "${_ID_BASE}" "${_ID_SEQ}"
+}
+
+# ─── Audit Event Emission ──────────────────────────────────────────────────
+
+emit_event() {
+    local domain="$1" action="$2" outcome="$3" detail="$4" rule="$5" severity="$6" risk_score="${7:-0}"
+    local id
+    id=$(gen_id)
+    SEQ=$((SEQ + 1))
+
+    # A2: Hash chain — use cached hash if available, otherwise read file
+    local prev_hash="genesis"
+    if [ -n "${_LAST_HASH}" ]; then
+        prev_hash="${_LAST_HASH}"
+    elif [ -f "${AUDIT_FILE}" ] && [ -s "${AUDIT_FILE}" ]; then
+        prev_hash=$(tail -1 "${AUDIT_FILE}" 2>/dev/null | shasum -a 256 | awk '{print $1}')
+    fi
+
+    local event
+    event=$(jq -n -c \
+        --arg id "${id}" \
+        --arg ts "${GATE_TS}" \
+        --argjson seq "${SEQ}" \
+        --arg source "gate" \
+        --arg host "${GATE_HOST}" \
+        --arg user "${GATE_USER}" \
+        --arg agent_id "${ZLAR_ADAPTER}" \
+        --arg session_id "${SESSION_ID:-unknown}" \
+        --arg domain "${domain}" \
+        --arg action "${action}" \
+        --arg outcome "${outcome}" \
+        --argjson risk_score "${risk_score}" \
+        --argjson detail "${detail}" \
+        --arg rule "${rule}" \
+        --arg policy_version "${POLICY_VERSION:-unknown}" \
+        --arg severity "${severity}" \
+        --arg prev_hash "${prev_hash}" \
+        '{id:$id,ts:$ts,seq:$seq,source:$source,host:$host,user:$user,
+          agent_id:$agent_id,session_id:$session_id,domain:$domain,
+          action:$action,outcome:$outcome,risk_score:$risk_score,
+          detail:$detail,rule:$rule,policy_version:$policy_version,
+          severity:$severity,prev_hash:$prev_hash}')
+
+    if echo "${event}" >> "${AUDIT_FILE}" 2>/dev/null; then
+        # Cache the hash for next event in this invocation
+        _LAST_HASH=$(printf '%s' "${event}" | shasum -a 256 | awk '{print $1}')
+    else
+        log "CRITICAL: Failed to write audit event — audit trail may be incomplete"
+    fi
+}
+
+# ─── Tool Translation (A1/A14: single jq per branch) ────────────────────────
+
+DOMAIN=""
+DETAIL="{}"
+TOOL_DISPLAY=""
+
+translate_tool() {
+    local tool_name="$1"
+    local tool_input="$2"
+
+    case "${tool_name}" in
+        Bash)
+            DOMAIN="bash"
+            IFS=$'\t' read -r DETAIL TOOL_DISPLAY < <(
+                printf '%s' "${tool_input}" | jq -r '[
+                    ({command: (.command // ""), cwd: (.cwd // "")} | tojson),
+                    ((.command // "")[0:200])
+                ] | join("\t")' 2>/dev/null || printf '{"command":""}\t'
+            )
+            ;;
+        Write)
+            DOMAIN="write"
+            IFS=$'\t' read -r DETAIL TOOL_DISPLAY < <(
+                printf '%s' "${tool_input}" | jq -r '
+                    ((.content // "") | @base64) as $raw |
+                    ($raw | @base64d | length) as $len |
+                    [
+                        ({path: (.file_path // ""), content_length: $len, content_sha256: "deferred"} | tojson),
+                        (.file_path // "")
+                    ] | join("\t")' 2>/dev/null || printf '{"path":""}\t'
+            )
+            ;;
+        Edit)
+            DOMAIN="edit"
+            IFS=$'\t' read -r DETAIL TOOL_DISPLAY < <(
+                printf '%s' "${tool_input}" | jq -r '[
+                    ({path: (.file_path // ""), old_string: ((.old_string // "")[0:80]), new_string: ((.new_string // "")[0:80])} | tojson),
+                    (.file_path // "")
+                ] | join("\t")' 2>/dev/null || printf '{"path":""}\t'
+            )
+            ;;
+        Read)
+            DOMAIN="read"
+            IFS=$'\t' read -r DETAIL TOOL_DISPLAY < <(
+                printf '%s' "${tool_input}" | jq -r '[
+                    ({path: (.file_path // "")} | tojson),
+                    (.file_path // "")
+                ] | join("\t")' 2>/dev/null || printf '{"path":""}\t'
+            )
+            ;;
+        Glob)
+            DOMAIN="glob"
+            IFS=$'\t' read -r DETAIL TOOL_DISPLAY < <(
+                printf '%s' "${tool_input}" | jq -r '[
+                    ({pattern: (.pattern // ""), path: (.path // "")} | tojson),
+                    (.pattern // "")
+                ] | join("\t")' 2>/dev/null || printf '{"pattern":""}\t'
+            )
+            ;;
+        Grep)
+            DOMAIN="grep"
+            IFS=$'\t' read -r DETAIL TOOL_DISPLAY < <(
+                printf '%s' "${tool_input}" | jq -r '[
+                    ({pattern: (.pattern // ""), path: (.path // "")} | tojson),
+                    (.pattern // "")
+                ] | join("\t")' 2>/dev/null || printf '{"pattern":""}\t'
+            )
+            ;;
+        NotebookEdit)
+            DOMAIN="notebook"
+            IFS=$'\t' read -r DETAIL TOOL_DISPLAY < <(
+                printf '%s' "${tool_input}" | jq -r '[
+                    ({path: (.notebook_path // "")} | tojson),
+                    (.notebook_path // "")
+                ] | join("\t")' 2>/dev/null || printf '{"path":""}\t'
+            )
+            ;;
+        Task|Agent)
+            DOMAIN="agent"
+            IFS=$'\t' read -r DETAIL TOOL_DISPLAY < <(
+                printf '%s' "${tool_input}" | jq -r '[
+                    ({prompt: ((.prompt // .description // "subagent")[0:200])} | tojson),
+                    "Sub-agent"
+                ] | join("\t")' 2>/dev/null || printf '{"prompt":"subagent"}\tSub-agent'
+            )
+            ;;
+        WebFetch)
+            DOMAIN="webfetch"
+            IFS=$'\t' read -r DETAIL TOOL_DISPLAY < <(
+                printf '%s' "${tool_input}" | jq -r '[
+                    ({url: (.url // "")} | tojson),
+                    (.url // "")
+                ] | join("\t")' 2>/dev/null || printf '{"url":""}\t'
+            )
+            ;;
+        WebSearch)
+            DOMAIN="websearch"
+            IFS=$'\t' read -r DETAIL TOOL_DISPLAY < <(
+                printf '%s' "${tool_input}" | jq -r '[
+                    ({query: (.query // "")} | tojson),
+                    (.query // "")
+                ] | join("\t")' 2>/dev/null || printf '{"query":""}\t'
+            )
+            ;;
+        *)
+            DOMAIN="unknown"
+            DETAIL=$(jq -n -c --arg t "${tool_name}" '{tool: $t}')
+            TOOL_DISPLAY="${tool_name}"
+            ;;
+    esac
+
+    # S7: Sanitize TOOL_DISPLAY — strip control chars, limit length
+    TOOL_DISPLAY=$(printf '%s' "${TOOL_DISPLAY}" | tr -cd '[:print:]' | head -c 200)
+}
+
+# ─── Policy Loader ──────────────────────────────────────────────────────────
+
+POLICY_VERSION=""
+POLICY_DEFAULT_ACTION="deny"
+POLICY_RULES_JSON=""
+POLICY_LOADED="false"
+
+load_policy() {
+    if [ ! -f "${POLICY_FILE}" ]; then
+        log "FATAL: Policy file not found: ${POLICY_FILE}"
+        return 1
+    fi
+
+    # Ed25519 signature verified on EVERY load. No cache — cache is a bypass
+    # vector (agent could write to var/log/.policy-cache to skip verification).
+
+    # Fail-closed: public key MUST exist for signature verification
+    if [ ! -f "${POLICY_PUBKEY}" ]; then
+        log "FATAL: Policy public key not found — cannot verify signature"
+        return 1
+    fi
+
+    # A3: Use temp directory with guaranteed cleanup
+    local tmpdir
+    tmpdir=$(mktemp -d /tmp/zlar-gate-verify.XXXXXX)
+    chmod 700 "${tmpdir}"
+
+    # Verify signature
+    {
+        local sig_value
+        sig_value=$(jq -r '.signature.value // ""' "${POLICY_FILE}" 2>/dev/null)
+        if [ -z "${sig_value}" ] || [ "${sig_value}" = "" ]; then
+            rm -rf "${tmpdir}"
+            log "FATAL: Policy is unsigned"
+            return 1
+        fi
+
+        # Create canonical form
+        local canon_file="${tmpdir}/canon"
+        local hash_file="${tmpdir}/hash"
+        local sig_file="${tmpdir}/sig"
+
+        jq '.signature.value = ""' "${POLICY_FILE}" > "${canon_file}" 2>/dev/null
+        shasum -a 256 "${canon_file}" | awk '{print $1}' | tr -d '\n' > "${hash_file}"
+        printf '%s' "${sig_value}" | base64 -d > "${sig_file}" 2>/dev/null
+
+        if ! openssl pkeyutl -verify \
+            -pubin -inkey "${POLICY_PUBKEY}" -rawin \
+            -sigfile "${sig_file}" \
+            -in "${hash_file}" &>/dev/null; then
+            rm -rf "${tmpdir}"
+            log "FATAL: Policy signature INVALID"
+            return 1
+        fi
+        rm -rf "${tmpdir}"
+    }
+
+    # Parse policy — single jq call for all fields
+    IFS=$'\t' read -r POLICY_VERSION POLICY_DEFAULT_ACTION POLICY_RULES_JSON < <(
+        jq -r '[
+            (.version // "unknown"),
+            (.default_action // "deny"),
+            (.rules | tojson)
+        ] | join("\t")' "${POLICY_FILE}" 2>/dev/null || printf 'unknown\tdeny\t[]'
+    )
+    POLICY_LOADED="true"
+
+    log "Policy loaded: v${POLICY_VERSION}, default=${POLICY_DEFAULT_ACTION}"
+}
+
+# ─── Detail Matcher (S1/A4: newline-safe, no echo|grep) ─────────────────────
+
+match_detail_field() {
+    local actual_value="$1"
+    local matcher_json="$2"
+
+    # S1: Reject values with embedded newlines — fail closed
+    # Newlines in tool_input values are a bypass vector
+    if [[ "${actual_value}" == *$'\n'* ]]; then
+        log "SECURITY: Rejecting value with embedded newlines"
+        return 1
+    fi
+
+    # A1: Extract all matcher types in one jq call
+    local regex contains prefix eq not_regex
+    IFS=$'\t' read -r regex contains prefix eq not_regex < <(
+        printf '%s' "${matcher_json}" | jq -r '[
+            (.regex // ""),
+            (.contains // ""),
+            (.prefix // ""),
+            (.eq // ""),
+            (.not_regex // "")
+        ] | join("\t")' 2>/dev/null || printf '\t\t\t\t'
+    )
+
+    # regex
+    if [ -n "${regex}" ]; then
+        # A4/S10: Use printf, not echo. Use timeout to bound regex eval (A5).
+        if printf '%s\n' "${actual_value}" | timeout 2 grep -qE -- "${regex}" 2>/dev/null; then
+            return 0
+        fi
+        return 1
+    fi
+
+    # contains
+    if [ -n "${contains}" ]; then
+        if printf '%s\n' "${actual_value}" | grep -qF -- "${contains}" 2>/dev/null; then
+            return 0
+        fi
+        return 1
+    fi
+
+    # prefix
+    if [ -n "${prefix}" ]; then
+        if [[ "${actual_value}" == "${prefix}"* ]]; then
+            return 0
+        fi
+        return 1
+    fi
+
+    # eq
+    if [ -n "${eq}" ]; then
+        if [ "${actual_value}" = "${eq}" ]; then
+            return 0
+        fi
+        return 1
+    fi
+
+    # not_regex
+    if [ -n "${not_regex}" ]; then
+        if printf '%s\n' "${actual_value}" | timeout 2 grep -qE -- "${not_regex}" 2>/dev/null; then
+            return 1
+        fi
+        return 0
+    fi
+
+    return 1
+}
+
+# ─── Policy Evaluator ──────────────────────────────────────────────────────
+
+MATCHED_RULE=""
+MATCHED_ACTION=""
+MATCHED_SEVERITY=""
+MATCHED_RISK_SCORE=0
+MATCHED_AUDIT="true"
+MATCHED_DESCRIPTION=""
+
+evaluate_policy() {
+    local domain="$1"
+    local detail="$2"
+
+    MATCHED_RULE=""
+    MATCHED_ACTION=""
+    MATCHED_SEVERITY="info"
+    MATCHED_RISK_SCORE=0
+    MATCHED_AUDIT="true"
+    MATCHED_DESCRIPTION=""
+
+    local rule_count
+    rule_count=$(printf '%s' "${POLICY_RULES_JSON}" | jq 'length' 2>/dev/null || echo 0)
+
+    local i=0
+    while [ "${i}" -lt "${rule_count}" ]; do
+        local rule
+        rule=$(printf '%s' "${POLICY_RULES_JSON}" | jq -c ".[${i}]" 2>/dev/null)
+
+        # Extract rule basics in one jq call
+        local enabled rule_domain
+        IFS=$'\t' read -r enabled rule_domain < <(
+            printf '%s' "${rule}" | jq -r '[(.enabled // true | tostring), (.domain // "")] | join("\t")' 2>/dev/null || printf 'true\t'
+        )
+
+        # Skip disabled rules
+        if [ "${enabled}" = "false" ]; then
+            i=$((i + 1))
+            continue
+        fi
+
+        # Check domain match
+        if [ -n "${rule_domain}" ] && [ "${rule_domain}" != "${domain}" ]; then
+            i=$((i + 1))
+            continue
+        fi
+
+        # Check match conditions
+        local match_json
+        match_json=$(printf '%s' "${rule}" | jq -c '.match // {}' 2>/dev/null)
+
+        # Domain-only match (catch-all for this domain)
+        local match_domain_only has_detail
+        IFS=$'\t' read -r match_domain_only has_detail < <(
+            printf '%s' "${match_json}" | jq -r '[(.domain // ""), (has("detail") | tostring)] | join("\t")' 2>/dev/null || printf '\tfalse'
+        )
+
+        if [ -n "${match_domain_only}" ] && [ "${match_domain_only}" = "${domain}" ]; then
+            if [ "${has_detail}" != "true" ]; then
+                _set_matched "${rule}"
+                return 0
+            fi
+        fi
+
+        # Detail matchers
+        if [ "${has_detail}" = "true" ]; then
+            local detail_match_json
+            detail_match_json=$(printf '%s' "${match_json}" | jq -c '.detail' 2>/dev/null)
+            local all_matched="true"
+
+            # Iterate detail fields
+            local fields
+            fields=$(printf '%s' "${detail_match_json}" | jq -r 'keys[]' 2>/dev/null)
+            for field in ${fields}; do
+                # A20/S5: Use --arg bracket notation for safe field access
+                local actual_value matcher_json_field
+                actual_value=$(printf '%s' "${detail}" | jq -r --arg f "${field}" '.[$f] // ""' 2>/dev/null)
+                matcher_json_field=$(printf '%s' "${detail_match_json}" | jq -c --arg f "${field}" '.[$f]' 2>/dev/null)
+
+                if ! match_detail_field "${actual_value}" "${matcher_json_field}"; then
+                    all_matched="false"
+                    break
+                fi
+            done
+
+            if [ "${all_matched}" = "true" ]; then
+                # Check compound_guard if present
+                local has_guard
+                has_guard=$(printf '%s' "${match_json}" | jq 'has("compound_guard")' 2>/dev/null)
+                if [ "${has_guard}" = "true" ]; then
+                    local guard_json
+                    guard_json=$(printf '%s' "${match_json}" | jq -c '.compound_guard' 2>/dev/null)
+                    local guard_fields
+                    guard_fields=$(printf '%s' "${guard_json}" | jq -r 'keys[]' 2>/dev/null)
+                    local guard_passed="true"
+                    for gfield in ${guard_fields}; do
+                        # A20/S5: Safe bracket notation
+                        local gval gmatcher
+                        gval=$(printf '%s' "${detail}" | jq -r --arg f "${gfield}" '.[$f] // ""' 2>/dev/null)
+                        gmatcher=$(printf '%s' "${guard_json}" | jq -c --arg f "${gfield}" '.[$f]' 2>/dev/null)
+                        if ! match_detail_field "${gval}" "${gmatcher}"; then
+                            guard_passed="false"
+                            break
+                        fi
+                    done
+                    if [ "${guard_passed}" = "false" ]; then
+                        i=$((i + 1))
+                        continue
+                    fi
+                fi
+
+                _set_matched "${rule}"
+                return 0
+            fi
+        fi
+
+        i=$((i + 1))
+    done
+
+    # No match — default action (still returns 0; caller checks MATCHED_RULE)
+    MATCHED_ACTION="${POLICY_DEFAULT_ACTION}"
+    MATCHED_RULE="default"
+    MATCHED_SEVERITY="warn"
+    MATCHED_DESCRIPTION="No matching rule — default policy action"
+    return 0
+}
+
+# A11: Capture all fields including description in one jq call
+_set_matched() {
+    local rule="$1"
+    IFS=$'\t' read -r MATCHED_RULE MATCHED_ACTION MATCHED_SEVERITY MATCHED_AUDIT MATCHED_DESCRIPTION < <(
+        printf '%s' "${rule}" | jq -r '[
+            (.id // "unknown"),
+            (.action // "deny"),
+            (.severity // "info"),
+            (.audit // true | tostring),
+            (.description // "")
+        ] | join("\t")' 2>/dev/null || printf 'unknown\tdeny\tinfo\ttrue\t'
+    )
+
+    # Compute risk score
+    local has_score
+    has_score=$(printf '%s' "${rule}" | jq 'has("risk_score")' 2>/dev/null)
+    if [ "${has_score}" = "true" ]; then
+        IFS=$'\t' read -r irrev consq blast < <(
+            printf '%s' "${rule}" | jq -r '[
+                (.risk_score.irreversibility // 0),
+                (.risk_score.consequence // 0),
+                (.risk_score.blast_radius // 0)
+            ] | join("\t")' 2>/dev/null || printf '0\t0\t0'
+        )
+        MATCHED_RISK_SCORE="${irrev}"
+        if [ "${consq}" -gt "${MATCHED_RISK_SCORE}" ] 2>/dev/null; then MATCHED_RISK_SCORE="${consq}"; fi
+        if [ "${blast}" -gt "${MATCHED_RISK_SCORE}" ] 2>/dev/null; then MATCHED_RISK_SCORE="${blast}"; fi
+    else
+        MATCHED_RISK_SCORE=0
+    fi
+}
+
+# ─── Availability Mode ──────────────────────────────────────────────────────
+
+get_availability_mode() {
+    if [ -f "${AVAILABILITY_STATE}" ]; then
+        jq -r '.mode // "active"' "${AVAILABILITY_STATE}" 2>/dev/null || echo "active"
+    else
+        echo "active"
+    fi
+}
+
+queue_for_review() {
+    local detail="$1" rule="$2" risk_score="$3"
+    local entry
+    entry=$(jq -n -c \
+        --arg id "$(gen_id)" \
+        --arg ts "${GATE_TS}" \
+        --arg rule "${rule}" \
+        --arg domain "${DOMAIN}" \
+        --argjson detail "${detail}" \
+        --argjson risk_score "${risk_score}" \
+        '{id:$id,ts:$ts,rule:$rule,domain:$domain,detail:$detail,risk_score:$risk_score}')
+    echo "${entry}" >> "${AWAY_QUEUE}" 2>/dev/null || true
+}
+
+# ─── Telegram Ask Channel ──────────────────────────────────────────────────
+
+# S3: Pass token via curl -K (process substitution) to avoid process table exposure
+telegram_api() {
+    local method="$1" body="$2"
+    curl -s --connect-timeout 5 --max-time 10 \
+        -X POST -H "Content-Type: application/json" \
+        -d "${body}" \
+        -K <(printf 'url = "https://api.telegram.org/bot%s/%s"' "${TELEGRAM_TOKEN}" "${method}") \
+        2>/dev/null
+}
+
+telegram_ask() {
+    local action_id="$1" tool_name="$2" display="$3" rule="$4" risk_score="$5" severity="$6"
+
+    if [ -z "${TELEGRAM_TOKEN}" ]; then
+        log "No Telegram token — denying ask action"
+        return 1
+    fi
+
+    # Rate limiting — deny if asks are coming too fast
+    local now_ms
+    now_ms=$(date +%s%N 2>/dev/null | cut -c1-13 || echo "$(($(date +%s) * 1000))")
+    if [ -f "${RATE_LIMIT_FILE}" ]; then
+        local last_ms
+        last_ms=$(cat "${RATE_LIMIT_FILE}" 2>/dev/null | tr -d '[:space:]')
+        last_ms=${last_ms:-0}
+        local elapsed_ms=$((now_ms - last_ms))
+        if [ "${elapsed_ms}" -lt "${TELEGRAM_FLOOD_GUARD_MS}" ]; then
+            log "RATE LIMITED: ${elapsed_ms}ms since last ask (guard=${TELEGRAM_FLOOD_GUARD_MS}ms)"
+            return 1
+        fi
+    fi
+    printf '%s' "${now_ms}" > "${RATE_LIMIT_FILE}" 2>/dev/null || true
+
+    # S7: Sanitize display for Telegram — strict allowlist
+    local safe_display
+    safe_display=$(printf '%s' "${display}" | tr -cd 'a-zA-Z0-9 /._-' | head -c 120)
+
+    # Format message
+    local emoji="⚡"
+    [ "${severity}" = "critical" ] && emoji="🔴"
+    [ "${severity}" = "warn" ] && emoji="🟡"
+
+    # Build message with jq to avoid all escaping issues
+    local send_body
+    send_body=$(jq -n -c \
+        --arg chat_id "${TELEGRAM_CHAT_ID}" \
+        --arg emoji "${emoji}" \
+        --arg tool "${tool_name}" \
+        --arg detail "${safe_display}" \
+        --arg risk "${risk_score}" \
+        --arg rule "${rule}" \
+        --arg aid "${action_id}" \
+        '{
+            chat_id: $chat_id,
+            text: ($emoji + " ZLAR Ask\n\nTool: " + $tool + "\nDetail: " + $detail + "\nRisk: " + $risk + "/100\nRule: " + $rule),
+            reply_markup: {inline_keyboard: [[
+                {text: "✅ Approve", callback_data: ("approve:" + $aid)},
+                {text: "❌ Deny", callback_data: ("deny:" + $aid)}
+            ]]}
+        }')
+
+    local send_result
+    send_result=$(telegram_api "sendMessage" "${send_body}")
+
+    local msg_id
+    msg_id=$(printf '%s' "${send_result}" | jq -r '.result.message_id // empty' 2>/dev/null)
+
+    if [ -z "${msg_id}" ]; then
+        log "Failed to send Telegram message: ${send_result}"
+        return 1
+    fi
+
+    log "Telegram ask sent: msg_id=${msg_id}, action_id=${action_id}"
+
+    # Record send time for audit
+    emit_event "${DOMAIN}" "ask_sent" "pending" "${DETAIL}" "${rule}" "${severity}" "${risk_score}"
+
+    # Poll for response
+    local deadline=$(($(date +%s) + TELEGRAM_TIMEOUT_S))
+    local last_update_id=0
+
+    while [ "$(date +%s)" -lt "${deadline}" ]; do
+        local poll_body
+        poll_body=$(jq -n -c \
+            --argjson offset "$((last_update_id + 1))" \
+            --argjson timeout 3 \
+            '{offset: $offset, timeout: $timeout, allowed_updates: ["callback_query"]}')
+
+        local updates
+        updates=$(telegram_api "getUpdates" "${poll_body}")
+
+        local count
+        count=$(printf '%s' "${updates}" | jq '.result | length' 2>/dev/null || echo 0)
+
+        local j=0
+        while [ "${j}" -lt "${count}" ]; do
+            local update
+            update=$(printf '%s' "${updates}" | jq -c ".result[${j}]" 2>/dev/null)
+
+            # Extract all callback fields in one jq call
+            local cb_data cb_id cb_from
+            IFS=$'\t' read -r cb_data cb_id cb_from < <(
+                printf '%s' "${update}" | jq -r '[
+                    (.callback_query.data // ""),
+                    (.callback_query.id // ""),
+                    (.callback_query.from.id // "" | tostring)
+                ] | join("\t")' 2>/dev/null || printf '\t\t'
+            )
+            last_update_id=$(printf '%s' "${update}" | jq -r '.update_id' 2>/dev/null)
+
+            # Verify callback sender matches authorized chat_id
+            if [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
+                log "UNAUTHORIZED callback from user ${cb_from} (expected ${TELEGRAM_CHAT_ID})"
+                telegram_api "answerCallbackQuery" "$(jq -n -c --arg id "${cb_id}" '{callback_query_id: $id, text: "Unauthorized"}')" >/dev/null
+                j=$((j + 1))
+                continue
+            fi
+
+            if [ "${cb_data}" = "approve:${action_id}" ]; then
+                telegram_api "answerCallbackQuery" "$(jq -n -c --arg id "${cb_id}" '{callback_query_id: $id, text: "Approved"}')" >/dev/null
+                # Update message — safe construction via jq
+                telegram_api "editMessageText" "$(jq -n -c \
+                    --arg chat_id "${TELEGRAM_CHAT_ID}" \
+                    --argjson msg_id "${msg_id}" \
+                    --arg detail "${safe_display}" \
+                    '{chat_id: $chat_id, message_id: $msg_id, text: ("✅ APPROVED — " + $detail)}')" >/dev/null
+                log "Telegram: APPROVED by human"
+                return 0
+            elif [ "${cb_data}" = "deny:${action_id}" ]; then
+                telegram_api "answerCallbackQuery" "$(jq -n -c --arg id "${cb_id}" '{callback_query_id: $id, text: "Denied"}')" >/dev/null
+                telegram_api "editMessageText" "$(jq -n -c \
+                    --arg chat_id "${TELEGRAM_CHAT_ID}" \
+                    --argjson msg_id "${msg_id}" \
+                    --arg detail "${safe_display}" \
+                    '{chat_id: $chat_id, message_id: $msg_id, text: ("❌ DENIED — " + $detail)}')" >/dev/null
+                log "Telegram: DENIED by human"
+                return 1
+            fi
+
+            j=$((j + 1))
+        done
+    done
+
+    # Timeout
+    log "Telegram: TIMED OUT after ${TELEGRAM_TIMEOUT_S}s"
+    telegram_api "editMessageText" "$(jq -n -c \
+        --arg chat_id "${TELEGRAM_CHAT_ID}" \
+        --argjson msg_id "${msg_id}" \
+        --arg detail "${safe_display}" \
+        '{chat_id: $chat_id, message_id: $msg_id, text: ("⏰ TIMED OUT — " + $detail + " — action blocked")}')" >/dev/null
+    return 1
+}
+
+# ─── Main Gate Logic ────────────────────────────────────────────────────────
+
+main() {
+    # Keepalive touch
+    printf '%s' "${GATE_TS}" > "${PROJECT_DIR}/var/log/.gate-active" 2>/dev/null
+
+    # 1. Read hook input from stdin (S9: capped at 1MB)
+    local input
+    input=$(head -c 1048576)
+
+    if [ -z "${input}" ]; then
+        log "Empty input — denying"
+        respond_deny "Empty hook input"
+        return
+    fi
+
+    # Reject oversized input
+    if [ ${#input} -ge 1048576 ]; then
+        log "Oversized input (>=1MB) — denying"
+        respond_deny "Input too large"
+        return
+    fi
+
+    # 2. Validate JSON
+    if ! printf '%s' "${input}" | jq empty 2>/dev/null; then
+        log "Malformed JSON input — denying"
+        respond_deny "Malformed hook input"
+        return
+    fi
+
+    # 3. Extract tool info (single jq call for all fields)
+    local tool_name tool_input
+    IFS=$'\t' read -r tool_name tool_input SESSION_ID < <(
+        printf '%s' "${input}" | jq -r '[
+            (.tool_name // ""),
+            (.tool_input // {} | tojson),
+            (.session_id // "unknown")
+        ] | join("\t")' 2>/dev/null || printf '\t{}\tunknown'
+    )
+    # Sanitize SESSION_ID — prevent path traversal
+    SESSION_ID=$(printf '%s' "${SESSION_ID}" | tr -cd 'a-zA-Z0-9_-' | head -c 64)
+
+    if [ -z "${tool_name}" ]; then
+        log "No tool_name in input — denying"
+        respond_deny "No tool name"
+        return
+    fi
+
+    # 4. Check watchdog lockdown
+    if [ -f "${LOCKDOWN_FILE}" ]; then
+        local lock_data
+        lock_data=$(jq -r '.locked // false' "${LOCKDOWN_FILE}" 2>/dev/null)
+        if [ "${lock_data}" = "true" ]; then
+            local lock_reason
+            lock_reason=$(jq -r '.reason // "Watchdog lockdown"' "${LOCKDOWN_FILE}" 2>/dev/null)
+            log "LOCKDOWN: ${lock_reason}"
+            translate_tool "${tool_name}" "${tool_input}"
+            local lock_detail
+            lock_detail=$(jq -n -c --arg reason "${lock_reason}" '{reason: $reason}')
+            emit_event "${DOMAIN}" "${tool_name}" "deny" "${lock_detail}" "watchdog-lock" "critical" 100
+            respond_deny "ZLAR lockdown: ${lock_reason}"
+            return
+        fi
+    fi
+
+    # 5. Translate tool to domain + detail
+    translate_tool "${tool_name}" "${tool_input}"
+    log "Tool: ${tool_name} → domain=${DOMAIN}, display=${TOOL_DISPLAY}"
+
+    # 6. Load and verify policy
+    if ! load_policy; then
+        log "Policy load failed — denying all"
+        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "policy-error" "critical" 0
+        respond_deny "ZLAR policy error. All actions blocked."
+        return
+    fi
+
+    # 7. Evaluate against policy rules
+    evaluate_policy "${DOMAIN}" "${DETAIL}"
+    log "Rule: ${MATCHED_RULE}, action=${MATCHED_ACTION}, risk=${MATCHED_RISK_SCORE}, severity=${MATCHED_SEVERITY}"
+
+    # 8. Session write counter — deny if session exceeds write limit
+    if [ "${DOMAIN}" = "write" ] || [ "${DOMAIN}" = "edit" ]; then
+        mkdir -p "${SESSION_DIR}" 2>/dev/null || true
+        local count_file="${SESSION_DIR}/${SESSION_ID}.count"
+        local write_count=0
+        # A6/S12: Atomic increment with flock
+        (
+            flock -x 200 2>/dev/null || true
+            if [ -f "${count_file}" ]; then
+                write_count=$(cat "${count_file}" 2>/dev/null | tr -d '[:space:]')
+                write_count=${write_count:-0}
+            fi
+            write_count=$((write_count + 1))
+            printf '%s' "${write_count}" > "${count_file}"
+        ) 200>"${count_file}.lock" 2>/dev/null
+        # Re-read after atomic write
+        write_count=$(cat "${count_file}" 2>/dev/null | tr -d '[:space:]')
+        write_count=${write_count:-0}
+        if [ "${write_count}" -gt "${SESSION_WRITE_LIMIT}" ]; then
+            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "session-write-limit" "critical" 90
+            respond_deny "Session write limit exceeded (${write_count}/${SESSION_WRITE_LIMIT})"
+            return
+        fi
+    fi
+
+    # 9. Route based on action
+    case "${MATCHED_ACTION}" in
+        allow)
+            if [ "${MATCHED_AUDIT}" = "true" ]; then
+                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "allow" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}"
+            fi
+            respond_allow
+            ;;
+
+        deny)
+            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}"
+            # A11/S6: Use pre-captured description, safe jq construction
+            respond_deny "Blocked by rule ${MATCHED_RULE}: ${MATCHED_DESCRIPTION:-policy denied}"
+            ;;
+
+        ask)
+            local mode
+            mode=$(get_availability_mode)
+
+            case "${mode}" in
+                away)
+                    if [ "${DOMAIN}" = "write" ] || [ "${DOMAIN}" = "edit" ]; then
+                        queue_for_review "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}"
+                        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "away_queued" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}"
+                        respond_deny "Away mode: write/edit actions require review."
+                    elif [ "${MATCHED_RISK_SCORE}" -lt "${AWAY_THRESHOLD}" ]; then
+                        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "away_auto_allow" "${DETAIL}" "${MATCHED_RULE}" "info" "${MATCHED_RISK_SCORE}"
+                        respond_allow
+                    elif [ "${MATCHED_SEVERITY}" = "critical" ]; then
+                        queue_for_review "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}"
+                        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "away_halt" "${DETAIL}" "${MATCHED_RULE}" "critical" "${MATCHED_RISK_SCORE}"
+                        respond_deny "Away mode: critical action halted. Queued for review."
+                    else
+                        queue_for_review "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}"
+                        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "away_queued" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}"
+                        respond_deny "Away mode: action queued for review."
+                    fi
+                    ;;
+
+                active|review|*)
+                    local action_id
+                    action_id=$(gen_id)
+
+                    if telegram_ask "${action_id}" "${tool_name}" "${TOOL_DISPLAY}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}" "${MATCHED_SEVERITY}"; then
+                        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "authorized" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}"
+                        respond_allow
+                    else
+                        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}"
+                        respond_deny "Denied by human or timed out (rule ${MATCHED_RULE})"
+                    fi
+                    ;;
+            esac
+            ;;
+
+        log)
+            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "logged" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}"
+            respond_allow
+            ;;
+
+        *)
+            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "${MATCHED_RULE}" "warn" 0
+            respond_deny "Unknown policy action: ${MATCHED_ACTION}"
+            ;;
+    esac
+}
+
+# Run
+main

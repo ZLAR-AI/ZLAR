@@ -1,0 +1,341 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR — Convenience CLI
+#
+# Usage:
+#   zlar status     — show governed frameworks, policy summary, audit count
+#   zlar audit      — show last 20 audit entries
+#   zlar policy     — show current policy rules summary
+#   zlar telegram   — configure Telegram approval (upgrade from deny-all)
+#   zlar uninstall  — clean removal
+#   zlar version    — show version
+#   zlar help       — show this help
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# Colors
+if [ -t 1 ]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; BOLD=''; DIM=''; NC=''
+fi
+
+# ─── Version ─────────────────────────────────────────────────────────────────
+
+VERSION="unknown"
+if [ -f "${PROJECT_DIR}/VERSION" ]; then
+    VERSION=$(cat "${PROJECT_DIR}/VERSION" 2>/dev/null || echo "unknown")
+fi
+
+# ─── Commands ────────────────────────────────────────────────────────────────
+
+cmd_version() {
+    echo "ZLAR v${VERSION}"
+    echo "Location: ${PROJECT_DIR}"
+}
+
+cmd_status() {
+    printf "\n${BOLD}ZLAR Status${NC}\n\n"
+
+    # Version
+    printf "  ${BOLD}Version:${NC}  ${VERSION}\n"
+    printf "  ${BOLD}Install:${NC}  ${PROJECT_DIR}\n\n"
+
+    # Frameworks
+    printf "  ${BOLD}Frameworks:${NC}\n"
+
+    # Claude Code
+    if [ -f "${HOME}/.claude/settings.json" ] && grep -q "zlar" "${HOME}/.claude/settings.json" 2>/dev/null; then
+        printf "    ${GREEN}●${NC} Claude Code — governed\n"
+    elif [ -f "${HOME}/.claude/settings.json" ] && grep -q "zlar" "${HOME}/.claude/settings.json" 2>/dev/null; then
+        printf "    ${YELLOW}●${NC} Claude Code — governed (by Gate or CC, not LT)\n"
+    elif command -v claude >/dev/null 2>&1 || [ -d "${HOME}/.claude" ]; then
+        printf "    ${RED}●${NC} Claude Code — installed but not governed\n"
+    else
+        printf "    ${DIM}○${NC} Claude Code — not installed\n"
+    fi
+
+    # Cursor
+    if [ -f "${HOME}/.cursor/hooks.json" ] && grep -q "zlar" "${HOME}/.cursor/hooks.json" 2>/dev/null; then
+        printf "    ${GREEN}●${NC} Cursor — governed\n"
+    elif [ -f "${HOME}/.cursor/hooks.json" ] && grep -q "zlar" "${HOME}/.cursor/hooks.json" 2>/dev/null; then
+        printf "    ${YELLOW}●${NC} Cursor — governed (by Gate, not LT)\n"
+    elif command -v cursor >/dev/null 2>&1 || [ -d "${HOME}/.cursor" ]; then
+        printf "    ${RED}●${NC} Cursor — installed but not governed\n"
+    else
+        printf "    ${DIM}○${NC} Cursor — not installed\n"
+    fi
+
+    # Windsurf
+    if [ -f "${HOME}/.codeium/windsurf/hooks.json" ] && grep -q "zlar" "${HOME}/.codeium/windsurf/hooks.json" 2>/dev/null; then
+        printf "    ${GREEN}●${NC} Windsurf — governed\n"
+    elif [ -f "${HOME}/.codeium/windsurf/hooks.json" ] && grep -q "zlar" "${HOME}/.codeium/windsurf/hooks.json" 2>/dev/null; then
+        printf "    ${YELLOW}●${NC} Windsurf — governed (by Gate, not LT)\n"
+    elif command -v windsurf >/dev/null 2>&1 || [ -d "${HOME}/.codeium/windsurf" ]; then
+        printf "    ${RED}●${NC} Windsurf — installed but not governed\n"
+    else
+        printf "    ${DIM}○${NC} Windsurf — not installed\n"
+    fi
+
+    printf "\n"
+
+    # Policy
+    printf "  ${BOLD}Policy:${NC}\n"
+    POLICY_FILE="${PROJECT_DIR}/etc/policies/active.policy.json"
+    if [ -f "${POLICY_FILE}" ] && command -v jq >/dev/null 2>&1; then
+        RULE_COUNT=$(jq '.rules | length' "${POLICY_FILE}" 2>/dev/null || echo "?")
+        ALLOW_COUNT=$(jq '[.rules[] | select(.action == "allow")] | length' "${POLICY_FILE}" 2>/dev/null || echo "?")
+        DENY_COUNT=$(jq '[.rules[] | select(.action == "deny")] | length' "${POLICY_FILE}" 2>/dev/null || echo "?")
+        DEFAULT_ACTION=$(jq -r '.default_action // "deny"' "${POLICY_FILE}" 2>/dev/null || echo "deny")
+        printf "    ${RULE_COUNT} rules (${ALLOW_COUNT} allow, ${DENY_COUNT} deny, default: ${DEFAULT_ACTION})\n"
+
+        # Signature status
+        SIG_VALUE=$(jq -r '.signature.value // ""' "${POLICY_FILE}" 2>/dev/null)
+        if [ -n "${SIG_VALUE}" ] && [ "${SIG_VALUE}" != "SIGNED_AT_INSTALL" ]; then
+            printf "    ${GREEN}●${NC} Signed\n"
+        else
+            printf "    ${RED}●${NC} Unsigned\n"
+        fi
+    else
+        printf "    ${RED}●${NC} No active policy found\n"
+    fi
+
+    printf "\n"
+
+    # Telegram
+    printf "  ${BOLD}Telegram:${NC}\n"
+    GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
+    if [ -f "${GATE_CONFIG}" ] && command -v jq >/dev/null 2>&1; then
+        TG_ENABLED=$(jq -r '.telegram.enabled // false' "${GATE_CONFIG}" 2>/dev/null)
+        if [ "${TG_ENABLED}" = "true" ]; then
+            printf "    ${GREEN}●${NC} Enabled — denied actions get sent to Telegram for approval\n"
+        else
+            printf "    ${DIM}○${NC} Disabled — denied actions are instantly blocked\n"
+            printf "    ${DIM}  Upgrade: zlar telegram${NC}\n"
+        fi
+    fi
+
+    printf "\n"
+
+    # Audit
+    printf "  ${BOLD}Audit:${NC}\n"
+    AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+    if [ -f "${AUDIT_FILE}" ]; then
+        AUDIT_COUNT=$(wc -l < "${AUDIT_FILE}" 2>/dev/null | tr -d ' ')
+        printf "    ${AUDIT_COUNT} decisions logged\n"
+        if [ "${AUDIT_COUNT}" -gt 0 ]; then
+            LAST_TS=$(tail -1 "${AUDIT_FILE}" | jq -r '.timestamp // ""' 2>/dev/null)
+            if [ -n "${LAST_TS}" ]; then
+                printf "    Last: ${LAST_TS}\n"
+            fi
+        fi
+    else
+        printf "    No audit entries yet\n"
+    fi
+
+    printf "\n"
+}
+
+cmd_audit() {
+    AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+    LINES="${1:-20}"
+
+    if [ ! -f "${AUDIT_FILE}" ]; then
+        echo "No audit entries yet."
+        return
+    fi
+
+    printf "\n${BOLD}Last ${LINES} audit entries:${NC}\n\n"
+
+    tail -n "${LINES}" "${AUDIT_FILE}" | while IFS= read -r line; do
+        TS=$(printf '%s' "${line}" | jq -r '.timestamp // ""' 2>/dev/null)
+        TOOL=$(printf '%s' "${line}" | jq -r '.tool_name // ""' 2>/dev/null)
+        DECISION=$(printf '%s' "${line}" | jq -r '.decision // ""' 2>/dev/null)
+        RULE=$(printf '%s' "${line}" | jq -r '.rule_id // ""' 2>/dev/null)
+
+        case "${DECISION}" in
+            allow) COLOR="${GREEN}" ;;
+            deny)  COLOR="${RED}" ;;
+            *)     COLOR="${YELLOW}" ;;
+        esac
+
+        printf "  ${DIM}${TS}${NC}  ${COLOR}%-5s${NC}  %-20s  ${DIM}${RULE}${NC}\n" "${DECISION}" "${TOOL}"
+    done
+
+    TOTAL=$(wc -l < "${AUDIT_FILE}" | tr -d ' ')
+    printf "\n  ${DIM}Total: ${TOTAL} entries${NC}\n\n"
+}
+
+cmd_policy() {
+    POLICY_FILE="${PROJECT_DIR}/etc/policies/active.policy.json"
+
+    if [ ! -f "${POLICY_FILE}" ]; then
+        echo "No active policy found."
+        return
+    fi
+
+    printf "\n${BOLD}ZLAR Policy Summary${NC}\n\n"
+
+    jq -r '.rules[] | "  \(.action | if . == "allow" then "  ✓ allow" elif . == "deny" then "  ✗ deny " else "  ? \(.)" end)  \(.id)  \(.description)"' \
+        "${POLICY_FILE}" 2>/dev/null
+
+    printf "\n  ${DIM}Default action: $(jq -r '.default_action // "deny"' "${POLICY_FILE}" 2>/dev/null)${NC}\n"
+    printf "  ${DIM}Policy file: ${POLICY_FILE}${NC}\n\n"
+}
+
+cmd_telegram() {
+    GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
+    ENV_FILE="${PROJECT_DIR}/.env"
+
+    printf "\n${BOLD}ZLAR — Telegram Setup${NC}\n\n"
+    printf "  Telegram lets you approve or deny blocked actions from your phone.\n"
+    printf "  Instead of instant-deny, the agent waits for your decision.\n\n"
+
+    printf "  ${BOLD}Step 1:${NC} Create a Telegram bot\n"
+    printf "    1. Open Telegram, message @BotFather\n"
+    printf "    2. Send /newbot, follow the prompts\n"
+    printf "    3. Copy the bot token\n\n"
+
+    printf "  ${BOLD}Step 2:${NC} Get your chat ID\n"
+    printf "    1. Message @userinfobot on Telegram\n"
+    printf "    2. It replies with your chat ID (a number)\n\n"
+
+    printf "  ${BOLD}Step 3:${NC} Enter your credentials\n\n"
+
+    read -p "  Bot token (or press Enter to skip): " BOT_TOKEN
+    if [ -z "${BOT_TOKEN}" ]; then
+        echo ""
+        echo "  Skipped. Run 'zlar telegram' again when ready."
+        return
+    fi
+
+    read -p "  Chat ID: " CHAT_ID
+    if [ -z "${CHAT_ID}" ]; then
+        echo ""
+        echo "  Skipped. Run 'zlar telegram' again when ready."
+        return
+    fi
+
+    # Update .env — preserve existing entries, replace token if present
+    if [ -f "${ENV_FILE}" ] && grep -q "ZLAR_TELEGRAM_TOKEN" "${ENV_FILE}" 2>/dev/null; then
+        # Replace existing token line
+        TEMP_ENV=$(mktemp)
+        sed "s|^ZLAR_TELEGRAM_TOKEN=.*|ZLAR_TELEGRAM_TOKEN=${BOT_TOKEN}|" "${ENV_FILE}" > "${TEMP_ENV}"
+        # Also uncomment if it was commented out
+        sed -i.bak "s|^#.*ZLAR_TELEGRAM_TOKEN=.*|ZLAR_TELEGRAM_TOKEN=${BOT_TOKEN}|" "${TEMP_ENV}" 2>/dev/null
+        rm -f "${TEMP_ENV}.bak"
+        mv "${TEMP_ENV}" "${ENV_FILE}"
+    else
+        # Append to existing .env or create new
+        printf "ZLAR_TELEGRAM_TOKEN=%s\n" "${BOT_TOKEN}" >> "${ENV_FILE}"
+    fi
+    chmod 600 "${ENV_FILE}"
+    echo "  ✓ Token saved to ${ENV_FILE} (mode 600)"
+
+    # Update gate.json — enable Telegram, set chat ID, set reasonable timeout
+    TEMP=$(mktemp)
+    jq --arg cid "${CHAT_ID}" \
+        '.telegram.enabled = true | .telegram.chat_id = $cid | .telegram.timeout_s = 300' \
+        "${GATE_CONFIG}" > "${TEMP}" 2>/dev/null
+    if [ -s "${TEMP}" ]; then
+        mv "${TEMP}" "${GATE_CONFIG}"
+        echo "  ✓ Telegram enabled in gate config"
+    else
+        rm -f "${TEMP}"
+        echo "  ✗ Could not update gate config — edit ${GATE_CONFIG} manually"
+        return
+    fi
+
+    # Update policy — convert deny → ask for rules that make sense
+    POLICY_FILE="${PROJECT_DIR}/etc/policies/active.policy.json"
+    TEMP2=$(mktemp)
+    jq '
+        .rules = [.rules[] |
+            if .id == "R016" or .id == "R014" or .id == "R017" or
+               .id == "R019" or .id == "R020" or .id == "R031" or
+               .id == "R090" or .id == "R100"
+            then .action = "ask"
+            else .
+            end
+        ]
+    ' "${POLICY_FILE}" > "${TEMP2}" 2>/dev/null
+    if [ -s "${TEMP2}" ]; then
+        mv "${TEMP2}" "${POLICY_FILE}"
+        echo "  ✓ Policy updated — deny → ask for reviewable actions"
+
+        # Re-sign policy
+        if [ -f "${HOME}/.zlar-signing.key" ]; then
+            "${PROJECT_DIR}/bin/zlar-policy" sign \
+                --input "${POLICY_FILE}" \
+                --key "${HOME}/.zlar-signing.key" 2>/dev/null
+            echo "  ✓ Policy re-signed"
+        else
+            echo "  ⚠ Could not re-sign policy — run: zlar-policy sign --input ${POLICY_FILE} --key ~/.zlar-signing.key"
+        fi
+    else
+        rm -f "${TEMP2}"
+        echo "  ✗ Could not update policy — edit ${POLICY_FILE} manually"
+    fi
+
+    # Test Telegram connection
+    printf "\n  Testing Telegram connection...\n"
+    RESULT=$(curl -s --connect-timeout 5 "https://api.telegram.org/bot${BOT_TOKEN}/getMe" 2>/dev/null || echo "")
+    if printf '%s' "${RESULT}" | jq -r '.ok' 2>/dev/null | grep -q "true"; then
+        BOT_NAME=$(printf '%s' "${RESULT}" | jq -r '.result.username // "unknown"' 2>/dev/null)
+        echo "  ✓ Connected to @${BOT_NAME}"
+    else
+        echo "  ✗ Could not connect — check your bot token"
+    fi
+
+    printf "\n  ${BOLD}Done.${NC} Blocked actions will now be sent to Telegram for your approval.\n\n"
+}
+
+cmd_uninstall() {
+    UNINSTALL_SCRIPT="${PROJECT_DIR}/uninstall.sh"
+    if [ -f "${UNINSTALL_SCRIPT}" ]; then
+        bash "${UNINSTALL_SCRIPT}"
+    else
+        echo "Uninstall script not found at ${UNINSTALL_SCRIPT}"
+        echo "To remove manually: rm -rf ${PROJECT_DIR}"
+    fi
+}
+
+cmd_help() {
+    printf "\n${BOLD}ZLAR v${VERSION}${NC} — Zero-config governance for AI coding agents\n\n"
+    printf "  ${BOLD}Usage:${NC} zlar <command>\n\n"
+    printf "  ${BOLD}Commands:${NC}\n"
+    printf "    status      Show governed frameworks, policy summary, audit count\n"
+    printf "    audit [n]   Show last n audit entries (default: 20)\n"
+    printf "    policy      Show current policy rules\n"
+    printf "    telegram    Set up Telegram approval (upgrade from deny-all)\n"
+    printf "    uninstall   Clean removal of ZLAR\n"
+    printf "    version     Show version\n"
+    printf "    help        Show this help\n"
+    printf "\n"
+    printf "  ${BOLD}More info:${NC} https://github.com/ZLAR-AI/ZLAR\n\n"
+}
+
+# ─── Dispatch ────────────────────────────────────────────────────────────────
+
+COMMAND="${1:-help}"
+shift 2>/dev/null || true
+
+case "${COMMAND}" in
+    status)    cmd_status ;;
+    audit)     cmd_audit "$@" ;;
+    policy)    cmd_policy ;;
+    telegram)  cmd_telegram ;;
+    uninstall) cmd_uninstall ;;
+    version)   cmd_version ;;
+    help|--help|-h) cmd_help ;;
+    *)
+        echo "Unknown command: ${COMMAND}"
+        cmd_help
+        exit 1
+        ;;
+esac

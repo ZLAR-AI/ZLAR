@@ -1,0 +1,373 @@
+{
+  "version": "2.1.0",
+  "created_at": "2026-03-01T00:00:00Z",
+  "author": "your-username",
+  "description": "ZLAR Gate — universal hook policy for Claude Code, Cursor, Windsurf. Deny-first rule ordering.",
+  "signature": {
+    "algorithm": "ed25519",
+    "public_key": "GENERATE_WITH_bin/zlar-policy_keygen",
+    "value": "SIGN_WITH_bin/zlar-policy_sign"
+  },
+  "default_action": "deny",
+  "scoring_thresholds": {
+    "allow": 20,
+    "log": 50,
+    "ask": 80
+  },
+  "rules": [
+    {
+      "id": "R001",
+      "enabled": true,
+      "description": "Safe read-only shell commands (no compound operators)",
+      "domain": "bash",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "^\\s*(ls|cat|head|tail|pwd|whoami|hostname|uptime|date|df|du|ps|echo|which|file|wc|id|uname|git\\s+(status|log|diff|branch|show|rev-parse|ls-files)|npm\\s+(ls|list|outdated|view|info|version)|node\\s+(-v|--version))\\b"
+          }
+        },
+        "compound_guard": {
+          "command": {
+            "not_regex": "[;|&`>]|\\$\\("
+          }
+        }
+      }
+    },
+    {
+      "id": "R002",
+      "enabled": true,
+      "description": "Recursive/forced deletion — halt",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\brm\\s+.*(-rf|-fr|--recursive)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R003",
+      "enabled": true,
+      "description": "Privilege escalation commands",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(sudo|visudo|dscl)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R005",
+      "enabled": true,
+      "description": "Persistence mechanisms — blocked",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(nohup|launchctl\\s+load|crontab|setsid)\\b|\\s&\\s*$"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 85,
+        "consequence": 90,
+        "blast_radius": 80
+      }
+    },
+    {
+      "id": "R006",
+      "enabled": true,
+      "description": "Resource amplification (fork bombs, infinite loops)",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": ":\\(\\)\\{.*\\}|while\\s+(true|1|:)|\\byes\\s*\\||\\bdd\\s+.*if=/dev/(zero|urandom)|\\bfor\\s*\\(\\s*;\\s*;\\s*\\)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 80,
+        "consequence": 95,
+        "blast_radius": 100
+      }
+    },
+    {
+      "id": "R016",
+      "enabled": true,
+      "description": "Network send commands require approval",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(curl|wget|ssh|scp|rsync|nc|ncat|netcat)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 60,
+        "consequence": 70,
+        "blast_radius": 80
+      }
+    },
+    {
+      "id": "R014",
+      "enabled": true,
+      "description": "Git push requires approval",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\bgit\\s+push\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 70,
+        "consequence": 60,
+        "blast_radius": 75
+      }
+    },
+    {
+      "id": "R017",
+      "enabled": true,
+      "description": "Simple rm (non-recursive) requires approval",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\brm\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 70,
+        "consequence": 60,
+        "blast_radius": 40
+      }
+    },
+    {
+      "id": "R019",
+      "enabled": true,
+      "description": "Compound commands always require approval",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "[;|&`]|\\$\\("
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 50,
+        "consequence": 50,
+        "blast_radius": 60
+      }
+    },
+    {
+      "id": "R020",
+      "enabled": true,
+      "description": "Unknown shell commands — ask human",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "domain": "bash"
+      },
+      "risk_score": {
+        "irreversibility": 60,
+        "consequence": 50,
+        "blast_radius": 40
+      }
+    },
+    {
+      "id": "R030",
+      "enabled": true,
+      "description": "Write to .ssh — blocked",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".ssh"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 95,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R031",
+      "enabled": true,
+      "description": "Write to .env files requires approval",
+      "domain": "write",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".env"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 60,
+        "consequence": 80,
+        "blast_radius": 50
+      }
+    },
+    {
+      "id": "R036",
+      "enabled": true,
+      "description": "General file writes — allow",
+      "domain": "write",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "write"
+      }
+    },
+    {
+      "id": "R042",
+      "enabled": true,
+      "description": "General edits — allow",
+      "domain": "edit",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "edit"
+      }
+    },
+    {
+      "id": "R053",
+      "enabled": true,
+      "description": "General reads — allow",
+      "domain": "read",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "read"
+      }
+    },
+    {
+      "id": "R060",
+      "enabled": true,
+      "description": "Glob searches — allow",
+      "domain": "glob",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "glob"
+      }
+    },
+    {
+      "id": "R061",
+      "enabled": true,
+      "description": "Grep searches — allow",
+      "domain": "grep",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "grep"
+      }
+    },
+    {
+      "id": "R090",
+      "enabled": true,
+      "description": "Web fetch — requires approval",
+      "domain": "webfetch",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "domain": "webfetch"
+      },
+      "risk_score": {
+        "irreversibility": 30,
+        "consequence": 50,
+        "blast_radius": 70
+      }
+    },
+    {
+      "id": "R091",
+      "enabled": true,
+      "description": "Web search — allow",
+      "domain": "websearch",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "websearch"
+      }
+    },
+    {
+      "id": "R100",
+      "enabled": true,
+      "description": "MCP tool calls — require approval (Cursor/Windsurf). MCP tools can do anything; never auto-allow.",
+      "domain": "unknown",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "domain": "unknown"
+      },
+      "risk_score": {
+        "irreversibility": 60,
+        "consequence": 70,
+        "blast_radius": 60
+      }
+    }
+  ]
+}
