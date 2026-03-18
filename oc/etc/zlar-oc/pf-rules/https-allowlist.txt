@@ -1,0 +1,18 @@
+# ZLAR-OC HTTPS Allowlist — Phase B
+# Generated: (populate after Phase A observation)
+#
+# This file is loaded by pf as: table <allowed_https_hosts> persist file "this-file.txt"
+# One IP per line. Comments start with #.
+#
+# To populate:
+#   zlar-oc-audit-domains --since 48h --format pf > this-file.txt
+#
+# Then reload: sudo pfctl -f /etc/pf.conf
+#
+# Seed list (resolve these before first use):
+#   dig +short api.anthropic.com
+#   dig +short api.openai.com
+#   dig +short huggingface.co
+#   dig +short cdn-lfs.huggingface.co
+#   dig +short github.com
+#   dig +short api.github.com

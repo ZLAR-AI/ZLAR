@@ -1,0 +1,211 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR-OC: Install launchd plists for production mode
+#
+# Creates three LaunchDaemons:
+#   1. ai.zlar-oc.openclaw   — The OpenClaw gateway (runs as aiagent under sandbox)
+#   2. ai.zlar-oc.gate       — The gate daemon (runs as admin)
+#   3. ai.zlar-oc.watchdog   — The watchdog daemon (runs as admin, monitors gate)
+#
+# Usage: sudo zlar-oc-install-plist
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Must run as root: sudo $0" >&2
+    exit 1
+fi
+
+ZLAR_OC_BIN="$(cd "$(dirname "$0")" && pwd)"
+
+# ─── OpenClaw Gateway Plist ───────────────────────────────────────────────────
+
+cat > /Library/LaunchDaemons/ai.zlar-oc.openclaw.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.zlar-oc.openclaw</string>
+
+    <key>UserName</key>
+    <string>aiagent</string>
+
+    <key>GroupName</key>
+    <string>_aiagent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/sandbox-exec</string>
+        <string>-f</string>
+        <string>/usr/local/etc/zlar-oc/openclaw.sb</string>
+        <string>-D</string>
+        <string>AGENT_HOME=/Users/aiagent</string>
+        <string>-D</string>
+        <string>ADMIN_HOME=/Users/admin</string>
+        <string>-D</string>
+        <string>WORKSPACE_ROOT=/Users/aiagent/workspace</string>
+        <string>-D</string>
+        <string>OPENCLAW_INSTALL_DIR=/opt/homebrew/lib/node_modules/openclaw</string>
+        <string>/opt/homebrew/bin/node</string>
+        <string>/opt/homebrew/lib/node_modules/openclaw/dist/entry.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/aiagent/workspace</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/aiagent</string>
+        <key>OPENCLAW_HOME</key>
+        <string>/Users/aiagent</string>
+        <key>OPENCLAW_GATEWAY_PORT</key>
+        <string>18789</string>
+        <key>HF_HOME</key>
+        <string>/opt/models/huggingface</string>
+        <key>NODE_ENV</key>
+        <string>production</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/zlar-oc/openclaw-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/zlar-oc/openclaw-stderr.log</string>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
+PLIST
+
+echo "Installed: /Library/LaunchDaemons/ai.zlar-oc.openclaw.plist"
+
+# ─── Gate Daemon Plist ────────────────────────────────────────────────────────
+
+cat > /Library/LaunchDaemons/ai.zlar-oc.gate.plist <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.zlar-oc.gate</string>
+
+    <key>UserName</key>
+    <string>admin</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>${ZLAR_OC_BIN}/zlar-oc-gate</string>
+        <string>start</string>
+        <string>--config</string>
+        <string>/usr/local/etc/zlar-oc/gate.json</string>
+        <string>--audit</string>
+        <string>/var/log/zlar-oc/audit.jsonl</string>
+        <string>--pidfile</string>
+        <string>/var/run/zlar-oc-gate.pid</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/zlar-oc/gate.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/zlar-oc/gate.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>
+PLIST
+
+echo "Installed: /Library/LaunchDaemons/ai.zlar-oc.gate.plist"
+
+# ─── Watchdog Daemon Plist ──────────────────────────────────────────────────
+
+cat > /Library/LaunchDaemons/ai.zlar-oc.watchdog.plist <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.zlar-oc.watchdog</string>
+
+    <key>UserName</key>
+    <string>admin</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>${ZLAR_OC_BIN}/zlar-oc-watchdog</string>
+        <string>start</string>
+        <string>--gate-pidfile</string>
+        <string>/var/run/zlar-oc-gate.pid</string>
+        <string>--audit</string>
+        <string>/var/log/zlar-oc/audit.jsonl</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/zlar-oc/watchdog.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/zlar-oc/watchdog.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
+PLIST
+
+echo "Installed: /Library/LaunchDaemons/ai.zlar-oc.watchdog.plist"
+
+# ─── Set Permissions ──────────────────────────────────────────────────────────
+
+chown root:wheel /Library/LaunchDaemons/ai.zlar-oc.*.plist
+chmod 644 /Library/LaunchDaemons/ai.zlar-oc.*.plist
+
+echo ""
+echo "To activate:"
+echo "  sudo launchctl load /Library/LaunchDaemons/ai.zlar-oc.openclaw.plist"
+echo "  sudo launchctl load /Library/LaunchDaemons/ai.zlar-oc.gate.plist"
+echo "  sudo launchctl load /Library/LaunchDaemons/ai.zlar-oc.watchdog.plist"
+echo ""
+echo "Or use the launcher: sudo zlar-oc-launch"

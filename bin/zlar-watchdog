@@ -1,0 +1,564 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR Watchdog
+#
+# Pre-flight and on-demand health checker for the ZLAR gate.
+#
+# Unlike the ZLAR-OC watchdog (which monitored a daemon PID loop), this
+# version checks the structural integrity of the synchronous hook model:
+#   - Is the policy file present, signed, and valid?
+#   - Is the audit trail writable?
+#   - Are the gate scripts present and executable?
+#   - Are required external tools available (jq, openssl)?
+#   - Is Telegram reachable?
+#
+# If any critical check fails, the watchdog can write a lockdown file.
+# The gate checks for this file on every invocation and refuses to allow
+# anything while lockdown is active.
+#
+# This is the membrane self-check mechanism.
+# The gate cannot operate if its foundations are broken.
+#
+# Usage:
+#   zlar-watchdog check               Run all health checks
+#   zlar-watchdog lockdown [REASON]    Write lockdown state (blocks gate)
+#   zlar-watchdog unlock               Remove lockdown state
+#   zlar-watchdog status               Show lockdown state only
+#
+# Exit codes:
+#   0  All checks passed (or lockdown/unlock succeeded)
+#   1  One or more checks failed
+#   2  Usage error
+#
+# Ported from ZLAR-OC watchdog. Adapted for synchronous hook model.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+# ─── Path Resolution ─────────────────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# ─── Configuration ───────────────────────────────────────────────────────────
+
+POLICY_FILE="${PROJECT_DIR}/etc/policies/active.policy.json"
+POLICY_PUBKEY="${PROJECT_DIR}/etc/keys/policy-signing.pub"
+AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+LOG_FILE="${PROJECT_DIR}/var/log/watchdog.log"
+LOCKDOWN_FILE="${PROJECT_DIR}/var/log/watchdog.lock"
+
+GATE_SCRIPT="${PROJECT_DIR}/bin/zlar-gate"
+HOOK_SCRIPT="${PROJECT_DIR}/adapters/claude-code/hook.sh"
+POLICY_CLI="${PROJECT_DIR}/bin/zlar-policy"
+
+TELEGRAM_API="https://api.telegram.org"
+TELEGRAM_TIMEOUT=5  # seconds for API ping
+
+HOSTNAME="$(hostname -s)"
+
+# ─── Colors ──────────────────────────────────────────────────────────────────
+
+if [ -t 1 ]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; BOLD=''; NC=''
+fi
+
+# ─── Output Helpers ──────────────────────────────────────────────────────────
+
+pass() { echo -e "${GREEN}  PASS${NC}  $*"; }
+fail() { echo -e "${RED}  FAIL${NC}  $*"; }
+skip() { echo -e "${YELLOW}  SKIP${NC}  $*"; }
+info() { echo -e "${BLUE}  INFO${NC}  $*"; }
+
+log_wd() {
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    mkdir -p "$(dirname "${LOG_FILE}")"
+    echo "[${ts}] [watchdog] $*" >> "${LOG_FILE}" 2>/dev/null || true
+}
+
+# ─── Individual Checks ──────────────────────────────────────────────────────
+
+# Track overall result
+FAILURES=0
+CHECKS=0
+
+run_check() {
+    CHECKS=$((CHECKS + 1))
+    # The check function is called; it should call pass/fail/skip
+}
+
+check_policy_exists() {
+    run_check
+    if [ -f "${POLICY_FILE}" ]; then
+        pass "Policy file exists (${POLICY_FILE})"
+        return 0
+    else
+        fail "Policy file MISSING (${POLICY_FILE})"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    fi
+}
+
+check_policy_signature_file() {
+    run_check
+    # The PoC uses a JSON policy with embedded signature, not a separate .sig file.
+    # Check that the policy has a non-empty signature value inside it.
+    if [ ! -f "${POLICY_FILE}" ]; then
+        fail "Policy signature — cannot check (policy file missing)"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        # Fall back to grep
+        local sig_value
+        sig_value=$(grep -o '"value"[[:space:]]*:[[:space:]]*"[^"]*"' "${POLICY_FILE}" 2>/dev/null | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
+        if [ -n "${sig_value}" ] && [ "${sig_value}" != "" ]; then
+            pass "Policy has embedded signature (${#sig_value} chars)"
+            return 0
+        else
+            fail "Policy has NO signature (empty or missing value field)"
+            FAILURES=$((FAILURES + 1))
+            return 1
+        fi
+    else
+        local sig_value
+        sig_value=$(jq -r '.signature.value // ""' "${POLICY_FILE}" 2>/dev/null)
+        if [ -n "${sig_value}" ] && [ "${sig_value}" != "" ]; then
+            pass "Policy has embedded signature (${#sig_value} chars)"
+            return 0
+        else
+            fail "Policy has NO signature (empty or missing .signature.value)"
+            FAILURES=$((FAILURES + 1))
+            return 1
+        fi
+    fi
+}
+
+check_policy_signature_valid() {
+    run_check
+    if [ ! -f "${POLICY_FILE}" ]; then
+        fail "Policy signature validity — cannot check (policy file missing)"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    fi
+
+    if [ ! -x "${POLICY_CLI}" ]; then
+        fail "Policy signature validity — cannot check (${POLICY_CLI} not found or not executable)"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    fi
+
+    # Call bin/zlar-policy verify --input <file>
+    # It exits 0 on valid, non-zero on invalid
+    local output
+    if output=$("${POLICY_CLI}" verify --input "${POLICY_FILE}" 2>&1); then
+        pass "Policy signature is VALID (verified by zlar-policy)"
+        return 0
+    else
+        fail "Policy signature is INVALID"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    fi
+}
+
+check_audit_writable() {
+    run_check
+    local audit_dir
+    audit_dir="$(dirname "${AUDIT_FILE}")"
+
+    # Ensure the directory exists
+    if [ ! -d "${audit_dir}" ]; then
+        mkdir -p "${audit_dir}" 2>/dev/null || true
+    fi
+
+    # If the file exists, check writability
+    if [ -f "${AUDIT_FILE}" ]; then
+        if [ -w "${AUDIT_FILE}" ]; then
+            pass "Audit file is writable (${AUDIT_FILE})"
+            return 0
+        else
+            fail "Audit file exists but is NOT writable (${AUDIT_FILE})"
+            FAILURES=$((FAILURES + 1))
+            return 1
+        fi
+    else
+        # File doesn't exist — check if directory is writable
+        if [ -w "${audit_dir}" ]; then
+            pass "Audit file does not exist yet, but directory is writable (${audit_dir})"
+            return 0
+        else
+            fail "Audit file missing and directory NOT writable (${audit_dir})"
+            FAILURES=$((FAILURES + 1))
+            return 1
+        fi
+    fi
+}
+
+check_hook_script() {
+    run_check
+    if [ ! -f "${HOOK_SCRIPT}" ]; then
+        fail "Hook script MISSING (${HOOK_SCRIPT})"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    fi
+
+    if [ ! -x "${HOOK_SCRIPT}" ]; then
+        fail "Hook script exists but is NOT executable (${HOOK_SCRIPT})"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    fi
+
+    pass "Hook script exists and is executable (${HOOK_SCRIPT})"
+    return 0
+}
+
+check_gate_script() {
+    run_check
+    if [ ! -f "${GATE_SCRIPT}" ]; then
+        fail "Gate script MISSING (${GATE_SCRIPT})"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    fi
+
+    if [ ! -x "${GATE_SCRIPT}" ]; then
+        fail "Gate script exists but is NOT executable (${GATE_SCRIPT})"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    fi
+
+    pass "Gate script exists and is executable (${GATE_SCRIPT})"
+    return 0
+}
+
+check_telegram_token() {
+    run_check
+    local token="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
+
+    if [ -n "${token}" ]; then
+        # Show first 5 and last 4 characters for identification, mask the rest
+        local masked
+        if [ ${#token} -gt 12 ]; then
+            masked="${token:0:5}...${token: -4}"
+        else
+            masked="(set, ${#token} chars)"
+        fi
+        pass "Telegram token is set (${masked})"
+        return 0
+    else
+        fail "Telegram token NOT set (need ZLAR_TELEGRAM_TOKEN or TELEGRAM_BOT_TOKEN)"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    fi
+}
+
+check_telegram_reachable() {
+    run_check
+    # Optional check — failure here is a warning, not critical
+    if ! command -v curl &>/dev/null; then
+        skip "Telegram reachability — curl not available"
+        return 0
+    fi
+
+    local token="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
+    if [ -z "${token}" ]; then
+        skip "Telegram reachability — no token set, cannot ping API"
+        return 0
+    fi
+
+    # Quick HEAD request to the getMe endpoint
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        --connect-timeout "${TELEGRAM_TIMEOUT}" \
+        --max-time "${TELEGRAM_TIMEOUT}" \
+        "${TELEGRAM_API}/bot${token}/getMe" 2>/dev/null || echo "000")
+
+    if [ "${http_code}" = "200" ]; then
+        pass "Telegram API is reachable (HTTP ${http_code})"
+        return 0
+    elif [ "${http_code}" = "000" ]; then
+        skip "Telegram API unreachable (network timeout — may be offline)"
+        # Not counted as failure — network may be intentionally down
+        return 0
+    elif [ "${http_code}" = "401" ]; then
+        fail "Telegram API reachable but token is INVALID (HTTP 401)"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    else
+        skip "Telegram API returned HTTP ${http_code} (unexpected, but API is reachable)"
+        return 0
+    fi
+}
+
+check_jq() {
+    run_check
+    if command -v jq &>/dev/null; then
+        local jq_version jq_path jq_hash
+        jq_version=$(jq --version 2>/dev/null || echo "unknown")
+        jq_path=$(which jq 2>/dev/null)
+        jq_hash=$(shasum -a 256 "${jq_path}" 2>/dev/null | awk '{print $1}')
+
+        # M4: jq binary integrity check
+        local hash_file="${PROJECT_DIR}/etc/jq.sha256"
+        if [ -f "${hash_file}" ]; then
+            local expected_hash
+            expected_hash=$(cat "${hash_file}" 2>/dev/null | tr -d '[:space:]')
+            if [ "${jq_hash}" != "${expected_hash}" ]; then
+                fail "jq binary hash MISMATCH (expected ${expected_hash:0:16}..., got ${jq_hash:0:16}...)"
+                FAILURES=$((FAILURES + 1))
+                return 1
+            fi
+            pass "jq is available (${jq_version}) — hash verified"
+        else
+            # First run: record hash
+            echo "${jq_hash}" > "${hash_file}" 2>/dev/null || true
+            pass "jq is available (${jq_version}) — hash recorded"
+        fi
+        return 0
+    else
+        fail "jq is NOT available (required for policy and audit processing)"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    fi
+}
+
+check_openssl() {
+    run_check
+    if command -v openssl &>/dev/null; then
+        local openssl_version
+        openssl_version=$(openssl version 2>/dev/null | head -c 30 || echo "unknown")
+        pass "openssl is available (${openssl_version})"
+        return 0
+    else
+        fail "openssl is NOT available (required for signature verification)"
+        FAILURES=$((FAILURES + 1))
+        return 1
+    fi
+}
+
+# ─── Lockdown Management ────────────────────────────────────────────────────
+# The lockdown file is a simple marker. When it exists, the gate should
+# refuse all actions. The file contains a JSON payload with reason and
+# timestamp for auditability.
+
+cmd_lockdown() {
+    local reason="${1:-Manual lockdown via watchdog}"
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    mkdir -p "$(dirname "${LOCKDOWN_FILE}")"
+
+    # Write lockdown state
+    printf '{"locked":true,"ts":"%s","host":"%s","reason":"%s","by":"watchdog"}\n' \
+        "${ts}" "${HOSTNAME}" "${reason}" > "${LOCKDOWN_FILE}"
+
+    log_wd "LOCKDOWN: ${reason}"
+
+    echo -e "${BOLD}ZLAR Watchdog — LOCKDOWN ACTIVATED${NC}"
+    echo ""
+    echo -e "  ${RED}State:${NC}   LOCKED"
+    echo -e "  ${RED}Time:${NC}    ${ts}"
+    echo -e "  ${RED}Reason:${NC}  ${reason}"
+    echo -e "  ${RED}File:${NC}    ${LOCKDOWN_FILE}"
+    echo ""
+    echo "  The gate will DENY ALL actions while this lockdown is active."
+    echo "  To remove: zlar-watchdog unlock"
+    echo ""
+}
+
+cmd_unlock() {
+    if [ ! -f "${LOCKDOWN_FILE}" ]; then
+        echo -e "${BOLD}ZLAR Watchdog — No lockdown active${NC}"
+        echo ""
+        echo "  Nothing to unlock."
+        return 0
+    fi
+
+    # Show what we're removing
+    local locked_reason locked_ts
+    if command -v jq &>/dev/null; then
+        locked_reason=$(jq -r '.reason // "unknown"' "${LOCKDOWN_FILE}" 2>/dev/null)
+        locked_ts=$(jq -r '.ts // "unknown"' "${LOCKDOWN_FILE}" 2>/dev/null)
+    else
+        locked_reason="(could not parse — jq not available)"
+        locked_ts="(unknown)"
+    fi
+
+    rm -f "${LOCKDOWN_FILE}"
+
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    log_wd "UNLOCK: Lockdown removed (was: ${locked_reason}, since: ${locked_ts})"
+
+    echo -e "${BOLD}ZLAR Watchdog — LOCKDOWN REMOVED${NC}"
+    echo ""
+    echo -e "  ${GREEN}State:${NC}       UNLOCKED"
+    echo -e "  ${GREEN}Time:${NC}        ${ts}"
+    echo "  Previous lockdown:"
+    echo "    Reason:  ${locked_reason}"
+    echo "    Since:   ${locked_ts}"
+    echo ""
+    echo "  The gate will resume normal operation."
+    echo ""
+}
+
+cmd_status() {
+    echo -e "${BOLD}ZLAR Watchdog Status${NC}"
+    echo ""
+
+    if [ -f "${LOCKDOWN_FILE}" ]; then
+        echo -e "  State: ${RED}LOCKED${NC}"
+        if command -v jq &>/dev/null; then
+            local reason ts by
+            reason=$(jq -r '.reason // "unknown"' "${LOCKDOWN_FILE}" 2>/dev/null)
+            ts=$(jq -r '.ts // "unknown"' "${LOCKDOWN_FILE}" 2>/dev/null)
+            by=$(jq -r '.by // "unknown"' "${LOCKDOWN_FILE}" 2>/dev/null)
+            echo "  Since:  ${ts}"
+            echo "  By:     ${by}"
+            echo "  Reason: ${reason}"
+        else
+            echo "  (jq not available — cannot parse lockdown details)"
+        fi
+    else
+        echo -e "  State: ${GREEN}UNLOCKED${NC}"
+    fi
+
+    # Show recent watchdog log entries
+    if [ -f "${LOG_FILE}" ]; then
+        local recent
+        recent=$(tail -5 "${LOG_FILE}" 2>/dev/null || true)
+        if [ -n "${recent}" ]; then
+            echo ""
+            echo "  Recent watchdog log:"
+            echo "${recent}" | while IFS= read -r line; do
+                echo "    ${line}"
+            done
+        fi
+    fi
+
+    echo ""
+}
+
+# ─── Run All Checks ─────────────────────────────────────────────────────────
+
+cmd_check() {
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    echo -e "${BOLD}ZLAR Watchdog — Health Check${NC}"
+    echo "  ${ts}  (${HOSTNAME})"
+    echo ""
+
+    # Lockdown status first
+    if [ -f "${LOCKDOWN_FILE}" ]; then
+        echo -e "  ${RED}WARNING: Lockdown is ACTIVE — gate is blocking all actions${NC}"
+        if command -v jq &>/dev/null; then
+            local lock_reason lock_ts
+            lock_reason=$(jq -r '.reason // "unknown"' "${LOCKDOWN_FILE}" 2>/dev/null)
+            lock_ts=$(jq -r '.ts // "unknown"' "${LOCKDOWN_FILE}" 2>/dev/null)
+            echo "  Locked since: ${lock_ts}"
+            echo "  Reason: ${lock_reason}"
+        fi
+        echo ""
+    fi
+
+    echo -e "${BOLD}  Prerequisites${NC}"
+    echo "  ─────────────────────────────────────────────────────"
+    check_jq
+    check_openssl
+    echo ""
+
+    echo -e "${BOLD}  Policy${NC}"
+    echo "  ─────────────────────────────────────────────────────"
+    check_policy_exists
+    check_policy_signature_file
+    check_policy_signature_valid
+    echo ""
+
+    echo -e "${BOLD}  Audit${NC}"
+    echo "  ─────────────────────────────────────────────────────"
+    check_audit_writable
+    echo ""
+
+    echo -e "${BOLD}  Gate Scripts${NC}"
+    echo "  ─────────────────────────────────────────────────────"
+    check_hook_script
+    check_gate_script
+    echo ""
+
+    echo -e "${BOLD}  Telegram${NC}"
+    echo "  ─────────────────────────────────────────────────────"
+    check_telegram_token
+    check_telegram_reachable
+    echo ""
+
+    # ─── Verdict ─────────────────────────────────────────────────────────────
+    echo "  ═════════════════════════════════════════════════════"
+    local passed=$((CHECKS - FAILURES))
+    if [ ${FAILURES} -eq 0 ]; then
+        echo -e "  ${GREEN}${BOLD}VERDICT: ALL CHECKS PASSED${NC}  (${passed}/${CHECKS})"
+        log_wd "CHECK: ALL PASSED (${passed}/${CHECKS})"
+    else
+        echo -e "  ${RED}${BOLD}VERDICT: ${FAILURES} CHECK(S) FAILED${NC}  (${passed}/${CHECKS} passed)"
+        log_wd "CHECK: ${FAILURES} FAILED (${passed}/${CHECKS} passed)"
+    fi
+    echo "  ═════════════════════════════════════════════════════"
+    echo ""
+
+    # Return non-zero if any check failed
+    if [ ${FAILURES} -gt 0 ]; then
+        return 1
+    fi
+    return 0
+}
+
+# ─── Argument Parsing ────────────────────────────────────────────────────────
+
+ACTION="${1:-help}"
+shift || true
+
+case "${ACTION}" in
+    check)
+        cmd_check
+        ;;
+    lockdown)
+        cmd_lockdown "$*"
+        ;;
+    unlock)
+        cmd_unlock
+        ;;
+    status)
+        cmd_status
+        ;;
+    *)
+        echo "ZLAR Watchdog — Membrane health checker"
+        echo ""
+        echo "Usage: $0 <command> [options]"
+        echo ""
+        echo "Commands:"
+        echo "  check                Run all health checks"
+        echo "  lockdown [REASON]    Write lockdown state (gate blocks all actions)"
+        echo "  unlock               Remove lockdown state (gate resumes)"
+        echo "  status               Show current lockdown state"
+        echo ""
+        echo "Health checks:"
+        echo "  - Policy file exists and has embedded signature"
+        echo "  - Policy signature is valid (via zlar-policy verify)"
+        echo "  - Audit file is writable"
+        echo "  - Hook script (adapters/claude-code/hook.sh) exists and is executable"
+        echo "  - Gate script (bin/zlar-gate) exists and is executable"
+        echo "  - Telegram token env var is set"
+        echo "  - Telegram API is reachable (optional)"
+        echo "  - jq is available"
+        echo "  - openssl is available"
+        echo ""
+        echo "Lockdown file: ${LOCKDOWN_FILE}"
+        echo "The gate should check for this file and deny all actions when present."
+        echo ""
+        exit 2
+        ;;
+esac

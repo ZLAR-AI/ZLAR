@@ -1,0 +1,752 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR-OC Launcher
+#
+# Orchestrates the full startup sequence:
+#   Phase 1: Pre-flight validation
+#   Phase 2: Create/verify aiagent user
+#   Phase 3: Create/verify log directories
+#   Phase 4: Load pf firewall rules
+#   Phase 5: Start MLX OpenAI server (if not running)
+#   Phase 6: Start OpenClaw gateway as aiagent under sandbox
+#   Phase 7: Wait for gateway readiness
+#   Phase 8: Start gate daemon
+#
+# Usage:
+#   sudo zlar-oc-launch [--dev]     # Full startup (requires root for phases 2-4)
+#   zlar-oc-launch --status         # Check running state (no root needed)
+#   zlar-oc-launch --stop           # Graceful shutdown
+#
+# The --dev flag runs OpenClaw in the foreground instead of via launchd.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+# ─── Configuration ────────────────────────────────────────────────────────────
+
+ZLAR_OC_ROOT="/usr/local/etc/zlar-oc"
+ZLAR_OC_LOG="/var/log/zlar-oc"
+ZLAR_OC_BIN="$(cd "$(dirname "$0")" && pwd)"
+
+AGENT_USER="aiagent"
+AGENT_UID="502"
+AGENT_GROUP="_aiagent"
+AGENT_GID="502"
+AGENT_HOME="/Users/${AGENT_USER}"
+
+SANDBOX_PROFILE="${ZLAR_OC_ROOT}/openclaw.sb"
+PF_RULES="${ZLAR_OC_ROOT}/pf-rules/zlar-oc.rules"
+PF_ANCHOR="zlar-oc"
+POLICY_FILE="${ZLAR_OC_ROOT}/policies/active.policy.json"
+POLICY_PUBKEY="${ZLAR_OC_ROOT}/keys/policy-signing.pub"
+
+OPENCLAW_INSTALL="/opt/homebrew/lib/node_modules/openclaw"
+OPENCLAW_ENTRY="${OPENCLAW_INSTALL}/dist/entry.js"
+NODE_BIN="/opt/homebrew/bin/node"
+
+GATEWAY_PORT=18789
+GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
+MLX_PORT=8000
+MLX_URL="http://127.0.0.1:${MLX_PORT}"
+MLX_PLIST_LABEL="com.mlx.openai-server"
+
+LAUNCHD_LABEL="ai.zlar-oc.openclaw"
+LAUNCHD_PLIST="/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist"
+GATE_PIDFILE="/var/run/zlar-oc-gate.pid"
+WATCHDOG_PIDFILE="/var/run/zlar-oc-watchdog.pid"
+
+# Known-good hashes for integrity verification (cell-cycle checkpoint #15)
+# Update these after any intentional change to enforcement components.
+# Generate with: shasum -a 256 <file> | awk '{print $1}'
+EXPECTED_PF_HASH=""          # Set after first verified deployment
+EXPECTED_SANDBOX_HASH=""     # Set after first verified deployment
+
+# Colors (only if terminal)
+if [ -t 1 ]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; BOLD=''; NC=''
+fi
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+log()   { echo -e "${BLUE}[zlar-oc]${NC} $*"; }
+ok()    { echo -e "${GREEN}  ✓${NC} $*"; }
+warn()  { echo -e "${YELLOW}  ⚠${NC} $*"; }
+fail()  { echo -e "${RED}  ✗ FATAL:${NC} $*" >&2; exit 1; }
+phase() { echo -e "\n${BOLD}── Phase $1: $2 ──${NC}"; }
+
+# shellcheck disable=SC2120
+require_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        fail "This command must be run as root (sudo $0 $*)"
+    fi
+}
+
+# ─── Phase 1: Pre-flight Validation ──────────────────────────────────────────
+
+preflight() {
+    phase 1 "Pre-flight validation"
+
+    # macOS check
+    if [ "$(uname)" != "Darwin" ]; then
+        fail "ZLAR-OC requires macOS (detected: $(uname))"
+    fi
+    ok "macOS detected"
+
+    # Apple Silicon check
+    if ! sysctl -n machdep.cpu.brand_string 2>/dev/null | grep -q "Apple"; then
+        warn "Expected Apple Silicon (M-series). Continuing anyway."
+    else
+        ok "Apple Silicon detected: $(sysctl -n machdep.cpu.brand_string)"
+    fi
+
+    # Node.js
+    if [ ! -x "${NODE_BIN}" ]; then
+        fail "Node.js not found at ${NODE_BIN}"
+    fi
+    ok "Node.js: $(${NODE_BIN} --version)"
+
+    # OpenClaw
+    if [ ! -f "${OPENCLAW_ENTRY}" ]; then
+        fail "OpenClaw not found at ${OPENCLAW_ENTRY}"
+    fi
+    ok "OpenClaw installed at ${OPENCLAW_INSTALL}"
+
+    # Sandbox profile
+    if [ ! -f "${SANDBOX_PROFILE}" ]; then
+        fail "Sandbox profile not found at ${SANDBOX_PROFILE}"
+    fi
+    ok "Sandbox profile: ${SANDBOX_PROFILE}"
+
+    # pf rules
+    if [ ! -f "${PF_RULES}" ]; then
+        fail "pf rules not found at ${PF_RULES}"
+    fi
+    ok "pf rules: ${PF_RULES}"
+
+    # GPU memory (informational)
+    local gpu_mem
+    gpu_mem=$(sysctl -n iogpu.wired_limit_mb 2>/dev/null || echo "unknown")
+    if [ "${gpu_mem}" != "unknown" ]; then
+        ok "GPU wired limit: ${gpu_mem}MB"
+    else
+        warn "Could not read iogpu.wired_limit_mb"
+    fi
+}
+
+# ─── Phase 1.5: Integrity Checkpoint (#15 cell-cycle checkpoint) ─────────────
+# "Stop before replication if integrity fails."
+# Verify that all enforcement components are intact before starting the agent.
+# This catches tampering, accidental edits, and drift between deployments.
+
+integrity_checkpoint() {
+    phase "1.5" "Integrity checkpoint"
+
+    local failures=0
+
+    # Verify pf rules hash (if expected hash is set)
+    if [ -n "${EXPECTED_PF_HASH}" ]; then
+        local pf_hash
+        pf_hash=$(shasum -a 256 "${PF_RULES}" 2>/dev/null | awk '{print $1}')
+        if [ "${pf_hash}" = "${EXPECTED_PF_HASH}" ]; then
+            ok "pf rules hash verified"
+        else
+            echo -e "${RED}  ✗ pf rules hash MISMATCH${NC}" >&2
+            echo "    Expected: ${EXPECTED_PF_HASH}" >&2
+            echo "    Got:      ${pf_hash}" >&2
+            failures=$((failures + 1))
+        fi
+    else
+        local pf_hash
+        pf_hash=$(shasum -a 256 "${PF_RULES}" 2>/dev/null | awk '{print $1}')
+        warn "No expected pf hash set. Current: ${pf_hash}"
+        warn "Set EXPECTED_PF_HASH in this script after first verified deployment."
+    fi
+
+    # Verify sandbox profile hash (if expected hash is set)
+    if [ -n "${EXPECTED_SANDBOX_HASH}" ]; then
+        local sb_hash
+        sb_hash=$(shasum -a 256 "${SANDBOX_PROFILE}" 2>/dev/null | awk '{print $1}')
+        if [ "${sb_hash}" = "${EXPECTED_SANDBOX_HASH}" ]; then
+            ok "Sandbox profile hash verified"
+        else
+            echo -e "${RED}  ✗ Sandbox profile hash MISMATCH${NC}" >&2
+            echo "    Expected: ${EXPECTED_SANDBOX_HASH}" >&2
+            echo "    Got:      ${sb_hash}" >&2
+            failures=$((failures + 1))
+        fi
+    else
+        local sb_hash
+        sb_hash=$(shasum -a 256 "${SANDBOX_PROFILE}" 2>/dev/null | awk '{print $1}')
+        warn "No expected sandbox hash set. Current: ${sb_hash}"
+        warn "Set EXPECTED_SANDBOX_HASH in this script after first verified deployment."
+    fi
+
+    # Verify policy signature (if policy and public key exist)
+    if [ -f "${POLICY_FILE}" ] && [ -f "${POLICY_PUBKEY}" ]; then
+        local sig_value
+        sig_value=$(grep -o '"value"[[:space:]]*:[[:space:]]*"[^"]*"' "${POLICY_FILE}" | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
+
+        if [ -z "${sig_value}" ] || [ "${sig_value}" = "" ]; then
+            echo -e "${RED}  ✗ Policy is UNSIGNED${NC}" >&2
+            failures=$((failures + 1))
+        else
+            # Verify signature using a private temp directory
+            local tmpdir
+            tmpdir=$(mktemp -d /tmp/zlar-oc-preflight.XXXXXX)
+            chmod 700 "${tmpdir}"
+
+            local canon_file="${tmpdir}/canon.json"
+            local hash_file="${tmpdir}/hash.bin"
+            local sig_file="${tmpdir}/sig.bin"
+
+            sed 's/"value"[[:space:]]*:[[:space:]]*"[^"]*"/"value": ""/' "${POLICY_FILE}" > "${canon_file}"
+            shasum -a 256 "${canon_file}" | awk '{print $1}' | tr -d '\n' > "${hash_file}"
+
+            if ! echo "${sig_value}" | base64 -d > "${sig_file}" 2>&1; then
+                echo -e "${RED}  ✗ Policy signature is not valid base64${NC}" >&2
+                failures=$((failures + 1))
+                rm -rf "${tmpdir}"
+            elif [ ! -s "${sig_file}" ]; then
+                echo -e "${RED}  ✗ Policy signature decoded to empty${NC}" >&2
+                failures=$((failures + 1))
+                rm -rf "${tmpdir}"
+            elif openssl pkeyutl -verify -pubin -inkey "${POLICY_PUBKEY}" -rawin \
+                -sigfile "${sig_file}" -in "${hash_file}" &>/dev/null; then
+                ok "Policy signature verified"
+                rm -rf "${tmpdir}"
+            else
+                echo -e "${RED}  ✗ Policy signature INVALID${NC}" >&2
+                failures=$((failures + 1))
+                rm -rf "${tmpdir}"
+            fi
+        fi
+    elif [ -f "${POLICY_FILE}" ]; then
+        warn "Policy exists but no public key found — cannot verify signature"
+    else
+        warn "No active policy file yet — will use defaults"
+    fi
+
+    # Verify gate binary exists and is not world-writable
+    local gate_bin="${ZLAR_OC_BIN}/zlar-oc-gate"
+    if [ -f "${gate_bin}" ]; then
+        local gate_perms
+        gate_perms=$(stat -f '%Lp' "${gate_bin}" 2>/dev/null || stat -c '%a' "${gate_bin}" 2>/dev/null || echo "unknown")
+        if [[ "${gate_perms}" == *"7" ]] && [[ "${gate_perms}" != "7"* ]]; then
+            echo -e "${RED}  ✗ Gate binary is world-writable (${gate_perms})${NC}" >&2
+            failures=$((failures + 1))
+        else
+            ok "Gate binary permissions: ${gate_perms}"
+        fi
+    else
+        warn "Gate binary not found at ${gate_bin}"
+    fi
+
+    # Verify watchdog binary exists
+    local wd_bin="${ZLAR_OC_BIN}/zlar-oc-watchdog"
+    if [ -f "${wd_bin}" ]; then
+        ok "Watchdog binary present"
+    else
+        warn "Watchdog binary not found at ${wd_bin}"
+    fi
+
+    # Verdict
+    if [ ${failures} -gt 0 ]; then
+        echo ""
+        echo -e "${RED}${BOLD}  INTEGRITY CHECK FAILED (${failures} failures)${NC}" >&2
+        echo -e "${RED}  The agent will NOT be started.${NC}" >&2
+        echo -e "${RED}  Fix the issues above, or set --skip-integrity to bypass (NOT recommended).${NC}" >&2
+        exit 1
+    fi
+
+    ok "All integrity checks passed"
+}
+
+# ─── Phase 2: Create/Verify aiagent User ─────────────────────────────────────
+
+setup_user() {
+    phase 2 "Create/verify aiagent user"
+
+    # Check if user already exists
+    if dscl . -read /Users/${AGENT_USER} UniqueID &>/dev/null; then
+        local existing_uid
+        existing_uid=$(dscl . -read /Users/${AGENT_USER} UniqueID | awk '{print $2}')
+        ok "User ${AGENT_USER} exists (UID ${existing_uid})"
+    else
+        log "Creating user ${AGENT_USER}..."
+
+        # Create group
+        dscl . -create /Groups/${AGENT_GROUP} 2>/dev/null || true
+        dscl . -create /Groups/${AGENT_GROUP} PrimaryGroupID ${AGENT_GID}
+
+        # Create user
+        dscl . -create /Users/${AGENT_USER}
+        dscl . -create /Users/${AGENT_USER} UniqueID ${AGENT_UID}
+        dscl . -create /Users/${AGENT_USER} PrimaryGroupID ${AGENT_GID}
+        dscl . -create /Users/${AGENT_USER} UserShell /usr/bin/false
+        dscl . -create /Users/${AGENT_USER} NFSHomeDirectory ${AGENT_HOME}
+        dscl . -create /Users/${AGENT_USER} RealName "OpenClaw AI Agent"
+        dscl . -create /Users/${AGENT_USER} IsHidden 1
+
+        ok "User ${AGENT_USER} created (UID ${AGENT_UID})"
+    fi
+
+    # Create home directory structure
+    local dirs=(
+        "${AGENT_HOME}"
+        "${AGENT_HOME}/.openclaw"
+        "${AGENT_HOME}/workspace"
+        "${AGENT_HOME}/.cache/huggingface"
+        "${AGENT_HOME}/Library/LaunchAgents"
+    )
+    for dir in "${dirs[@]}"; do
+        mkdir -p "${dir}"
+    done
+    chown -R ${AGENT_USER}:${AGENT_GROUP} ${AGENT_HOME}
+    chmod 700 ${AGENT_HOME}
+    ok "Home directory structure verified"
+
+    # Verify agent is NOT in admin/staff/wheel groups
+    if id -Gn ${AGENT_USER} 2>/dev/null | grep -qE '\b(admin|staff|wheel)\b'; then
+        fail "${AGENT_USER} is in a privileged group — remove immediately"
+    fi
+    ok "User ${AGENT_USER} has no privileged group memberships"
+}
+
+# ─── Phase 3: Create/Verify Log Directories ──────────────────────────────────
+
+setup_logs() {
+    phase 3 "Create/verify log directories"
+
+    mkdir -p "${ZLAR_OC_LOG}"
+    chown admin:${AGENT_GROUP} "${ZLAR_OC_LOG}"
+    chmod 770 "${ZLAR_OC_LOG}"
+    ok "Log directory: ${ZLAR_OC_LOG}"
+
+    # Create log files with correct ownership
+    local log_files=(
+        "audit.jsonl"
+        "sandbox-denials.log"
+        "pf-blocked.log"
+        "gate.log"
+    )
+    for f in "${log_files[@]}"; do
+        touch "${ZLAR_OC_LOG}/${f}"
+        chown admin:${AGENT_GROUP} "${ZLAR_OC_LOG}/${f}"
+        chmod 640 "${ZLAR_OC_LOG}/${f}"
+    done
+    ok "Log files created/verified"
+
+    # OpenClaw stdout/stderr — owned by agent (launchd writes as agent)
+    for f in openclaw-stdout.log openclaw-stderr.log; do
+        touch "${ZLAR_OC_LOG}/${f}"
+        chown ${AGENT_USER}:${AGENT_GROUP} "${ZLAR_OC_LOG}/${f}"
+        chmod 640 "${ZLAR_OC_LOG}/${f}"
+    done
+    ok "OpenClaw log files created/verified"
+}
+
+# ─── Phase 4: Load pf Firewall Rules ─────────────────────────────────────────
+
+setup_firewall() {
+    phase 4 "Load pf firewall rules"
+
+    # Check if anchor is already in pf.conf
+    if ! grep -q "anchor \"${PF_ANCHOR}\"" /etc/pf.conf 2>/dev/null; then
+        log "Adding ZLAR-OC anchor to /etc/pf.conf..."
+
+        # Backup pf.conf
+        cp /etc/pf.conf "/etc/pf.conf.bak.$(date +%Y%m%d%H%M%S)"
+
+        # Append anchor lines
+        cat >> /etc/pf.conf <<EOF
+
+# ZLAR-OC agent containment (added by zlar-oc-launch)
+anchor "${PF_ANCHOR}"
+load anchor "${PF_ANCHOR}" from "${PF_RULES}"
+EOF
+        ok "Anchor added to /etc/pf.conf"
+    else
+        ok "Anchor already present in /etc/pf.conf"
+    fi
+
+    # Load the rules
+    if ! pfctl -f /etc/pf.conf 2>&1; then
+        fail "pfctl failed to load rules"
+    fi
+    ok "pf rules loaded"
+
+    # Enable pf
+    pfctl -e 2>/dev/null || true
+    ok "pf enabled"
+
+    # Verify anchor rules loaded
+    local rule_count
+    rule_count=$(pfctl -a ${PF_ANCHOR} -sr 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${rule_count}" -eq 0 ]; then
+        fail "No rules loaded in anchor ${PF_ANCHOR}"
+    fi
+    ok "Anchor ${PF_ANCHOR}: ${rule_count} rules active"
+
+    # Create pflog interface if it doesn't exist
+    if ! ifconfig pflog0 &>/dev/null; then
+        ifconfig pflog0 create 2>/dev/null || warn "Could not create pflog0 interface"
+    fi
+    ok "pflog0 interface ready"
+}
+
+# ─── Phase 5: Start MLX OpenAI Server ────────────────────────────────────────
+
+start_mlx() {
+    phase 5 "MLX OpenAI server"
+
+    # Check if already running
+    if curl -sf "${MLX_URL}/health" &>/dev/null; then
+        ok "MLX server already running at ${MLX_URL}"
+        return 0
+    fi
+
+    # Try to load via launchd
+    if launchctl list | grep -q "${MLX_PLIST_LABEL}"; then
+        log "MLX LaunchAgent loaded but not responding, restarting..."
+        launchctl kickstart -k "gui/$(id -u)/${MLX_PLIST_LABEL}" 2>/dev/null || true
+    else
+        log "Loading MLX LaunchAgent..."
+        local mlx_plist="${HOME}/Library/LaunchAgents/${MLX_PLIST_LABEL}.plist"
+        if [ -f "${mlx_plist}" ]; then
+            launchctl load "${mlx_plist}" 2>/dev/null || true
+        else
+            fail "MLX plist not found at ${mlx_plist}. Install mlx-openai-server first."
+        fi
+    fi
+
+    # Wait for readiness
+    log "Waiting for MLX server..."
+    local attempts=0
+    while [ ${attempts} -lt 30 ]; do
+        if curl -sf "${MLX_URL}/health" &>/dev/null; then
+            ok "MLX server ready at ${MLX_URL}"
+            return 0
+        fi
+        attempts=$((attempts + 1))
+        sleep 1
+    done
+
+    fail "MLX server failed to start within 30s. Check: launchctl list | grep mlx"
+}
+
+# ─── Phase 6: Start OpenClaw Gateway ─────────────────────────────────────────
+
+start_openclaw_dev() {
+    # Development mode: foreground launch via sudo -u aiagent + sandbox-exec
+    log "Starting OpenClaw in foreground (dev mode)..."
+    log "Press Ctrl+C to stop."
+
+    # shellcheck disable=SC2024
+    sudo -u ${AGENT_USER} \
+        sandbox-exec -f "${SANDBOX_PROFILE}" \
+        -D "AGENT_HOME=${AGENT_HOME}" \
+        -D "ADMIN_HOME=/Users/admin" \
+        -D "WORKSPACE_ROOT=${AGENT_HOME}/workspace" \
+        -D "OPENCLAW_INSTALL_DIR=${OPENCLAW_INSTALL}" \
+        env \
+            "HOME=${AGENT_HOME}" \
+            "OPENCLAW_HOME=${AGENT_HOME}" \
+            "OPENCLAW_GATEWAY_PORT=${GATEWAY_PORT}" \
+            "HF_HOME=/opt/models/huggingface" \
+            "NODE_ENV=production" \
+            "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+        "${NODE_BIN}" "${OPENCLAW_ENTRY}" \
+        >> "${ZLAR_OC_LOG}/openclaw-stdout.log" \
+        2>> "${ZLAR_OC_LOG}/openclaw-stderr.log" &
+
+    OPENCLAW_PID=$!
+    log "OpenClaw PID: ${OPENCLAW_PID}"
+}
+
+start_openclaw_prod() {
+    # Production mode: launchd daemon
+    if launchctl list | grep -q "${LAUNCHD_LABEL}"; then
+        ok "OpenClaw daemon already loaded"
+        # Restart if not responding
+        if ! curl -sf "${GATEWAY_URL}/health" &>/dev/null; then
+            log "Daemon loaded but not responding, restarting..."
+            launchctl kickstart -k "system/${LAUNCHD_LABEL}"
+        fi
+    else
+        if [ ! -f "${LAUNCHD_PLIST}" ]; then
+            fail "launchd plist not found at ${LAUNCHD_PLIST}. Run: zlar-oc-install-plist"
+        fi
+        log "Loading OpenClaw daemon..."
+        launchctl load "${LAUNCHD_PLIST}"
+        ok "Daemon loaded: ${LAUNCHD_LABEL}"
+    fi
+}
+
+start_openclaw() {
+    phase 6 "Start OpenClaw gateway"
+
+    # Check if already running
+    if curl -sf "${GATEWAY_URL}/health" &>/dev/null; then
+        ok "OpenClaw gateway already running at ${GATEWAY_URL}"
+        return 0
+    fi
+
+    if [ "${DEV_MODE}" = "true" ]; then
+        start_openclaw_dev
+    else
+        start_openclaw_prod
+    fi
+}
+
+# ─── Phase 7: Wait for Gateway Readiness ─────────────────────────────────────
+
+wait_gateway() {
+    phase 7 "Wait for gateway readiness"
+
+    local attempts=0
+    while [ ${attempts} -lt 30 ]; do
+        if curl -sf "${GATEWAY_URL}/health" &>/dev/null; then
+            ok "Gateway responding at ${GATEWAY_URL}"
+            return 0
+        fi
+        attempts=$((attempts + 1))
+        printf "  Waiting... (%d/30)\r" ${attempts}
+        sleep 1
+    done
+
+    echo ""
+    fail "Gateway failed to respond within 30s. Check: ${ZLAR_OC_LOG}/openclaw-stderr.log"
+}
+
+# ─── Phase 8: Start Gate Daemon ───────────────────────────────────────────────
+
+start_gate() {
+    phase 8 "Start gate daemon"
+
+    # Check if already running
+    if [ -f "${GATE_PIDFILE}" ] && kill -0 "$(cat "${GATE_PIDFILE}")" 2>/dev/null; then
+        ok "Gate daemon already running (PID $(cat "${GATE_PIDFILE}"))"
+        return 0
+    fi
+
+    local gate_bin="${ZLAR_OC_BIN}/zlar-oc-gate"
+    if [ ! -x "${gate_bin}" ]; then
+        warn "Gate daemon not found at ${gate_bin} — skipping"
+        warn "The audit trail will not be populated until the gate is running."
+        return 0
+    fi
+
+    "${gate_bin}" start \
+        --config "${ZLAR_OC_ROOT}/gate.json" \
+        --audit  "${ZLAR_OC_LOG}/audit.jsonl" \
+        --pidfile "${GATE_PIDFILE}" \
+        >> "${ZLAR_OC_LOG}/gate.log" 2>&1 &
+
+    ok "Gate daemon started (PID $!)"
+}
+
+# ─── Phase 9: Start Watchdog ──────────────────────────────────────────────────
+
+start_watchdog() {
+    phase 9 "Start watchdog (membrane self-repair)"
+
+    # Check if already running
+    if [ -f "${WATCHDOG_PIDFILE}" ] && kill -0 "$(cat "${WATCHDOG_PIDFILE}")" 2>/dev/null; then
+        ok "Watchdog already running (PID $(cat "${WATCHDOG_PIDFILE}"))"
+        return 0
+    fi
+
+    local wd_bin="${ZLAR_OC_BIN}/zlar-oc-watchdog"
+    if [ ! -x "${wd_bin}" ]; then
+        warn "Watchdog not found at ${wd_bin} — skipping"
+        warn "The gate will NOT be monitored for failures."
+        return 0
+    fi
+
+    "${wd_bin}" start \
+        --gate-bin "${ZLAR_OC_BIN}/zlar-oc-gate" \
+        --audit "${ZLAR_OC_LOG}/audit.jsonl" \
+        >> "${ZLAR_OC_LOG}/watchdog.log" 2>&1 &
+
+    ok "Watchdog started (PID $!)"
+}
+
+# ─── Status ───────────────────────────────────────────────────────────────────
+
+status() {
+    echo -e "${BOLD}ZLAR-OC Status${NC}"
+    echo ""
+
+    # aiagent user
+    if dscl . -read /Users/${AGENT_USER} UniqueID &>/dev/null 2>&1; then
+        ok "User ${AGENT_USER} exists"
+    else
+        warn "User ${AGENT_USER} not found"
+    fi
+
+    # pf
+    if pfctl -a ${PF_ANCHOR} -sr 2>/dev/null | grep -q .; then
+        local rc
+        rc=$(pfctl -a ${PF_ANCHOR} -sr 2>/dev/null | wc -l | tr -d ' ')
+        ok "pf anchor ${PF_ANCHOR}: ${rc} rules"
+    else
+        warn "pf anchor ${PF_ANCHOR}: not loaded"
+    fi
+
+    # MLX server
+    if curl -sf "${MLX_URL}/health" &>/dev/null; then
+        ok "MLX server: running (${MLX_URL})"
+    else
+        warn "MLX server: not responding (${MLX_URL})"
+    fi
+
+    # OpenClaw gateway
+    if curl -sf "${GATEWAY_URL}/health" &>/dev/null; then
+        ok "OpenClaw gateway: running (${GATEWAY_URL})"
+    else
+        warn "OpenClaw gateway: not responding (${GATEWAY_URL})"
+    fi
+
+    # Gate daemon
+    if [ -f "${GATE_PIDFILE}" ] && kill -0 "$(cat "${GATE_PIDFILE}")" 2>/dev/null; then
+        ok "Gate daemon: running (PID $(cat "${GATE_PIDFILE}"))"
+    else
+        warn "Gate daemon: not running"
+    fi
+
+    # Watchdog
+    if [ -f "${WATCHDOG_PIDFILE}" ] && kill -0 "$(cat "${WATCHDOG_PIDFILE}")" 2>/dev/null; then
+        ok "Watchdog: running (PID $(cat "${WATCHDOG_PIDFILE}"))"
+    else
+        warn "Watchdog: not running"
+    fi
+
+    # Audit trail
+    if [ -f "${ZLAR_OC_LOG}/audit.jsonl" ]; then
+        local lines
+        lines=$(wc -l < "${ZLAR_OC_LOG}/audit.jsonl" | tr -d ' ')
+        ok "Audit trail: ${lines} events"
+    else
+        warn "Audit trail: not found"
+    fi
+
+    echo ""
+}
+
+# ─── Stop ─────────────────────────────────────────────────────────────────────
+
+stop() {
+    log "Stopping ZLAR-OC..."
+
+    # Stop watchdog first (so it doesn't restart the gate)
+    if [ -f "${WATCHDOG_PIDFILE}" ] && kill -0 "$(cat "${WATCHDOG_PIDFILE}")" 2>/dev/null; then
+        kill "$(cat "${WATCHDOG_PIDFILE}")"
+        rm -f "${WATCHDOG_PIDFILE}"
+        ok "Watchdog stopped"
+    fi
+
+    # Stop gate
+    if [ -f "${GATE_PIDFILE}" ] && kill -0 "$(cat "${GATE_PIDFILE}")" 2>/dev/null; then
+        kill "$(cat "${GATE_PIDFILE}")"
+        rm -f "${GATE_PIDFILE}"
+        ok "Gate daemon stopped"
+    fi
+
+    # Stop OpenClaw
+    if launchctl list | grep -q "${LAUNCHD_LABEL}" 2>/dev/null; then
+        launchctl unload "${LAUNCHD_PLIST}" 2>/dev/null || true
+        ok "OpenClaw daemon unloaded"
+    fi
+
+    # Kill any remaining aiagent processes
+    if pgrep -u ${AGENT_USER} &>/dev/null; then
+        pkill -u ${AGENT_USER}
+        ok "Killed remaining ${AGENT_USER} processes"
+    fi
+
+    # Note: we do NOT disable pf or remove the anchor. The firewall stays up.
+    log "Stopped. Firewall rules remain active."
+}
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+DEV_MODE="false"
+ACTION="start"
+SKIP_INTEGRITY="false"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dev)              DEV_MODE="true"; shift ;;
+        --status)           ACTION="status"; shift ;;
+        --stop)             ACTION="stop"; shift ;;
+        --skip-integrity)   SKIP_INTEGRITY="true"; shift ;;
+        --help|-h)
+            echo "Usage: sudo $0 [--dev] [--status] [--stop] [--skip-integrity]"
+            echo ""
+            echo "  --dev              Run OpenClaw in foreground (development mode)"
+            echo "  --status           Show current status (no root needed)"
+            echo "  --stop             Graceful shutdown"
+            echo "  --skip-integrity   Skip integrity checkpoint (NOT recommended)"
+            exit 0
+            ;;
+        *) fail "Unknown option: $1" ;;
+    esac
+done
+
+case "${ACTION}" in
+    status)
+        status
+        ;;
+    stop)
+        require_root
+        stop
+        ;;
+    start)
+        require_root
+
+        echo -e "${BOLD}═══════════════════════════════════════════════════${NC}"
+        echo -e "${BOLD}  ZLAR-OC Launcher${NC}"
+        echo -e "${BOLD}  Mode: $([ "${DEV_MODE}" = "true" ] && echo "development" || echo "production")${NC}"
+        echo -e "${BOLD}═══════════════════════════════════════════════════${NC}"
+
+        preflight
+
+        # Cell-cycle checkpoint: verify membrane integrity before agent starts
+        if [ "${SKIP_INTEGRITY}" = "true" ]; then
+            warn "Integrity checkpoint SKIPPED (--skip-integrity)"
+            warn "The membrane has NOT been verified."
+        else
+            integrity_checkpoint
+        fi
+
+        setup_user
+        setup_logs
+        setup_firewall
+        start_mlx
+        start_openclaw
+        wait_gateway
+        start_gate
+        start_watchdog
+
+        echo ""
+        echo -e "${GREEN}${BOLD}ZLAR-OC is running.${NC}"
+        echo -e "  Gateway:     ${GATEWAY_URL}"
+        echo -e "  Audit trail: ${ZLAR_OC_LOG}/audit.jsonl"
+        echo -e "  Watchdog:    active"
+        echo -e "  Logs:        ${ZLAR_OC_LOG}/"
+        echo ""
+        echo -e "  Stop with: sudo $0 --stop"
+        echo -e "  Status:    $0 --status"
+
+        if [ "${DEV_MODE}" = "true" ] && [ -n "${OPENCLAW_PID:-}" ]; then
+            echo ""
+            log "Dev mode: waiting for OpenClaw (PID ${OPENCLAW_PID})..."
+            wait "${OPENCLAW_PID}" || true
+            log "OpenClaw exited."
+            stop
+        fi
+        ;;
+esac

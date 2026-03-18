@@ -1,0 +1,1354 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR Audit Engine — The Living Memory
+#
+# The audit trail is not a log. A log is dead data you grep through after
+# something goes wrong. The audit trail is a living memory — the system's
+# complete autobiographical record that it can introspect, replay, and
+# learn from.
+#
+# This tool turns the raw audit.jsonl into intelligence:
+#
+#   replay    — DVR for agent sessions. See exactly what happened, when,
+#               why, which rules fired, what the risk scores were.
+#
+#   fingerprint — Build a behavioral baseline. What does "normal" look like
+#                 for this agent? Which domains, binaries, destinations,
+#                 and patterns constitute its signature?
+#
+#   drift     — Compare current behavior against the baseline. Is the agent
+#               doing new things? Reaching new places? The immune system
+#               analogy: not every new thing is bad, but every new thing
+#               should be noticed.
+#
+#   timeline  — Chronological narrative of a session or time window.
+#               Human-readable. What happened, in order, with context.
+#
+#   heatmap   — Activity density by hour/domain. When is the agent most
+#               active? Which domains get the most events? Where is the
+#               boundary being tested?
+#
+#   verdict   — After a session, the audit engine looks at everything that
+#               happened and produces a one-page verdict: was this session
+#               clean? Anomalous? What should be investigated?
+#
+# Philosophy: The agent's own exhaust becomes the fuel for trust calibration.
+# Auditability is not overhead — it's the product.
+#
+# Usage:
+#   zlar-audit replay     [--session ID] [--since TIME] [--format text|json]
+#   zlar-audit fingerprint [--since TIME] [--output FILE]
+#   zlar-audit drift       [--baseline FILE] [--since TIME]
+#   zlar-audit timeline    [--session ID] [--since TIME] [--limit N]
+#   zlar-audit heatmap     [--since TIME] [--format text|json]
+#   zlar-audit verdict     [--session ID] [--since TIME]
+#   zlar-audit stats       [--since TIME]
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+# ─── Path resolution (relative to this script, same pattern as zlar-gate) ───
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# ─── Configuration ───────────────────────────────────────────────────────────
+
+ZLAR_ROOT="${ZLAR_ROOT:-${PROJECT_DIR}/etc}"
+GATE_CONFIG="${ZLAR_ROOT}/gate.json"
+FINGERPRINT_DIR="${FINGERPRINT_DIR:-${PROJECT_DIR}/var/log/fingerprints}"
+
+if [ -n "${AUDIT_FILE:-}" ]; then
+    : # env var already set
+elif [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    AUDIT_FILE=$(jq -r '.audit_file // "'"${PROJECT_DIR}/var/log/audit.jsonl"'"' "${GATE_CONFIG}" 2>/dev/null)
+else
+    AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+fi
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+require_jq() {
+    if ! command -v jq &>/dev/null; then
+        echo "ERROR: jq is required for audit analysis. Install via: brew install jq" >&2
+        exit 1
+    fi
+}
+
+require_audit() {
+    if [ ! -f "${AUDIT_FILE}" ]; then
+        echo "ERROR: Audit file not found at ${AUDIT_FILE}" >&2
+        echo "The gate daemon must have run at least once to produce audit data." >&2
+        exit 1
+    fi
+}
+
+# Convert "since" argument to ISO timestamp filter
+# Supports: 1h, 24h, 7d, 30d, or ISO timestamp
+since_to_filter() {
+    local since="${1:-24h}"
+    local seconds=0
+
+    if [[ "${since}" =~ ^[0-9]+h$ ]]; then
+        seconds=$(( ${since%h} * 3600 ))
+    elif [[ "${since}" =~ ^[0-9]+d$ ]]; then
+        seconds=$(( ${since%d} * 86400 ))
+    elif [[ "${since}" =~ ^[0-9]+m$ ]]; then
+        seconds=$(( ${since%m} * 60 ))
+    elif [[ "${since}" =~ ^[0-9]{4}-[0-9]{2} ]]; then
+        # Already an ISO timestamp
+        echo "${since}"
+        return
+    else
+        seconds=86400  # default 24h
+    fi
+
+    # Compute the cutoff timestamp
+    local cutoff_epoch=$(( $(date +%s) - seconds ))
+    date -u -r "${cutoff_epoch}" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
+        date -u -d "@${cutoff_epoch}" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
+        echo "1970-01-01T00:00:00Z"
+}
+
+# Filter audit events by time window
+filter_events() {
+    local since_ts="${1:-}"
+    local session="${2:-}"
+
+    local filter='.'
+
+    if [ -n "${since_ts}" ]; then
+        filter="${filter} | select(.ts >= \"${since_ts}\")"
+    fi
+
+    if [ -n "${session}" ]; then
+        filter="${filter} | select(.session == \"${session}\" or .session_id == \"${session}\")"
+    fi
+
+    jq -c "${filter}" "${AUDIT_FILE}" 2>/dev/null
+}
+
+# ─── REPLAY ──────────────────────────────────────────────────────────────────
+# DVR for agent sessions. Every event, in order, with full context.
+# Like reviewing security camera footage — but for AI behavior.
+
+cmd_replay() {
+    local since="" session="" format="text" limit=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since)  shift; since="$1"; shift ;;
+            --session) shift; session="$1"; shift ;;
+            --format) shift; format="$1"; shift ;;
+            --limit)  shift; limit="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+    require_audit
+
+    local since_ts=""
+    if [ -n "${since}" ]; then
+        since_ts=$(since_to_filter "${since}")
+    fi
+
+    if [ "${format}" = "json" ]; then
+        filter_events "${since_ts}" "${session}" | if [ "${limit}" -gt 0 ]; then head -n "${limit}"; else cat; fi
+        return
+    fi
+
+    # Text format — human-readable replay
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  SESSION REPLAY"
+    if [ -n "${session}" ]; then
+        echo "  Session: ${session}"
+    fi
+    if [ -n "${since}" ]; then
+        echo "  Since: ${since} (${since_ts})"
+    fi
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+
+    local event_num=0
+    filter_events "${since_ts}" "${session}" | while IFS= read -r event; do
+        event_num=$((event_num + 1))
+        if [ "${limit}" -gt 0 ] && [ "${event_num}" -gt "${limit}" ]; then
+            break
+        fi
+
+        local ts domain action outcome rule severity source risk_score
+        ts=$(echo "${event}" | jq -r '.ts // "?"')
+        domain=$(echo "${event}" | jq -r '.domain // "?"')
+        action=$(echo "${event}" | jq -r '.action // "?"')
+        outcome=$(echo "${event}" | jq -r '.outcome // "?"')
+        rule=$(echo "${event}" | jq -r '.rule // "—"')
+        severity=$(echo "${event}" | jq -r '.severity // "info"')
+        source=$(echo "${event}" | jq -r '.source // "?"')
+
+        # Severity indicator
+        local indicator="·"
+        case "${severity}" in
+            warn)     indicator="▲" ;;
+            critical) indicator="█" ;;
+        esac
+
+        # Outcome color hint
+        local outcome_mark=""
+        case "${outcome}" in
+            allow)   outcome_mark="✓" ;;
+            deny)    outcome_mark="✗" ;;
+            ask)     outcome_mark="?" ;;
+            queued)  outcome_mark="⏳" ;;
+            timeout) outcome_mark="⏰" ;;
+            error)   outcome_mark="!" ;;
+        esac
+
+        # Extract the most relevant detail
+        local detail_summary
+        detail_summary=$(echo "${event}" | jq -r '
+            .detail |
+            if .command then .command
+            elif .binary then .binary
+            elif .dst_host then "→ \(.dst_host):\(.dst_port // "?")"
+            elif .path then .path
+            elif .event then .event
+            elif .message then .message[:80]
+            else "—"
+            end' 2>/dev/null)
+
+        printf "  %s %s  %-12s %-24s  %s %-7s  %-5s  %s\n" \
+            "${indicator}" "${ts}" "${domain}" "${detail_summary}" \
+            "${outcome_mark}" "${outcome}" "${rule}" "${source}"
+    done
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+}
+
+# ─── FINGERPRINT ─────────────────────────────────────────────────────────────
+# Build a behavioral baseline — the agent's "normal" signature.
+#
+# This is the creative inversion: instead of defining what's bad (rules),
+# we observe what IS and build a portrait. Then deviations from that portrait
+# are the signal.
+#
+# A fingerprint captures:
+#   - Which domains the agent operates in (exec, net, fs, browser)
+#   - Which binaries it runs and how often
+#   - Which network destinations it reaches
+#   - Which file paths it touches
+#   - The hourly activity pattern (is it a night worker? steady? bursty?)
+#   - The ratio of allow/deny/ask outcomes
+#   - The average risk score
+#
+# This is analogous to how your immune system learns "self" — by observing
+# what's normal for THIS body, not by having a list of every possible pathogen.
+
+cmd_fingerprint() {
+    local since="7d" output=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since)  shift; since="$1"; shift ;;
+            --output) shift; output="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+    require_audit
+
+    local since_ts
+    since_ts=$(since_to_filter "${since}")
+
+    echo "Building behavioral fingerprint from audit trail (since ${since})..." >&2
+
+    local fingerprint
+    fingerprint=$(jq -s --arg since "${since_ts}" --arg generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    [.[] | select(.ts >= $since)] |
+
+    {
+        generated_at: $generated,
+        observation_window: $since,
+        total_events: length,
+
+        # Domain distribution — what areas does the agent operate in?
+        domain_distribution: (group_by(.domain) | map({
+            domain: .[0].domain,
+            count: length,
+            pct: (length * 100 / (. | length | if . == 0 then 1 else . end))
+        }) | sort_by(-.count)),
+
+        # Outcome distribution — how much is allowed vs denied?
+        outcome_distribution: (group_by(.outcome) | map({
+            outcome: .[0].outcome,
+            count: length
+        }) | sort_by(-.count)),
+
+        # Top binaries — what does it run?
+        top_binaries: ([.[] | select(.domain == "exec") | .detail.binary // empty] |
+            group_by(.) | map({binary: .[0], count: length}) |
+            sort_by(-.count) | .[0:20]),
+
+        # Top network destinations — where does it reach?
+        top_destinations: ([.[] | select(.domain == "net.outbound" or .domain == "net.http") |
+            .detail.dst_host // .detail.dst_ip // empty] |
+            group_by(.) | map({host: .[0], count: length}) |
+            sort_by(-.count) | .[0:20]),
+
+        # Top file paths — what does it touch?
+        top_paths: ([.[] | select(.domain == "fs" or .domain == "fs.config") |
+            .detail.path // empty] |
+            group_by(.) | map({path: .[0], count: length}) |
+            sort_by(-.count) | .[0:20]),
+
+        # Hourly pattern — when is it most active?
+        hourly_pattern: ([.[] | .ts[11:13] // "00"] |
+            group_by(.) | map({hour: .[0], count: length}) |
+            sort_by(.hour)),
+
+        # Severity distribution
+        severity_distribution: (group_by(.severity) | map({
+            severity: .[0].severity,
+            count: length
+        })),
+
+        # Source distribution
+        source_distribution: (group_by(.source) | map({
+            source: .[0].source,
+            count: length
+        }) | sort_by(-.count)),
+
+        # Rules most triggered
+        top_rules: ([.[] | .rule // empty | select(. != "")] |
+            group_by(.) | map({rule: .[0], count: length}) |
+            sort_by(-.count) | .[0:15]),
+
+        # Availability mode distribution (if tracked)
+        availability_modes: ([.[] | .detail.availability_mode // empty] |
+            group_by(.) | map({mode: .[0], count: length})),
+
+        # Risk score statistics
+        risk_stats: {
+            events_with_score: ([.[] | .detail.risk_score // empty | select(. > 0)] | length),
+            avg_score: ([.[] | .detail.risk_score // empty | select(. > 0)] |
+                if length > 0 then (add / length | . * 10 | floor / 10) else 0 end),
+            max_score: ([.[] | .detail.risk_score // empty | select(. > 0)] |
+                if length > 0 then max else 0 end)
+        }
+    }' "${AUDIT_FILE}" 2>/dev/null)
+
+    if [ -n "${output}" ]; then
+        # Save to file
+        mkdir -p "$(dirname "${output}")"
+        echo "${fingerprint}" > "${output}"
+        echo "Fingerprint saved to ${output}" >&2
+    else
+        # Save to default location with timestamp
+        mkdir -p "${FINGERPRINT_DIR}" 2>/dev/null || true
+        local fp_file="${FINGERPRINT_DIR}/fingerprint-$(date +%Y%m%d-%H%M%S).json"
+        echo "${fingerprint}" > "${fp_file}" 2>/dev/null || true
+        echo "Fingerprint saved to ${fp_file}" >&2
+    fi
+
+    # Also print to stdout
+    echo "${fingerprint}" | jq '.'
+}
+
+# ─── DRIFT ───────────────────────────────────────────────────────────────────
+# Compare current behavior against a baseline fingerprint.
+#
+# This is the immune response. The fingerprint is "self." Anything that
+# deviates significantly is flagged — not as necessarily bad, but as
+# noteworthy. New binaries, new destinations, new file paths, changed
+# hourly patterns.
+#
+# The metaphor is precise: your immune system doesn't know what every
+# virus looks like. It knows what YOU look like. Anything that isn't you
+# triggers an investigation.
+
+cmd_drift() {
+    local baseline="" since="24h"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --baseline) shift; baseline="$1"; shift ;;
+            --since)    shift; since="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+    require_audit
+
+    # Find baseline — use latest fingerprint if not specified
+    if [ -z "${baseline}" ]; then
+        baseline=$(ls -1t "${FINGERPRINT_DIR}"/fingerprint-*.json 2>/dev/null | head -1 || true)
+        if [ -z "${baseline}" ]; then
+            echo "ERROR: No baseline fingerprint found. Run 'zlar-audit fingerprint' first." >&2
+            exit 1
+        fi
+        echo "Using baseline: ${baseline}" >&2
+    fi
+
+    if [ ! -f "${baseline}" ]; then
+        echo "ERROR: Baseline file not found: ${baseline}" >&2
+        exit 1
+    fi
+
+    local since_ts
+    since_ts=$(since_to_filter "${since}")
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  BEHAVIORAL DRIFT ANALYSIS"
+    echo "  Baseline: $(basename "${baseline}")"
+    echo "  Current window: last ${since}"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+
+    # Build current snapshot
+    local current_binaries current_destinations current_paths
+    current_binaries=$(jq -c --arg since "${since_ts}" \
+        '[.[] | select(.ts >= $since and .domain == "exec") | .detail.binary // empty] | unique | sort' \
+        "${AUDIT_FILE}" 2>/dev/null)
+
+    current_destinations=$(jq -c --arg since "${since_ts}" \
+        '[.[] | select(.ts >= $since and (.domain == "net.outbound" or .domain == "net.http")) | .detail.dst_host // .detail.dst_ip // empty] | unique | sort' \
+        "${AUDIT_FILE}" 2>/dev/null)
+
+    current_paths=$(jq -c --arg since "${since_ts}" \
+        '[.[] | select(.ts >= $since and (.domain == "fs" or .domain == "fs.config")) | .detail.path // empty] | unique | sort' \
+        "${AUDIT_FILE}" 2>/dev/null)
+
+    # Compare against baseline
+    local baseline_binaries baseline_destinations baseline_paths
+    baseline_binaries=$(jq -c '[.top_binaries[].binary] | sort' "${baseline}" 2>/dev/null)
+    baseline_destinations=$(jq -c '[.top_destinations[].host] | sort' "${baseline}" 2>/dev/null)
+    baseline_paths=$(jq -c '[.top_paths[].path] | sort' "${baseline}" 2>/dev/null)
+
+    # New binaries (not in baseline)
+    local new_binaries
+    new_binaries=$(jq -nc --argjson current "${current_binaries}" --argjson baseline "${baseline_binaries}" \
+        '$current - $baseline' 2>/dev/null)
+    local new_binary_count
+    new_binary_count=$(echo "${new_binaries}" | jq 'length' 2>/dev/null || echo 0)
+
+    if [ "${new_binary_count}" -gt 0 ]; then
+        echo "  ▲ NEW BINARIES (not in baseline): ${new_binary_count}"
+        echo "${new_binaries}" | jq -r '.[] | "    → \(.)"' 2>/dev/null
+        echo ""
+    else
+        echo "  · No new binaries"
+    fi
+
+    # New destinations
+    local new_destinations
+    new_destinations=$(jq -nc --argjson current "${current_destinations}" --argjson baseline "${baseline_destinations}" \
+        '$current - $baseline' 2>/dev/null)
+    local new_dest_count
+    new_dest_count=$(echo "${new_destinations}" | jq 'length' 2>/dev/null || echo 0)
+
+    if [ "${new_dest_count}" -gt 0 ]; then
+        echo "  ▲ NEW DESTINATIONS (not in baseline): ${new_dest_count}"
+        echo "${new_destinations}" | jq -r '.[] | "    → \(.)"' 2>/dev/null
+        echo ""
+    else
+        echo "  · No new network destinations"
+    fi
+
+    # New file paths
+    local new_paths
+    new_paths=$(jq -nc --argjson current "${current_paths}" --argjson baseline "${baseline_paths}" \
+        '$current - $baseline' 2>/dev/null)
+    local new_path_count
+    new_path_count=$(echo "${new_paths}" | jq 'length' 2>/dev/null || echo 0)
+
+    if [ "${new_path_count}" -gt 0 ]; then
+        echo "  ▲ NEW FILE PATHS (not in baseline): ${new_path_count}"
+        echo "${new_paths}" | jq -r '.[] | "    → \(.)"' 2>/dev/null
+        echo ""
+    else
+        echo "  · No new file paths"
+    fi
+
+    # Outcome ratio shift
+    local current_deny_pct baseline_deny_pct
+    current_deny_pct=$(jq -s --arg since "${since_ts}" \
+        '[.[] | select(.ts >= $since)] |
+         if length == 0 then 0
+         else ([.[] | select(.outcome == "deny")] | length) * 100 / length | floor
+         end' "${AUDIT_FILE}" 2>/dev/null || echo 0)
+
+    baseline_deny_pct=$(jq \
+        '.outcome_distribution | map(select(.outcome == "deny")) |
+         if length > 0 then .[0].count else 0 end' "${baseline}" 2>/dev/null || echo 0)
+
+    echo "  Denial rate: current=${current_deny_pct}%  baseline=${baseline_deny_pct}"
+
+    # Drift score
+    local drift_score=0
+    drift_score=$((new_binary_count * 15 + new_dest_count * 20 + new_path_count * 5))
+    if [ "${drift_score}" -gt 100 ]; then drift_score=100; fi
+
+    echo ""
+    echo "  ─────────────────────────────────────────────────"
+    echo "  DRIFT SCORE: ${drift_score}/100"
+    if [ "${drift_score}" -lt 10 ]; then
+        echo "  Assessment: Stable. Behavior matches baseline."
+    elif [ "${drift_score}" -lt 30 ]; then
+        echo "  Assessment: Minor drift. New activity detected but within bounds."
+    elif [ "${drift_score}" -lt 60 ]; then
+        echo "  Assessment: Moderate drift. Review new binaries/destinations."
+    else
+        echo "  Assessment: Significant drift. Investigate before proceeding."
+    fi
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+}
+
+# ─── TIMELINE ────────────────────────────────────────────────────────────────
+# Chronological narrative. What happened, in order, in plain language.
+# This is what you read on your phone when you wake up.
+
+cmd_timeline() {
+    local since="24h" session="" limit=50
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since)   shift; since="$1"; shift ;;
+            --session) shift; session="$1"; shift ;;
+            --limit)   shift; limit="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+    require_audit
+
+    local since_ts
+    since_ts=$(since_to_filter "${since}")
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  TIMELINE — Last ${since}"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+
+    local event_filter='. | select(.ts >= "'"${since_ts}"'")'
+    if [ -n "${session}" ]; then
+        event_filter="${event_filter} | select(.session == \"${session}\" or .session_id == \"${session}\")"
+    fi
+
+    local count=0
+    jq -c "${event_filter}" "${AUDIT_FILE}" 2>/dev/null | head -n "${limit}" | while IFS= read -r event; do
+        count=$((count + 1))
+
+        local ts domain action outcome detail_text severity
+        ts=$(echo "${event}" | jq -r '.ts // "?"')
+        domain=$(echo "${event}" | jq -r '.domain // "?"')
+        action=$(echo "${event}" | jq -r '.action // "?"')
+        outcome=$(echo "${event}" | jq -r '.outcome // "?"')
+        severity=$(echo "${event}" | jq -r '.severity // "info"')
+
+        # Build human-readable narrative
+        local narrative=""
+        case "${domain}" in
+            exec)
+                local cmd
+                cmd=$(echo "${event}" | jq -r '.detail.command // .detail.binary // "unknown command"')
+                narrative="Executed: ${cmd}"
+                ;;
+            net.outbound|net.http)
+                local host port
+                host=$(echo "${event}" | jq -r '.detail.dst_host // .detail.dst_ip // "?"')
+                port=$(echo "${event}" | jq -r '.detail.dst_port // "?"')
+                narrative="Network → ${host}:${port}"
+                ;;
+            fs|fs.config)
+                local path op
+                path=$(echo "${event}" | jq -r '.detail.path // "?"')
+                op=$(echo "${event}" | jq -r '.detail.operation // "access"')
+                narrative="File ${op}: ${path}"
+                ;;
+            browser.nav)
+                local url
+                url=$(echo "${event}" | jq -r '.detail.url // "?"')
+                narrative="Browsed: ${url}"
+                ;;
+            subagent)
+                narrative="Sub-agent spawned"
+                ;;
+            policy)
+                local pevent
+                pevent=$(echo "${event}" | jq -r '.detail.event // "change"')
+                narrative="Policy: ${pevent}"
+                ;;
+            availability)
+                local aevent
+                aevent=$(echo "${event}" | jq -r '.detail.event // "change"')
+                narrative="Availability: ${aevent}"
+                ;;
+            system)
+                narrative="System: ${action}"
+                ;;
+            ask)
+                local decision
+                decision=$(echo "${event}" | jq -r '.detail.decision // .detail.event // "pending"')
+                narrative="Ask: ${decision}"
+                ;;
+            *)
+                narrative="${domain}: ${action}"
+                ;;
+        esac
+
+        # Format the line
+        local time_short="${ts:11:8}"  # HH:MM:SS
+        local severity_mark="  "
+        case "${severity}" in
+            warn)     severity_mark="▲ " ;;
+            critical) severity_mark="██" ;;
+        esac
+
+        local outcome_mark=""
+        case "${outcome}" in
+            allow)  outcome_mark="[OK]" ;;
+            deny)   outcome_mark="[NO]" ;;
+            ask)    outcome_mark="[??]" ;;
+            queued) outcome_mark="[QQ]" ;;
+        esac
+
+        printf "  %s %s %-6s %s\n" "${severity_mark}" "${time_short}" "${outcome_mark}" "${narrative}"
+    done
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+}
+
+# ─── HEATMAP ─────────────────────────────────────────────────────────────────
+# Activity density. When is the agent working? Where is the boundary
+# being probed? This is the metabolic view — energy expenditure over time.
+
+cmd_heatmap() {
+    local since="7d" format="text"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since)  shift; since="$1"; shift ;;
+            --format) shift; format="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+    require_audit
+
+    local since_ts
+    since_ts=$(since_to_filter "${since}")
+
+    if [ "${format}" = "json" ]; then
+        jq -s --arg since "${since_ts}" '
+            [.[] | select(.ts >= $since)] |
+            {
+                by_hour: (group_by(.ts[11:13]) | map({hour: .[0].ts[11:13], count: length})),
+                by_domain: (group_by(.domain) | map({domain: .[0].domain, count: length}) | sort_by(-.count)),
+                by_outcome: (group_by(.outcome) | map({outcome: .[0].outcome, count: length})),
+                by_day: (group_by(.ts[0:10]) | map({date: .[0].ts[0:10], count: length}))
+            }' "${AUDIT_FILE}" 2>/dev/null
+        return
+    fi
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  ACTIVITY HEATMAP — Last ${since}"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+
+    # Hourly activity
+    echo "  HOURLY ACTIVITY:"
+    echo "  ─────────────────────────────────────────────────"
+
+    jq -s --arg since "${since_ts}" '
+        [.[] | select(.ts >= $since)] |
+        group_by(.ts[11:13]) |
+        map({hour: .[0].ts[11:13], count: length}) |
+        sort_by(.hour) |
+        .[] |
+        "\(.hour):00  \("█" * ((.count / 10) | floor | if . > 40 then 40 else . end))  \(.count)"
+    ' "${AUDIT_FILE}" 2>/dev/null | while IFS= read -r line; do
+        # Strip the surrounding quotes from jq output
+        line="${line#\"}"
+        line="${line%\"}"
+        echo "  ${line}"
+    done
+
+    echo ""
+
+    # Domain distribution
+    echo "  DOMAIN DISTRIBUTION:"
+    echo "  ─────────────────────────────────────────────────"
+
+    jq -s --arg since "${since_ts}" '
+        [.[] | select(.ts >= $since)] |
+        group_by(.domain) |
+        map({domain: .[0].domain, count: length}) |
+        sort_by(-.count) |
+        .[] |
+        "  \(.domain | . + " " * (20 - (. | length | if . > 20 then 20 else . end)))  \("█" * ((.count / 5) | floor | if . > 30 then 30 else . end))  \(.count)"
+    ' "${AUDIT_FILE}" 2>/dev/null | while IFS= read -r line; do
+        line="${line#\"}"
+        line="${line%\"}"
+        echo "${line}"
+    done
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+}
+
+# ─── VERDICT ─────────────────────────────────────────────────────────────────
+# The one-page assessment. After a session or time window, the audit engine
+# looks at everything that happened and delivers a verdict:
+#
+#   CLEAN     — Normal activity, within baseline, nothing unusual
+#   NOTABLE   — Some new activity worth noting but not alarming
+#   ANOMALOUS — Significant deviations from expected behavior
+#   CRITICAL  — Security-relevant events that require investigation
+#
+# This is what you want to see on your phone: a single word, with evidence.
+
+cmd_verdict() {
+    local since="24h" session=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since)   shift; since="$1"; shift ;;
+            --session) shift; session="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+    require_audit
+
+    local since_ts
+    since_ts=$(since_to_filter "${since}")
+
+    local session_filter=""
+    if [ -n "${session}" ]; then
+        session_filter="and (.session == \"${session}\" or .session_id == \"${session}\")"
+    fi
+
+    # Compute verdict metrics
+    local metrics
+    metrics=$(jq -s --arg since "${since_ts}" "
+        [.[] | select(.ts >= \$since ${session_filter})] |
+        {
+            total: length,
+            denials: ([.[] | select(.outcome == \"deny\")] | length),
+            critical: ([.[] | select(.severity == \"critical\")] | length),
+            asks: ([.[] | select(.outcome == \"ask\" or .domain == \"ask\")] | length),
+            timeouts: ([.[] | select(.outcome == \"timeout\")] | length),
+            halts: ([.[] | select(.detail.event == \"away_halt\")] | length),
+            lockdowns: ([.[] | select(.action == \"lockdown\" or .detail.event == \"lockdown\")] | length),
+            policy_changes: ([.[] | select(.domain == \"policy\" and .action != \"heartbeat\")] | length),
+            unique_binaries: ([.[] | select(.domain == \"exec\") | .detail.binary // empty] | unique | length),
+            unique_destinations: ([.[] | select(.domain == \"net.outbound\" or .domain == \"net.http\") | .detail.dst_host // .detail.dst_ip // empty] | unique | length),
+            availability_transitions: ([.[] | select(.domain == \"availability\")] | length)
+        }
+    " "${AUDIT_FILE}" 2>/dev/null)
+
+    local total denials critical asks timeouts halts lockdowns policy_changes
+    total=$(echo "${metrics}" | jq '.total' 2>/dev/null || echo 0)
+    denials=$(echo "${metrics}" | jq '.denials' 2>/dev/null || echo 0)
+    critical=$(echo "${metrics}" | jq '.critical' 2>/dev/null || echo 0)
+    asks=$(echo "${metrics}" | jq '.asks' 2>/dev/null || echo 0)
+    timeouts=$(echo "${metrics}" | jq '.timeouts' 2>/dev/null || echo 0)
+    halts=$(echo "${metrics}" | jq '.halts' 2>/dev/null || echo 0)
+    lockdowns=$(echo "${metrics}" | jq '.lockdowns' 2>/dev/null || echo 0)
+    policy_changes=$(echo "${metrics}" | jq '.policy_changes' 2>/dev/null || echo 0)
+
+    # Compute verdict score (0 = clean, higher = worse)
+    local score=0
+    score=$((score + critical * 25))
+    score=$((score + lockdowns * 40))
+    score=$((score + halts * 15))
+    score=$((score + timeouts * 10))
+    if [ "${denials}" -gt 20 ]; then score=$((score + 15)); fi
+    if [ "${denials}" -gt 50 ]; then score=$((score + 20)); fi
+    if [ "${policy_changes}" -gt 3 ]; then score=$((score + 10)); fi
+
+    local verdict="CLEAN"
+    local verdict_detail=""
+    if [ "${score}" -ge 80 ]; then
+        verdict="CRITICAL"
+        verdict_detail="Security-relevant events detected. Investigate before continuing."
+    elif [ "${score}" -ge 40 ]; then
+        verdict="ANOMALOUS"
+        verdict_detail="Significant deviations from expected behavior. Review recommended."
+    elif [ "${score}" -ge 15 ]; then
+        verdict="NOTABLE"
+        verdict_detail="Some unusual activity detected. Worth a quick review."
+    else
+        verdict_detail="Normal activity within expected bounds."
+    fi
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  VERDICT: ${verdict}"
+    echo "  ${verdict_detail}"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+    echo "  Period:              last ${since}"
+    echo "  Total events:        ${total}"
+    echo "  Denials:             ${denials}"
+    echo "  Critical severity:   ${critical}"
+    echo "  Ask prompts:         ${asks}"
+    echo "  Timeouts:            ${timeouts}"
+    echo "  Away halts:          ${halts}"
+    echo "  Lockdowns:           ${lockdowns}"
+    echo "  Policy changes:      ${policy_changes}"
+    echo "  Unique binaries:     $(echo "${metrics}" | jq '.unique_binaries' 2>/dev/null)"
+    echo "  Unique destinations: $(echo "${metrics}" | jq '.unique_destinations' 2>/dev/null)"
+    echo "  Availability transitions: $(echo "${metrics}" | jq '.availability_transitions' 2>/dev/null)"
+    echo ""
+
+    # Show critical events if any
+    if [ "${critical}" -gt 0 ]; then
+        echo "  CRITICAL EVENTS:"
+        echo "  ─────────────────────────────────────────────────"
+        jq -c "select(.ts >= \"${since_ts}\" and .severity == \"critical\" ${session_filter})" \
+            "${AUDIT_FILE}" 2>/dev/null | head -n 10 | while IFS= read -r event; do
+            local cts cdomain caction cdetail
+            cts=$(echo "${event}" | jq -r '.ts[11:19] // "?"')
+            cdomain=$(echo "${event}" | jq -r '.domain // "?"')
+            caction=$(echo "${event}" | jq -r '.action // "?"')
+            cdetail=$(echo "${event}" | jq -r '
+                .detail |
+                if .command then .command[:60]
+                elif .binary then .binary
+                elif .dst_host then .dst_host
+                elif .path then .path[:60]
+                elif .event then .event
+                else "—"
+                end' 2>/dev/null)
+            printf "  █ %s  %-14s %s\n" "${cts}" "${cdomain}" "${cdetail}"
+        done
+        echo ""
+    fi
+
+    echo "  Score: ${score}/100 (lower is better)"
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+}
+
+# ─── STATS ───────────────────────────────────────────────────────────────────
+# Quick statistics overview.
+
+cmd_stats() {
+    local since="24h"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since) shift; since="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+    require_audit
+
+    local since_ts
+    since_ts=$(since_to_filter "${since}")
+
+    echo ""
+    echo "  Audit trail stats (last ${since}):"
+    echo "  ─────────────────────────────────────────────────"
+
+    jq -s --arg since "${since_ts}" '
+        [.[] | select(.ts >= $since)] |
+        "  Total events:     \(length)",
+        "  Outcomes:",
+        (group_by(.outcome) | map("    \(.[0].outcome // "?"):  \(length)") | .[]),
+        "  Domains:",
+        (group_by(.domain) | sort_by(-length) | .[0:8] | map("    \(.[0].domain // "?"):  \(length)") | .[]),
+        "  Sources:",
+        (group_by(.source) | map("    \(.[0].source // "?"):  \(length)") | .[])
+    ' "${AUDIT_FILE}" 2>/dev/null | while IFS= read -r line; do
+        line="${line#\"}"
+        line="${line%\"}"
+        echo "${line}"
+    done
+
+    echo ""
+}
+
+# ─── EVOLVE ──────────────────────────────────────────────────────────────────
+# The policy evolution engine. Watches the audit trail and proposes rule changes.
+#
+# This is the creature learning to see. Not learning to open its own cage —
+# learning to RECOMMEND to the human where the cage walls should move.
+#
+# The engine analyzes patterns that no human would catch from raw logs:
+#
+#   1. PROMOTION:  "api.stripe.com contacted 847 times, zero denials,
+#                   zero anomalies. Promote from 'log' to 'allow'?"
+#
+#   2. RESTRICTION: "Agent attempted /usr/bin/curl 12 times, denied each
+#                    time. Currently matched by catch-all R010 (ask).
+#                    Add explicit deny rule?"
+#
+#   3. TIGHTENING:  "R005 allows all shell execution. 98% of shells run
+#                    /bin/sh. Consider restricting to /bin/sh only?"
+#
+#   4. RETIREMENT:  "/opt/homebrew/bin/ffprobe in allowlist (R003) but
+#                    never observed in 30 days. Disable rule?"
+#
+# Every proposal includes evidence: event counts, time ranges, risk context.
+# The human reviews. The human signs. The gate enforces.
+#
+# The creature suggests. The human decides. This is the loop.
+
+cmd_evolve() {
+    local since="7d" format="text" min_observations=10
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since)  shift; since="$1"; shift ;;
+            --format) shift; format="$1"; shift ;;
+            --min)    shift; min_observations="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+    require_audit
+
+    local since_ts
+    since_ts=$(since_to_filter "${since}")
+
+    # Load current policy for comparison
+    local policy_file="${ZLAR_ROOT}/policies/default.policy.json"
+    if [ ! -f "${policy_file}" ]; then
+        policy_file="${ZLAR_ROOT}/policies/active.policy.json"
+    fi
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  POLICY EVOLUTION — Proposals from ${since} of observation"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+
+    local proposal_count=0
+
+    # ── Proposal Type 1: PROMOTE ─────────────────────────────────────
+    # Find network destinations that are currently "log" or "ask" but have
+    # been consistently clean. These are candidates for promotion to "allow".
+
+    echo "  PROMOTIONS (log/ask → allow)"
+    echo "  ─────────────────────────────────────────────────────"
+
+    local net_analysis
+    net_analysis=$(jq -s --arg since "${since_ts}" --argjson min "${min_observations}" '
+        [.[] | select(.ts >= $since and (.domain == "net.outbound" or .domain == "net.http"))] |
+        if length == 0 then [] else
+            group_by((.detail.dst_host // .detail.dst_ip // "unknown")) |
+            map({
+                host: (.[0].detail.dst_host // .[0].detail.dst_ip // "unknown"),
+                total: length,
+                allowed: ([.[] | select(.outcome == "allow")] | length),
+                denied: ([.[] | select(.outcome == "deny")] | length),
+                logged: ([.[] | select(.outcome == "log" or .action == "log")] | length),
+                asked: ([.[] | select(.outcome == "ask")] | length),
+                first_seen: (sort_by(.ts) | first | .ts),
+                last_seen: (sort_by(.ts) | last | .ts),
+                rule: (.[0].rule // "none"),
+                ports: ([.[].detail.dst_port // empty] | unique)
+            }) |
+            [.[] | select(.total >= $min and .denied == 0 and (.logged > 0 or .asked > 0))] |
+            sort_by(-.total)
+        end
+    ' "${AUDIT_FILE}" 2>/dev/null)
+
+    local promote_count
+    if [ -z "${net_analysis}" ] || [ "${net_analysis}" = "null" ]; then
+        net_analysis="[]"
+    fi
+    promote_count=$(echo "${net_analysis}" | jq 'length' 2>/dev/null || echo 0)
+
+    if [ "${promote_count}" -gt 0 ]; then
+        echo "${net_analysis}" | jq -r '.[] |
+            "  → \(.host) (port \(.ports | join(",")))"  + "\n" +
+            "    Observed: \(.total) times | Denied: \(.denied) | Logged: \(.logged) | Asked: \(.asked)\n" +
+            "    Window: \(.first_seen[0:10]) to \(.last_seen[0:10]) | Current rule: \(.rule)\n" +
+            "    PROPOSAL: Add to R021 dst_host allowlist (allow HTTPS)\n"
+        ' 2>/dev/null
+        proposal_count=$((proposal_count + promote_count))
+    else
+        echo "  (none — no destinations ready for promotion)"
+    fi
+    echo ""
+
+    # ── Proposal Type 2: RESTRICT ────────────────────────────────────
+    # Find binaries/commands that keep getting denied. If they're hitting
+    # a generic catch-all, propose a specific deny rule.
+
+    echo "  RESTRICTIONS (catch-all → explicit deny)"
+    echo "  ─────────────────────────────────────────────────────"
+
+    local deny_analysis
+    deny_analysis=$(jq -s --arg since "${since_ts}" --argjson min 3 '
+        [.[] | select(.ts >= $since and .domain == "exec" and .outcome == "deny")] |
+        if length == 0 then [] else
+            group_by((.detail.binary // .detail.command // "unknown")) |
+            map({
+                binary: (.[0].detail.binary // "unknown"),
+                command_sample: (.[0].detail.command // "none"),
+                count: length,
+                rule: (.[0].rule // "none"),
+                first_seen: (sort_by(.ts) | first | .ts),
+                last_seen: (sort_by(.ts) | last | .ts)
+            }) |
+            [.[] | select(.count >= $min)] |
+            sort_by(-.count)
+        end
+    ' "${AUDIT_FILE}" 2>/dev/null)
+
+    local restrict_count
+    if [ -z "${deny_analysis}" ] || [ "${deny_analysis}" = "null" ]; then
+        deny_analysis="[]"
+    fi
+    restrict_count=$(echo "${deny_analysis}" | jq 'length' 2>/dev/null || echo 0)
+
+    if [ "${restrict_count}" -gt 0 ]; then
+        echo "${deny_analysis}" | jq -r '.[] |
+            "  → \(.binary) (denied \(.count) times)\n" +
+            "    Sample: \(.command_sample)\n" +
+            "    Matched by: \(.rule) | Last: \(.last_seen[0:16])\n" +
+            "    PROPOSAL: Add explicit deny rule with documented rationale\n"
+        ' 2>/dev/null
+        proposal_count=$((proposal_count + restrict_count))
+    else
+        echo "  (none — no repeated denials targeting catch-all rules)"
+    fi
+    echo ""
+
+    # ── Proposal Type 3: TIGHTEN ─────────────────────────────────────
+    # Find allow rules where actual usage is a small subset of what's
+    # permitted. Tighter rules = smaller attack surface.
+
+    echo "  TIGHTENING (broad allow → narrow allow)"
+    echo "  ─────────────────────────────────────────────────────"
+
+    local exec_analysis
+    exec_analysis=$(jq -s --arg since "${since_ts}" --argjson min "${min_observations}" '
+        [.[] | select(.ts >= $since and .domain == "exec" and .outcome == "allow")] |
+        if length == 0 then [] else
+            group_by((.rule // "none")) |
+            map({
+                rule: (.[0].rule // "none"),
+                total: length,
+                unique_binaries: ([.[].detail.binary // empty] | unique),
+                unique_binary_count: ([.[].detail.binary // empty] | unique | length),
+                binary_distribution: (
+                    [.[].detail.binary // empty] |
+                    group_by(.) |
+                    map({binary: .[0], count: length}) |
+                    sort_by(-.count)
+                )
+            }) |
+            [.[] | select(.total >= $min and .unique_binary_count > 0)] |
+            sort_by(-.total)
+        end
+    ' "${AUDIT_FILE}" 2>/dev/null)
+
+    local tighten_proposals=0
+    if [ -z "${exec_analysis}" ]; then exec_analysis="[]"; fi
+    if [ -n "${exec_analysis}" ] && [ "${exec_analysis}" != "null" ] && [ "${exec_analysis}" != "[]" ]; then
+        # Check each rule: if a rule allows N binaries but only M<N are observed,
+        # it could be tightened
+        echo "${exec_analysis}" | jq -r '
+            .[] |
+            select(.unique_binary_count >= 1) |
+            "  → Rule \(.rule): \(.total) events, \(.unique_binary_count) unique binaries\n" +
+            "    Used: \([.binary_distribution[0:5][] | "\(.binary) (\(.count)x)"] | join(", "))\n" +
+            (if .unique_binary_count <= 3 and .total > 20 then
+                "    PROPOSAL: Restrict rule to observed binaries only\n"
+            else
+                "    (usage is diverse — rule width appears appropriate)\n"
+            end)
+        ' 2>/dev/null
+    else
+        echo "  (insufficient data for tightening analysis)"
+    fi
+    echo ""
+
+    # ── Proposal Type 4: RETIRE ──────────────────────────────────────
+    # Find allow rules that have NEVER matched in the observation window.
+    # Dead rules add complexity without value.
+
+    echo "  RETIREMENTS (unused rules → disable)"
+    echo "  ─────────────────────────────────────────────────────"
+
+    if [ -f "${policy_file}" ]; then
+        local all_rule_ids matched_rule_ids unmatched_rules
+        all_rule_ids=$(jq -r '[.rules[] | select(.enabled == true) | .id] | sort | .[]' "${policy_file}" 2>/dev/null)
+        matched_rule_ids=$(jq -s --arg since "${since_ts}" \
+            '[.[] | select(.ts >= $since) | .rule // empty | select(. != "")] | unique | sort | .[]' \
+            "${AUDIT_FILE}" 2>/dev/null)
+
+        local has_retirement=false
+        while IFS= read -r rule_id; do
+            if [ -z "${rule_id}" ]; then continue; fi
+            if ! echo "${matched_rule_ids}" | grep -q "^${rule_id}$"; then
+                local rule_desc
+                rule_desc=$(jq -r --arg id "${rule_id}" '.rules[] | select(.id == $id) | .description // "—"' "${policy_file}" 2>/dev/null)
+                echo "  → ${rule_id}: ${rule_desc}"
+                echo "    No matches in last ${since}. Consider disabling."
+                echo ""
+                has_retirement=true
+                proposal_count=$((proposal_count + 1))
+            fi
+        done <<< "${all_rule_ids}"
+
+        if [ "${has_retirement}" = "false" ]; then
+            echo "  (all enabled rules had at least one match)"
+        fi
+    else
+        echo "  (no policy file found for rule analysis)"
+    fi
+    echo ""
+
+    # ── Proposal Type 5: EMERGING PATTERNS ───────────────────────────
+    # Things that don't fit existing categories but deserve attention.
+
+    echo "  EMERGING PATTERNS"
+    echo "  ─────────────────────────────────────────────────────"
+
+    # Check for new domains (event domains) not covered by explicit rules
+    local domain_coverage
+    domain_coverage=$(jq -s --arg since "${since_ts}" '
+        [.[] | select(.ts >= $since)] |
+        if length == 0 then [] else
+            group_by(.domain) |
+            map({
+                domain: .[0].domain,
+                count: length,
+                rules_matched: ([.[].rule // empty | select(. != "")] | unique | length),
+                unmatched_pct: (
+                    ([.[] | select(.rule == "" or .rule == null)] | length) * 100 /
+                    (if length == 0 then 1 else length end)
+                )
+            }) |
+            [.[] | select(.unmatched_pct > 50 and .count >= 5)] |
+            sort_by(-.unmatched_pct)
+        end
+    ' "${AUDIT_FILE}" 2>/dev/null)
+
+    local emerging_count
+    if [ -z "${domain_coverage}" ] || [ "${domain_coverage}" = "null" ]; then
+        domain_coverage="[]"
+    fi
+    emerging_count=$(echo "${domain_coverage}" | jq 'length' 2>/dev/null || echo 0)
+
+    if [ "${emerging_count}" -gt 0 ]; then
+        echo "${domain_coverage}" | jq -r '.[] |
+            "  → Domain \(.domain): \(.count) events, \(.unmatched_pct)% unmatched by rules\n" +
+            "    PROPOSAL: Add explicit rules for this domain\n"
+        ' 2>/dev/null
+        proposal_count=$((proposal_count + emerging_count))
+    else
+        echo "  (all active domains have adequate rule coverage)"
+    fi
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  TOTAL PROPOSALS: ${proposal_count}"
+    echo ""
+    echo "  To act on proposals:"
+    echo "    1. Review each proposal against operational context"
+    echo "    2. Edit default.policy.json with approved changes"
+    echo "    3. Sign: zlar-policy sign --input draft --output active"
+    echo "    4. Gate picks up new policy on next poll cycle"
+    echo ""
+    echo "  The creature suggests. The human decides."
+    echo "═══════════════════════════════════════════════════════════════"
+}
+
+# ─── Verify Chain (#H4) ───────────────────────────────────────────────────────
+# The audit trail includes prev_hash linking each event to the last.
+# This command walks the chain and reports any breaks.
+
+cmd_verify_chain() {
+    local audit="${AUDIT_FILE}" format="text" fix="false"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --audit)  shift; audit="$1"; shift ;;
+            --format) shift; format="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ ! -f "${audit}" ]; then
+        echo "ERROR: Audit file not found: ${audit}" >&2
+        exit 1
+    fi
+
+    require_jq
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  AUDIT CHAIN VERIFICATION"
+    echo "  File: ${audit}"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+
+    local total=0 verified=0 breaks=0 genesis_count=0
+    local prev_line="" line_num=0 first_break_at=0
+
+    while IFS= read -r line; do
+        line_num=$((line_num + 1))
+        total=$((total + 1))
+
+        # Skip empty lines
+        if [ -z "${line}" ]; then
+            continue
+        fi
+
+        # Extract prev_hash from current line
+        local curr_prev_hash
+        curr_prev_hash=$(echo "${line}" | jq -r '.prev_hash // ""' 2>/dev/null)
+
+        if [ "${curr_prev_hash}" = "genesis" ]; then
+            genesis_count=$((genesis_count + 1))
+            if [ ${genesis_count} -eq 1 ] && [ ${line_num} -eq 1 ]; then
+                # First line with genesis — expected
+                verified=$((verified + 1))
+            elif [ ${genesis_count} -gt 1 ] || [ ${line_num} -gt 1 ]; then
+                # Genesis in the middle — chain was restarted
+                breaks=$((breaks + 1))
+                if [ ${first_break_at} -eq 0 ]; then first_break_at=${line_num}; fi
+                if [ "${format}" = "text" ]; then
+                    local break_ts
+                    break_ts=$(echo "${line}" | jq -r '.ts // "?"' 2>/dev/null)
+                    echo "  BREAK  line ${line_num}: genesis marker mid-chain (${break_ts})"
+                fi
+            fi
+        elif [ -n "${prev_line}" ]; then
+            # Compute expected hash (SHA-256 of the previous line)
+            local expected_hash
+            expected_hash=$(printf '%s' "${prev_line}" | shasum -a 256 | awk '{print $1}')
+
+            if [ "${curr_prev_hash}" = "${expected_hash}" ]; then
+                verified=$((verified + 1))
+            else
+                breaks=$((breaks + 1))
+                if [ ${first_break_at} -eq 0 ]; then first_break_at=${line_num}; fi
+                if [ "${format}" = "text" ]; then
+                    local break_ts break_id
+                    break_ts=$(echo "${line}" | jq -r '.ts // "?"' 2>/dev/null)
+                    break_id=$(echo "${line}" | jq -r '.id // "?"' 2>/dev/null)
+                    echo "  BREAK  line ${line_num}: hash mismatch (${break_ts}, id=${break_id})"
+                    echo "         expected: ${expected_hash:0:16}..."
+                    echo "         got:      ${curr_prev_hash:0:16}..."
+                fi
+            fi
+        fi
+
+        prev_line="${line}"
+    done < "${audit}"
+
+    echo ""
+    echo "  ─────────────────────────────────────────────────────"
+    echo "  Total events:    ${total}"
+    echo "  Verified links:  ${verified}"
+    echo "  Chain breaks:    ${breaks}"
+    echo "  Genesis markers: ${genesis_count}"
+
+    if [ ${first_break_at} -gt 0 ]; then
+        echo "  First break at:  line ${first_break_at}"
+    fi
+
+    echo ""
+    if [ ${breaks} -eq 0 ]; then
+        echo "  VERDICT: CHAIN INTACT"
+        echo "  All ${verified} hash links verified. No tampering detected."
+    elif [ ${breaks} -le 2 ]; then
+        echo "  VERDICT: CHAIN HAS GAPS"
+        echo "  ${breaks} break(s) found. May indicate gate restart or log rotation."
+        echo "  Review break points for explanation."
+    else
+        echo "  VERDICT: CHAIN COMPROMISED"
+        echo "  ${breaks} breaks found. Investigate for possible tampering."
+    fi
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+
+    if [ "${format}" = "json" ]; then
+        jq -n -c \
+            --argjson total "${total}" \
+            --argjson verified "${verified}" \
+            --argjson breaks "${breaks}" \
+            --argjson genesis "${genesis_count}" \
+            --argjson first_break "${first_break_at}" \
+            '{total:$total,verified:$verified,breaks:$breaks,genesis_markers:$genesis,first_break_at:$first_break,
+              verdict:(if $breaks == 0 then "INTACT" elif $breaks <= 2 then "GAPS" else "COMPROMISED" end)}'
+    fi
+
+    if [ ${breaks} -gt 0 ]; then
+        return 1
+    fi
+    return 0
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+COMMAND="${1:-help}"
+shift || true
+
+case "${COMMAND}" in
+    replay)       cmd_replay "$@" ;;
+    fingerprint)  cmd_fingerprint "$@" ;;
+    drift)        cmd_drift "$@" ;;
+    timeline)     cmd_timeline "$@" ;;
+    heatmap)      cmd_heatmap "$@" ;;
+    verdict)      cmd_verdict "$@" ;;
+    stats)        cmd_stats "$@" ;;
+    evolve)       cmd_evolve "$@" ;;
+    verify-chain) cmd_verify_chain "$@" ;;
+    *)
+        echo "ZLAR Audit Engine — The Living Memory"
+        echo ""
+        echo "Usage: $(basename "$0") COMMAND [OPTIONS]"
+        echo ""
+        echo "Commands:"
+        echo "  replay       Session DVR — every event in order with full context"
+        echo "  fingerprint  Build behavioral baseline from audit history"
+        echo "  drift        Compare current behavior against baseline"
+        echo "  timeline     Human-readable chronological narrative"
+        echo "  heatmap      Activity density by hour and domain"
+        echo "  verdict      One-page session assessment (CLEAN/NOTABLE/ANOMALOUS/CRITICAL)"
+        echo "  evolve       Propose policy rule changes from observation data"
+        echo "  verify-chain Walk the hash chain and report any breaks or tampering"
+        echo "  stats        Quick statistics overview"
+        echo ""
+        echo "Common options:"
+        echo "  --since TIME    Time window (1h, 24h, 7d, 30d, or ISO timestamp)"
+        echo "  --session ID    Filter to specific session"
+        echo "  --format FMT    Output format (text, json)"
+        echo "  --limit N       Max events to show"
+        echo ""
+        echo "Examples:"
+        echo "  $(basename "$0") verdict --since 24h"
+        echo "  $(basename "$0") timeline --since 6h"
+        echo "  $(basename "$0") fingerprint --since 7d"
+        echo "  $(basename "$0") drift --since 1h"
+        echo "  $(basename "$0") replay --session gate-1709567890-1234 --format json"
+        echo ""
+        exit 1
+        ;;
+esac

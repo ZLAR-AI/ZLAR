@@ -1,0 +1,4 @@
+{
+  "policy_file": "etc/egress-policy.json",
+  "log_dir": "var/log"
+}

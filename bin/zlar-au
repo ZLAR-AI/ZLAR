@@ -1,0 +1,873 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR-AU — Audit Trail Analysis & Compliance Reporting
+#
+# Reads the hash-chained JSONL audit trail produced by ZLAR Gate and turns it
+# into compliance-grade reports. Supports: summary, query, verify (hash chain),
+# export (CSV/JSON), report (HTML compliance reports), digest (daily/weekly).
+#
+# No daemon. No database. Reads JSONL, produces reports.
+#
+# Designed for: OSFI B-13, SOC 2, PCI-DSS 10, SOX audit requirements.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+VERSION="1.0.0"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# ─── Preflight ──────────────────────────────────────────────────────────────
+if ! command -v jq &>/dev/null; then
+    echo "Error: jq is required. Install with: brew install jq" >&2
+    exit 1
+fi
+
+# ─── Configuration ──────────────────────────────────────────────────────────
+
+# Auto-detect audit file: check AU config, then common ZLAR locations
+AU_CONFIG="${PROJECT_DIR}/etc/au.json"
+AUDIT_FILE=""
+REPORT_DIR="${PROJECT_DIR}/var/reports"
+
+if [ -f "${AU_CONFIG}" ]; then
+    AUDIT_FILE=$(jq -r '.audit_file // ""' "${AU_CONFIG}" 2>/dev/null)
+    _rdir=$(jq -r '.report_dir // ""' "${AU_CONFIG}" 2>/dev/null)
+    [ -n "${_rdir}" ] && REPORT_DIR="${_rdir}"
+fi
+
+# Auto-detect from common locations if not configured
+if [ -z "${AUDIT_FILE}" ] || [ ! -f "${AUDIT_FILE}" ]; then
+    for candidate in \
+        "${HOME}/.zlar-lt/var/log/audit.jsonl" \
+        "${HOME}/.zlar-gate/var/log/audit.jsonl" \
+        "/var/log/zlar-oc/audit.jsonl" \
+        "$(dirname "${PROJECT_DIR}")/zlar-gate/var/log/audit.jsonl" \
+        "$(dirname "${PROJECT_DIR}")/zlar-lt/var/log/audit.jsonl" \
+        "$(dirname "${PROJECT_DIR}")/zlar-oc/var/log/audit.jsonl"; do
+        if [ -f "${candidate}" ]; then
+            AUDIT_FILE="${candidate}"
+            break
+        fi
+    done
+fi
+
+# Override via env var
+AUDIT_FILE="${ZLAR_AUDIT_FILE:-${AUDIT_FILE}}"
+
+mkdir -p "${REPORT_DIR}" 2>/dev/null || true
+
+# ─── Colors ─────────────────────────────────────────────────────────────────
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# ─── Helpers ────────────────────────────────────────────────────────────────
+
+_require_audit() {
+    if [ -z "${AUDIT_FILE}" ] || [ ! -f "${AUDIT_FILE}" ]; then
+        echo -e "${RED}Error:${NC} No audit file found." >&2
+        echo "  Set ZLAR_AUDIT_FILE=/path/to/audit.jsonl or configure etc/au.json" >&2
+        exit 1
+    fi
+}
+
+_count() {
+    wc -l < "$1" 2>/dev/null | tr -d '[:space:]'
+}
+
+_human_size() {
+    local bytes=$1
+    if [ "${bytes}" -gt 1073741824 ]; then
+        printf "%.1f GB" "$(echo "scale=1; ${bytes}/1073741824" | bc 2>/dev/null || echo "?")"
+    elif [ "${bytes}" -gt 1048576 ]; then
+        printf "%.1f MB" "$(echo "scale=1; ${bytes}/1048576" | bc 2>/dev/null || echo "?")"
+    elif [ "${bytes}" -gt 1024 ]; then
+        printf "%.1f KB" "$(echo "scale=1; ${bytes}/1024" | bc 2>/dev/null || echo "?")"
+    else
+        printf "%d B" "${bytes}"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── summary ────────────────────────────────────────────────────────────────
+
+cmd_summary() {
+    _require_audit
+
+    local total=$(_count "${AUDIT_FILE}")
+    local file_size=$(wc -c < "${AUDIT_FILE}" 2>/dev/null | tr -d '[:space:]')
+
+    echo -e "${BOLD}ZLAR Audit Summary${NC}"
+    echo -e "═══════════════════════════════════════"
+    echo -e "  File:    ${AUDIT_FILE}"
+    echo -e "  Size:    $(_human_size ${file_size})"
+    echo -e "  Events:  ${total}"
+    echo ""
+
+    if [ "${total}" -eq 0 ]; then
+        echo "  No events recorded yet."
+        return
+    fi
+
+    # Time range
+    local first_ts last_ts
+    first_ts=$(head -1 "${AUDIT_FILE}" | jq -r '.ts // "?"' 2>/dev/null)
+    last_ts=$(tail -1 "${AUDIT_FILE}" | jq -r '.ts // "?"' 2>/dev/null)
+    echo -e "  First:   ${first_ts}"
+    echo -e "  Last:    ${last_ts}"
+    echo ""
+
+    # Outcome breakdown
+    echo -e "${BOLD}  Outcomes:${NC}"
+    jq -r '.outcome' "${AUDIT_FILE}" 2>/dev/null | sort | uniq -c | sort -rn | while read count outcome; do
+        local color="${NC}"
+        case "${outcome}" in
+            allow|authorized|logged|away_auto_allow) color="${GREEN}" ;;
+            deny|denied) color="${RED}" ;;
+            pending|away_queued|away_halt) color="${YELLOW}" ;;
+        esac
+        printf "    ${color}%-20s${NC} %s\n" "${outcome}" "${count}"
+    done
+    echo ""
+
+    # Domain breakdown
+    echo -e "${BOLD}  Domains:${NC}"
+    jq -r '.domain' "${AUDIT_FILE}" 2>/dev/null | sort | uniq -c | sort -rn | while read count domain; do
+        printf "    %-20s %s\n" "${domain}" "${count}"
+    done
+    echo ""
+
+    # Top deny reasons
+    local deny_count
+    deny_count=$(jq -r 'select(.outcome == "deny" or .outcome == "denied") | .rule' "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    if [ "${deny_count}" -gt 0 ]; then
+        echo -e "${BOLD}  Top Deny Rules:${NC}"
+        jq -r 'select(.outcome == "deny" or .outcome == "denied") | .rule' "${AUDIT_FILE}" 2>/dev/null | sort | uniq -c | sort -rn | head -5 | while read count rule; do
+            printf "    ${RED}%-20s${NC} %s\n" "${rule}" "${count}"
+        done
+        echo ""
+    fi
+
+    # Risk score distribution
+    echo -e "${BOLD}  Risk Distribution:${NC}"
+    local high_risk med_risk low_risk
+    high_risk=$(jq -r 'select(.risk_score >= 70) | .id' "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    med_risk=$(jq -r 'select(.risk_score >= 30 and .risk_score < 70) | .id' "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    low_risk=$(jq -r 'select(.risk_score < 30) | .id' "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    echo -e "    ${RED}High (≥70):${NC}    ${high_risk}"
+    echo -e "    ${YELLOW}Medium (30-69):${NC} ${med_risk}"
+    echo -e "    ${GREEN}Low (<30):${NC}      ${low_risk}"
+    echo ""
+
+    # Frameworks seen
+    echo -e "${BOLD}  Frameworks:${NC}"
+    jq -r '.agent_id // "unknown"' "${AUDIT_FILE}" 2>/dev/null | sort -u | while read fw; do
+        echo "    ${fw}"
+    done
+
+    # Policy versions seen
+    echo -e "${BOLD}  Policy Versions:${NC}"
+    jq -r '.policy_version // "unknown"' "${AUDIT_FILE}" 2>/dev/null | sort -u | while read pv; do
+        echo "    ${pv}"
+    done
+}
+
+# ─── query ──────────────────────────────────────────────────────────────────
+
+cmd_query() {
+    _require_audit
+
+    local filter="."
+    local limit=20
+    local format="table"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --outcome) filter="${filter} | select(.outcome == \"$2\")"; shift 2 ;;
+            --domain) filter="${filter} | select(.domain == \"$2\")"; shift 2 ;;
+            --rule) filter="${filter} | select(.rule == \"$2\")"; shift 2 ;;
+            --severity) filter="${filter} | select(.severity == \"$2\")"; shift 2 ;;
+            --risk-min) filter="${filter} | select(.risk_score >= $2)"; shift 2 ;;
+            --session) filter="${filter} | select(.session_id == \"$2\")"; shift 2 ;;
+            --agent) filter="${filter} | select(.agent_id == \"$2\")"; shift 2 ;;
+            --after) filter="${filter} | select(.ts >= \"$2\")"; shift 2 ;;
+            --before) filter="${filter} | select(.ts <= \"$2\")"; shift 2 ;;
+            --limit|-n) limit="$2"; shift 2 ;;
+            --json) format="json"; shift ;;
+            --csv) format="csv"; shift ;;
+            *) echo "Unknown option: $1" >&2; exit 1 ;;
+        esac
+    done
+
+    case "${format}" in
+        table)
+            echo -e "${BOLD}$(printf '%-24s %-10s %-10s %-15s %-15s %s' 'TIMESTAMP' 'OUTCOME' 'DOMAIN' 'RULE' 'RISK' 'ACTION')${NC}"
+            echo "────────────────────────────────────────────────────────────────────────────────────────────"
+            jq -r "${filter} | [.ts, .outcome, .domain, .rule, (.risk_score | tostring), .action] | join(\"\t\")" "${AUDIT_FILE}" 2>/dev/null | tail -"${limit}" | while IFS=$'\t' read -r ts outcome domain rule risk action; do
+                local color="${NC}"
+                case "${outcome}" in
+                    allow|authorized|logged) color="${GREEN}" ;;
+                    deny|denied) color="${RED}" ;;
+                    pending|away_queued) color="${YELLOW}" ;;
+                esac
+                printf "${color}%-24s %-10s %-10s %-15s %-15s %s${NC}\n" "${ts}" "${outcome}" "${domain}" "${rule}" "${risk}" "${action:0:40}"
+            done
+            ;;
+        json)
+            jq "${filter}" "${AUDIT_FILE}" 2>/dev/null | tail -"$((limit * 5))"
+            ;;
+        csv)
+            echo "id,ts,outcome,domain,rule,severity,risk_score,action,session_id,agent_id,host,user,policy_version"
+            jq -r "${filter} | [.id, .ts, .outcome, .domain, .rule, .severity, (.risk_score | tostring), .action, .session_id, .agent_id, .host, .user, .policy_version] | @csv" "${AUDIT_FILE}" 2>/dev/null | tail -"${limit}"
+            ;;
+    esac
+}
+
+# ─── verify ─────────────────────────────────────────────────────────────────
+
+cmd_verify() {
+    _require_audit
+
+    echo -e "${BOLD}ZLAR Hash Chain Verification${NC}"
+    echo -e "═══════════════════════════════════════"
+    echo -e "  File: ${AUDIT_FILE}"
+    echo ""
+
+    local total=$(_count "${AUDIT_FILE}")
+    local errors=0
+    local prev_hash="genesis"
+    local line_num=0
+
+    while IFS= read -r line; do
+        line_num=$((line_num + 1))
+
+        # Extract this line's prev_hash claim
+        local claimed_prev
+        claimed_prev=$(printf '%s' "${line}" | jq -r '.prev_hash // ""' 2>/dev/null)
+
+        if [ "${line_num}" -eq 1 ]; then
+            if [ "${claimed_prev}" != "genesis" ]; then
+                echo -e "  ${RED}Line 1: Expected prev_hash=genesis, got ${claimed_prev}${NC}"
+                errors=$((errors + 1))
+            fi
+        else
+            if [ "${claimed_prev}" != "${prev_hash}" ]; then
+                echo -e "  ${RED}Line ${line_num}: Hash chain broken!${NC}"
+                echo -e "    Expected: ${prev_hash:0:16}..."
+                echo -e "    Got:      ${claimed_prev:0:16}..."
+                errors=$((errors + 1))
+            fi
+        fi
+
+        # Compute hash of this line for next iteration
+        prev_hash=$(printf '%s' "${line}" | shasum -a 256 | awk '{print $1}')
+
+        # Progress indicator every 1000 lines
+        if [ $((line_num % 1000)) -eq 0 ]; then
+            printf "\r  Verified %d / %d events..." "${line_num}" "${total}" >&2
+        fi
+    done < "${AUDIT_FILE}"
+
+    if [ "${line_num}" -ge 1000 ]; then
+        printf "\r" >&2
+    fi
+
+    echo -e "  Events verified: ${line_num}"
+
+    if [ "${errors}" -eq 0 ]; then
+        echo -e "  ${GREEN}✓ Hash chain intact — no tampering detected${NC}"
+        echo -e "  Chain root:  genesis"
+        echo -e "  Chain head:  ${prev_hash:0:32}..."
+    else
+        echo -e "  ${RED}✗ ${errors} hash chain break(s) detected!${NC}"
+        echo -e "  ${RED}  The audit trail may have been tampered with.${NC}"
+        return 1
+    fi
+}
+
+# ─── export ─────────────────────────────────────────────────────────────────
+
+cmd_export() {
+    _require_audit
+
+    local format="csv"
+    local output=""
+    local filter="."
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --format|-f) format="$2"; shift 2 ;;
+            --output|-o) output="$2"; shift 2 ;;
+            --after) filter="${filter} | select(.ts >= \"$2\")"; shift 2 ;;
+            --before) filter="${filter} | select(.ts <= \"$2\")"; shift 2 ;;
+            --outcome) filter="${filter} | select(.outcome == \"$2\")"; shift 2 ;;
+            --domain) filter="${filter} | select(.domain == \"$2\")"; shift 2 ;;
+            *) echo "Unknown option: $1" >&2; exit 1 ;;
+        esac
+    done
+
+    local ts
+    ts=$(date +%Y%m%d-%H%M%S)
+
+    case "${format}" in
+        csv)
+            output="${output:-${REPORT_DIR}/audit-export-${ts}.csv}"
+            echo "id,ts,seq,source,host,user,agent_id,session_id,domain,action,outcome,risk_score,rule,policy_version,severity,prev_hash" > "${output}"
+            jq -r "${filter} | [.id, .ts, .seq, .source, .host, .user, .agent_id, .session_id, .domain, .action, .outcome, (.risk_score | tostring), .rule, .policy_version, .severity, .prev_hash] | @csv" "${AUDIT_FILE}" >> "${output}" 2>/dev/null
+            local count
+            count=$(tail -n +2 "${output}" | wc -l | tr -d '[:space:]')
+            echo -e "${GREEN}✓${NC} Exported ${count} events to ${output}"
+            ;;
+        json)
+            output="${output:-${REPORT_DIR}/audit-export-${ts}.json}"
+            jq -s "[.[] | ${filter}]" "${AUDIT_FILE}" > "${output}" 2>/dev/null
+            local count
+            count=$(jq 'length' "${output}" 2>/dev/null)
+            echo -e "${GREEN}✓${NC} Exported ${count} events to ${output}"
+            ;;
+        jsonl)
+            output="${output:-${REPORT_DIR}/audit-export-${ts}.jsonl}"
+            jq -c "${filter}" "${AUDIT_FILE}" > "${output}" 2>/dev/null
+            local count
+            count=$(_count "${output}")
+            echo -e "${GREEN}✓${NC} Exported ${count} events to ${output}"
+            ;;
+        splunk)
+            # Splunk CIM-compatible format
+            output="${output:-${REPORT_DIR}/audit-export-${ts}-splunk.json}"
+            jq -c "${filter} | {
+                _time: .ts,
+                host: .host,
+                source: \"zlar-gate\",
+                sourcetype: \"zlar:audit\",
+                event: {
+                    action: .outcome,
+                    app: \"zlar-gate\",
+                    user: .user,
+                    src: .agent_id,
+                    object: .action,
+                    object_category: .domain,
+                    severity: .severity,
+                    signature: .rule,
+                    signature_id: .rule,
+                    vendor_product: \"ZLAR Gate\",
+                    risk_score: .risk_score,
+                    session_id: .session_id,
+                    policy_version: .policy_version,
+                    detail: .detail
+                }
+            }" "${AUDIT_FILE}" > "${output}" 2>/dev/null
+            local count
+            count=$(_count "${output}")
+            echo -e "${GREEN}✓${NC} Exported ${count} events in Splunk CIM format to ${output}"
+            ;;
+        *)
+            echo "Unknown format: ${format}. Use: csv, json, jsonl, splunk" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# ─── report ─────────────────────────────────────────────────────────────────
+
+cmd_report() {
+    _require_audit
+
+    local report_type="compliance"
+    local period=""
+    local output=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --type|-t) report_type="$2"; shift 2 ;;
+            --period|-p) period="$2"; shift 2 ;;
+            --output|-o) output="$2"; shift 2 ;;
+            *) echo "Unknown option: $1" >&2; exit 1 ;;
+        esac
+    done
+
+    local ts
+    ts=$(date +%Y%m%d-%H%M%S)
+    local report_date
+    report_date=$(date +%Y-%m-%d)
+
+    case "${report_type}" in
+        compliance)
+            output="${output:-${REPORT_DIR}/compliance-report-${ts}.html}"
+            _generate_compliance_report "${output}" "${period}"
+            ;;
+        incident)
+            output="${output:-${REPORT_DIR}/incident-report-${ts}.html}"
+            _generate_incident_report "${output}" "${period}"
+            ;;
+        executive)
+            output="${output:-${REPORT_DIR}/executive-summary-${ts}.html}"
+            _generate_executive_report "${output}" "${period}"
+            ;;
+        *)
+            echo "Unknown report type: ${report_type}. Use: compliance, incident, executive" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# ─── Report Generators ──────────────────────────────────────────────────────
+
+_html_header() {
+    local title="$1"
+    cat <<HTMLEOF
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>${title}</title>
+<style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+    h1 { border-bottom: 3px solid #1a1a1a; padding-bottom: 10px; }
+    h2 { color: #333; margin-top: 30px; border-bottom: 1px solid #ddd; padding-bottom: 5px; }
+    table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+    th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    tr:nth-child(even) { background: #fafafa; }
+    .stat { display: inline-block; min-width: 120px; text-align: center; padding: 15px; margin: 5px; border: 1px solid #ddd; border-radius: 4px; }
+    .stat-value { font-size: 2em; font-weight: 700; display: block; }
+    .stat-label { font-size: 0.85em; color: #666; }
+    .allow { color: #16a34a; } .deny { color: #dc2626; } .warn { color: #d97706; }
+    .severity-critical { background: #fecaca; } .severity-warn { background: #fef3c7; }
+    .hash { font-family: monospace; font-size: 0.85em; color: #666; }
+    .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 0.85em; color: #666; }
+    @media print { body { margin: 0; } .no-print { display: none; } }
+</style>
+</head>
+<body>
+HTMLEOF
+}
+
+_html_footer() {
+    cat <<HTMLEOF
+<div class="footer">
+    <p>Generated by ZLAR-AU v${VERSION} on $(date -u +%Y-%m-%dT%H:%M:%SZ) | ZLAR Inc. — hello@zlar.ai</p>
+    <p><em>This report is generated from a hash-chained JSONL audit trail. Chain integrity can be verified with: <code>zlar-au verify</code></em></p>
+</div>
+</body>
+</html>
+HTMLEOF
+}
+
+_generate_compliance_report() {
+    local output="$1"
+    local period="$2"
+
+    # Build time filter
+    local time_filter="."
+    if [ -n "${period}" ]; then
+        time_filter=". | select(.ts >= \"${period}\")"
+    fi
+
+    # Compute stats
+    local total allow_count deny_count ask_count high_risk
+    total=$(jq -r "${time_filter} | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    allow_count=$(jq -r "${time_filter} | select(.outcome == \"allow\" or .outcome == \"authorized\" or .outcome == \"logged\" or .outcome == \"away_auto_allow\") | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    deny_count=$(jq -r "${time_filter} | select(.outcome == \"deny\" or .outcome == \"denied\") | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    ask_count=$(jq -r "${time_filter} | select(.outcome == \"pending\" or .outcome == \"away_queued\") | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    high_risk=$(jq -r "${time_filter} | select(.risk_score >= 70) | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+
+    local first_ts last_ts
+    first_ts=$(jq -r "${time_filter} | .ts" "${AUDIT_FILE}" 2>/dev/null | head -1)
+    last_ts=$(jq -r "${time_filter} | .ts" "${AUDIT_FILE}" 2>/dev/null | tail -1)
+
+    {
+        _html_header "ZLAR Compliance Report"
+        cat <<HTMLEOF
+<h1>ZLAR Compliance Report</h1>
+<p><strong>Report Period:</strong> ${first_ts:-N/A} — ${last_ts:-N/A}</p>
+<p><strong>Generated:</strong> $(date -u +%Y-%m-%dT%H:%M:%SZ)</p>
+<p><strong>Audit Source:</strong> ${AUDIT_FILE}</p>
+
+<h2>1. Executive Summary</h2>
+<div>
+    <div class="stat"><span class="stat-value">${total}</span><span class="stat-label">Total Events</span></div>
+    <div class="stat"><span class="stat-value allow">${allow_count}</span><span class="stat-label">Allowed</span></div>
+    <div class="stat"><span class="stat-value deny">${deny_count}</span><span class="stat-label">Denied</span></div>
+    <div class="stat"><span class="stat-value warn">${ask_count}</span><span class="stat-label">Pending/Queued</span></div>
+    <div class="stat"><span class="stat-value deny">${high_risk}</span><span class="stat-label">High Risk (≥70)</span></div>
+</div>
+
+<h2>2. Policy Enforcement Overview</h2>
+<p>All AI agent tool calls were evaluated against an Ed25519-signed policy. The policy cannot be modified by the agent. Every decision is recorded in a hash-chained audit trail that provides cryptographic tamper evidence.</p>
+
+<h3>2.1 Outcome Distribution</h3>
+<table>
+<tr><th>Outcome</th><th>Count</th><th>Percentage</th></tr>
+HTMLEOF
+
+        jq -r "${time_filter} | .outcome" "${AUDIT_FILE}" 2>/dev/null | sort | uniq -c | sort -rn | while read count outcome; do
+            local pct=0
+            if [ "${total}" -gt 0 ]; then
+                pct=$(echo "scale=1; ${count} * 100 / ${total}" | bc 2>/dev/null || echo "?")
+            fi
+            echo "<tr><td>${outcome}</td><td>${count}</td><td>${pct}%</td></tr>"
+        done
+
+        cat <<HTMLEOF
+</table>
+
+<h3>2.2 Domain Activity</h3>
+<table>
+<tr><th>Domain</th><th>Total</th><th>Allowed</th><th>Denied</th></tr>
+HTMLEOF
+
+        jq -r "${time_filter} | .domain" "${AUDIT_FILE}" 2>/dev/null | sort -u | while read domain; do
+            local d_total d_allow d_deny
+            d_total=$(jq -r "${time_filter} | select(.domain == \"${domain}\") | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+            d_allow=$(jq -r "${time_filter} | select(.domain == \"${domain}\" and (.outcome == \"allow\" or .outcome == \"authorized\" or .outcome == \"logged\")) | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+            d_deny=$(jq -r "${time_filter} | select(.domain == \"${domain}\" and (.outcome == \"deny\" or .outcome == \"denied\")) | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+            echo "<tr><td>${domain}</td><td>${d_total}</td><td class='allow'>${d_allow}</td><td class='deny'>${d_deny}</td></tr>"
+        done
+
+        cat <<HTMLEOF
+</table>
+
+<h3>2.3 Top Triggered Rules</h3>
+<table>
+<tr><th>Rule ID</th><th>Count</th><th>Typical Outcome</th></tr>
+HTMLEOF
+
+        jq -r "${time_filter} | [.rule, .outcome] | join(\"\t\")" "${AUDIT_FILE}" 2>/dev/null | sort | uniq -c | sort -rn | head -10 | while read count rest; do
+            local rule outcome
+            rule=$(echo "${rest}" | cut -f1)
+            outcome=$(echo "${rest}" | cut -f2)
+            echo "<tr><td>${rule}</td><td>${count}</td><td>${outcome}</td></tr>"
+        done
+
+        cat <<HTMLEOF
+</table>
+
+<h2>3. High-Risk Events</h2>
+<p>Events with risk score ≥ 70 require review. These represent actions classified as potentially irreversible, high-consequence, or wide blast radius.</p>
+<table>
+<tr><th>Timestamp</th><th>Domain</th><th>Action</th><th>Outcome</th><th>Risk</th><th>Rule</th></tr>
+HTMLEOF
+
+        jq -r "${time_filter} | select(.risk_score >= 70) | [.ts, .domain, .action, .outcome, (.risk_score | tostring), .rule] | join(\"\t\")" "${AUDIT_FILE}" 2>/dev/null | while IFS=$'\t' read -r ts domain action outcome risk rule; do
+            local cls=""
+            [ "${outcome}" = "deny" ] || [ "${outcome}" = "denied" ] && cls="severity-critical"
+            echo "<tr class='${cls}'><td>${ts}</td><td>${domain}</td><td>${action:0:60}</td><td>${outcome}</td><td>${risk}</td><td>${rule}</td></tr>"
+        done
+
+        cat <<HTMLEOF
+</table>
+
+<h2>4. Hash Chain Integrity</h2>
+<p>The audit trail uses SHA-256 hash chaining. Each event's hash becomes the <code>prev_hash</code> of the next event. This provides cryptographic evidence that no events have been inserted, deleted, or reordered.</p>
+<table>
+<tr><th>Property</th><th>Value</th></tr>
+<tr><td>Chain algorithm</td><td>SHA-256</td></tr>
+<tr><td>Total events in chain</td><td>${total}</td></tr>
+HTMLEOF
+
+        local chain_root chain_head
+        chain_root=$(head -1 "${AUDIT_FILE}" 2>/dev/null | jq -r '.prev_hash // "?"' 2>/dev/null)
+        chain_head=$(tail -1 "${AUDIT_FILE}" 2>/dev/null | shasum -a 256 | awk '{print $1}')
+        echo "<tr><td>Chain root</td><td class='hash'>${chain_root}</td></tr>"
+        echo "<tr><td>Chain head</td><td class='hash'>${chain_head:0:64}</td></tr>"
+
+        cat <<HTMLEOF
+</table>
+<p><em>Run <code>zlar-au verify</code> for full chain validation.</em></p>
+
+<h2>5. Compliance Framework Mapping</h2>
+<table>
+<tr><th>Requirement</th><th>Standard</th><th>ZLAR Coverage</th></tr>
+<tr><td>Log all access to system components</td><td>PCI-DSS 10.2</td><td>✓ All tool calls logged with user, timestamp, action, outcome</td></tr>
+<tr><td>Automated log review</td><td>PCI-DSS 10.4.1.1</td><td>✓ zlar-au provides automated analysis and reporting</td></tr>
+<tr><td>Tamper-evident logging</td><td>PCI-DSS 10.3</td><td>✓ SHA-256 hash chain provides tamper evidence</td></tr>
+<tr><td>12-month log retention</td><td>PCI-DSS 10.5</td><td>⚠ Depends on deployment retention policy</td></tr>
+<tr><td>Detect unauthorized access</td><td>SOC 2 CC6.1</td><td>✓ All denied actions recorded with risk scores</td></tr>
+<tr><td>Monitor system operations</td><td>SOC 2 CC7.2</td><td>✓ Real-time Telegram alerts + audit trail</td></tr>
+<tr><td>Technology incident management</td><td>OSFI B-13 §4.4</td><td>✓ Incident reports generated from deny/high-risk events</td></tr>
+<tr><td>Third-party audit rights</td><td>OSFI B-10</td><td>✓ Full trail exportable in CSV/JSON/Splunk formats</td></tr>
+<tr><td>Change tracking</td><td>SOX §404</td><td>✓ All file writes/edits recorded with content hashes</td></tr>
+<tr><td>AI system traceability</td><td>EU AI Act Art. 12</td><td>✓ Decision logs with model/agent ID, policy version, timestamps</td></tr>
+</table>
+
+<h2>6. Methodology</h2>
+<p>This report was generated by ZLAR-AU v${VERSION}, which reads the hash-chained JSONL audit trail produced by ZLAR Gate v2. The gate engine evaluates every AI agent tool call against an Ed25519-signed policy. The gate contains no intelligence — it classifies, applies rules, and records decisions. Policy rules are human-authored and cryptographically signed.</p>
+<p><strong>Important:</strong> ZLAR reduces risk. It does not eliminate it. Regex-based command classification has known limitations (obfuscated commands, variable indirection). This report reflects what the gate observed and decided, not a guarantee of complete containment.</p>
+HTMLEOF
+
+        _html_footer
+    } > "${output}"
+
+    echo -e "${GREEN}✓${NC} Compliance report generated: ${output}"
+    echo "  Open in browser to print to PDF."
+}
+
+_generate_incident_report() {
+    local output="$1"
+    local period="$2"
+
+    local time_filter="."
+    if [ -n "${period}" ]; then
+        time_filter=". | select(.ts >= \"${period}\")"
+    fi
+
+    {
+        _html_header "ZLAR Incident Report"
+        cat <<HTMLEOF
+<h1>ZLAR Incident Report</h1>
+<p><strong>Generated:</strong> $(date -u +%Y-%m-%dT%H:%M:%SZ)</p>
+<p><strong>Scope:</strong> Denied and high-risk events requiring review</p>
+
+<h2>Denied Actions</h2>
+<table>
+<tr><th>Time</th><th>Domain</th><th>Action</th><th>Rule</th><th>Risk</th><th>Severity</th></tr>
+HTMLEOF
+
+        jq -r "${time_filter} | select(.outcome == \"deny\" or .outcome == \"denied\") | [.ts, .domain, .action, .rule, (.risk_score | tostring), .severity] | join(\"\t\")" "${AUDIT_FILE}" 2>/dev/null | while IFS=$'\t' read -r ts domain action rule risk severity; do
+            local cls=""
+            [ "${severity}" = "critical" ] && cls="severity-critical"
+            [ "${severity}" = "warn" ] && cls="severity-warn"
+            echo "<tr class='${cls}'><td>${ts}</td><td>${domain}</td><td>${action:0:60}</td><td>${rule}</td><td>${risk}</td><td>${severity}</td></tr>"
+        done
+
+        cat <<HTMLEOF
+</table>
+
+<h2>High-Risk Allowed Actions</h2>
+<p>Actions that were allowed but carried elevated risk scores (≥ 50). These may warrant policy review.</p>
+<table>
+<tr><th>Time</th><th>Domain</th><th>Action</th><th>Rule</th><th>Risk</th></tr>
+HTMLEOF
+
+        jq -r "${time_filter} | select((.outcome == \"allow\" or .outcome == \"authorized\") and .risk_score >= 50) | [.ts, .domain, .action, .rule, (.risk_score | tostring)] | join(\"\t\")" "${AUDIT_FILE}" 2>/dev/null | while IFS=$'\t' read -r ts domain action rule risk; do
+            echo "<tr class='severity-warn'><td>${ts}</td><td>${domain}</td><td>${action:0:60}</td><td>${rule}</td><td>${risk}</td></tr>"
+        done
+
+        cat <<HTMLEOF
+</table>
+HTMLEOF
+        _html_footer
+    } > "${output}"
+
+    echo -e "${GREEN}✓${NC} Incident report generated: ${output}"
+}
+
+_generate_executive_report() {
+    local output="$1"
+    local period="$2"
+
+    local time_filter="."
+    if [ -n "${period}" ]; then
+        time_filter=". | select(.ts >= \"${period}\")"
+    fi
+
+    local total allow deny
+    total=$(jq -r "${time_filter} | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    allow=$(jq -r "${time_filter} | select(.outcome == \"allow\" or .outcome == \"authorized\" or .outcome == \"logged\" or .outcome == \"away_auto_allow\") | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    deny=$(jq -r "${time_filter} | select(.outcome == \"deny\" or .outcome == \"denied\") | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+
+    local enforce_rate="0"
+    if [ "${total}" -gt 0 ]; then
+        enforce_rate=$(echo "scale=1; ${deny} * 100 / ${total}" | bc 2>/dev/null || echo "?")
+    fi
+
+    {
+        _html_header "ZLAR Executive Summary"
+        cat <<HTMLEOF
+<h1>ZLAR — Executive Summary</h1>
+<p><strong>Date:</strong> $(date +%Y-%m-%d)</p>
+
+<h2>AI Agent Governance Status</h2>
+<div>
+    <div class="stat"><span class="stat-value">${total}</span><span class="stat-label">Total Actions Governed</span></div>
+    <div class="stat"><span class="stat-value allow">${allow}</span><span class="stat-label">Allowed</span></div>
+    <div class="stat"><span class="stat-value deny">${deny}</span><span class="stat-label">Blocked</span></div>
+    <div class="stat"><span class="stat-value">${enforce_rate}%</span><span class="stat-label">Enforcement Rate</span></div>
+</div>
+
+<h2>Key Points</h2>
+<ul>
+<li>Every AI agent tool call is evaluated against an Ed25519-signed policy before execution.</li>
+<li>The policy is a human artifact — the AI cannot modify the rules that govern it.</li>
+<li>All decisions are recorded in a cryptographically hash-chained audit trail.</li>
+<li>The gate contains no intelligence. It classifies actions and applies rules deterministically.</li>
+</ul>
+
+<h2>Frameworks Governed</h2>
+<table>
+<tr><th>Framework</th><th>Events</th></tr>
+HTMLEOF
+
+        jq -r "${time_filter} | .agent_id // \"unknown\"" "${AUDIT_FILE}" 2>/dev/null | sort | uniq -c | sort -rn | while read count fw; do
+            echo "<tr><td>${fw}</td><td>${count}</td></tr>"
+        done
+
+        cat <<HTMLEOF
+</table>
+
+<p class="footer"><em>For detailed analysis, see the full Compliance Report. For incident review, see the Incident Report.</em></p>
+HTMLEOF
+        _html_footer
+    } > "${output}"
+
+    echo -e "${GREEN}✓${NC} Executive summary generated: ${output}"
+}
+
+# ─── digest ─────────────────────────────────────────────────────────────────
+
+cmd_digest() {
+    _require_audit
+
+    local period="daily"
+    [ $# -gt 0 ] && period="$1"
+
+    local since
+    case "${period}" in
+        daily)   since=$(date -u -v-1d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "1 day ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "") ;;
+        weekly)  since=$(date -u -v-7d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "7 days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "") ;;
+        monthly) since=$(date -u -v-30d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "30 days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "") ;;
+        *) echo "Unknown period: ${period}. Use: daily, weekly, monthly" >&2; exit 1 ;;
+    esac
+
+    if [ -z "${since}" ]; then
+        echo "Warning: Could not compute date offset. Showing all events." >&2
+        since=""
+    fi
+
+    echo -e "${BOLD}ZLAR ${period^} Digest${NC}"
+    echo -e "═══════════════════════════════════════"
+
+    if [ -n "${since}" ]; then
+        echo -e "  Period: since ${since}"
+    fi
+    echo ""
+
+    local filter="."
+    [ -n "${since}" ] && filter=". | select(.ts >= \"${since}\")"
+
+    local total allow deny
+    total=$(jq -r "${filter} | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    allow=$(jq -r "${filter} | select(.outcome == \"allow\" or .outcome == \"authorized\" or .outcome == \"logged\" or .outcome == \"away_auto_allow\") | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    deny=$(jq -r "${filter} | select(.outcome == \"deny\" or .outcome == \"denied\") | .id" "${AUDIT_FILE}" 2>/dev/null | wc -l | tr -d '[:space:]')
+
+    echo -e "  Total events: ${total}"
+    echo -e "  ${GREEN}Allowed:${NC}       ${allow}"
+    echo -e "  ${RED}Denied:${NC}        ${deny}"
+    echo ""
+
+    if [ "${deny}" -gt 0 ]; then
+        echo -e "${BOLD}  Denied Actions:${NC}"
+        jq -r "${filter} | select(.outcome == \"deny\" or .outcome == \"denied\") | \"    \" + .ts + \"  \" + .domain + \"  \" + .action[0:40] + \"  (\" + .rule + \")\"" "${AUDIT_FILE}" 2>/dev/null | head -10
+        if [ "${deny}" -gt 10 ]; then
+            echo "    ... and $((deny - 10)) more"
+        fi
+    fi
+}
+
+# ─── help ───────────────────────────────────────────────────────────────────
+
+cmd_help() {
+    cat <<EOF
+${BOLD}ZLAR-AU v${VERSION}${NC} — Audit Trail Analysis & Compliance Reporting
+
+${BOLD}USAGE${NC}
+    zlar-au <command> [options]
+
+${BOLD}COMMANDS${NC}
+    summary              Overview of audit trail (events, outcomes, domains, risk)
+    query [filters]      Search and filter audit events
+    verify               Verify hash chain integrity (tamper detection)
+    export [options]     Export audit trail (CSV, JSON, JSONL, Splunk CIM)
+    report [options]     Generate HTML compliance reports
+    digest [period]      Daily/weekly/monthly summary
+    version              Show version
+    help                 Show this help
+
+${BOLD}QUERY FILTERS${NC}
+    --outcome <val>      Filter by outcome (allow, deny, authorized, etc.)
+    --domain <val>       Filter by domain (bash, write, read, edit, etc.)
+    --rule <val>         Filter by rule ID (R001, R002, etc.)
+    --severity <val>     Filter by severity (info, warn, critical)
+    --risk-min <n>       Filter by minimum risk score
+    --session <id>       Filter by session ID
+    --agent <id>         Filter by framework (claude-code, cursor, windsurf)
+    --after <datetime>   Filter events after ISO timestamp
+    --before <datetime>  Filter events before ISO timestamp
+    --limit|-n <n>       Limit results (default: 20)
+    --json               Output as JSON
+    --csv                Output as CSV
+
+${BOLD}EXPORT FORMATS${NC}
+    --format csv         CSV with all fields (default)
+    --format json        JSON array
+    --format jsonl       Raw JSONL (filtered copy)
+    --format splunk      Splunk Common Information Model format
+
+${BOLD}REPORT TYPES${NC}
+    --type compliance    Full compliance report (PCI-DSS, SOC 2, OSFI mapping)
+    --type incident      Denied and high-risk events only
+    --type executive     One-page executive summary
+
+${BOLD}DIGEST PERIODS${NC}
+    daily                Last 24 hours (default)
+    weekly               Last 7 days
+    monthly              Last 30 days
+
+${BOLD}ENVIRONMENT${NC}
+    ZLAR_AUDIT_FILE      Path to audit.jsonl (overrides auto-detection)
+
+${BOLD}EXAMPLES${NC}
+    zlar-au summary
+    zlar-au query --outcome deny --domain bash --limit 50
+    zlar-au query --risk-min 70 --csv > high-risk.csv
+    zlar-au verify
+    zlar-au export --format splunk
+    zlar-au report --type compliance --period 2026-03-01
+    zlar-au report --type incident
+    zlar-au digest daily
+
+${BOLD}THE ZLAR FAMILY${NC}
+    ZLAR-OC    OS-level containment for OpenClaw agents
+    ZLAR-CC    Claude Code specific gate
+    ZLAR Gate  Universal gate (Claude Code, Cursor, Windsurf)
+    ZLAR-LT    Zero-config governance (curl | bash)
+    ZLAR-AU    This tool — audit trail analysis & compliance reporting
+
+EOF
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+main() {
+    local cmd="${1:-help}"
+    shift 2>/dev/null || true
+
+    case "${cmd}" in
+        summary)    cmd_summary "$@" ;;
+        query)      cmd_query "$@" ;;
+        verify)     cmd_verify "$@" ;;
+        export)     cmd_export "$@" ;;
+        report)     cmd_report "$@" ;;
+        digest)     cmd_digest "$@" ;;
+        version)    echo "ZLAR-AU v${VERSION}" ;;
+        help|--help|-h) cmd_help ;;
+        *)
+            echo "Unknown command: ${cmd}" >&2
+            echo "Run 'zlar-au help' for usage." >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

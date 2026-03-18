@@ -1,0 +1,1245 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════
+# ZLAR-NT — Network Egress Policy for AI Agents
+# Copyright 2026 ZLAR Inc. — Apache 2.0
+#
+# Application-level network egress policy enforcement.
+# Defines which network destinations AI agents can reach,
+# monitors live connections, and reports violations.
+#
+# Works alongside ZLAR Gate:
+#   Gate catches "curl" commands → NT checks WHERE they're going.
+#   Gate is command-level. NT is destination-level.
+#
+# Dependencies: jq, bash 4+
+# Optional: lsof (live scan), dig/host (DNS resolution), bc (stats)
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+readonly VERSION="1.0.0"
+readonly PROGRAM="zlar-nt"
+
+# ─── Resolve paths ────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# ─── Configuration ────────────────────────────────────────────────
+CONFIG_FILE="${ZLAR_NT_CONFIG:-${PROJECT_DIR}/etc/nt.json}"
+POLICY_FILE=""
+LOG_DIR="${PROJECT_DIR}/var/log"
+LOG_FILE="${LOG_DIR}/nt.jsonl"
+
+# ─── Colors ───────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    BOLD='\033[1m'
+    DIM='\033[2m'
+    RESET='\033[0m'
+else
+    RED="" GREEN="" YELLOW="" BLUE="" CYAN="" BOLD="" DIM="" RESET=""
+fi
+
+# ─── Helpers ──────────────────────────────────────────────────────
+die()   { echo -e "${RED}error:${RESET} $*" >&2; exit 1; }
+warn()  { echo -e "${YELLOW}warn:${RESET} $*" >&2; }
+info()  { echo -e "${BLUE}info:${RESET} $*" >&2; }
+ok()    { echo -e "${GREEN}  ✓${RESET} $*"; }
+fail()  { echo -e "${RED}  ✗${RESET} $*"; }
+dim()   { echo -e "${DIM}$*${RESET}"; }
+
+check_jq() {
+    command -v jq >/dev/null 2>&1 || die "jq is required. Install: brew install jq / apt install jq"
+}
+
+timestamp() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+
+# ─── Load configuration ──────────────────────────────────────────
+load_config() {
+    if [[ -f "${CONFIG_FILE}" ]]; then
+        local policy_path
+        policy_path=$(jq -r '.policy_file // ""' "${CONFIG_FILE}" 2>/dev/null)
+        if [[ -n "${policy_path}" && "${policy_path}" != "null" ]]; then
+            # Resolve relative paths from project dir
+            if [[ "${policy_path}" != /* ]]; then
+                policy_path="${PROJECT_DIR}/${policy_path}"
+            fi
+            POLICY_FILE="${policy_path}"
+        fi
+
+        local log_dir_cfg
+        log_dir_cfg=$(jq -r '.log_dir // ""' "${CONFIG_FILE}" 2>/dev/null)
+        if [[ -n "${log_dir_cfg}" && "${log_dir_cfg}" != "null" ]]; then
+            if [[ "${log_dir_cfg}" != /* ]]; then
+                log_dir_cfg="${PROJECT_DIR}/${log_dir_cfg}"
+            fi
+            LOG_DIR="${log_dir_cfg}"
+            LOG_FILE="${LOG_DIR}/nt.jsonl"
+        fi
+    fi
+
+    # Auto-detect policy file if not set
+    if [[ -z "${POLICY_FILE}" ]]; then
+        for candidate in \
+            "${PROJECT_DIR}/etc/egress-policy.json" \
+            "${HOME}/.zlar-nt/etc/egress-policy.json" \
+            "${HOME}/.zlar-lt/etc/egress-policy.json" \
+            "${HOME}/.zlar-gate/etc/egress-policy.json"; do
+            if [[ -f "${candidate}" ]]; then
+                POLICY_FILE="${candidate}"
+                break
+            fi
+        done
+    fi
+
+    # Override from environment
+    POLICY_FILE="${ZLAR_NT_POLICY:-${POLICY_FILE}}"
+    LOG_FILE="${ZLAR_NT_LOG:-${LOG_FILE}}"
+
+    mkdir -p "${LOG_DIR}" 2>/dev/null || true
+}
+
+require_policy() {
+    if [[ -z "${POLICY_FILE}" || ! -f "${POLICY_FILE}" ]]; then
+        die "No egress policy found. Create etc/egress-policy.json or set ZLAR_NT_POLICY."
+    fi
+}
+
+# ─── Policy Engine ────────────────────────────────────────────────
+# The policy is a JSON file with domain rules, CIDR rules, and port rules.
+# No intelligence. Pattern matching only.
+
+# Extract domain from URL or bare domain
+extract_domain() {
+    local input="$1"
+    # Strip protocol
+    local domain="${input#*://}"
+    # Strip path
+    domain="${domain%%/*}"
+    # Strip port
+    domain="${domain%%:*}"
+    # Strip userinfo
+    domain="${domain##*@}"
+    # Lowercase
+    echo "${domain}" | tr '[:upper:]' '[:lower:]'
+}
+
+# Extract port from URL (default 443 for https, 80 for http)
+extract_port() {
+    local input="$1"
+    local proto=""
+    if [[ "${input}" == https://* ]]; then
+        proto="443"
+    elif [[ "${input}" == http://* ]]; then
+        proto="80"
+    elif [[ "${input}" == ssh://* ]]; then
+        proto="22"
+    elif [[ "${input}" == ftp://* ]]; then
+        proto="21"
+    fi
+
+    # Check for explicit port
+    local after_proto="${input#*://}"
+    if [[ -z "${after_proto}" ]]; then
+        after_proto="${input}"
+    fi
+    local host_part="${after_proto%%/*}"
+    if [[ "${host_part}" == *:* ]]; then
+        local port="${host_part##*:}"
+        if [[ "${port}" =~ ^[0-9]+$ ]]; then
+            echo "${port}"
+            return
+        fi
+    fi
+    echo "${proto:-443}"
+}
+
+# Check if domain matches a pattern (supports wildcard: *.example.com)
+domain_matches() {
+    local domain="$1"
+    local pattern="$2"
+
+    pattern=$(echo "${pattern}" | tr '[:upper:]' '[:lower:]')
+
+    # Exact match
+    if [[ "${domain}" == "${pattern}" ]]; then
+        return 0
+    fi
+
+    # Wildcard match: *.example.com matches sub.example.com, a.b.example.com
+    if [[ "${pattern}" == \*.* ]]; then
+        local suffix="${pattern#\*.}"
+        if [[ "${domain}" == *.${suffix} || "${domain}" == "${suffix}" ]]; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# Check if an IP falls within a CIDR block
+# Pure bash — no external tools
+ip_in_cidr() {
+    local ip="$1"
+    local cidr="$2"
+
+    # Only handle IPv4
+    if [[ "${ip}" == *:* ]]; then
+        return 1
+    fi
+
+    local network="${cidr%/*}"
+    local prefix="${cidr#*/}"
+
+    # Convert IP to integer
+    local IFS='.'
+    local -a ip_parts=(${ip})
+    local -a net_parts=(${network})
+    IFS=' '
+
+    if [[ ${#ip_parts[@]} -ne 4 || ${#net_parts[@]} -ne 4 ]]; then
+        return 1
+    fi
+
+    local ip_int=$(( (ip_parts[0] << 24) + (ip_parts[1] << 16) + (ip_parts[2] << 8) + ip_parts[3] ))
+    local net_int=$(( (net_parts[0] << 24) + (net_parts[1] << 16) + (net_parts[2] << 8) + net_parts[3] ))
+
+    local mask=$(( 0xFFFFFFFF << (32 - prefix) ))
+
+    if (( (ip_int & mask) == (net_int & mask) )); then
+        return 0
+    fi
+    return 1
+}
+
+# Check if a string looks like an IP address
+is_ip() {
+    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+# ─── Core: check a destination against the egress policy ──────────
+# Returns JSON: {"action":"allow|deny","reason":"...","rule_id":"...","domain":"..."}
+check_destination() {
+    local input="$1"
+    local domain port
+
+    domain=$(extract_domain "${input}")
+    port=$(extract_port "${input}")
+
+    if [[ -z "${domain}" ]]; then
+        echo '{"action":"deny","reason":"empty destination","rule_id":"","domain":""}'
+        return
+    fi
+
+    # Reject destinations with embedded newlines (same S1 principle as gate v2)
+    if [[ "${domain}" == *$'\n'* || "${input}" == *$'\n'* ]]; then
+        echo "{\"action\":\"deny\",\"reason\":\"newline injection rejected\",\"rule_id\":\"SECURITY\",\"domain\":$(echo "${domain}" | head -1 | jq -Rs '.')}"
+        return
+    fi
+
+    local policy_json
+    policy_json=$(cat "${POLICY_FILE}")
+
+    local default_action
+    default_action=$(echo "${policy_json}" | jq -r '.default_action // "deny"')
+
+    local rule_count
+    rule_count=$(echo "${policy_json}" | jq '.rules | length')
+
+    # Check each rule in order (first match wins)
+    local i=0
+    while (( i < rule_count )); do
+        local rule
+        rule=$(echo "${policy_json}" | jq -c ".rules[${i}]")
+        local rule_id rule_action rule_type rule_pattern rule_reason rule_ports
+        IFS=$'\t' read -r rule_id rule_action rule_type rule_pattern rule_reason rule_ports < <(
+            echo "${rule}" | jq -r '[
+                (.id // ""),
+                (.action // "deny"),
+                (.type // ""),
+                (.pattern // ""),
+                (.reason // ""),
+                ((.ports // []) | map(tostring) | join(","))
+            ] | join("\t")'
+        )
+
+        local matched=false
+
+        case "${rule_type}" in
+            domain)
+                if domain_matches "${domain}" "${rule_pattern}"; then
+                    # Check port restriction if specified
+                    if [[ -n "${rule_ports}" ]]; then
+                        local IFS=','
+                        local -a allowed_ports=(${rule_ports})
+                        IFS=' '
+                        for p in "${allowed_ports[@]}"; do
+                            if [[ "${port}" == "${p}" ]]; then
+                                matched=true
+                                break
+                            fi
+                        done
+                    else
+                        matched=true
+                    fi
+                fi
+                ;;
+            cidr)
+                if is_ip "${domain}"; then
+                    if ip_in_cidr "${domain}" "${rule_pattern}"; then
+                        matched=true
+                    fi
+                fi
+                ;;
+            ip)
+                if [[ "${domain}" == "${rule_pattern}" ]]; then
+                    matched=true
+                fi
+                ;;
+        esac
+
+        if [[ "${matched}" == "true" ]]; then
+            printf '{"action":"%s","reason":"%s","rule_id":"%s","domain":"%s","port":"%s"}\n' \
+                "${rule_action}" "${rule_reason}" "${rule_id}" "${domain}" "${port}"
+            return
+        fi
+
+        (( i++ ))
+    done
+
+    # No rule matched — use default action
+    printf '{"action":"%s","reason":"no matching rule — default policy","rule_id":"DEFAULT","domain":"%s","port":"%s"}\n' \
+        "${default_action}" "${domain}" "${port}"
+}
+
+# ─── Log a check result ──────────────────────────────────────────
+log_check() {
+    local input="$1"
+    local result="$2"
+    local source="${3:-manual}"
+
+    local entry
+    entry=$(jq -n \
+        --arg ts "$(timestamp)" \
+        --arg input "${input}" \
+        --arg source "${source}" \
+        --argjson result "${result}" \
+        '{ts: $ts, type: "check", input: $input, source: $source, action: $result.action, domain: $result.domain, rule_id: $result.rule_id, reason: $result.reason}')
+
+    echo "${entry}" >> "${LOG_FILE}" 2>/dev/null || true
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# Commands
+# ═══════════════════════════════════════════════════════════════════
+
+# ─── check ────────────────────────────────────────────────────────
+# Check a URL/domain/IP against the egress policy
+cmd_check() {
+    require_policy
+
+    local input=""
+    local json_output=false
+    local source="manual"
+    local quiet=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json)   json_output=true; shift ;;
+            --source) source="$2"; shift 2 ;;
+            --quiet)  quiet=true; shift ;;
+            -*)       die "Unknown flag: $1" ;;
+            *)        input="$1"; shift ;;
+        esac
+    done
+
+    if [[ -z "${input}" ]]; then
+        die "Usage: ${PROGRAM} check <url|domain|ip> [--json] [--quiet] [--source gate]"
+    fi
+
+    local result
+    result=$(check_destination "${input}")
+    log_check "${input}" "${result}" "${source}"
+
+    if [[ "${json_output}" == "true" ]]; then
+        echo "${result}"
+    elif [[ "${quiet}" == "true" ]]; then
+        local action
+        action=$(echo "${result}" | jq -r '.action')
+        if [[ "${action}" == "allow" ]]; then
+            exit 0
+        else
+            exit 1
+        fi
+    else
+        local action domain reason rule_id port
+        IFS=$'\t' read -r action domain reason rule_id port < <(
+            echo "${result}" | jq -r '[.action, .domain, .reason, .rule_id, .port] | join("\t")'
+        )
+
+        local label
+        if [[ "${action}" == "allow" ]]; then
+            label="${GREEN}ALLOW${RESET}"
+        else
+            label="${RED}DENY${RESET}"
+        fi
+
+        echo -e "${label}  ${BOLD}${domain}${RESET}:${port}"
+        if [[ -n "${reason}" && "${reason}" != "null" ]]; then
+            echo -e "       ${DIM}${reason}${RESET}"
+        fi
+        if [[ -n "${rule_id}" && "${rule_id}" != "null" ]]; then
+            echo -e "       ${DIM}rule: ${rule_id}${RESET}"
+        fi
+
+        if [[ "${action}" != "allow" ]]; then
+            return 1
+        fi
+    fi
+}
+
+# ─── scan ─────────────────────────────────────────────────────────
+# Scan live network connections from agent-related processes
+cmd_scan() {
+    local user="${ZLAR_AGENT_USER:-}"
+    local process_filter=""
+    local json_output=false
+    local check_policy=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --user)     user="$2"; shift 2 ;;
+            --process)  process_filter="$2"; shift 2 ;;
+            --json)     json_output=true; shift ;;
+            --check)    check_policy=true; shift ;;
+            -*)         die "Unknown flag: $1" ;;
+            *)          shift ;;
+        esac
+    done
+
+    # Require lsof
+    if ! command -v lsof >/dev/null 2>&1; then
+        die "lsof is required for scan. Available on macOS (built-in) and Linux (apt install lsof)."
+    fi
+
+    echo -e "${BOLD}Network Scan${RESET}"
+    echo -e "${DIM}$(timestamp)${RESET}"
+    echo ""
+
+    # Build lsof command
+    local lsof_args=(-i -n -P +c 0)
+    if [[ -n "${user}" ]]; then
+        lsof_args+=(-u "${user}")
+    fi
+
+    local connections
+    connections=$(lsof "${lsof_args[@]}" 2>/dev/null | grep -E "ESTABLISHED|SYN_SENT|LISTEN" || true)
+
+    if [[ -z "${connections}" ]]; then
+        info "No active network connections found."
+        return
+    fi
+
+    # Filter by process name if specified
+    if [[ -n "${process_filter}" ]]; then
+        connections=$(echo "${connections}" | grep -i "${process_filter}" || true)
+        if [[ -z "${connections}" ]]; then
+            info "No connections matching process '${process_filter}'."
+            return
+        fi
+    fi
+
+    local total=0
+    local violations=0
+
+    echo -e "${BOLD}PID      PROCESS                    REMOTE                    STATE         POLICY${RESET}"
+    echo "─────────────────────────────────────────────────────────────────────────────────────────"
+
+    while IFS= read -r line; do
+        # Parse lsof output
+        local process pid remote_addr state
+        process=$(echo "${line}" | awk '{print $1}')
+        pid=$(echo "${line}" | awk '{print $2}')
+        # Get the remote address (last field before state, or the NAME column)
+        remote_addr=$(echo "${line}" | awk '{for(i=1;i<=NF;i++) if($i ~ /->/) {split($i,a,"->"); print a[2]; break}}')
+        state=$(echo "${line}" | awk '{print $NF}')
+
+        if [[ -z "${remote_addr}" ]]; then
+            # Listening socket
+            remote_addr=$(echo "${line}" | awk '{print $(NF-1)}')
+            state="LISTEN"
+        fi
+
+        (( total++ ))
+
+        local policy_status="${DIM}—${RESET}"
+        if [[ "${check_policy}" == "true" && -n "${POLICY_FILE}" && -f "${POLICY_FILE}" ]]; then
+            # Extract IP/host from remote address
+            local remote_host="${remote_addr%%:*}"
+            if [[ -n "${remote_host}" && "${remote_host}" != "*" ]]; then
+                local result
+                result=$(check_destination "${remote_host}" 2>/dev/null || echo '{"action":"deny"}')
+                local action
+                action=$(echo "${result}" | jq -r '.action' 2>/dev/null || echo "deny")
+                if [[ "${action}" == "allow" ]]; then
+                    policy_status="${GREEN}allow${RESET}"
+                else
+                    policy_status="${RED}DENY${RESET}"
+                    (( violations++ ))
+
+                    # Log violation
+                    local log_entry
+                    log_entry=$(jq -n \
+                        --arg ts "$(timestamp)" \
+                        --arg process "${process}" \
+                        --arg pid "${pid}" \
+                        --arg remote "${remote_addr}" \
+                        --arg state "${state}" \
+                        --arg action "${action}" \
+                        '{ts: $ts, type: "scan_violation", process: $process, pid: $pid, remote: $remote, state: $state, action: $action}')
+                    echo "${log_entry}" >> "${LOG_FILE}" 2>/dev/null || true
+                fi
+            fi
+        fi
+
+        printf "%-8s %-26s %-25s %-13s %b\n" \
+            "${pid}" "${process:0:26}" "${remote_addr:0:25}" "${state}" "${policy_status}"
+
+    done <<< "${connections}"
+
+    echo ""
+    echo -e "Total connections: ${BOLD}${total}${RESET}"
+    if [[ "${check_policy}" == "true" ]]; then
+        if (( violations > 0 )); then
+            echo -e "Policy violations: ${RED}${BOLD}${violations}${RESET}"
+        else
+            echo -e "Policy violations: ${GREEN}0${RESET}"
+        fi
+    fi
+}
+
+# ─── watch ────────────────────────────────────────────────────────
+# Continuous monitoring — scan at intervals, log violations
+cmd_watch() {
+    local interval=30
+    local user="${ZLAR_AGENT_USER:-}"
+    local process_filter=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interval) interval="$2"; shift 2 ;;
+            --user)     user="$2"; shift 2 ;;
+            --process)  process_filter="$2"; shift 2 ;;
+            -*)         die "Unknown flag: $1" ;;
+            *)          shift ;;
+        esac
+    done
+
+    require_policy
+
+    if ! command -v lsof >/dev/null 2>&1; then
+        die "lsof is required for watch mode."
+    fi
+
+    echo -e "${BOLD}ZLAR-NT Watch Mode${RESET}"
+    echo -e "Interval: ${interval}s"
+    echo -e "Policy:   ${POLICY_FILE}"
+    if [[ -n "${user}" ]]; then
+        echo -e "User:     ${user}"
+    fi
+    echo -e "Log:      ${LOG_FILE}"
+    echo -e "${DIM}Press Ctrl+C to stop${RESET}"
+    echo ""
+
+    local scan_count=0
+    local total_violations=0
+
+    trap 'echo ""; echo -e "${BOLD}Watch stopped.${RESET} Scans: ${scan_count}, Total violations: ${total_violations}"; exit 0' INT TERM
+
+    while true; do
+        (( scan_count++ ))
+
+        # Build lsof command
+        local lsof_args=(-i -n -P +c 0)
+        if [[ -n "${user}" ]]; then
+            lsof_args+=(-u "${user}")
+        fi
+
+        local connections
+        connections=$(lsof "${lsof_args[@]}" 2>/dev/null | grep -E "ESTABLISHED|SYN_SENT" || true)
+
+        if [[ -n "${process_filter}" ]]; then
+            connections=$(echo "${connections}" | grep -i "${process_filter}" || true)
+        fi
+
+        local scan_violations=0
+        local scan_ts
+        scan_ts=$(timestamp)
+
+        if [[ -n "${connections}" ]]; then
+            while IFS= read -r line; do
+                local process pid remote_addr
+                process=$(echo "${line}" | awk '{print $1}')
+                pid=$(echo "${line}" | awk '{print $2}')
+                remote_addr=$(echo "${line}" | awk '{for(i=1;i<=NF;i++) if($i ~ /->/) {split($i,a,"->"); print a[2]; break}}')
+
+                if [[ -z "${remote_addr}" ]]; then
+                    continue
+                fi
+
+                local remote_host="${remote_addr%%:*}"
+                if [[ -z "${remote_host}" || "${remote_host}" == "*" ]]; then
+                    continue
+                fi
+
+                local result
+                result=$(check_destination "${remote_host}" 2>/dev/null || echo '{"action":"deny"}')
+                local action
+                action=$(echo "${result}" | jq -r '.action' 2>/dev/null || echo "deny")
+
+                if [[ "${action}" != "allow" ]]; then
+                    (( scan_violations++ ))
+                    (( total_violations++ ))
+
+                    echo -e "${RED}[${scan_ts}]${RESET} ${RED}VIOLATION${RESET} ${process} (${pid}) → ${remote_addr}"
+
+                    local log_entry
+                    log_entry=$(jq -n \
+                        --arg ts "${scan_ts}" \
+                        --arg process "${process}" \
+                        --arg pid "${pid}" \
+                        --arg remote "${remote_addr}" \
+                        --arg action "${action}" \
+                        --argjson result "${result}" \
+                        '{ts: $ts, type: "watch_violation", process: $process, pid: $pid, remote: $remote, action: $action, rule_id: $result.rule_id, reason: $result.reason}')
+                    echo "${log_entry}" >> "${LOG_FILE}" 2>/dev/null || true
+                fi
+            done <<< "${connections}"
+        fi
+
+        if (( scan_violations == 0 )); then
+            echo -e "${DIM}[${scan_ts}] scan #${scan_count} — no violations${RESET}"
+        fi
+
+        sleep "${interval}"
+    done
+}
+
+# ─── resolve ──────────────────────────────────────────────────────
+# DNS resolution + policy check
+cmd_resolve() {
+    local domain=""
+    local json_output=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json)  json_output=true; shift ;;
+            -*)      die "Unknown flag: $1" ;;
+            *)       domain="$1"; shift ;;
+        esac
+    done
+
+    if [[ -z "${domain}" ]]; then
+        die "Usage: ${PROGRAM} resolve <domain> [--json]"
+    fi
+
+    domain=$(extract_domain "${domain}")
+
+    echo -e "${BOLD}DNS Resolution: ${domain}${RESET}"
+    echo ""
+
+    # Try dig first, then host, then nslookup
+    local ips=()
+    if command -v dig >/dev/null 2>&1; then
+        while IFS= read -r ip; do
+            [[ -n "${ip}" ]] && ips+=("${ip}")
+        done < <(dig +short "${domain}" A 2>/dev/null | grep -E '^[0-9]+\.' || true)
+    elif command -v host >/dev/null 2>&1; then
+        while IFS= read -r ip; do
+            [[ -n "${ip}" ]] && ips+=("${ip}")
+        done < <(host "${domain}" 2>/dev/null | awk '/has address/ {print $NF}' || true)
+    else
+        warn "Neither dig nor host available. Install dnsutils / bind-tools for DNS resolution."
+    fi
+
+    if [[ ${#ips[@]} -eq 0 ]]; then
+        echo -e "${YELLOW}No A records found for ${domain}${RESET}"
+        return
+    fi
+
+    echo -e "Resolved IPs:"
+    for ip in "${ips[@]}"; do
+        echo -e "  ${ip}"
+    done
+    echo ""
+
+    # Check domain against policy
+    if [[ -n "${POLICY_FILE}" && -f "${POLICY_FILE}" ]]; then
+        echo -e "${BOLD}Domain policy check:${RESET}"
+        local domain_result
+        domain_result=$(check_destination "${domain}")
+        local domain_action
+        domain_action=$(echo "${domain_result}" | jq -r '.action')
+        if [[ "${domain_action}" == "allow" ]]; then
+            ok "${domain} — allowed"
+        else
+            fail "${domain} — denied ($(echo "${domain_result}" | jq -r '.reason'))"
+        fi
+
+        echo ""
+        echo -e "${BOLD}IP policy check:${RESET}"
+        for ip in "${ips[@]}"; do
+            local ip_result
+            ip_result=$(check_destination "${ip}")
+            local ip_action
+            ip_action=$(echo "${ip_result}" | jq -r '.action')
+            if [[ "${ip_action}" == "allow" ]]; then
+                ok "${ip} — allowed"
+            else
+                fail "${ip} — denied ($(echo "${ip_result}" | jq -r '.reason'))"
+            fi
+        done
+    else
+        warn "No egress policy loaded — skipping policy check."
+    fi
+}
+
+# ─── policy ───────────────────────────────────────────────────────
+# Display current egress policy summary
+cmd_policy() {
+    require_policy
+
+    local json_output=false
+    local validate=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json)     json_output=true; shift ;;
+            --validate) validate=true; shift ;;
+            -*)         die "Unknown flag: $1" ;;
+            *)          shift ;;
+        esac
+    done
+
+    if [[ "${json_output}" == "true" ]]; then
+        cat "${POLICY_FILE}"
+        return
+    fi
+
+    local policy_json
+    policy_json=$(cat "${POLICY_FILE}")
+
+    echo -e "${BOLD}ZLAR-NT Egress Policy${RESET}"
+    echo -e "${DIM}${POLICY_FILE}${RESET}"
+    echo ""
+
+    local default_action description rule_count
+    IFS=$'\t' read -r default_action description rule_count < <(
+        echo "${policy_json}" | jq -r '[
+            (.default_action // "deny"),
+            (.description // ""),
+            (.rules | length | tostring)
+        ] | join("\t")'
+    )
+
+    echo -e "Default action: ${BOLD}${default_action}${RESET}"
+    if [[ -n "${description}" && "${description}" != "null" ]]; then
+        echo -e "Description:    ${description}"
+    fi
+    echo -e "Rules:          ${rule_count}"
+    echo ""
+
+    # Count by action
+    local allow_count deny_count
+    allow_count=$(echo "${policy_json}" | jq '[.rules[] | select(.action == "allow")] | length')
+    deny_count=$(echo "${policy_json}" | jq '[.rules[] | select(.action == "deny")] | length')
+
+    echo -e "${GREEN}Allow rules: ${allow_count}${RESET}  ${RED}Deny rules: ${deny_count}${RESET}"
+    echo ""
+
+    # List rules
+    echo -e "${BOLD}ID          TYPE     ACTION   PATTERN                          REASON${RESET}"
+    echo "────────────────────────────────────────────────────────────────────────────────────"
+
+    echo "${policy_json}" | jq -r '.rules[] | [.id, .type, .action, .pattern, (.reason // "")] | @tsv' | \
+    while IFS=$'\t' read -r id type action pattern reason; do
+        local color="${RESET}"
+        if [[ "${action}" == "allow" ]]; then
+            color="${GREEN}"
+        elif [[ "${action}" == "deny" ]]; then
+            color="${RED}"
+        fi
+        printf "%-11s %-8s %b%-8s%b %-32s %s\n" \
+            "${id}" "${type}" "${color}" "${action}" "${RESET}" "${pattern:0:32}" "${reason:0:40}"
+    done
+
+    # Validation
+    if [[ "${validate}" == "true" ]]; then
+        echo ""
+        echo -e "${BOLD}Validation:${RESET}"
+
+        local valid=true
+
+        # Check required fields
+        if [[ "${default_action}" != "allow" && "${default_action}" != "deny" ]]; then
+            fail "default_action must be 'allow' or 'deny' (got: ${default_action})"
+            valid=false
+        else
+            ok "default_action: ${default_action}"
+        fi
+
+        # Check each rule
+        local i=0
+        while (( i < rule_count )); do
+            local rule_id rule_type rule_action rule_pattern
+            IFS=$'\t' read -r rule_id rule_type rule_action rule_pattern < <(
+                echo "${policy_json}" | jq -r ".rules[${i}] | [.id, .type, .action, .pattern] | @tsv"
+            )
+
+            if [[ -z "${rule_id}" || "${rule_id}" == "null" ]]; then
+                fail "Rule ${i}: missing 'id'"
+                valid=false
+            fi
+            if [[ "${rule_type}" != "domain" && "${rule_type}" != "cidr" && "${rule_type}" != "ip" ]]; then
+                fail "Rule ${rule_id}: invalid type '${rule_type}' (must be domain, cidr, or ip)"
+                valid=false
+            fi
+            if [[ "${rule_action}" != "allow" && "${rule_action}" != "deny" ]]; then
+                fail "Rule ${rule_id}: invalid action '${rule_action}'"
+                valid=false
+            fi
+            if [[ -z "${rule_pattern}" || "${rule_pattern}" == "null" ]]; then
+                fail "Rule ${rule_id}: missing 'pattern'"
+                valid=false
+            fi
+
+            # Validate CIDR format
+            if [[ "${rule_type}" == "cidr" ]]; then
+                if [[ ! "${rule_pattern}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
+                    fail "Rule ${rule_id}: invalid CIDR '${rule_pattern}'"
+                    valid=false
+                fi
+            fi
+
+            (( i++ ))
+        done
+
+        if [[ "${valid}" == "true" ]]; then
+            echo ""
+            ok "Policy is valid (${rule_count} rules)"
+        else
+            echo ""
+            fail "Policy has validation errors"
+            return 1
+        fi
+    fi
+}
+
+# ─── report ───────────────────────────────────────────────────────
+# Generate network activity report from NT log
+cmd_report() {
+    local format="text"
+    local after=""
+    local before=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json)   format="json"; shift ;;
+            --csv)    format="csv"; shift ;;
+            --after)  after="$2"; shift 2 ;;
+            --before) before="$2"; shift 2 ;;
+            -*)       die "Unknown flag: $1" ;;
+            *)        shift ;;
+        esac
+    done
+
+    if [[ ! -f "${LOG_FILE}" ]]; then
+        info "No network log found at ${LOG_FILE}. Run 'check', 'scan --check', or 'watch' first."
+        return
+    fi
+
+    local log_data
+    log_data=$(cat "${LOG_FILE}")
+
+    # Apply time filters
+    if [[ -n "${after}" ]]; then
+        log_data=$(echo "${log_data}" | jq -c "select(.ts >= \"${after}\")")
+    fi
+    if [[ -n "${before}" ]]; then
+        log_data=$(echo "${log_data}" | jq -c "select(.ts <= \"${before}\")")
+    fi
+
+    if [[ -z "${log_data}" ]]; then
+        info "No events in the specified time range."
+        return
+    fi
+
+    local total_events checks violations scans
+    total_events=$(echo "${log_data}" | wc -l | tr -d ' ')
+    checks=$(echo "${log_data}" | jq -c 'select(.type == "check")' | wc -l | tr -d ' ')
+    violations=$(echo "${log_data}" | jq -c 'select(.type == "watch_violation" or .type == "scan_violation")' | wc -l | tr -d ' ')
+
+    if [[ "${format}" == "json" ]]; then
+        jq -n \
+            --argjson total "${total_events}" \
+            --argjson checks "${checks}" \
+            --argjson violations "${violations}" \
+            --arg log_file "${LOG_FILE}" \
+            '{
+                total_events: $total,
+                checks: $checks,
+                violations: $violations,
+                log_file: $log_file,
+                top_denied_domains: [],
+                top_allowed_domains: []
+            }'
+        return
+    fi
+
+    if [[ "${format}" == "csv" ]]; then
+        echo "timestamp,type,domain,action,rule_id,reason,process,pid,remote"
+        echo "${log_data}" | jq -r '[
+            .ts,
+            .type,
+            (.domain // ""),
+            (.action // ""),
+            (.rule_id // ""),
+            (.reason // ""),
+            (.process // ""),
+            (.pid // ""),
+            (.remote // "")
+        ] | @csv'
+        return
+    fi
+
+    # Text report
+    echo -e "${BOLD}═══════════════════════════════════════════════════════${RESET}"
+    echo -e "${BOLD}  ZLAR-NT Network Activity Report${RESET}"
+    echo -e "${BOLD}═══════════════════════════════════════════════════════${RESET}"
+    echo ""
+    echo -e "Generated: $(timestamp)"
+    echo -e "Log file:  ${LOG_FILE}"
+    echo ""
+
+    echo -e "${BOLD}Summary${RESET}"
+    echo "───────────────────────────────"
+    echo -e "Total events:     ${BOLD}${total_events}${RESET}"
+    echo -e "Policy checks:    ${checks}"
+    echo -e "Violations:       ${RED}${violations}${RESET}"
+    echo ""
+
+    # Top denied domains
+    local denied_domains
+    denied_domains=$(echo "${log_data}" | jq -r 'select(.action == "deny") | .domain // .remote // ""' | \
+        sort | uniq -c | sort -rn | head -10)
+
+    if [[ -n "${denied_domains}" ]]; then
+        echo -e "${BOLD}Top Denied Destinations${RESET}"
+        echo "───────────────────────────────"
+        echo "${denied_domains}" | while read -r count domain; do
+            echo -e "  ${RED}${count}${RESET}  ${domain}"
+        done
+        echo ""
+    fi
+
+    # Top allowed domains
+    local allowed_domains
+    allowed_domains=$(echo "${log_data}" | jq -r 'select(.action == "allow") | .domain // ""' | \
+        sort | uniq -c | sort -rn | head -10)
+
+    if [[ -n "${allowed_domains}" ]]; then
+        echo -e "${BOLD}Top Allowed Destinations${RESET}"
+        echo "───────────────────────────────"
+        echo "${allowed_domains}" | while read -r count domain; do
+            echo -e "  ${GREEN}${count}${RESET}  ${domain}"
+        done
+        echo ""
+    fi
+
+    # Violation timeline (if any)
+    if (( violations > 0 )); then
+        echo -e "${BOLD}Recent Violations${RESET}"
+        echo "───────────────────────────────"
+        echo "${log_data}" | jq -r 'select(.type == "watch_violation" or .type == "scan_violation") | "\(.ts)  \(.process // "—")  \(.remote // .domain // "—")  \(.reason // "—")"' | \
+            tail -20
+        echo ""
+    fi
+}
+
+# ─── audit ────────────────────────────────────────────────────────
+# Analyze gate audit trail for network-related events
+cmd_audit() {
+    local audit_file=""
+    local limit=50
+    local json_output=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --file)   audit_file="$2"; shift 2 ;;
+            --limit)  limit="$2"; shift 2 ;;
+            --json)   json_output=true; shift ;;
+            -*)       die "Unknown flag: $1" ;;
+            *)        shift ;;
+        esac
+    done
+
+    # Auto-detect gate audit file
+    if [[ -z "${audit_file}" ]]; then
+        for candidate in \
+            "${HOME}/.zlar-lt/var/log/audit.jsonl" \
+            "${HOME}/.zlar-gate/var/log/audit.jsonl" \
+            "$(cd "${PROJECT_DIR}/.." 2>/dev/null && pwd)/zlar-gate/var/log/audit.jsonl" \
+            "$(cd "${PROJECT_DIR}/.." 2>/dev/null && pwd)/zlar-lt/var/log/audit.jsonl"; do
+            if [[ -f "${candidate}" ]]; then
+                audit_file="${candidate}"
+                break
+            fi
+        done
+    fi
+
+    if [[ -z "${audit_file}" || ! -f "${audit_file}" ]]; then
+        die "No gate audit file found. Use --file <path> or install ZLAR Gate/LT."
+    fi
+
+    echo -e "${BOLD}Network Events from Gate Audit Trail${RESET}"
+    echo -e "${DIM}${audit_file}${RESET}"
+    echo ""
+
+    # Find network-related events (R016 = network send, or domain = bash with curl/wget/ssh)
+    local network_events
+    network_events=$(jq -c 'select(
+        .rule_id == "R016" or
+        (.tool_display // "" | test("curl|wget|ssh|scp|rsync|nc |ncat|netcat"; "i")) or
+        (.domain // "" | test("webfetch|network"; "i"))
+    )' "${audit_file}" 2>/dev/null | tail -"${limit}")
+
+    if [[ -z "${network_events}" ]]; then
+        info "No network-related events found in audit trail."
+        return
+    fi
+
+    local event_count
+    event_count=$(echo "${network_events}" | wc -l | tr -d ' ')
+
+    echo -e "Network events: ${BOLD}${event_count}${RESET} (showing last ${limit})"
+    echo ""
+
+    if [[ "${json_output}" == "true" ]]; then
+        echo "${network_events}"
+        return
+    fi
+
+    echo -e "${BOLD}TIMESTAMP                   OUTCOME   TOOL                                    RULE${RESET}"
+    echo "──────────────────────────────────────────────────────────────────────────────────────"
+
+    echo "${network_events}" | while IFS= read -r event; do
+        local ts outcome tool_display rule_id
+        IFS=$'\t' read -r ts outcome tool_display rule_id < <(
+            echo "${event}" | jq -r '[
+                (.ts // ""),
+                (.outcome // ""),
+                (.tool_display // ""),
+                (.rule_id // "")
+            ] | join("\t")'
+        )
+
+        local color="${RESET}"
+        case "${outcome}" in
+            allow) color="${GREEN}" ;;
+            deny)  color="${RED}" ;;
+            ask)   color="${YELLOW}" ;;
+        esac
+
+        printf "%-27s %b%-9s%b %-39s %s\n" \
+            "${ts:0:27}" "${color}" "${outcome}" "${RESET}" "${tool_display:0:39}" "${rule_id}"
+    done
+
+    # Summary
+    echo ""
+    local allowed denied asked
+    allowed=$(echo "${network_events}" | jq -r 'select(.outcome == "allow")' | wc -l | tr -d ' ')
+    denied=$(echo "${network_events}" | jq -r 'select(.outcome == "deny")' | wc -l | tr -d ' ')
+    asked=$(echo "${network_events}" | jq -r 'select(.outcome == "ask")' | wc -l | tr -d ' ')
+
+    echo -e "Allowed: ${GREEN}${allowed}${RESET}  Denied: ${RED}${denied}${RESET}  Asked: ${YELLOW}${asked}${RESET}"
+}
+
+# ─── batch ────────────────────────────────────────────────────────
+# Check multiple destinations from a file or stdin
+cmd_batch() {
+    require_policy
+
+    local input_file=""
+    local json_output=false
+    local source="batch"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --file)   input_file="$2"; shift 2 ;;
+            --json)   json_output=true; shift ;;
+            --source) source="$2"; shift 2 ;;
+            -*)       die "Unknown flag: $1" ;;
+            *)        input_file="$1"; shift ;;
+        esac
+    done
+
+    local total=0
+    local allowed=0
+    local denied=0
+
+    if [[ "${json_output}" != "true" ]]; then
+        echo -e "${BOLD}Batch Policy Check${RESET}"
+        echo ""
+    fi
+
+    local input_stream
+    if [[ -n "${input_file}" && -f "${input_file}" ]]; then
+        input_stream=$(cat "${input_file}")
+    else
+        # Read from stdin
+        input_stream=$(cat)
+    fi
+
+    while IFS= read -r destination; do
+        # Skip empty lines and comments
+        [[ -z "${destination}" || "${destination}" == \#* ]] && continue
+
+        (( total++ ))
+        local result
+        result=$(check_destination "${destination}")
+        log_check "${destination}" "${result}" "${source}"
+
+        local action domain reason
+        IFS=$'\t' read -r action domain reason < <(
+            echo "${result}" | jq -r '[.action, .domain, .reason] | join("\t")'
+        )
+
+        if [[ "${action}" == "allow" ]]; then
+            (( allowed++ ))
+            if [[ "${json_output}" != "true" ]]; then
+                ok "${domain} — ${action}"
+            fi
+        else
+            (( denied++ ))
+            if [[ "${json_output}" != "true" ]]; then
+                fail "${domain} — ${action} (${reason})"
+            fi
+        fi
+
+        if [[ "${json_output}" == "true" ]]; then
+            echo "${result}"
+        fi
+    done <<< "${input_stream}"
+
+    if [[ "${json_output}" != "true" ]]; then
+        echo ""
+        echo -e "Total: ${total}  ${GREEN}Allowed: ${allowed}${RESET}  ${RED}Denied: ${denied}${RESET}"
+    fi
+}
+
+# ─── version ──────────────────────────────────────────────────────
+cmd_version() {
+    echo "${PROGRAM} ${VERSION}"
+}
+
+# ─── help ─────────────────────────────────────────────────────────
+cmd_help() {
+    cat <<EOF
+${BOLD}ZLAR-NT${RESET} — Network Egress Policy for AI Agents
+Version ${VERSION}
+
+${BOLD}USAGE${RESET}
+    ${PROGRAM} <command> [options]
+
+${BOLD}COMMANDS${RESET}
+    check <url|domain|ip>   Check destination against egress policy
+    scan                    Scan live network connections (requires lsof)
+    watch                   Continuous monitoring — scan at intervals
+    resolve <domain>        DNS resolution + policy check
+    policy                  Display/validate egress policy
+    report                  Generate network activity report
+    audit                   Analyze gate audit trail for network events
+    batch                   Check multiple destinations from file/stdin
+    version                 Show version
+    help                    Show this help
+
+${BOLD}EXAMPLES${RESET}
+    # Check if a destination is allowed
+    ${PROGRAM} check https://github.com
+    ${PROGRAM} check api.anthropic.com
+    ${PROGRAM} check 169.254.169.254
+
+    # Gate integration (called from gate rule)
+    ${PROGRAM} check "\$URL" --json --source gate --quiet
+
+    # Scan live connections and check against policy
+    ${PROGRAM} scan --check
+    ${PROGRAM} scan --user aiagent --check
+
+    # Watch mode — continuous monitoring
+    ${PROGRAM} watch --interval 60 --user aiagent
+
+    # DNS resolution + policy check
+    ${PROGRAM} resolve example.com
+
+    # Validate your egress policy
+    ${PROGRAM} policy --validate
+
+    # Batch check from a file
+    echo -e "github.com\nevil.com\n10.0.0.1" | ${PROGRAM} batch
+
+    # Network report
+    ${PROGRAM} report
+    ${PROGRAM} report --csv > network.csv
+
+${BOLD}CONFIGURATION${RESET}
+    Policy file:  \$ZLAR_NT_POLICY or etc/egress-policy.json
+    Config file:  \$ZLAR_NT_CONFIG or etc/nt.json
+    Log file:     \$ZLAR_NT_LOG or var/log/nt.jsonl
+
+${BOLD}GATE INTEGRATION${RESET}
+    ZLAR-NT works alongside ZLAR Gate. The gate catches network commands
+    (curl, wget, ssh). NT checks WHERE they're going.
+
+    Gate rule R016 can call:
+        zlar-nt check "\$URL" --quiet --source gate
+    Exit code 0 = allow, 1 = deny.
+
+${BOLD}POLICY FORMAT${RESET}
+    The egress policy is a JSON file with domain, CIDR, and IP rules.
+    Rules are evaluated in order — first match wins.
+    See etc/egress-policy.json for the default policy.
+
+Copyright 2026 ZLAR Inc. Apache 2.0
+EOF
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# Main
+# ═══════════════════════════════════════════════════════════════════
+main() {
+    check_jq
+    load_config
+
+    local cmd="${1:-help}"
+    shift || true
+
+    case "${cmd}" in
+        check)    cmd_check "$@" ;;
+        scan)     cmd_scan "$@" ;;
+        watch)    cmd_watch "$@" ;;
+        resolve)  cmd_resolve "$@" ;;
+        policy)   cmd_policy "$@" ;;
+        report)   cmd_report "$@" ;;
+        audit)    cmd_audit "$@" ;;
+        batch)    cmd_batch "$@" ;;
+        version)  cmd_version ;;
+        help|--help|-h)  cmd_help ;;
+        *)        die "Unknown command: ${cmd}. Run '${PROGRAM} help' for usage." ;;
+    esac
+}
+
+main "$@"

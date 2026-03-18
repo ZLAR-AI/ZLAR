@@ -1,0 +1,4 @@
+{
+  "registry_file": "etc/fleet-registry.json",
+  "log_dir": "var/log"
+}

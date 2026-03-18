@@ -1,0 +1,1026 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════
+# ZLAR-FL — Multi-Agent Fleet Governance
+# Copyright 2026 ZLAR Inc. — Apache 2.0
+#
+# Centralized registry, distributed enforcement, fleet-wide audit.
+# Manages multiple ZLAR-governed agents as a fleet.
+#
+# The fleet registry is a human artifact — like the policy is a human
+# artifact in the gate. Humans decide which agents are in the fleet.
+# FL tracks them, aggregates their audit trails, and reports.
+#
+# Dependencies: jq, bash 4+
+# Optional: ssh (remote agent status), bc (statistics)
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+readonly VERSION="1.0.0"
+readonly PROGRAM="zlar-fl"
+
+# ─── Resolve paths ────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# ─── Configuration ────────────────────────────────────────────────
+CONFIG_FILE="${ZLAR_FL_CONFIG:-${PROJECT_DIR}/etc/fl.json}"
+REGISTRY_FILE=""
+LOG_DIR="${PROJECT_DIR}/var/log"
+
+# ─── Colors ───────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    BOLD='\033[1m'
+    DIM='\033[2m'
+    RESET='\033[0m'
+else
+    RED="" GREEN="" YELLOW="" BLUE="" CYAN="" BOLD="" DIM="" RESET=""
+fi
+
+# ─── Helpers ──────────────────────────────────────────────────────
+die()   { echo -e "${RED}error:${RESET} $*" >&2; exit 1; }
+warn()  { echo -e "${YELLOW}warn:${RESET} $*" >&2; }
+info()  { echo -e "${BLUE}info:${RESET} $*" >&2; }
+ok()    { echo -e "${GREEN}  ✓${RESET} $*"; }
+fail()  { echo -e "${RED}  ✗${RESET} $*"; }
+dim()   { echo -e "${DIM}$*${RESET}"; }
+
+check_jq() {
+    command -v jq >/dev/null 2>&1 || die "jq is required. Install: brew install jq / apt install jq"
+}
+
+timestamp() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+
+# ─── Load configuration ──────────────────────────────────────────
+load_config() {
+    if [[ -f "${CONFIG_FILE}" ]]; then
+        local reg_path
+        reg_path=$(jq -r '.registry_file // ""' "${CONFIG_FILE}" 2>/dev/null)
+        if [[ -n "${reg_path}" && "${reg_path}" != "null" ]]; then
+            if [[ "${reg_path}" != /* ]]; then
+                reg_path="${PROJECT_DIR}/${reg_path}"
+            fi
+            REGISTRY_FILE="${reg_path}"
+        fi
+
+        local log_cfg
+        log_cfg=$(jq -r '.log_dir // ""' "${CONFIG_FILE}" 2>/dev/null)
+        if [[ -n "${log_cfg}" && "${log_cfg}" != "null" ]]; then
+            if [[ "${log_cfg}" != /* ]]; then
+                log_cfg="${PROJECT_DIR}/${log_cfg}"
+            fi
+            LOG_DIR="${log_cfg}"
+        fi
+    fi
+
+    # Auto-detect registry
+    if [[ -z "${REGISTRY_FILE}" ]]; then
+        for candidate in \
+            "${PROJECT_DIR}/etc/fleet-registry.json" \
+            "${HOME}/.zlar-fl/etc/fleet-registry.json"; do
+            if [[ -f "${candidate}" ]]; then
+                REGISTRY_FILE="${candidate}"
+                break
+            fi
+        done
+    fi
+
+    REGISTRY_FILE="${ZLAR_FL_REGISTRY:-${REGISTRY_FILE:-${PROJECT_DIR}/etc/fleet-registry.json}}"
+    mkdir -p "${LOG_DIR}" 2>/dev/null || true
+}
+
+require_registry() {
+    if [[ ! -f "${REGISTRY_FILE}" ]]; then
+        die "No fleet registry found. Run '${PROGRAM} init' to create one, or set ZLAR_FL_REGISTRY."
+    fi
+}
+
+# ─── Registry operations ─────────────────────────────────────────
+
+# Get agent count
+agent_count() {
+    jq '.agents | length' "${REGISTRY_FILE}" 2>/dev/null || echo 0
+}
+
+# Find agent by ID, returns the JSON object or empty
+find_agent() {
+    local agent_id="$1"
+    jq -c ".agents[] | select(.id == \"${agent_id}\")" "${REGISTRY_FILE}" 2>/dev/null
+}
+
+# Resolve an agent's audit file path
+resolve_audit_path() {
+    local agent_json="$1"
+    local gate_path audit_path host
+
+    IFS=$'\t' read -r gate_path audit_path host < <(
+        echo "${agent_json}" | jq -r '[
+            (.gate_path // ""),
+            (.audit_path // ""),
+            (.host // "local")
+        ] | join("\t")'
+    )
+
+    # Explicit audit_path takes priority
+    if [[ -n "${audit_path}" && "${audit_path}" != "null" ]]; then
+        echo "${audit_path}"
+        return
+    fi
+
+    # Derive from gate_path
+    if [[ -n "${gate_path}" && "${gate_path}" != "null" ]]; then
+        # Expand ~ to HOME
+        gate_path="${gate_path/#\~/$HOME}"
+        echo "${gate_path}/var/log/audit.jsonl"
+        return
+    fi
+
+    echo ""
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# Commands
+# ═══════════════════════════════════════════════════════════════════
+
+# ─── init ─────────────────────────────────────────────────────────
+# Initialize a new fleet registry
+cmd_init() {
+    local fleet_name="${1:-default}"
+    local force=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force) force=true; shift ;;
+            -*)      die "Unknown flag: $1" ;;
+            *)       fleet_name="$1"; shift ;;
+        esac
+    done
+
+    if [[ -f "${REGISTRY_FILE}" && "${force}" != "true" ]]; then
+        die "Registry already exists at ${REGISTRY_FILE}. Use --force to overwrite."
+    fi
+
+    local fleet_id
+    fleet_id="fleet-$(date +%s | tail -c 9)"
+
+    local registry
+    registry=$(jq -n \
+        --arg id "${fleet_id}" \
+        --arg name "${fleet_name}" \
+        --arg ts "$(timestamp)" \
+        --arg version "${VERSION}" \
+        '{
+            fleet_id: $id,
+            fleet_name: $name,
+            created_at: $ts,
+            version: $version,
+            agents: []
+        }')
+
+    mkdir -p "$(dirname "${REGISTRY_FILE}")" 2>/dev/null || true
+    echo "${registry}" | jq '.' > "${REGISTRY_FILE}"
+
+    ok "Fleet initialized: ${fleet_name} (${fleet_id})"
+    echo -e "   Registry: ${REGISTRY_FILE}"
+    echo ""
+    echo -e "   Next: ${PROGRAM} register --id agent-01 --name 'My Agent' --gate ~/.zlar-lt"
+}
+
+# ─── register ────────────────────────────────────────────────────
+# Register an agent in the fleet
+cmd_register() {
+    require_registry
+
+    local agent_id=""
+    local agent_name=""
+    local gate_path=""
+    local audit_path=""
+    local host="local"
+    local framework=""
+    local tags=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --id)        agent_id="$2"; shift 2 ;;
+            --name)      agent_name="$2"; shift 2 ;;
+            --gate)      gate_path="$2"; shift 2 ;;
+            --audit)     audit_path="$2"; shift 2 ;;
+            --host)      host="$2"; shift 2 ;;
+            --framework) framework="$2"; shift 2 ;;
+            --tags)      tags="$2"; shift 2 ;;
+            -*)          die "Unknown flag: $1" ;;
+            *)           shift ;;
+        esac
+    done
+
+    if [[ -z "${agent_id}" ]]; then
+        die "Usage: ${PROGRAM} register --id <agent-id> --name <name> --gate <path> [--host <host>] [--framework <fw>] [--tags <t1,t2>]"
+    fi
+
+    # Check for duplicate
+    local existing
+    existing=$(find_agent "${agent_id}")
+    if [[ -n "${existing}" ]]; then
+        die "Agent '${agent_id}' already registered. Use '${PROGRAM} update' to modify."
+    fi
+
+    # Auto-detect framework from gate path
+    if [[ -z "${framework}" && -n "${gate_path}" ]]; then
+        local expanded="${gate_path/#\~/$HOME}"
+        if [[ -d "${expanded}" ]]; then
+            if [[ -f "${expanded}/adapters/claude-code/hook.sh" ]]; then
+                framework="claude-code"
+            fi
+            if [[ -f "${expanded}/adapters/cursor/hook.sh" ]]; then
+                framework="${framework:+${framework},}cursor"
+            fi
+            if [[ -f "${expanded}/adapters/windsurf/hook.sh" ]]; then
+                framework="${framework:+${framework},}windsurf"
+            fi
+        fi
+    fi
+
+    # Build tags array
+    local tags_json="[]"
+    if [[ -n "${tags}" ]]; then
+        tags_json=$(echo "${tags}" | tr ',' '\n' | jq -R '.' | jq -s '.')
+    fi
+
+    # Add agent to registry
+    local tmp_file
+    tmp_file=$(mktemp)
+    jq --arg id "${agent_id}" \
+       --arg name "${agent_name:-${agent_id}}" \
+       --arg gate "${gate_path}" \
+       --arg audit "${audit_path}" \
+       --arg host "${host}" \
+       --arg fw "${framework}" \
+       --arg ts "$(timestamp)" \
+       --argjson tags "${tags_json}" \
+       '.agents += [{
+            id: $id,
+            name: $name,
+            gate_path: $gate,
+            audit_path: (if $audit == "" then null else $audit end),
+            host: $host,
+            framework: $fw,
+            registered_at: $ts,
+            status: "active",
+            tags: $tags
+        }]' "${REGISTRY_FILE}" > "${tmp_file}"
+    mv "${tmp_file}" "${REGISTRY_FILE}"
+
+    ok "Registered: ${agent_id} (${agent_name:-${agent_id}})"
+    if [[ -n "${gate_path}" ]]; then
+        echo -e "   Gate: ${gate_path}"
+    fi
+    if [[ "${host}" != "local" ]]; then
+        echo -e "   Host: ${host}"
+    fi
+    if [[ -n "${framework}" ]]; then
+        echo -e "   Framework: ${framework}"
+    fi
+}
+
+# ─── deregister ───────────────────────────────────────────────────
+cmd_deregister() {
+    require_registry
+
+    local agent_id="$1"
+    if [[ -z "${agent_id}" ]]; then
+        die "Usage: ${PROGRAM} deregister <agent-id>"
+    fi
+
+    local existing
+    existing=$(find_agent "${agent_id}")
+    if [[ -z "${existing}" ]]; then
+        die "Agent '${agent_id}' not found in registry."
+    fi
+
+    local tmp_file
+    tmp_file=$(mktemp)
+    jq --arg id "${agent_id}" '.agents |= map(select(.id != $id))' "${REGISTRY_FILE}" > "${tmp_file}"
+    mv "${tmp_file}" "${REGISTRY_FILE}"
+
+    ok "Deregistered: ${agent_id}"
+}
+
+# ─── list ─────────────────────────────────────────────────────────
+# List all agents in the fleet
+cmd_list() {
+    require_registry
+
+    local json_output=false
+    local tag_filter=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json_output=true; shift ;;
+            --tag)  tag_filter="$2"; shift 2 ;;
+            -*)     die "Unknown flag: $1" ;;
+            *)      shift ;;
+        esac
+    done
+
+    local registry
+    registry=$(cat "${REGISTRY_FILE}")
+
+    local fleet_name fleet_id count
+    IFS=$'\t' read -r fleet_name fleet_id count < <(
+        echo "${registry}" | jq -r '[.fleet_name, .fleet_id, (.agents | length | tostring)] | join("\t")'
+    )
+
+    if [[ "${json_output}" == "true" ]]; then
+        if [[ -n "${tag_filter}" ]]; then
+            echo "${registry}" | jq --arg tag "${tag_filter}" '.agents |= map(select(.tags | index($tag)))'
+        else
+            echo "${registry}" | jq '.'
+        fi
+        return
+    fi
+
+    echo -e "${BOLD}Fleet: ${fleet_name}${RESET} (${fleet_id})"
+    echo -e "Agents: ${count}"
+    echo ""
+
+    if (( count == 0 )); then
+        info "No agents registered. Run '${PROGRAM} register' to add one."
+        return
+    fi
+
+    echo -e "${BOLD}ID                 NAME                    HOST          FRAMEWORK       STATUS${RESET}"
+    echo "────────────────────────────────────────────────────────────────────────────────────"
+
+    local filter_expr='.'
+    if [[ -n "${tag_filter}" ]]; then
+        filter_expr="select(.tags | index(\"${tag_filter}\"))"
+    fi
+
+    echo "${registry}" | jq -r ".agents[] | ${filter_expr} | [.id, .name, (.host // \"-\"), (.framework // \"-\"), .status] | @tsv" | \
+    while IFS=$'\t' read -r id name host fw status; do
+        [[ "${host}" == "-" ]] && host=""
+        [[ "${fw}" == "-" ]] && fw=""
+        local status_color="${GREEN}"
+        case "${status}" in
+            inactive|disabled) status_color="${YELLOW}" ;;
+            error|unreachable) status_color="${RED}" ;;
+        esac
+
+        printf "%-18s %-23s %-13s %-15s %b%s%b\n" \
+            "${id:0:18}" "${name:0:23}" "${host:0:13}" "${fw:0:15}" "${status_color}" "${status}" "${RESET}"
+    done
+}
+
+# ─── status ───────────────────────────────────────────────────────
+# Show fleet status with health checks
+cmd_status() {
+    require_registry
+
+    local json_output=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json_output=true; shift ;;
+            -*)     die "Unknown flag: $1" ;;
+            *)      shift ;;
+        esac
+    done
+
+    local registry
+    registry=$(cat "${REGISTRY_FILE}")
+
+    local fleet_name count
+    IFS=$'\t' read -r fleet_name count < <(
+        echo "${registry}" | jq -r '[.fleet_name, (.agents | length | tostring)] | join("\t")'
+    )
+
+    echo -e "${BOLD}Fleet Status: ${fleet_name}${RESET}"
+    echo -e "${DIM}$(timestamp)${RESET}"
+    echo ""
+
+    if (( count == 0 )); then
+        info "No agents in fleet."
+        return
+    fi
+
+    local healthy=0
+    local unhealthy=0
+    local total_events=0
+
+    echo -e "${BOLD}AGENT              GATE         AUDIT FILE                                EVENTS   HEALTH${RESET}"
+    echo "──────────────────────────────────────────────────────────────────────────────────────────────────"
+
+    echo "${registry}" | jq -c '.agents[]' | while IFS= read -r agent; do
+        local id name gate_path host
+        IFS=$'\t' read -r id name gate_path host < <(
+            echo "${agent}" | jq -r '[.id, .name, .gate_path, .host] | join("\t")'
+        )
+
+        local health="${GREEN}●${RESET}"
+        local event_count="—"
+        local audit_display="—"
+
+        # Check if this is a local agent
+        if [[ "${host}" == "local" || "${host}" == "localhost" || -z "${host}" ]]; then
+            local audit_file
+            audit_file=$(resolve_audit_path "${agent}")
+
+            if [[ -n "${audit_file}" && -f "${audit_file}" ]]; then
+                event_count=$(wc -l < "${audit_file}" | tr -d ' ')
+                audit_display="${audit_file}"
+                # Truncate for display
+                if (( ${#audit_display} > 40 )); then
+                    audit_display="...${audit_display: -37}"
+                fi
+            else
+                health="${YELLOW}○${RESET}"
+                audit_display="(not found)"
+            fi
+
+            # Check gate binary
+            local expanded_gate="${gate_path/#\~/$HOME}"
+            if [[ -n "${gate_path}" && ! -f "${expanded_gate}/bin/zlar-gate" ]]; then
+                health="${RED}✗${RESET}"
+            fi
+        else
+            # Remote agent — can't check directly without SSH
+            audit_display="(remote: ${host})"
+            health="${DIM}?${RESET}"
+        fi
+
+        printf "%-18s %-12s %-41s %-8s %b\n" \
+            "${id:0:18}" "${gate_path:0:12}" "${audit_display:0:41}" "${event_count}" "${health}"
+    done
+
+    echo ""
+
+    # Fleet-wide summary
+    local active_count inactive_count
+    active_count=$(echo "${registry}" | jq '[.agents[] | select(.status == "active")] | length')
+    inactive_count=$(echo "${registry}" | jq '[.agents[] | select(.status != "active")] | length')
+
+    echo -e "Active: ${GREEN}${active_count}${RESET}  Inactive: ${YELLOW}${inactive_count}${RESET}  Total: ${count}"
+}
+
+# ─── audit ────────────────────────────────────────────────────────
+# Aggregate audit trails across fleet agents
+cmd_audit() {
+    require_registry
+
+    local limit=50
+    local agent_filter=""
+    local outcome_filter=""
+    local json_output=false
+    local merge=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --limit)   limit="$2"; shift 2 ;;
+            --agent)   agent_filter="$2"; shift 2 ;;
+            --outcome) outcome_filter="$2"; shift 2 ;;
+            --json)    json_output=true; shift ;;
+            --merge)   merge=true; shift ;;
+            -*)        die "Unknown flag: $1" ;;
+            *)         shift ;;
+        esac
+    done
+
+    local registry
+    registry=$(cat "${REGISTRY_FILE}")
+
+    echo -e "${BOLD}Fleet Audit Trail${RESET}"
+    echo ""
+
+    local all_events=""
+    local agents_checked=0
+    local agents_with_data=0
+
+    # Iterate agents
+    echo "${registry}" | jq -c '.agents[]' | while IFS= read -r agent; do
+        local id host
+        IFS=$'\t' read -r id host < <(
+            echo "${agent}" | jq -r '[.id, .host] | join("\t")'
+        )
+
+        # Filter by agent if specified
+        if [[ -n "${agent_filter}" && "${id}" != "${agent_filter}" ]]; then
+            continue
+        fi
+
+        (( agents_checked++ ))
+
+        # Only local agents for now
+        if [[ "${host}" != "local" && "${host}" != "localhost" && -n "${host}" ]]; then
+            dim "  ${id}: remote (${host}) — skipped"
+            continue
+        fi
+
+        local audit_file
+        audit_file=$(resolve_audit_path "${agent}")
+
+        if [[ -z "${audit_file}" || ! -f "${audit_file}" ]]; then
+            dim "  ${id}: no audit file"
+            continue
+        fi
+
+        (( agents_with_data++ ))
+        local event_count
+        event_count=$(wc -l < "${audit_file}" | tr -d ' ')
+
+        if [[ "${merge}" == "true" || "${json_output}" == "true" ]]; then
+            # Add agent_id to each event and output
+            jq -c --arg agent_id "${id}" '. + {fleet_agent_id: $agent_id}' "${audit_file}" 2>/dev/null
+        else
+            echo -e "${BOLD}${id}${RESET} (${event_count} events)"
+
+            local filter='.'
+            if [[ -n "${outcome_filter}" ]]; then
+                filter="select(.outcome == \"${outcome_filter}\")"
+            fi
+
+            jq -c "${filter}" "${audit_file}" 2>/dev/null | tail -"${limit}" | \
+            while IFS= read -r event; do
+                local ts outcome tool_display rule_id
+                IFS=$'\t' read -r ts outcome tool_display rule_id < <(
+                    echo "${event}" | jq -r '[(.ts // ""), (.outcome // ""), (.tool_display // ""), (.rule_id // "")] | join("\t")'
+                )
+
+                local color="${RESET}"
+                case "${outcome}" in
+                    allow) color="${GREEN}" ;;
+                    deny)  color="${RED}" ;;
+                    ask)   color="${YELLOW}" ;;
+                esac
+
+                printf "  %-24s %b%-7s%b %-40s %s\n" \
+                    "${ts:0:24}" "${color}" "${outcome}" "${RESET}" "${tool_display:0:40}" "${rule_id}"
+            done
+            echo ""
+        fi
+    done
+
+    if [[ "${merge}" == "true" && "${json_output}" != "true" ]]; then
+        info "Use --json with --merge for structured output."
+    fi
+}
+
+# ─── report ───────────────────────────────────────────────────────
+# Fleet-wide governance report
+cmd_report() {
+    require_registry
+
+    local format="text"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) format="json"; shift ;;
+            --csv)  format="csv"; shift ;;
+            -*)     die "Unknown flag: $1" ;;
+            *)      shift ;;
+        esac
+    done
+
+    local registry
+    registry=$(cat "${REGISTRY_FILE}")
+
+    local fleet_name fleet_id agent_count
+    IFS=$'\t' read -r fleet_name fleet_id agent_count < <(
+        echo "${registry}" | jq -r '[.fleet_name, .fleet_id, (.agents | length | tostring)] | join("\t")'
+    )
+
+    echo -e "${BOLD}═══════════════════════════════════════════════════════${RESET}"
+    echo -e "${BOLD}  ZLAR-FL Fleet Governance Report${RESET}"
+    echo -e "${BOLD}═══════════════════════════════════════════════════════${RESET}"
+    echo ""
+    echo -e "Fleet:     ${fleet_name} (${fleet_id})"
+    echo -e "Generated: $(timestamp)"
+    echo -e "Agents:    ${agent_count}"
+    echo ""
+
+    if (( agent_count == 0 )); then
+        info "No agents to report on."
+        return
+    fi
+
+    # Aggregate stats across all local agents
+    local fleet_total=0
+    local fleet_allowed=0
+    local fleet_denied=0
+    local fleet_asked=0
+
+    echo -e "${BOLD}Per-Agent Summary${RESET}"
+    echo "────────────────────────────────────────────────────────────────"
+
+    echo "${registry}" | jq -c '.agents[]' | while IFS= read -r agent; do
+        local id name host fw
+        IFS=$'\t' read -r id name host fw < <(
+            echo "${agent}" | jq -r '[.id, .name, .host, .framework] | join("\t")'
+        )
+
+        if [[ "${host}" != "local" && "${host}" != "localhost" && -n "${host}" ]]; then
+            printf "  %-18s %-20s %s\n" "${id}" "${name}" "(remote — ${host})"
+            continue
+        fi
+
+        local audit_file
+        audit_file=$(resolve_audit_path "${agent}")
+
+        if [[ -z "${audit_file}" || ! -f "${audit_file}" ]]; then
+            printf "  %-18s %-20s %s\n" "${id}" "${name}" "(no audit data)"
+            continue
+        fi
+
+        local total allowed denied asked
+        total=$(wc -l < "${audit_file}" | tr -d ' ')
+        allowed=$(jq -r 'select(.outcome == "allow")' "${audit_file}" 2>/dev/null | grep -c '"outcome"' || echo 0)
+        denied=$(jq -r 'select(.outcome == "deny")' "${audit_file}" 2>/dev/null | grep -c '"outcome"' || echo 0)
+        asked=$(jq -r 'select(.outcome == "ask")' "${audit_file}" 2>/dev/null | grep -c '"outcome"' || echo 0)
+
+        printf "  %-18s %-20s events: %-6s " "${id}" "${name}" "${total}"
+        echo -e "${GREEN}allow: ${allowed}${RESET}  ${RED}deny: ${denied}${RESET}  ${YELLOW}ask: ${asked}${RESET}"
+
+        (( fleet_total += total )) || true
+        (( fleet_allowed += allowed )) || true
+        (( fleet_denied += denied )) || true
+        (( fleet_asked += asked )) || true
+    done
+
+    echo ""
+    echo -e "${BOLD}Fleet Totals${RESET}"
+    echo "────────────────────────────────────────────────────────────────"
+    echo -e "Total events:  ${BOLD}${fleet_total}${RESET}"
+    echo -e "Allowed:       ${GREEN}${fleet_allowed}${RESET}"
+    echo -e "Denied:        ${RED}${fleet_denied}${RESET}"
+    echo -e "Asked:         ${YELLOW}${fleet_asked}${RESET}"
+    echo ""
+
+    # Framework distribution
+    echo -e "${BOLD}Framework Distribution${RESET}"
+    echo "────────────────────────────────────────────────────────────────"
+    echo "${registry}" | jq -r '.agents[].framework' | sort | uniq -c | sort -rn | \
+    while read -r count fw; do
+        [[ -z "${fw}" || "${fw}" == "null" ]] && fw="(unknown)"
+        echo -e "  ${count}  ${fw}"
+    done
+    echo ""
+
+    # Host distribution
+    echo -e "${BOLD}Host Distribution${RESET}"
+    echo "────────────────────────────────────────────────────────────────"
+    echo "${registry}" | jq -r '.agents[].host' | sort | uniq -c | sort -rn | \
+    while read -r count host; do
+        echo -e "  ${count}  ${host}"
+    done
+}
+
+# ─── policy ───────────────────────────────────────────────────────
+# Compare policies across fleet agents
+cmd_policy() {
+    require_registry
+
+    local action=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            compare) action="compare"; shift ;;
+            sync)    action="sync"; shift ;;
+            show)    action="show"; shift ;;
+            -*)      die "Unknown flag: $1" ;;
+            *)       action="${action:-show}"; shift ;;
+        esac
+    done
+
+    action="${action:-show}"
+
+    local registry
+    registry=$(cat "${REGISTRY_FILE}")
+
+    case "${action}" in
+        show)
+            echo -e "${BOLD}Fleet Policy Overview${RESET}"
+            echo ""
+
+            echo "${registry}" | jq -c '.agents[]' | while IFS= read -r agent; do
+                local id name gate_path host
+                IFS=$'\t' read -r id name gate_path host < <(
+                    echo "${agent}" | jq -r '[.id, .name, .gate_path, .host] | join("\t")'
+                )
+
+                if [[ "${host}" != "local" && "${host}" != "localhost" && -n "${host}" ]]; then
+                    echo -e "  ${BOLD}${id}${RESET}: (remote — ${host})"
+                    continue
+                fi
+
+                local expanded="${gate_path/#\~/$HOME}"
+                local policy_file=""
+
+                # Find active policy
+                for candidate in \
+                    "${expanded}/etc/policies/active.policy.json" \
+                    "${expanded}/etc/policies/lt-default.policy.json"; do
+                    if [[ -f "${candidate}" ]]; then
+                        policy_file="${candidate}"
+                        break
+                    fi
+                done
+
+                if [[ -z "${policy_file}" ]]; then
+                    echo -e "  ${BOLD}${id}${RESET}: ${YELLOW}no policy found${RESET}"
+                    continue
+                fi
+
+                local rule_count default_action description
+                IFS=$'\t' read -r rule_count default_action description < <(
+                    jq -r '[(.rules | length | tostring), (.default_action // "deny"), (.description // "")] | join("\t")' "${policy_file}"
+                )
+
+                echo -e "  ${BOLD}${id}${RESET}: ${rule_count} rules, default: ${default_action}"
+                if [[ -n "${description}" && "${description}" != "null" ]]; then
+                    echo -e "    ${DIM}${description:0:70}${RESET}"
+                fi
+            done
+            ;;
+
+        compare)
+            echo -e "${BOLD}Policy Comparison${RESET}"
+            echo ""
+
+            # Collect policy hashes
+            local policies=()
+            echo "${registry}" | jq -c '.agents[]' | while IFS= read -r agent; do
+                local id gate_path host
+                IFS=$'\t' read -r id gate_path host < <(
+                    echo "${agent}" | jq -r '[.id, .gate_path, .host] | join("\t")'
+                )
+
+                if [[ "${host}" != "local" && "${host}" != "localhost" && -n "${host}" ]]; then
+                    continue
+                fi
+
+                local expanded="${gate_path/#\~/$HOME}"
+                local policy_file=""
+                for candidate in \
+                    "${expanded}/etc/policies/active.policy.json" \
+                    "${expanded}/etc/policies/lt-default.policy.json"; do
+                    if [[ -f "${candidate}" ]]; then
+                        policy_file="${candidate}"
+                        break
+                    fi
+                done
+
+                if [[ -z "${policy_file}" ]]; then
+                    echo -e "  ${id}: ${YELLOW}no policy${RESET}"
+                    continue
+                fi
+
+                local hash
+                hash=$(jq -cS '.rules' "${policy_file}" | shasum -a 256 | cut -d' ' -f1)
+                local rule_count
+                rule_count=$(jq '.rules | length' "${policy_file}")
+                echo -e "  ${id}: ${rule_count} rules — ${DIM}${hash:0:16}...${RESET}"
+            done
+
+            echo ""
+            info "Agents with the same hash have identical rule sets."
+            ;;
+
+        sync)
+            warn "Policy sync is not implemented in v1."
+            echo "Policy distribution should be done through your deployment pipeline."
+            echo "Each agent's policy is a human artifact — signed and deployed deliberately."
+            ;;
+    esac
+}
+
+# ─── topology ─────────────────────────────────────────────────────
+# Show fleet topology
+cmd_topology() {
+    require_registry
+
+    local registry
+    registry=$(cat "${REGISTRY_FILE}")
+
+    local fleet_name
+    fleet_name=$(echo "${registry}" | jq -r '.fleet_name')
+
+    echo -e "${BOLD}Fleet Topology: ${fleet_name}${RESET}"
+    echo ""
+
+    # Group by host — use process substitution to avoid stdin conflicts
+    local hosts_list
+    hosts_list=$(echo "${registry}" | jq -r '[.agents[].host] | unique | .[]')
+
+    while IFS= read -r host; do
+        [[ -z "${host}" ]] && continue
+        echo -e "${BOLD}╔══ ${host}${RESET}"
+
+        local agents_on_host
+        agents_on_host=$(echo "${registry}" | jq -c ".agents[] | select(.host == \"${host}\")")
+
+        while IFS= read -r agent; do
+            local id name fw agent_status tags_str
+            id=$(echo "${agent}" | jq -r '.id')
+            name=$(echo "${agent}" | jq -r '.name')
+            fw=$(echo "${agent}" | jq -r '.framework // ""')
+            agent_status=$(echo "${agent}" | jq -r '.status')
+            tags_str=$(echo "${agent}" | jq -r '(.tags // []) | join(",")')
+
+            local status_icon="${GREEN}●${RESET}"
+            case "${agent_status}" in
+                inactive) status_icon="${YELLOW}○${RESET}" ;;
+                error)    status_icon="${RED}✗${RESET}" ;;
+            esac
+
+            echo -e "║  ${status_icon} ${BOLD}${id}${RESET} — ${name}"
+            if [[ -n "${fw}" ]]; then
+                echo -e "║    framework: ${fw}"
+            fi
+            if [[ -n "${tags_str}" ]]; then
+                echo -e "║    tags: ${DIM}${tags_str}${RESET}"
+            fi
+        done <<< "${agents_on_host}"
+
+        echo -e "╚══"
+        echo ""
+    done <<< "${hosts_list}"
+}
+
+# ─── update ───────────────────────────────────────────────────────
+# Update an agent's properties
+cmd_update() {
+    require_registry
+
+    local agent_id=""
+    local new_name=""
+    local new_status=""
+    local new_gate=""
+    local new_host=""
+    local new_fw=""
+    local new_tags=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --id)        agent_id="$2"; shift 2 ;;
+            --name)      new_name="$2"; shift 2 ;;
+            --status)    new_status="$2"; shift 2 ;;
+            --gate)      new_gate="$2"; shift 2 ;;
+            --host)      new_host="$2"; shift 2 ;;
+            --framework) new_fw="$2"; shift 2 ;;
+            --tags)      new_tags="$2"; shift 2 ;;
+            -*)          die "Unknown flag: $1" ;;
+            *)           agent_id="${agent_id:-$1}"; shift ;;
+        esac
+    done
+
+    if [[ -z "${agent_id}" ]]; then
+        die "Usage: ${PROGRAM} update --id <agent-id> [--name <name>] [--status <status>] [--gate <path>]"
+    fi
+
+    local existing
+    existing=$(find_agent "${agent_id}")
+    if [[ -z "${existing}" ]]; then
+        die "Agent '${agent_id}' not found."
+    fi
+
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    local update_expr='.agents |= map(if .id == $id then'
+    local args=(--arg id "${agent_id}")
+
+    if [[ -n "${new_name}" ]]; then
+        update_expr+=' .name = $name |'
+        args+=(--arg name "${new_name}")
+    fi
+    if [[ -n "${new_status}" ]]; then
+        update_expr+=' .status = $status |'
+        args+=(--arg status "${new_status}")
+    fi
+    if [[ -n "${new_gate}" ]]; then
+        update_expr+=' .gate_path = $gate |'
+        args+=(--arg gate "${new_gate}")
+    fi
+    if [[ -n "${new_host}" ]]; then
+        update_expr+=' .host = $host_val |'
+        args+=(--arg host_val "${new_host}")
+    fi
+    if [[ -n "${new_fw}" ]]; then
+        update_expr+=' .framework = $fw |'
+        args+=(--arg fw "${new_fw}")
+    fi
+    if [[ -n "${new_tags}" ]]; then
+        local tags_json
+        tags_json=$(echo "${new_tags}" | tr ',' '\n' | jq -R '.' | jq -s '.')
+        update_expr+=' .tags = $tags |'
+        args+=(--argjson tags "${tags_json}")
+    fi
+
+    # Remove trailing pipe
+    update_expr="${update_expr% |}"
+    update_expr+=' else . end)'
+
+    jq "${args[@]}" "${update_expr}" "${REGISTRY_FILE}" > "${tmp_file}"
+    mv "${tmp_file}" "${REGISTRY_FILE}"
+
+    ok "Updated: ${agent_id}"
+}
+
+# ─── version ──────────────────────────────────────────────────────
+cmd_version() {
+    echo "${PROGRAM} ${VERSION}"
+}
+
+# ─── help ─────────────────────────────────────────────────────────
+cmd_help() {
+    cat <<EOF
+${BOLD}ZLAR-FL${RESET} — Multi-Agent Fleet Governance
+Version ${VERSION}
+
+${BOLD}USAGE${RESET}
+    ${PROGRAM} <command> [options]
+
+${BOLD}COMMANDS${RESET}
+    init [name]             Initialize a new fleet registry
+    register                Register an agent in the fleet
+    deregister <id>         Remove an agent from the fleet
+    list                    List all fleet agents
+    status                  Fleet health status with audit checks
+    audit                   Aggregate audit trails across agents
+    report                  Fleet-wide governance report
+    policy [show|compare]   View and compare policies across agents
+    topology                Show fleet topology grouped by host
+    update                  Update an agent's properties
+    version                 Show version
+    help                    Show this help
+
+${BOLD}EXAMPLES${RESET}
+    # Initialize a fleet
+    ${PROGRAM} init "production"
+
+    # Register agents
+    ${PROGRAM} register --id bohm-mini --name "Bohm (Mini)" --gate ~/.zlar-lt --host local --framework claude-code
+    ${PROGRAM} register --id bohm-mbp --name "Bohm (MBP)" --gate ~/.zlar-lt --host macbook --framework claude-code --tags inference,heavy
+
+    # Fleet overview
+    ${PROGRAM} list
+    ${PROGRAM} status
+    ${PROGRAM} topology
+
+    # Aggregate audit trails
+    ${PROGRAM} audit
+    ${PROGRAM} audit --agent bohm-mini --limit 20
+
+    # Policy comparison
+    ${PROGRAM} policy compare
+
+    # Fleet-wide report
+    ${PROGRAM} report
+
+    # Update agent status
+    ${PROGRAM} update --id bohm-mbp --status inactive
+
+${BOLD}CONFIGURATION${RESET}
+    Registry:  \$ZLAR_FL_REGISTRY or etc/fleet-registry.json
+    Config:    \$ZLAR_FL_CONFIG or etc/fl.json
+
+${BOLD}THE FLEET REGISTRY${RESET}
+    The registry is a human artifact. Humans decide which agents
+    are in the fleet. FL tracks them, aggregates their audit trails,
+    and reports. No agent can add itself to the fleet.
+
+Copyright 2026 ZLAR Inc. Apache 2.0
+EOF
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# Main
+# ═══════════════════════════════════════════════════════════════════
+main() {
+    check_jq
+    load_config
+
+    local cmd="${1:-help}"
+    shift || true
+
+    case "${cmd}" in
+        init)       cmd_init "$@" ;;
+        register)   cmd_register "$@" ;;
+        deregister) cmd_deregister "$@" ;;
+        list)       cmd_list "$@" ;;
+        status)     cmd_status "$@" ;;
+        audit)      cmd_audit "$@" ;;
+        report)     cmd_report "$@" ;;
+        policy)     cmd_policy "$@" ;;
+        topology)   cmd_topology "$@" ;;
+        update)     cmd_update "$@" ;;
+        version)    cmd_version ;;
+        help|--help|-h)  cmd_help ;;
+        *)          die "Unknown command: ${cmd}. Run '${PROGRAM} help' for usage." ;;
+    esac
+}
+
+main "$@"
