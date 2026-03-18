@@ -54,6 +54,53 @@ scripts/       Setup and installation
 signal/        Agent-facing signal layer
 ```
 
+## Tuning — Set Your Own Speed
+
+ZLAR ships locked down. As you build trust, open it up.
+
+**Level 1: Deny-heavy (default)**
+Everything risky is blocked. Reads and writes allowed. No Telegram needed. This is where you start.
+
+**Level 2: Add Telegram approval**
+Risky actions go to your phone instead of being blocked. You approve or deny from anywhere.
+```bash
+zlar telegram
+```
+
+**Level 3: Raise thresholds**
+Auto-approve low-risk actions. Only get pinged for the real decisions. Edit the `scoring_thresholds` in your active policy:
+```json
+"scoring_thresholds": {
+    "allow": 50,
+    "log": 51,
+    "ask": 71
+}
+```
+- **≤50:** auto-approve silently — safe commands, compound commands, routine operations
+- **51–70:** approve and log — moderate risk, recorded in audit trail
+- **71+:** Telegram approval required — network, deployments, permissions, deletions
+
+Then re-sign and restart:
+```bash
+zlar-policy sign --input ~/.zlar/etc/policies/active.policy.json --key ~/.zlar-signing.key
+# Restart your editor to pick up the new policy
+```
+
+The deny rules (rm -rf, sudo, persistence mechanisms) always block regardless of threshold. The audit trail records everything regardless of threshold. You're choosing what interrupts you, not what gets observed.
+
+## Uninstall
+
+Clean removal. Hooks removed from all frameworks. Signing key preserved.
+
+```bash
+zlar uninstall
+```
+
+Or directly:
+```bash
+~/.zlar/uninstall.sh
+```
+
 ## For Agents
 
 See [`AGENTS.md`](AGENTS.md) for discovery. See [`signal/`](signal/) for the thesis, manifest, and structured project map.
