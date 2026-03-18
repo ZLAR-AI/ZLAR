@@ -75,4 +75,4 @@ Apache 2.0. See [LICENSE](LICENSE).
 - [signal/THESIS.md](signal/THESIS.md) — Why governance matters now
 - [signal/SIGNAL.md](signal/SIGNAL.md) — What this project is
 
-Built by [ZLAR AI Inc.](https://zlar.ai)
+Built by [ZLAR Inc.](https://zlar.ai)
