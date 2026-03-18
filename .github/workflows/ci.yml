@@ -16,19 +16,19 @@ jobs:
         run: sudo apt-get install -y shellcheck
 
       - name: ShellCheck bin/
-        run: shellcheck --severity=warning --exclude=SC2034,SC2059,SC2162 bin/*
+        run: shellcheck --severity=error bin/*
 
       - name: ShellCheck adapters/
-        run: shellcheck --severity=warning --exclude=SC2034,SC2059,SC2162 adapters/*/hook.sh
+        run: shellcheck --severity=error adapters/*/hook.sh
 
       - name: ShellCheck scripts/
-        run: shellcheck --severity=warning --exclude=SC2034,SC2059,SC2162 scripts/*.sh
+        run: shellcheck --severity=error scripts/*.sh
 
       - name: ShellCheck install/uninstall
-        run: shellcheck --severity=warning --exclude=SC2034,SC2059,SC2162 install.sh uninstall.sh
+        run: shellcheck --severity=error install.sh uninstall.sh
 
       - name: ShellCheck oc/bin/
-        run: shellcheck --severity=warning --exclude=SC2034,SC2059,SC2162 oc/bin/*
+        run: shellcheck --severity=error oc/bin/*
 
       - name: Validate JSON configs
         run: |
