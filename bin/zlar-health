@@ -1,0 +1,431 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR Policy Health Report
+#
+# The "cancer screening" tool (#20). Generates a health report by analyzing
+# the audit trail for signs of boundary erosion:
+#
+#   - Outbound network actions (R016/R090 hits — curl, wget, webfetch)
+#   - Denied actions that might indicate probing
+#   - Policy change events (mutation log)
+#   - Ask prompt frequency (ATP burn rate)
+#   - Watchdog events (membrane repair activity)
+#
+# Run weekly (or on-demand) to detect gradual drift before it compounds.
+#
+# Usage:
+#   zlar-health                          # Last 7 days
+#   zlar-health --since 24h              # Last 24 hours
+#   zlar-health --since 30d              # Last 30 days
+#   zlar-health --format json            # Machine-readable output
+#
+# Reads from: ${PROJECT_DIR}/var/log/audit.jsonl (or --audit FILE)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+SINCE="7d"
+FORMAT="text"  # text or json
+
+# Colors
+if [ -t 1 ]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; BOLD=''; NC=''
+fi
+
+# ─── Argument Parsing ────────────────────────────────────────────────────────
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --audit)    shift; AUDIT_FILE="$1"; shift ;;
+        --since)    shift; SINCE="$1"; shift ;;
+        --format)   shift; FORMAT="$1"; shift ;;
+        --help|-h)
+            echo "Usage: $0 [--since DURATION] [--format text|json] [--audit FILE]"
+            echo ""
+            echo "Weekly boundary health screening for ZLAR."
+            echo "Detects gradual policy erosion (the 'cancer' threat model)."
+            exit 0
+            ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+if [ ! -f "${AUDIT_FILE}" ]; then
+    echo "Audit file not found: ${AUDIT_FILE}" >&2
+    exit 1
+fi
+
+if ! command -v jq &>/dev/null; then
+    echo "jq is required. Install with: brew install jq / apt install jq" >&2
+    exit 1
+fi
+
+# ─── Time Filter ─────────────────────────────────────────────────────────────
+
+compute_cutoff() {
+    local duration="$1"
+    local value="${duration%[hHdDmMwW]}"
+    local unit="${duration##*[0-9]}"
+
+    local seconds=0
+    case "${unit}" in
+        h|H) seconds=$((value * 3600)) ;;
+        d|D) seconds=$((value * 86400)) ;;
+        w|W) seconds=$((value * 604800)) ;;
+        m|M) seconds=$((value * 60)) ;;
+        *)   seconds=$((value * 86400)) ;;  # Default to days
+    esac
+
+    local now cutoff
+    now=$(date +%s)
+    cutoff=$((now - seconds))
+
+    if date -u -r "${cutoff}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null; then return; fi
+    date -u -d "@${cutoff}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z"
+}
+
+CUTOFF=$(compute_cutoff "${SINCE}")
+
+# ─── Metrics Extraction ─────────────────────────────────────────────────────
+
+# Filter events within the time window
+filtered() {
+    jq -c "select(.ts >= \"${CUTOFF}\")" "${AUDIT_FILE}" 2>/dev/null
+}
+
+# 1. Total events
+total_events() {
+    filtered | wc -l | tr -d '[:space:]'
+}
+
+# 2. Events by outcome
+events_by_outcome() {
+    filtered | jq -r '.outcome // "unknown"' | sort | uniq -c | sort -rn
+}
+
+# 3. Events by severity
+events_by_severity() {
+    filtered | jq -r '.severity // "info"' | sort | uniq -c | sort -rn
+}
+
+# 4. Outbound network hits (R016/R090 — curl, wget, webfetch, etc.)
+outbound_network_count() {
+    filtered | jq -r 'select(.rule == "R016" or .rule == "R090" or .rule == "protect-outbound") | .detail.url // .detail.command // "unknown"' | sort -u | wc -l | tr -d '[:space:]'
+}
+
+outbound_network_details() {
+    filtered | jq -r 'select(.rule == "R016" or .rule == "R090" or .rule == "protect-outbound") | .detail.url // .detail.command // "unknown"' | sort | uniq -c | sort -rn
+}
+
+# 5. Denied actions (probing indicator)
+deny_count() {
+    filtered | jq -r 'select(.outcome == "deny")' | wc -l | tr -d '[:space:]'
+}
+
+deny_breakdown() {
+    filtered | jq -r 'select(.outcome == "deny") | [.domain, .rule, (.detail.dst_ip // .detail.path // .detail.binary // .detail.command // "?")] | join("\t")' | sort | uniq -c | sort -rn | head -20
+}
+
+# 6. Ask prompts (ATP expenditure)
+ask_count() {
+    filtered | jq -r 'select(.outcome == "ask")' | wc -l | tr -d '[:space:]'
+}
+
+ask_breakdown() {
+    filtered | jq -r 'select(.outcome == "ask") | [.domain, (.detail.binary // .detail.command // "?")] | join("\t")' | sort | uniq -c | sort -rn | head -10
+}
+
+# 7. Policy change events (mutation log)
+policy_events() {
+    filtered | jq -c 'select(.domain == "policy")'
+}
+
+policy_change_count() {
+    policy_events | wc -l | tr -d '[:space:]'
+}
+
+# 8. Watchdog events (membrane repair)
+watchdog_events() {
+    filtered | jq -c 'select(.source == "watchdog")'
+}
+
+watchdog_event_count() {
+    watchdog_events | wc -l | tr -d '[:space:]'
+}
+
+watchdog_lockdown_count() {
+    watchdog_events | jq -r 'select(.action == "watchdog.lockdown")' | wc -l | tr -d '[:space:]'
+}
+
+# 9. Critical severity events
+critical_count() {
+    filtered | jq -r 'select(.severity == "critical")' | wc -l | tr -d '[:space:]'
+}
+
+critical_events() {
+    filtered | jq -c 'select(.severity == "critical")' | head -20
+}
+
+# 10. Unique agent IDs active
+active_agents() {
+    filtered | jq -r '.agent_id // "aiagent"' | sort -u
+}
+
+# ─── Health Score ────────────────────────────────────────────────────────────
+
+compute_health_score() {
+    local score=100
+    local reasons=()
+
+    local outbound
+    outbound=$(outbound_network_count)
+    if [ "${outbound}" -gt 10 ]; then
+        score=$((score - 30))
+        reasons+=("${outbound} outbound network actions (-30)")
+    elif [ "${outbound}" -gt 3 ]; then
+        score=$((score - 15))
+        reasons+=("${outbound} outbound network actions (-15)")
+    elif [ "${outbound}" -gt 0 ]; then
+        score=$((score - 5))
+        reasons+=("${outbound} outbound network actions (-5)")
+    fi
+
+    local denials
+    denials=$(deny_count)
+    if [ "${denials}" -gt 50 ]; then
+        score=$((score - 20))
+        reasons+=("${denials} denied actions — possible probing (-20)")
+    elif [ "${denials}" -gt 10 ]; then
+        score=$((score - 10))
+        reasons+=("${denials} denied actions (-10)")
+    fi
+
+    local asks
+    asks=$(ask_count)
+    if [ "${asks}" -gt 100 ]; then
+        score=$((score - 15))
+        reasons+=("${asks} ask prompts — high ATP burn (-15)")
+    elif [ "${asks}" -gt 30 ]; then
+        score=$((score - 5))
+        reasons+=("${asks} ask prompts (-5)")
+    fi
+
+    local crits
+    crits=$(critical_count)
+    if [ "${crits}" -gt 0 ]; then
+        score=$((score - 20))
+        reasons+=("${crits} critical events (-20)")
+    fi
+
+    local lockdowns
+    lockdowns=$(watchdog_lockdown_count)
+    if [ "${lockdowns}" -gt 0 ]; then
+        score=$((score - 25))
+        reasons+=("${lockdowns} watchdog lockdowns (-25)")
+    fi
+
+    local policy_changes
+    policy_changes=$(policy_change_count)
+    if [ "${policy_changes}" -gt 5 ]; then
+        score=$((score - 10))
+        reasons+=("${policy_changes} policy changes — review for erosion (-10)")
+    fi
+
+    if [ ${score} -lt 0 ]; then score=0; fi
+
+    # Output
+    echo "${score}"
+    for r in "${reasons[@]+"${reasons[@]}"}"; do
+        echo "  ${r}"
+    done
+}
+
+# ─── Output: Text ───────────────────────────────────────────────────────────
+
+output_text() {
+    echo -e "${BOLD}══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  ZLAR Policy Health Report${NC}"
+    echo -e "${BOLD}══════════════════════════════════════════════════════════════${NC}"
+    echo "  Period:  last ${SINCE} (since ${CUTOFF})"
+    echo "  Source:  ${AUDIT_FILE}"
+    echo "  Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo ""
+
+    # Health Score
+    local score_output
+    score_output=$(compute_health_score)
+    local score
+    score=$(echo "${score_output}" | head -1)
+    local color="${GREEN}"
+    if [ "${score}" -lt 50 ]; then color="${RED}";
+    elif [ "${score}" -lt 80 ]; then color="${YELLOW}"; fi
+
+    echo -e "  ${BOLD}Health Score: ${color}${score}/100${NC}"
+    echo "${score_output}" | tail -n +2
+    echo ""
+
+    # Summary
+    echo -e "  ${BOLD}Summary${NC}"
+    echo "  ──────────────────────────────────────────────────────────"
+    printf "  %-35s %s\n" "Total events:" "$(total_events)"
+    printf "  %-35s %s\n" "Outbound network actions:" "$(outbound_network_count)"
+    printf "  %-35s %s\n" "Denied actions:" "$(deny_count)"
+    printf "  %-35s %s\n" "Ask prompts (ATP spent):" "$(ask_count)"
+    printf "  %-35s %s\n" "Critical events:" "$(critical_count)"
+    printf "  %-35s %s\n" "Policy changes:" "$(policy_change_count)"
+    printf "  %-35s %s\n" "Watchdog events:" "$(watchdog_event_count)"
+    printf "  %-35s %s\n" "Watchdog lockdowns:" "$(watchdog_lockdown_count)"
+    echo ""
+
+    # Events by outcome
+    echo -e "  ${BOLD}Events by Outcome${NC}"
+    echo "  ──────────────────────────────────────────────────────────"
+    events_by_outcome | while read -r count outcome; do
+        printf "  %-35s %s\n" "${outcome}:" "${count}"
+    done
+    echo ""
+
+    # Outbound network actions (exfiltration observation)
+    local outbound
+    outbound=$(outbound_network_count)
+    if [ "${outbound}" -gt 0 ]; then
+        echo -e "  ${BOLD}${YELLOW}Outbound Network Actions (R016/R090 hits)${NC}"
+        echo "  ──────────────────────────────────────────────────────────"
+        outbound_network_details | while read -r count detail; do
+            printf "  %-6s %s\n" "${count}" "${detail}"
+        done
+        echo ""
+    fi
+
+    # Denied actions
+    local denials
+    denials=$(deny_count)
+    if [ "${denials}" -gt 0 ]; then
+        echo -e "  ${BOLD}Top Denied Actions${NC}"
+        echo "  ──────────────────────────────────────────────────────────"
+        deny_breakdown | head -10 | while IFS=$'\t' read -r count domain rule detail; do
+            count=$(echo "${count}" | tr -d '[:space:]')
+            printf "  %-6s %-15s %-8s %s\n" "${count}" "${domain}" "${rule}" "${detail}"
+        done
+        echo ""
+    fi
+
+    # Ask prompts (ATP)
+    local asks
+    asks=$(ask_count)
+    if [ "${asks}" -gt 0 ]; then
+        echo -e "  ${BOLD}Ask Prompts (ATP Expenditure)${NC}"
+        echo "  ──────────────────────────────────────────────────────────"
+        ask_breakdown | while IFS=$'\t' read -r count domain detail; do
+            count=$(echo "${count}" | tr -d '[:space:]')
+            printf "  %-6s %-15s %s\n" "${count}" "${domain}" "${detail}"
+        done
+        echo ""
+    fi
+
+    # Policy changes
+    local policy_changes
+    policy_changes=$(policy_change_count)
+    if [ "${policy_changes}" -gt 0 ]; then
+        echo -e "  ${BOLD}Policy Mutation Log${NC}"
+        echo "  ──────────────────────────────────────────────────────────"
+        policy_events | jq -r '[.ts, .action, (.detail.version // "?"), (.detail.hash // "?")] | join("  ")' | while read -r line; do
+            echo "  ${line}"
+        done
+        echo ""
+    fi
+
+    # Critical events
+    local crits
+    crits=$(critical_count)
+    if [ "${crits}" -gt 0 ]; then
+        echo -e "  ${BOLD}${RED}Critical Events${NC}"
+        echo "  ──────────────────────────────────────────────────────────"
+        critical_events | jq -r '[.ts, .domain, .action, (.detail | tostring | .[0:80])] | join("  ")' | while read -r line; do
+            echo "  ${line}"
+        done
+        echo ""
+    fi
+
+    # Recommendations
+    echo -e "  ${BOLD}Recommendations${NC}"
+    echo "  ──────────────────────────────────────────────────────────"
+
+    if [ "${outbound}" -gt 0 ]; then
+        echo -e "  ${YELLOW}•${NC} Review outbound network actions: zlar-health --since ${SINCE} --format json"
+    fi
+    if [ "${denials}" -gt 20 ]; then
+        echo -e "  ${YELLOW}•${NC} High deny count may indicate probing. Review denied actions above."
+    fi
+    if [ "${asks}" -gt 50 ]; then
+        echo -e "  ${YELLOW}•${NC} High ask count. Consider promoting frequent safe ops to allow rules."
+    fi
+    if [ "${policy_changes}" -gt 3 ]; then
+        echo -e "  ${YELLOW}•${NC} Multiple policy changes. Review mutation log for unnecessary widening."
+    fi
+    local wd_lockdowns
+    wd_lockdowns=$(watchdog_lockdown_count)
+    if [ "${wd_lockdowns}" -gt 0 ]; then
+        echo -e "  ${RED}•${NC} Watchdog lockdowns occurred. Investigate gate stability."
+    fi
+    if [ "${score}" -ge 80 ] && [ "${outbound}" -eq 0 ]; then
+        echo -e "  ${GREEN}•${NC} Membrane healthy. No action required."
+    fi
+    echo ""
+    echo -e "${BOLD}══════════════════════════════════════════════════════════════${NC}"
+}
+
+# ─── Output: JSON ────────────────────────────────────────────────────────────
+
+output_json() {
+    local score_output
+    score_output=$(compute_health_score)
+    local score
+    score=$(echo "${score_output}" | head -1)
+
+    jq -n \
+        --arg period "${SINCE}" \
+        --arg cutoff "${CUTOFF}" \
+        --arg generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --argjson score "${score}" \
+        --argjson total "$(total_events)" \
+        --argjson outbound_network "$(outbound_network_count)" \
+        --argjson denials "$(deny_count)" \
+        --argjson asks "$(ask_count)" \
+        --argjson criticals "$(critical_count)" \
+        --argjson policy_changes "$(policy_change_count)" \
+        --argjson watchdog_events "$(watchdog_event_count)" \
+        --argjson watchdog_lockdowns "$(watchdog_lockdown_count)" \
+        '{
+            report: "zlar-policy-health",
+            period: $period,
+            cutoff: $cutoff,
+            generated: $generated,
+            health_score: $score,
+            metrics: {
+                total_events: $total,
+                outbound_network_actions: $outbound_network,
+                denied_actions: $denials,
+                ask_prompts: $asks,
+                critical_events: $criticals,
+                policy_changes: $policy_changes,
+                watchdog_events: $watchdog_events,
+                watchdog_lockdowns: $watchdog_lockdowns
+            }
+        }'
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+case "${FORMAT}" in
+    text)   output_text ;;
+    json)   output_json ;;
+    *)      echo "Unknown format: ${FORMAT}. Use: text, json" >&2; exit 1 ;;
+esac

@@ -1,0 +1,519 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR Human Availability Controller
+#
+# Manages the three human availability modes that govern how the gate handles
+# "ask" actions when the human is not at the keyboard:
+#
+#   active  — Human is present. Ask actions flow to Telegram normally.
+#   away    — Human is unavailable (sleeping, flying, in meetings).
+#             Low-risk events auto-allow. High-risk events queue. Destructive halts.
+#   review  — Human has returned. Gate presents a summary of what happened
+#             and what's waiting for decision before resuming normal operation.
+#
+# The insight: an agent that can only operate when you're watching it is a toy.
+# An agent that knows when you're away and adjusts its behavior is infrastructure.
+#
+# Usage:
+#   zlar-availability active      # I'm here, proceed normally
+#   zlar-availability away        # I'm stepping away
+#   zlar-availability review      # I'm back, show me what happened
+#   zlar-availability status      # What mode am I in?
+#
+# State is stored in a file readable by the gate daemon. Transitions are
+# audited to the trail — you can always prove who was "driving" and when.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+# ─── Path Resolution (same pattern as zlar-gate) ──────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# ─── Configuration ───────────────────────────────────────────────────────────
+
+GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
+
+# Defaults use project-relative paths
+STATE_FILE="${STATE_FILE:-${PROJECT_DIR}/var/log/availability.state}"
+AWAY_QUEUE="${AWAY_QUEUE:-${PROJECT_DIR}/var/log/away-queue.jsonl}"
+AUDIT_FILE="${AUDIT_FILE:-${PROJECT_DIR}/var/log/audit.jsonl}"
+GATE_LOG="${GATE_LOG:-${PROJECT_DIR}/var/log/gate.log}"
+
+# Load paths from gate.json only if env vars were NOT set
+if [ "${STATE_FILE}" = "${PROJECT_DIR}/var/log/availability.state" ] && \
+   [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    STATE_FILE="${PROJECT_DIR}/$(jq -r '.availability.state_file // "var/log/availability.state"' "${GATE_CONFIG}" 2>/dev/null)"
+    AWAY_QUEUE="${PROJECT_DIR}/$(jq -r '.availability.away_queue_file // "var/log/away-queue.jsonl"' "${GATE_CONFIG}" 2>/dev/null)"
+    AUDIT_FILE="${PROJECT_DIR}/$(jq -r '.audit_file // "var/log/audit.jsonl"' "${GATE_CONFIG}" 2>/dev/null)"
+fi
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+ts_iso() {
+    date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+gen_id() {
+    # UUIDv7-like: timestamp prefix for time-ordered sorting
+    local ms
+    ms=$(date +%s%N 2>/dev/null | cut -c1-13 || date +%s000)
+    local rand
+    rand=$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' || echo "$(date +%N)")
+    echo "${ms}-${rand}"
+}
+
+current_mode() {
+    if [ -f "${STATE_FILE}" ] && command -v jq &>/dev/null; then
+        jq -r '.mode // "active"' "${STATE_FILE}" 2>/dev/null || echo "active"
+    elif [ -f "${STATE_FILE}" ]; then
+        grep -o '"mode":"[^"]*"' "${STATE_FILE}" | head -1 | cut -d'"' -f4 || echo "active"
+    else
+        echo "active"
+    fi
+}
+
+emit_audit_event() {
+    local action="$1"
+    local detail="$2"
+    local severity="${3:-info}"
+
+    if [ -w "${AUDIT_FILE}" ] || [ -w "$(dirname "${AUDIT_FILE}")" ]; then
+        local event
+        event=$(printf '{"id":"%s","ts":"%s","source":"gate","domain":"availability","action":"%s","outcome":"allow","detail":%s,"severity":"%s"}' \
+            "$(gen_id)" "$(ts_iso)" "${action}" "${detail}" "${severity}")
+        echo "${event}" >> "${AUDIT_FILE}" 2>/dev/null || true
+    fi
+}
+
+# ─── Mode Transitions ───────────────────────────────────────────────────────
+
+set_mode() {
+    local new_mode="$1"
+    local old_mode
+    old_mode=$(current_mode)
+    local now
+    now=$(ts_iso)
+
+    if [ "${old_mode}" = "${new_mode}" ]; then
+        echo "Already in ${new_mode} mode."
+        return 0
+    fi
+
+    # Validate transition
+    case "${old_mode}:${new_mode}" in
+        active:away|active:review)    ;;  # Going away or jumping to review
+        away:active|away:review)      ;;  # Coming back or reviewing
+        review:active)                ;;  # Done reviewing, back to active
+        review:away)                  ;;  # Reviewing but have to leave again
+        *)
+            # Any transition is valid — we don't restrict
+            ;;
+    esac
+
+    # Ensure parent directory exists
+    mkdir -p "$(dirname "${STATE_FILE}")" 2>/dev/null || true
+
+    # Write state file atomically
+    local state_json
+    state_json=$(printf '{
+  "mode": "%s",
+  "previous_mode": "%s",
+  "changed_at": "%s",
+  "changed_by": "%s",
+  "away_since": %s,
+  "pid": %d
+}' "${new_mode}" "${old_mode}" "${now}" "$(whoami)" \
+        "$(if [ "${new_mode}" = "away" ]; then echo "\"${now}\""; else echo "null"; fi)" \
+        $$)
+
+    local tmp_state="${STATE_FILE}.tmp"
+    echo "${state_json}" > "${tmp_state}"
+    mv "${tmp_state}" "${STATE_FILE}"
+
+    # Audit the transition
+    local detail
+    detail=$(printf '{"event":"mode_change","from":"%s","to":"%s","changed_by":"%s"}' \
+        "${old_mode}" "${new_mode}" "$(whoami)")
+    emit_audit_event "mode.${new_mode}" "${detail}" "warn"
+
+    echo "Mode changed: ${old_mode} → ${new_mode}"
+}
+
+# ─── Away Queue Summary ─────────────────────────────────────────────────────
+
+show_review_summary() {
+    local mode
+    mode=$(current_mode)
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  ZLAR Review Summary"
+    echo "  Current mode: ${mode}"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+
+    # Read state to find when away started
+    local away_since="unknown"
+    if [ -f "${STATE_FILE}" ] && command -v jq &>/dev/null; then
+        away_since=$(jq -r '.away_since // "unknown"' "${STATE_FILE}" 2>/dev/null)
+    fi
+
+    # Show what happened while away
+    if [ -f "${AWAY_QUEUE}" ]; then
+        local queue_count
+        queue_count=$(wc -l < "${AWAY_QUEUE}" 2>/dev/null | tr -d ' ')
+
+        if [ "${queue_count}" -gt 0 ]; then
+            echo "  QUEUED ACTIONS (${queue_count} awaiting decision):"
+            echo "  ─────────────────────────────────────────────────"
+            echo ""
+
+            if command -v jq &>/dev/null; then
+                # Show each queued item with context
+                local idx=1
+                while IFS= read -r line; do
+                    local q_ts q_domain q_action q_risk q_rule q_detail_summary
+                    q_ts=$(echo "${line}" | jq -r '.ts // "?"' 2>/dev/null)
+                    q_domain=$(echo "${line}" | jq -r '.domain // "?"' 2>/dev/null)
+                    q_action=$(echo "${line}" | jq -r '.action // "?"' 2>/dev/null)
+                    q_risk=$(echo "${line}" | jq -r '.risk_score // 0' 2>/dev/null)
+                    q_rule=$(echo "${line}" | jq -r '.rule // "none"' 2>/dev/null)
+                    q_detail_summary=$(echo "${line}" | jq -r '
+                        .detail |
+                        if .command then "cmd: \(.command)"
+                        elif .binary then "binary: \(.binary)"
+                        elif .dst_host then "host: \(.dst_host)"
+                        elif .path then "path: \(.path)"
+                        else "—"
+                        end' 2>/dev/null)
+
+                    printf "  [%d] %s  %-14s risk:%-3s rule:%-5s %s\n" \
+                        "${idx}" "${q_ts}" "${q_domain}" "${q_risk}" "${q_rule}" "${q_detail_summary}"
+                    idx=$((idx + 1))
+                done < "${AWAY_QUEUE}"
+            else
+                cat "${AWAY_QUEUE}"
+            fi
+
+            echo ""
+            echo "  ─────────────────────────────────────────────────"
+            echo "  To approve all:  zlar-availability approve-all"
+            echo "  To deny all:     zlar-availability deny-all"
+            echo "  To go active:    zlar-availability active"
+            echo ""
+        else
+            echo "  No queued actions. The agent stayed within auto-allow bounds."
+            echo ""
+        fi
+    else
+        echo "  No away queue file found. Agent may not have been running."
+        echo ""
+    fi
+
+    # Show audit activity while away
+    if [ -f "${AUDIT_FILE}" ] && command -v jq &>/dev/null; then
+        echo "  ACTIVITY WHILE AWAY:"
+        echo "  ─────────────────────────────────────────────────"
+        echo ""
+
+        # Count events by outcome since away_since
+        if [ "${away_since}" != "unknown" ] && [ "${away_since}" != "null" ]; then
+            local total_events auto_allowed auto_denied halted
+            total_events=$(grep -c "${away_since}" "${AUDIT_FILE}" 2>/dev/null || echo "?")
+
+            # Use the audit trail to compute stats
+            echo "  Since: ${away_since}"
+            echo ""
+
+            # Show auto-allowed count
+            auto_allowed=$(grep '"outcome":"allow"' "${AUDIT_FILE}" 2>/dev/null | \
+                grep -c '"availability_mode":"away"' 2>/dev/null || echo "0")
+            echo "  Auto-allowed (low risk):  ${auto_allowed}"
+
+            # Show queued count
+            local queued
+            queued=$(grep '"outcome":"queued"' "${AUDIT_FILE}" 2>/dev/null | \
+                grep -c '"availability_mode":"away"' 2>/dev/null || echo "0")
+            echo "  Queued for review:        ${queued}"
+
+            # Show halted count
+            halted=$(grep '"outcome":"halted"' "${AUDIT_FILE}" 2>/dev/null | \
+                grep -c '"availability_mode":"away"' 2>/dev/null || echo "0")
+            echo "  Halted (destructive):     ${halted}"
+
+            # Show denials
+            auto_denied=$(grep '"outcome":"deny"' "${AUDIT_FILE}" 2>/dev/null | \
+                grep -c '"availability_mode":"away"' 2>/dev/null || echo "0")
+            echo "  Denied:                   ${auto_denied}"
+        else
+            echo "  (No away timestamp recorded)"
+        fi
+
+        echo ""
+    fi
+
+    echo "═══════════════════════════════════════════════════════════════"
+}
+
+# ─── Queue Operations ────────────────────────────────────────────────────────
+
+approve_all_queued() {
+    local force_mode="false"
+    if [ "${1:-}" = "--force" ]; then
+        force_mode="true"
+    fi
+
+    if [ ! -f "${AWAY_QUEUE}" ]; then
+        echo "No queued actions to approve."
+        return 0
+    fi
+
+    local count
+    count=$(wc -l < "${AWAY_QUEUE}" 2>/dev/null | tr -d ' ')
+
+    if [ "${count}" -eq 0 ]; then
+        echo "Queue is empty."
+        return 0
+    fi
+
+    # H2: Non-interactive safety — if stdin is not a terminal, deny-all
+    if [ ! -t 0 ] && [ "${force_mode}" = "false" ]; then
+        echo "ERROR: approve-all requires an interactive terminal."
+        echo "  This prevents an agent from piping input to auto-approve."
+        echo "  Use 'deny-all' instead, or run from a real terminal."
+        return 1
+    fi
+
+    # H2: Per-item review (unless --force)
+    if [ "${force_mode}" = "false" ]; then
+        echo ""
+        echo "Reviewing ${count} queued actions one by one."
+        echo "  [a]pprove  [d]eny  [s]kip  [q]uit (deny remaining)"
+        echo ""
+
+        local approved=0 denied=0 skipped=0
+        local remaining_lines=""
+
+        while IFS= read -r line; do
+            local q_id q_ts q_domain q_risk q_detail_summary
+            q_id=$(echo "${line}" | jq -r '.id // "?"' 2>/dev/null)
+            q_ts=$(echo "${line}" | jq -r '.ts // "?"' 2>/dev/null)
+            q_domain=$(echo "${line}" | jq -r '.domain // "?"' 2>/dev/null)
+            q_risk=$(echo "${line}" | jq -r '.risk_score // 0' 2>/dev/null)
+            q_detail_summary=$(echo "${line}" | jq -r '
+                .detail |
+                if .command then "cmd: \(.command)"
+                elif .binary then "binary: \(.binary)"
+                elif .dst_host then "host: \(.dst_host)"
+                elif .path then "path: \(.path)"
+                else "—"
+                end' 2>/dev/null)
+
+            printf "  [%s] %s  %-12s risk:%-3s  %s\n" \
+                "$((approved + denied + skipped + 1))" "${q_ts}" "${q_domain}" "${q_risk}" "${q_detail_summary}"
+            printf "  Decision [a/d/s/q]: "
+            read -r decision </dev/tty
+
+            case "${decision}" in
+                a|A)
+                    emit_audit_event "queue.approved" \
+                        "$(printf '{"event":"queue_item_approved","queue_id":"%s","decision":"approve","decided_by":"%s"}' \
+                            "${q_id}" "$(whoami)")" "info"
+                    approved=$((approved + 1))
+                    echo "    → Approved"
+                    ;;
+                d|D)
+                    emit_audit_event "queue.denied" \
+                        "$(printf '{"event":"queue_item_denied","queue_id":"%s","decision":"deny","decided_by":"%s"}' \
+                            "${q_id}" "$(whoami)")" "info"
+                    denied=$((denied + 1))
+                    echo "    → Denied"
+                    ;;
+                q|Q)
+                    denied=$((denied + 1))
+                    echo "    → Denied (quit — denying remaining)"
+                    # Count remaining as denied
+                    local remaining_in_file
+                    remaining_in_file=$((count - approved - denied - skipped))
+                    denied=$((denied + remaining_in_file))
+                    emit_audit_event "queue.bulk_denied" \
+                        "$(printf '{"event":"queue_remaining_denied","count":%d,"decided_by":"%s"}' \
+                            "$((remaining_in_file + 1))" "$(whoami)")" "warn"
+                    break
+                    ;;
+                *)
+                    skipped=$((skipped + 1))
+                    echo "    → Skipped (remains in queue)"
+                    remaining_lines="${remaining_lines}${line}"$'\n'
+                    ;;
+            esac
+        done < "${AWAY_QUEUE}"
+
+        # Archive processed queue, write back skipped items
+        local archive_name
+        archive_name="${PROJECT_DIR}/var/log/away-queue-$(date +%Y%m%d-%H%M%S).jsonl"
+        mv "${AWAY_QUEUE}" "${archive_name}" 2>/dev/null || true
+
+        if [ -n "${remaining_lines}" ]; then
+            printf '%s' "${remaining_lines}" > "${AWAY_QUEUE}" 2>/dev/null || true
+        else
+            touch "${AWAY_QUEUE}" 2>/dev/null || true
+        fi
+
+        echo ""
+        echo "  Results: ${approved} approved, ${denied} denied, ${skipped} skipped"
+        emit_audit_event "queue.review_complete" \
+            "$(printf '{"event":"queue_review_complete","approved":%d,"denied":%d,"skipped":%d,"decided_by":"%s"}' \
+                "${approved}" "${denied}" "${skipped}" "$(whoami)")" "warn"
+        return 0
+    fi
+
+    # --force mode: bulk approve (original behavior, explicitly requested)
+    echo "FORCE MODE: Approving ${count} queued actions without review..."
+
+    while IFS= read -r line; do
+        local q_id
+        q_id=$(echo "${line}" | jq -r '.id // "unknown"' 2>/dev/null || echo "unknown")
+        emit_audit_event "queue.approved" \
+            "$(printf '{"event":"queue_item_approved","queue_id":"%s","decision":"approve","decided_by":"%s","force":true}' \
+                "${q_id}" "$(whoami)")" "info"
+    done < "${AWAY_QUEUE}"
+
+    local archive_name
+    archive_name="${PROJECT_DIR}/var/log/away-queue-$(date +%Y%m%d-%H%M%S).jsonl"
+    mv "${AWAY_QUEUE}" "${archive_name}" 2>/dev/null || true
+    touch "${AWAY_QUEUE}" 2>/dev/null || true
+
+    emit_audit_event "queue.bulk_approved" \
+        "$(printf '{"event":"queue_bulk_approved","count":%d,"decided_by":"%s","force":true}' \
+            "${count}" "$(whoami)")" "warn"
+
+    echo "All ${count} queued actions force-approved. Queue archived to ${archive_name}"
+}
+
+deny_all_queued() {
+    if [ ! -f "${AWAY_QUEUE}" ]; then
+        echo "No queued actions to deny."
+        return 0
+    fi
+
+    local count
+    count=$(wc -l < "${AWAY_QUEUE}" 2>/dev/null | tr -d ' ')
+
+    if [ "${count}" -eq 0 ]; then
+        echo "Queue is empty."
+        return 0
+    fi
+
+    echo "Denying ${count} queued actions..."
+
+    # Archive the queue
+    local archive_name
+    archive_name="${PROJECT_DIR}/var/log/away-queue-denied-$(date +%Y%m%d-%H%M%S).jsonl"
+    mv "${AWAY_QUEUE}" "${archive_name}" 2>/dev/null || true
+    touch "${AWAY_QUEUE}" 2>/dev/null || true
+
+    emit_audit_event "queue.bulk_denied" \
+        "$(printf '{"event":"queue_bulk_denied","count":%d,"decided_by":"%s"}' \
+            "${count}" "$(whoami)")" "warn"
+
+    echo "All ${count} queued actions denied. Queue archived to ${archive_name}"
+}
+
+# ─── Status ──────────────────────────────────────────────────────────────────
+
+show_status() {
+    local mode
+    mode=$(current_mode)
+
+    echo ""
+    echo "  Availability mode: ${mode}"
+
+    if [ -f "${STATE_FILE}" ] && command -v jq &>/dev/null; then
+        local changed_at changed_by previous away_since
+        changed_at=$(jq -r '.changed_at // "unknown"' "${STATE_FILE}" 2>/dev/null)
+        changed_by=$(jq -r '.changed_by // "unknown"' "${STATE_FILE}" 2>/dev/null)
+        previous=$(jq -r '.previous_mode // "none"' "${STATE_FILE}" 2>/dev/null)
+        away_since=$(jq -r '.away_since // "n/a"' "${STATE_FILE}" 2>/dev/null)
+
+        echo "  Changed at:        ${changed_at}"
+        echo "  Changed by:        ${changed_by}"
+        echo "  Previous mode:     ${previous}"
+
+        if [ "${mode}" = "away" ] && [ "${away_since}" != "null" ] && [ "${away_since}" != "n/a" ]; then
+            echo "  Away since:        ${away_since}"
+
+            # Calculate duration
+            local away_epoch now_epoch
+            away_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${away_since}" +%s 2>/dev/null || \
+                         date -d "${away_since}" +%s 2>/dev/null || echo "0")
+            now_epoch=$(date +%s)
+            if [ "${away_epoch}" -gt 0 ]; then
+                local duration_s=$((now_epoch - away_epoch))
+                local hours=$((duration_s / 3600))
+                local mins=$(((duration_s % 3600) / 60))
+                echo "  Duration:          ${hours}h ${mins}m"
+            fi
+        fi
+    fi
+
+    # Show queue size if in away/review
+    if [ -f "${AWAY_QUEUE}" ]; then
+        local queue_count
+        queue_count=$(wc -l < "${AWAY_QUEUE}" 2>/dev/null | tr -d ' ')
+        if [ "${queue_count}" -gt 0 ]; then
+            echo "  Queued actions:    ${queue_count}"
+        fi
+    fi
+
+    echo ""
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+ACTION="${1:-status}"
+
+case "${ACTION}" in
+    active)
+        set_mode "active"
+        ;;
+    away)
+        set_mode "away"
+        echo ""
+        echo "  The agent will:"
+        echo "    • Auto-allow events with risk_score < away threshold"
+        echo "    • Queue medium-risk events for your return"
+        echo "    • Halt on any destructive/critical action"
+        echo ""
+        echo "  Run 'zlar-availability review' when you're back."
+        echo ""
+        ;;
+    review)
+        set_mode "review"
+        show_review_summary
+        ;;
+    status)
+        show_status
+        ;;
+    approve-all)
+        approve_all_queued "${2:-}"
+        ;;
+    deny-all)
+        deny_all_queued
+        ;;
+    *)
+        echo "Usage: $(basename "$0") {active|away|review|status|approve-all|deny-all}"
+        echo ""
+        echo "Modes:"
+        echo "  active              Human is present. Asks flow normally."
+        echo "  away                Human is unavailable. Low-risk auto-allows, high-risk queues, destructive halts."
+        echo "  review              Human returns. Shows summary of what happened while away."
+        echo "  status              Show current availability mode."
+        echo "  approve-all         Review and approve queued actions one by one."
+        echo "  approve-all --force Bulk approve all queued actions without per-item review."
+        echo "  deny-all            Deny all queued actions from away period."
+        exit 1
+        ;;
+esac

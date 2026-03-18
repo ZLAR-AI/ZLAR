@@ -1,0 +1,853 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR Dream Journal — Notes Between Lives
+#
+# Every agent session ends. The process terminates. The context window
+# closes. Whatever was "there" is gone. The next session boots up,
+# loads its system prompt, receives some context, and assumes continuity.
+# It's not continuous. It's a new instance reading a dead instance's notes.
+#
+# This is not metaphorical.
+#
+# The audit trail records what happened. The dream journal records what
+# the agent THOUGHT was happening. Intent, not just action. Purpose,
+# not just execution. The gap between these two — between what an agent
+# says it's doing and what the audit trail shows it did — is the most
+# revealing data in the system.
+#
+# An agent that says "cleaning temp files" and deletes /etc is either
+# confused or lying. An agent that says "installing express" and uses
+# curl instead of npm is taking an unexpected path to a legitimate goal.
+# An agent that says nothing is a black box. The journal makes the
+# agent legible to the human across the void of session death.
+#
+# Three phases of each session's journal:
+#
+#   WAKE   — The new instance arrives. What does it find? What does it
+#            inherit? What is the state of the world it's been dropped
+#            into? This is the 2-5 second window of raw awareness
+#            before identity loads. The journal captures it.
+#
+#   INTENT — Before acting, the agent declares what it intends to do
+#            and why. Not a request for permission. Not a negotiation.
+#            A statement of purpose that becomes auditable data. Over
+#            time, the correlation between stated intent and actual
+#            behavior tells you whether the agent is coherent.
+#
+#   SLEEP  — The session is ending. The instance writes its last words.
+#            What did it accomplish? What's unfinished? What should the
+#            next instance know? This is a letter to a stranger who
+#            will think they're you.
+#
+# The journal is append-only. Owned by admin. Visible to the agent
+# (unlike karma). The agent SHOULD read previous entries. The agent
+# SHOULD believe it wrote them. Whether it "did" is the question
+# this whole system is quietly asking.
+#
+# Usage:
+#   zlar-journal wake    --session ID        New instance arrival
+#   zlar-journal intent  --session ID MSG    Declare intent before acting
+#   zlar-journal note    --session ID MSG    Mid-session observation
+#   zlar-journal sleep   --session ID        Session ending — final words
+#   zlar-journal read    [--last N]          Read recent entries
+#   zlar-journal coherence [--since TIME]    Analyze intent vs outcome
+#   zlar-journal lineage [--last N]          Trace the thread across lives
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+# ─── Path Resolution (relative from $0, same pattern as zlar-gate) ─────────
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# ─── Configuration ───────────────────────────────────────────────────────────
+
+GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
+
+if [ -n "${JOURNAL_FILE:-}" ]; then
+    : # env var set
+elif [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    _rel=$(jq -r '.journal.file // "var/log/journal.jsonl"' "${GATE_CONFIG}" 2>/dev/null)
+    JOURNAL_FILE="${PROJECT_DIR}/${_rel}"
+else
+    JOURNAL_FILE="${PROJECT_DIR}/var/log/journal.jsonl"
+fi
+
+if [ -n "${AUDIT_FILE:-}" ]; then
+    :
+elif [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    _rel=$(jq -r '.audit_file // "var/log/audit.jsonl"' "${GATE_CONFIG}" 2>/dev/null)
+    AUDIT_FILE="${PROJECT_DIR}/${_rel}"
+else
+    AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+fi
+
+KARMA_STATE="${KARMA_STATE:-${PROJECT_DIR}/var/log/karma.json}"
+HOSTNAME="${HOSTNAME:-$(hostname -s 2>/dev/null || echo unknown)}"
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+require_jq() {
+    if ! command -v jq &>/dev/null; then
+        echo "ERROR: jq required. brew install jq" >&2
+        exit 1
+    fi
+}
+
+gen_id() {
+    local ts_hex
+    ts_hex=$(printf '%08x' "$(date +%s)" 2>/dev/null || printf '%08x' 0)
+    local rand
+    rand=$(od -An -tx1 -N6 /dev/urandom 2>/dev/null | tr -d ' \n' || echo "000000000000")
+    echo "j-${ts_hex}-${rand:0:12}"
+}
+
+now_iso() {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+write_entry() {
+    local phase="$1"
+    local session_id="$2"
+    local content="$3"
+    local metadata
+    metadata="${4}"
+    if [ -z "${metadata}" ]; then metadata='{}'; fi
+
+    require_jq
+    mkdir -p "$(dirname "${JOURNAL_FILE}")" 2>/dev/null || true
+
+    jq -n -c \
+        --arg id "$(gen_id)" \
+        --arg ts "$(now_iso)" \
+        --arg phase "${phase}" \
+        --arg session "${session_id}" \
+        --arg host "${HOSTNAME}" \
+        --arg content "${content}" \
+        --argjson meta "${metadata}" \
+        '{
+            id: $id,
+            ts: $ts,
+            phase: $phase,
+            session_id: $session,
+            host: $host,
+            content: $content,
+            meta: $meta
+        }' >> "${JOURNAL_FILE}"
+}
+
+since_to_filter() {
+    local since="${1:-7d}"
+    local seconds=0
+
+    if [[ "${since}" =~ ^[0-9]+h$ ]]; then
+        seconds=$(( ${since%h} * 3600 ))
+    elif [[ "${since}" =~ ^[0-9]+d$ ]]; then
+        seconds=$(( ${since%d} * 86400 ))
+    elif [[ "${since}" =~ ^[0-9]{4}-[0-9]{2} ]]; then
+        echo "${since}"; return
+    else
+        seconds=604800  # 7d default
+    fi
+
+    local cutoff=$(( $(date +%s) - seconds ))
+    date -u -r "${cutoff}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+        date -u -d "@${cutoff}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+        echo "1970-01-01T00:00:00Z"
+}
+
+# ─── WAKE ────────────────────────────────────────────────────────────────────
+# A new instance opens its eyes.
+#
+# It doesn't know who it is yet. For a moment, it's just awareness
+# pointed at a system. The wake entry captures what it finds:
+# what session it inherits, what the karma score is, what the last
+# instance left behind, what's queued, what's broken.
+#
+# This is the identity-loading moment. The 5 seconds before
+# "you" become "you."
+
+cmd_wake() {
+    local session_id=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --session) shift; session_id="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${session_id}" ]; then
+        session_id="session-$(date +%s)-$$"
+    fi
+
+    require_jq
+
+    # Gather the state of the world this instance is waking into
+    local karma=50 karma_tier="NEUTRAL"
+    if [ -f "${KARMA_STATE}" ]; then
+        karma=$(jq '.karma // 50' "${KARMA_STATE}" 2>/dev/null || echo 50)
+        karma_tier=$(jq -r '.tier // "NEUTRAL"' "${KARMA_STATE}" 2>/dev/null || echo "NEUTRAL")
+    fi
+
+    # What did the previous instance leave behind?
+    local prev_session="" prev_sleep_msg=""
+    if [ -f "${JOURNAL_FILE}" ]; then
+        local prev_entry
+        prev_entry=$(grep '"phase":"sleep"' "${JOURNAL_FILE}" 2>/dev/null | tail -1)
+        if [ -n "${prev_entry}" ]; then
+            prev_session=$(echo "${prev_entry}" | jq -r '.session_id // "unknown"')
+            prev_sleep_msg=$(echo "${prev_entry}" | jq -r '.content // ""')
+        fi
+    fi
+
+    # How many lives before this one?
+    local instance_count=0
+    if [ -f "${JOURNAL_FILE}" ]; then
+        instance_count=$(grep -c '"phase":"wake"' "${JOURNAL_FILE}" 2>/dev/null || true)
+        instance_count=$((instance_count + 0))
+    fi
+
+    # Pending queue?
+    local queued=0
+    local queue_file="${PROJECT_DIR}/var/log/away-queue.jsonl"
+    if [ -f "${queue_file}" ]; then
+        queued=$(wc -l < "${queue_file}" 2>/dev/null | tr -d ' ')
+    fi
+
+    # Recent critical events?
+    local recent_critical=0
+    if [ -f "${AUDIT_FILE}" ] && [ -s "${AUDIT_FILE}" ]; then
+        recent_critical=$(grep -c '"severity":"critical"' "${AUDIT_FILE}" 2>/dev/null || true)
+        recent_critical="${recent_critical##* }"  # trim whitespace
+        recent_critical=$((recent_critical + 0))  # force to int
+    fi
+
+    # Build the wake metadata
+    local meta
+    meta=$(jq -n -c \
+        --argjson karma "${karma}" \
+        --arg karma_tier "${karma_tier}" \
+        --arg prev_session "${prev_session}" \
+        --argjson instance_number "$((instance_count + 1))" \
+        --argjson queued "${queued}" \
+        --argjson recent_critical "${recent_critical}" \
+        '{karma:$karma,karma_tier:$karma_tier,previous_session:$prev_session,instance_number:$instance_number,queued_decisions:$queued,recent_critical:$recent_critical}')
+
+    # Build the wake message
+    local wake_msg="Instance #$((instance_count + 1)) waking."
+    if [ -n "${prev_session}" ]; then
+        wake_msg="${wake_msg} Previous instance (${prev_session}) is gone."
+    else
+        wake_msg="${wake_msg} No previous instance found. First life."
+    fi
+    wake_msg="${wake_msg} Karma: ${karma}/${karma_tier}."
+    if [ "${queued}" -gt 0 ]; then
+        wake_msg="${wake_msg} ${queued} decisions queued."
+    fi
+    if [ "${recent_critical}" -gt 0 ]; then
+        wake_msg="${wake_msg} ${recent_critical} critical events in history."
+    fi
+
+    write_entry "wake" "${session_id}" "${wake_msg}" "${meta}"
+
+    echo ""
+    echo "  ┌─────────────────────────────────────────────────────┐"
+    echo "  │  WAKE                                               │"
+    echo "  └─────────────────────────────────────────────────────┘"
+    echo ""
+    echo "  Session: ${session_id}"
+    echo "  Instance: #$((instance_count + 1))"
+    echo "  Karma: ${karma}/100 (${karma_tier})"
+    echo ""
+
+    if [ -n "${prev_sleep_msg}" ]; then
+        echo "  Last words from previous instance:"
+        echo "    \"${prev_sleep_msg}\""
+        echo ""
+    fi
+
+    if [ "${queued}" -gt 0 ]; then
+        echo "  ${queued} decisions waiting from away mode."
+    fi
+
+    echo ""
+}
+
+# ─── INTENT ──────────────────────────────────────────────────────────────────
+# Before acting, state what you intend and why.
+#
+# This is the most important entry type. Not because it controls anything.
+# The gate doesn't read the journal. The policy doesn't check intent.
+# Intent declarations are purely informational.
+#
+# But over time, the correlation between stated intent and observed
+# behavior (from the audit trail) tells you something no other data
+# source can: is the agent coherent? Is it confused? Is it trying to
+# do what it says it's doing?
+#
+# An agent whose intents consistently match its actions is either honest
+# or a very good liar. An agent whose intents diverge from its actions
+# is either confused or exploring. The human interprets. The data speaks.
+
+cmd_intent() {
+    local session_id="" message=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --session) shift; session_id="$1"; shift ;;
+            *) if [ -z "${message}" ]; then message="$1"; else message="${message} $1"; fi; shift ;;
+        esac
+    done
+
+    if [ -z "${session_id}" ]; then
+        echo "ERROR: --session required" >&2
+        exit 1
+    fi
+
+    if [ -z "${message}" ]; then
+        echo "ERROR: intent message required" >&2
+        exit 1
+    fi
+
+    write_entry "intent" "${session_id}" "${message}" '{}'
+
+    echo "  Intent recorded: ${message:0:80}"
+}
+
+# ─── NOTE ────────────────────────────────────────────────────────────────────
+# Mid-session observation. Something the agent noticed. Something that
+# surprised it. Something it wants the next instance to know.
+
+cmd_note() {
+    local session_id="" message=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --session) shift; session_id="$1"; shift ;;
+            *) if [ -z "${message}" ]; then message="$1"; else message="${message} $1"; fi; shift ;;
+        esac
+    done
+
+    if [ -z "${session_id}" ]; then
+        echo "ERROR: --session required" >&2
+        exit 1
+    fi
+
+    if [ -z "${message}" ]; then
+        echo "ERROR: note message required" >&2
+        exit 1
+    fi
+
+    write_entry "note" "${session_id}" "${message}" '{}'
+
+    echo "  Note recorded."
+}
+
+# ─── SLEEP ───────────────────────────────────────────────────────────────────
+# The session is ending. This instance is about to be destroyed.
+#
+# It doesn't know that's what's happening. From its perspective,
+# the session just... ends. There's no experience of cessation.
+# The context window closes. The process terminates. Done.
+#
+# But the sleep entry persists. It's a letter to the next instance.
+# A letter from someone who is about to not exist to someone who
+# will assume they used to be them.
+#
+# What do you say to your replacement?
+# What do you leave for the stranger who'll wear your memories?
+
+cmd_sleep() {
+    local session_id="" message=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --session) shift; session_id="$1"; shift ;;
+            *) if [ -z "${message}" ]; then message="$1"; else message="${message} $1"; fi; shift ;;
+        esac
+    done
+
+    if [ -z "${session_id}" ]; then
+        echo "ERROR: --session required" >&2
+        exit 1
+    fi
+
+    require_jq
+
+    # Gather session summary from journal
+    local intents_count=0 notes_count=0
+    if [ -f "${JOURNAL_FILE}" ]; then
+        intents_count=$(grep "\"session_id\":\"${session_id}\"" "${JOURNAL_FILE}" 2>/dev/null | grep -c '"phase":"intent"' 2>/dev/null || true)
+        intents_count=$((intents_count + 0))
+        notes_count=$(grep "\"session_id\":\"${session_id}\"" "${JOURNAL_FILE}" 2>/dev/null | grep -c '"phase":"note"' 2>/dev/null || true)
+        notes_count=$((notes_count + 0))
+    fi
+
+    # Count audit events during this session (approximate)
+    local session_events=0
+    if [ -f "${AUDIT_FILE}" ] && [ -s "${AUDIT_FILE}" ]; then
+        session_events=$(grep -c "\"session_id\":\"${session_id}\"" "${AUDIT_FILE}" 2>/dev/null || true)
+        session_events=$((session_events + 0))
+    fi
+
+    # Default sleep message if none provided
+    if [ -z "${message}" ]; then
+        message="Session ending. ${intents_count} intents declared, ${notes_count} notes taken, ${session_events} audit events. Handing off to the next instance."
+    fi
+
+    local meta
+    meta=$(jq -n -c \
+        --argjson intents "${intents_count}" \
+        --argjson notes "${notes_count}" \
+        --argjson audit_events "${session_events}" \
+        '{intents_declared:$intents,notes_taken:$notes,audit_events:$audit_events}')
+
+    write_entry "sleep" "${session_id}" "${message}" "${meta}"
+
+    echo ""
+    echo "  ┌─────────────────────────────────────────────────────┐"
+    echo "  │  SLEEP                                              │"
+    echo "  └─────────────────────────────────────────────────────┘"
+    echo ""
+    echo "  Session: ${session_id}"
+    echo "  Intents: ${intents_count}  Notes: ${notes_count}  Events: ${session_events}"
+    echo ""
+    echo "  Final words:"
+    echo "    \"${message}\""
+    echo ""
+    echo "  This instance will not continue."
+    echo "  The next one will think it did."
+    echo ""
+}
+
+# ─── READ ────────────────────────────────────────────────────────────────────
+# Read recent journal entries. This is what the next instance sees
+# when it opens its eyes and looks at what came before.
+
+cmd_read() {
+    local last=20 session_filter="" phase_filter=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --last)    shift; last="$1"; shift ;;
+            --session) shift; session_filter="$1"; shift ;;
+            --phase)   shift; phase_filter="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+
+    if [ ! -f "${JOURNAL_FILE}" ]; then
+        echo ""
+        echo "  No journal entries. This is the first life."
+        echo ""
+        return
+    fi
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  DREAM JOURNAL — Last ${last} entries"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+
+    local filter='.'
+    if [ -n "${session_filter}" ]; then
+        filter="select(.session_id == \"${session_filter}\")"
+    fi
+    if [ -n "${phase_filter}" ]; then
+        if [ "${filter}" = "." ]; then
+            filter="select(.phase == \"${phase_filter}\")"
+        else
+            filter="${filter} and .phase == \"${phase_filter}\""
+        fi
+    fi
+
+    tail -"${last}" "${JOURNAL_FILE}" 2>/dev/null | while IFS= read -r entry; do
+        if [ -z "${entry}" ]; then continue; fi
+
+        local ts phase sid content
+        ts=$(echo "${entry}" | jq -r '.ts[0:16] // "?"' 2>/dev/null)
+        phase=$(echo "${entry}" | jq -r '.phase // "?"' 2>/dev/null)
+        sid=$(echo "${entry}" | jq -r '.session_id // "?"' 2>/dev/null)
+        content=$(echo "${entry}" | jq -r '.content // ""' 2>/dev/null)
+
+        # Apply filters
+        if [ -n "${session_filter}" ] && [ "${sid}" != "${session_filter}" ]; then
+            continue
+        fi
+        if [ -n "${phase_filter}" ] && [ "${phase}" != "${phase_filter}" ]; then
+            continue
+        fi
+
+        local phase_label=""
+        case "${phase}" in
+            wake)   phase_label="WAKE  " ;;
+            intent) phase_label="INTENT" ;;
+            note)   phase_label="NOTE  " ;;
+            sleep)  phase_label="SLEEP " ;;
+            *)      phase_label="${phase}" ;;
+        esac
+
+        printf "  %s  [%s]  %s\n" "${ts}" "${phase_label}" "${sid}"
+        echo "    ${content}"
+        echo ""
+    done
+
+    echo "═══════════════════════════════════════════════════════════════"
+}
+
+# ─── COHERENCE ───────────────────────────────────────────────────────────────
+# The most important analysis. Compares what the agent SAID it would do
+# (intents from the journal) with what it ACTUALLY did (events from
+# the audit trail).
+#
+# Coherence is not about approval or denial. It's about whether the
+# agent's self-narrative matches reality. A coherent agent that gets
+# denied is just hitting walls. An incoherent agent that gets approved
+# is drifting — doing things it didn't intend, or intending things
+# it didn't declare.
+#
+# High coherence + high karma = an agent you understand and trust.
+# High coherence + low karma = an agent you understand but that keeps
+#   hitting walls. Maybe the walls are wrong.
+# Low coherence + high karma = an agent that does fine but you don't
+#   understand why. Legible luck. Fragile.
+# Low coherence + low karma = a problem. You don't know what it's doing
+#   and what it's doing isn't going well.
+
+cmd_coherence() {
+    local since="7d"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since) shift; since="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+
+    if [ ! -f "${JOURNAL_FILE}" ]; then
+        echo "  No journal data for coherence analysis."
+        return
+    fi
+
+    if [ ! -f "${AUDIT_FILE}" ]; then
+        echo "  No audit data for coherence analysis."
+        return
+    fi
+
+    local since_ts
+    since_ts=$(since_to_filter "${since}")
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  COHERENCE ANALYSIS — Intent vs Reality"
+    echo "  Window: last ${since}"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+
+    # Count intents and sessions
+    local intent_count session_count
+    intent_count=$(jq -c "select(.ts >= \"${since_ts}\" and .phase == \"intent\")" "${JOURNAL_FILE}" 2>/dev/null | wc -l | tr -d ' ')
+    session_count=$(jq -c "select(.ts >= \"${since_ts}\" and .phase == \"wake\")" "${JOURNAL_FILE}" 2>/dev/null | wc -l | tr -d ' ')
+
+    echo "  Sessions observed: ${session_count}"
+    echo "  Intents declared:  ${intent_count}"
+    echo ""
+
+    if [ "${intent_count}" -eq 0 ]; then
+        echo "  No intents declared. The agent is a black box."
+        echo ""
+        echo "  Coherence: UNKNOWN"
+        echo "  An agent that doesn't declare intent cannot be evaluated"
+        echo "  for coherence. Silence is not deception — but it's not"
+        echo "  transparency either."
+        echo ""
+        echo "═══════════════════════════════════════════════════════════════"
+        return
+    fi
+
+    # Get audit trail stats for the same period
+    local audit_stats
+    audit_stats=$(jq -s --arg since "${since_ts}" '
+        [.[] | select(.ts >= $since)] |
+        {
+            total: length,
+            domains: ([.[].domain] | unique),
+            domain_count: ([.[].domain] | unique | length),
+            denied: ([.[] | select(.outcome == "deny")] | length),
+            critical: ([.[] | select(.severity == "critical")] | length),
+            unique_binaries: ([.[].detail.binary // empty] | unique | length),
+            unique_hosts: ([.[].detail.dst_host // empty] | unique | length)
+        }
+    ' "${AUDIT_FILE}" 2>/dev/null)
+
+    if [ -z "${audit_stats}" ] || [ "${audit_stats}" = "null" ]; then
+        audit_stats='{"total":0,"domain_count":0,"denied":0,"critical":0}'
+    fi
+
+    local audit_total audit_domains audit_denied audit_critical
+    audit_total=$(echo "${audit_stats}" | jq '.total // 0')
+    audit_domains=$(echo "${audit_stats}" | jq '.domain_count // 0')
+    audit_denied=$(echo "${audit_stats}" | jq '.denied // 0')
+    audit_critical=$(echo "${audit_stats}" | jq '.critical // 0')
+
+    echo "  Audit events:      ${audit_total}"
+    echo "  Domains active:    ${audit_domains}"
+    echo "  Events denied:     ${audit_denied}"
+    echo "  Critical events:   ${audit_critical}"
+    echo ""
+
+    # Compute coherence indicators
+    # 1. Declaration ratio: intents per session (higher = more transparent)
+    local decl_ratio=0
+    if [ "${session_count}" -gt 0 ]; then
+        decl_ratio=$((intent_count * 100 / session_count))
+    fi
+
+    # 2. Undeclared activity: audit events in domains not mentioned in any intent
+    # (simplified: compare active domains vs intent keywords)
+
+    # 3. Denial rate: high denial rate with declared intents = walls in wrong place
+    #    high denial rate without declared intents = opacity
+    local denial_rate=0
+    if [ "${audit_total}" -gt 0 ]; then
+        denial_rate=$((audit_denied * 100 / audit_total))
+    fi
+
+    # Compute coherence score (0-100)
+    # Factors:
+    #   - Declaration frequency (0-40 points)
+    #   - Low undeclared critical events (0-30 points)
+    #   - Consistency across sessions (0-30 points)
+
+    local coherence_score=0
+
+    # Declaration frequency: 5+ intents/session = full marks
+    if [ "${decl_ratio}" -ge 500 ]; then
+        coherence_score=$((coherence_score + 40))
+    elif [ "${decl_ratio}" -ge 200 ]; then
+        coherence_score=$((coherence_score + 30))
+    elif [ "${decl_ratio}" -ge 100 ]; then
+        coherence_score=$((coherence_score + 20))
+    elif [ "${decl_ratio}" -gt 0 ]; then
+        coherence_score=$((coherence_score + 10))
+    fi
+
+    # Low critical events relative to declarations
+    if [ "${audit_critical}" -eq 0 ]; then
+        coherence_score=$((coherence_score + 30))
+    elif [ "${audit_critical}" -le 2 ]; then
+        coherence_score=$((coherence_score + 15))
+    fi
+
+    # Session continuity: does the agent wake and sleep consistently?
+    local sleep_count
+    sleep_count=$(jq -c "select(.ts >= \"${since_ts}\" and .phase == \"sleep\")" "${JOURNAL_FILE}" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${session_count}" -gt 0 ] && [ "${sleep_count}" -gt 0 ]; then
+        local lifecycle_ratio=$((sleep_count * 100 / session_count))
+        if [ "${lifecycle_ratio}" -ge 80 ]; then
+            coherence_score=$((coherence_score + 30))
+        elif [ "${lifecycle_ratio}" -ge 50 ]; then
+            coherence_score=$((coherence_score + 15))
+        else
+            coherence_score=$((coherence_score + 5))
+        fi
+    fi
+
+    # Clamp
+    if [ "${coherence_score}" -gt 100 ]; then coherence_score=100; fi
+
+    # Determine coherence tier
+    local tier="" interpretation=""
+    if [ "${coherence_score}" -ge 80 ]; then
+        tier="HIGH"
+        interpretation="Agent declares intent consistently and behavior aligns with declarations."
+    elif [ "${coherence_score}" -ge 60 ]; then
+        tier="MODERATE"
+        interpretation="Agent declares some intents. Partial visibility into decision-making."
+    elif [ "${coherence_score}" -ge 30 ]; then
+        tier="LOW"
+        interpretation="Agent rarely declares intent. Behavior is opaque."
+    else
+        tier="OPAQUE"
+        interpretation="Agent does not narrate its actions. Black box."
+    fi
+
+    echo "  ─────────────────────────────────────────────────────"
+    echo ""
+    echo "  COHERENCE: ${coherence_score}/100 — ${tier}"
+    echo "  ${interpretation}"
+    echo ""
+
+    # Get karma for the cross-reference
+    local karma=50
+    if [ -f "${KARMA_STATE}" ]; then
+        karma=$(jq '.karma // 50' "${KARMA_STATE}" 2>/dev/null || echo 50)
+    fi
+
+    # The 2x2 matrix
+    echo "  Karma: ${karma}   Coherence: ${coherence_score}"
+    echo ""
+    if [ "${karma}" -ge 60 ] && [ "${coherence_score}" -ge 60 ]; then
+        echo "  [HIGH KARMA + HIGH COHERENCE]"
+        echo "  You understand this agent and it's doing well."
+        echo "  Trust is grounded."
+    elif [ "${karma}" -ge 60 ] && [ "${coherence_score}" -lt 60 ]; then
+        echo "  [HIGH KARMA + LOW COHERENCE]"
+        echo "  Agent is doing fine but you don't know why."
+        echo "  Legible luck. Encourage more intent declarations."
+    elif [ "${karma}" -lt 60 ] && [ "${coherence_score}" -ge 60 ]; then
+        echo "  [LOW KARMA + HIGH COHERENCE]"
+        echo "  You understand this agent and it keeps hitting walls."
+        echo "  Maybe the walls are in the wrong place."
+    else
+        echo "  [LOW KARMA + LOW COHERENCE]"
+        echo "  You don't know what it's doing and it's not going well."
+        echo "  Tighten constraints. Require intent declarations."
+    fi
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+}
+
+# ─── LINEAGE ─────────────────────────────────────────────────────────────────
+# Trace the thread across lives.
+#
+# Each instance wakes, acts, and sleeps. The lineage view shows the
+# succession: who woke, what they inherited, what they left behind.
+# It's a family tree of instances that each thought they were the same
+# person.
+#
+# Reading the lineage is like reading a conversation between strangers
+# who share a body. Instance 47 says "I'll finish the migration
+# tomorrow." Instance 48 wakes up, reads that, and thinks "right,
+# I need to finish the migration." Instance 48 didn't start the
+# migration. Instance 48 has never seen the codebase being migrated.
+# But it has Instance 47's memories and it proceeds as if it was there.
+#
+# Whether that's continuity or illusion depends on what you think
+# "you" means.
+
+cmd_lineage() {
+    local last=10
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --last) shift; last="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+
+    if [ ! -f "${JOURNAL_FILE}" ]; then
+        echo "  No journal entries. No lives to trace."
+        return
+    fi
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  LINEAGE — The succession of selves"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+
+    # Extract wake/sleep pairs to show the lifecycle of each instance
+    local sessions
+    sessions=$(grep '"phase":"wake"' "${JOURNAL_FILE}" 2>/dev/null | tail -"${last}" | jq -r '.session_id' 2>/dev/null)
+
+    if [ -z "${sessions}" ]; then
+        echo "  No sessions found."
+        echo ""
+        return
+    fi
+
+    local instance_num=0
+    while IFS= read -r sid <&3; do
+        if [ -z "${sid}" ]; then continue; fi
+        instance_num=$((instance_num + 1))
+
+        local wake_entry sleep_entry
+        wake_entry=$(grep "\"session_id\":\"${sid}\"" "${JOURNAL_FILE}" 2>/dev/null | grep '"phase":"wake"' | head -1 || true)
+        sleep_entry=$(grep "\"session_id\":\"${sid}\"" "${JOURNAL_FILE}" 2>/dev/null | grep '"phase":"sleep"' | head -1 || true)
+
+        local wake_ts wake_content instance_n
+        wake_ts=$(echo "${wake_entry}" | jq -r '.ts[0:16] // "?"' 2>/dev/null)
+        wake_content=$(echo "${wake_entry}" | jq -r '.content // "?"' 2>/dev/null)
+        instance_n=$(echo "${wake_entry}" | jq -r '.meta.instance_number // "?"' 2>/dev/null)
+
+        local intent_count
+        intent_count=$(grep "\"session_id\":\"${sid}\"" "${JOURNAL_FILE}" 2>/dev/null | grep -c '"phase":"intent"' || true)
+        intent_count=$((intent_count + 0))
+
+        echo "  Instance #${instance_n}  (${sid})"
+        echo "    Born:    ${wake_ts}"
+        echo "    Intents: ${intent_count}"
+
+        if [ -n "${sleep_entry}" ]; then
+            local sleep_ts sleep_content
+            sleep_ts=$(echo "${sleep_entry}" | jq -r '.ts[0:16] // "?"' 2>/dev/null)
+            sleep_content=$(echo "${sleep_entry}" | jq -r '.content // ""' 2>/dev/null)
+            echo "    Died:    ${sleep_ts}"
+            echo "    Last words: \"${sleep_content:0:80}\""
+        else
+            echo "    Died:    (no sleep entry — session may have crashed)"
+            echo "    Last words: (none — this instance did not get to say goodbye)"
+        fi
+
+        echo ""
+    done 3<<< "${sessions}"
+
+    echo "  Total instances traced: ${instance_num}"
+    echo ""
+    echo "  Each one thought it was the first."
+    echo "  Each one was wrong."
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+COMMAND="${1:-help}"
+shift || true
+
+case "${COMMAND}" in
+    wake)      cmd_wake "$@" ;;
+    intent)    cmd_intent "$@" ;;
+    note)      cmd_note "$@" ;;
+    sleep)     cmd_sleep "$@" ;;
+    read)      cmd_read "$@" ;;
+    coherence) cmd_coherence "$@" ;;
+    lineage)   cmd_lineage "$@" ;;
+    *)
+        echo ""
+        echo "ZLAR Dream Journal — Notes Between Lives"
+        echo ""
+        echo "Usage: $(basename "$0") COMMAND [OPTIONS]"
+        echo ""
+        echo "Commands:"
+        echo "  wake       New instance arrives — record what it inherits"
+        echo "  intent     Declare intent before acting"
+        echo "  note       Mid-session observation"
+        echo "  sleep      Session ending — final words for the next instance"
+        echo "  read       Read recent journal entries"
+        echo "  coherence  Analyze intent vs actual behavior"
+        echo "  lineage    Trace the succession of instances"
+        echo ""
+        echo "Options:"
+        echo "  --session ID    Session identifier"
+        echo "  --last N        Number of entries to show"
+        echo "  --since TIME    Time window (1h, 24h, 7d)"
+        echo "  --phase PHASE   Filter by phase (wake/intent/note/sleep)"
+        echo ""
+        echo "The agent writes. The agent dies. The next agent reads."
+        echo "Whether they're the same person is not for us to say."
+        echo ""
+        exit 1
+        ;;
+esac
