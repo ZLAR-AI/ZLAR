@@ -1,0 +1,745 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR-OC Policy CLI
+#
+# Manages policy lifecycle: generate keys, sign, verify, deploy, inspect.
+#
+# Usage:
+#   zlar-oc-policy keygen                         Generate Ed25519 signing keypair
+#   zlar-oc-policy sign   --input F --key K [--output O]   Sign a policy
+#   zlar-oc-policy verify --input F [--pubkey P]           Verify signature
+#   zlar-oc-policy deploy --input F                        Copy to active policy
+#   zlar-oc-policy inspect --input F                       Show policy summary
+#   zlar-oc-policy diff   --old F --new F                  Diff two policies
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+# Prefer Homebrew OpenSSL — macOS system LibreSSL does not support Ed25519 pkeyutl -rawin
+if [ -x "/opt/homebrew/bin/openssl" ]; then
+    OPENSSL_BIN="/opt/homebrew/bin/openssl"
+elif [ -x "/usr/local/bin/openssl" ]; then
+    OPENSSL_BIN="/usr/local/bin/openssl"
+else
+    OPENSSL_BIN="openssl"
+fi
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
+
+ZLAR_OC_ROOT="/usr/local/etc/zlar-oc"
+KEYS_DIR="${ZLAR_OC_ROOT}/keys"
+POLICY_DIR="${ZLAR_OC_ROOT}/policies"
+ACTIVE_POLICY="${POLICY_DIR}/active.policy.json"
+
+# Colors
+if [ -t 1 ]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; BOLD=''; NC=''
+fi
+
+ok()   { echo -e "${GREEN}  ✓${NC} $*"; }
+fail() { echo -e "${RED}  ✗${NC} $*" >&2; exit 1; }
+warn() { echo -e "${YELLOW}  ⚠${NC} $*"; }
+info() { echo -e "${BLUE}  ℹ${NC} $*"; }
+
+# ─── Key Generation ──────────────────────────────────────────────────────────
+
+cmd_keygen() {
+    echo -e "${BOLD}Generating Ed25519 signing keypair${NC}"
+    echo ""
+
+    local privkey="${HOME}/.zlar-oc-signing.key"
+    local pubkey="${KEYS_DIR}/policy-signing.pub"
+
+    if [ -f "${privkey}" ]; then
+        warn "Private key already exists at ${privkey}"
+        echo -n "  Overwrite? [y/N] "
+        read -r answer
+        if [ "${answer}" != "y" ] && [ "${answer}" != "Y" ]; then
+            echo "  Aborted."
+            return 1
+        fi
+    fi
+
+    # Generate Ed25519 private key
+    ${OPENSSL_BIN} genpkey -algorithm Ed25519 -out "${privkey}" 2>/dev/null
+    chmod 600 "${privkey}"
+    ok "Private key: ${privkey} (mode 600)"
+
+    # Extract public key
+    mkdir -p "${KEYS_DIR}"
+    ${OPENSSL_BIN} pkey -in "${privkey}" -pubout -out "${pubkey}" 2>/dev/null
+    chmod 644 "${pubkey}"
+    ok "Public key:  ${pubkey} (mode 644)"
+
+    echo ""
+    info "Private key is stored in your home directory."
+    info "It should NEVER be accessible to the aiagent user."
+    info "The public key is deployed to ${KEYS_DIR}/ for the gate to verify."
+    echo ""
+
+    # Display public key fingerprint
+    local fingerprint
+    fingerprint=$(${OPENSSL_BIN} pkey -pubin -in "${pubkey}" -outform DER 2>/dev/null | shasum -a 256 | awk '{print $1}')
+    info "Public key fingerprint (SHA-256): ${fingerprint:0:16}..."
+}
+
+# ─── Sign ────────────────────────────────────────────────────────────────────
+
+cmd_sign() {
+    local input="" key="" output=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --input)  shift; input="$1"; shift ;;
+            --key)    shift; key="$1"; shift ;;
+            --output) shift; output="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${input}" ]; then
+        fail "Missing --input <policy.json>"
+    fi
+    if [ -z "${key}" ]; then
+        key="${HOME}/.zlar-oc-signing.key"
+        if [ ! -f "${key}" ]; then
+            fail "No --key specified and default key not found at ${key}"
+        fi
+        info "Using default key: ${key}"
+    fi
+    if [ -z "${output}" ]; then
+        output="${input%.json}.signed.json"
+    fi
+
+    if [ ! -f "${input}" ]; then
+        fail "Policy file not found: ${input}"
+    fi
+    if [ ! -f "${key}" ]; then
+        fail "Private key not found: ${key}"
+    fi
+
+    echo -e "${BOLD}Signing policy${NC}"
+
+    # Validate JSON
+    if command -v jq &>/dev/null; then
+        if ! jq empty "${input}" 2>/dev/null; then
+            fail "Invalid JSON in ${input}"
+        fi
+    fi
+
+    # Read policy version
+    local version
+    version=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    info "Policy version: ${version}"
+
+    # Count rules
+    if command -v jq &>/dev/null; then
+        local rule_count
+        rule_count=$(jq '.rules | length' "${input}" 2>/dev/null || echo "?")
+        info "Rules: ${rule_count}"
+    fi
+
+    # Extract public key from private key for embedding
+    local pubkey_b64
+    pubkey_b64=$(${OPENSSL_BIN} pkey -in "${key}" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n')
+
+    # Use a private temp directory — prevents symlink attacks on crypto material
+    local tmpdir
+    tmpdir=$(mktemp -d /tmp/zlar-oc-sign.XXXXXX)
+    chmod 700 "${tmpdir}"
+    # shellcheck disable=SC2064
+    trap "rm -rf '${tmpdir}'" RETURN
+
+    local canon_file="${tmpdir}/canon.json"
+    local hash_file="${tmpdir}/hash.bin"
+    local sig_file="${tmpdir}/sig.bin"
+
+    # Create canonical form (with empty signature) for signing
+    if command -v jq &>/dev/null; then
+        # Use jq to set signature fields cleanly
+        jq --arg pubkey "${pubkey_b64}" \
+           '.signature.algorithm = "ed25519" | .signature.public_key = $pubkey | .signature.value = ""' \
+           "${input}" > "${canon_file}"
+    else
+        # Fallback: sed-based approach
+        cp "${input}" "${canon_file}"
+        sed -i 's/"value"[[:space:]]*:[[:space:]]*"[^"]*"/"value": ""/' "${canon_file}"
+    fi
+
+    shasum -a 256 "${canon_file}" | awk '{print $1}' | tr -d '\n' > "${hash_file}"
+
+    ${OPENSSL_BIN} pkeyutl -sign \
+        -inkey "${key}" -rawin \
+        -in "${hash_file}" \
+        -out "${sig_file}" 2>/dev/null
+
+    local sig_b64
+    sig_b64=$(base64 < "${sig_file}" | tr -d '\n')
+
+    # Create signed output
+    if command -v jq &>/dev/null; then
+        jq --arg pubkey "${pubkey_b64}" \
+           --arg sig "${sig_b64}" \
+           '.signature.algorithm = "ed25519" | .signature.public_key = $pubkey | .signature.value = $sig' \
+           "${input}" > "${output}"
+    else
+        # Fallback
+        sed "s|\"value\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"value\": \"${sig_b64}\"|" "${canon_file}" > "${output}"
+        sed -i "s|\"public_key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"public_key\": \"${pubkey_b64}\"|" "${output}"
+    fi
+
+    ok "Signed policy written to: ${output}"
+
+    # Show hash for verification
+    local output_hash
+    output_hash=$(shasum -a 256 "${output}" | awk '{print $1}')
+    info "SHA-256: ${output_hash:0:16}..."
+    echo ""
+    info "To deploy: zlar-oc-policy deploy --input ${output}"
+}
+
+# ─── Verify ──────────────────────────────────────────────────────────────────
+
+cmd_verify() {
+    local input="" pubkey=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --input)  shift; input="$1"; shift ;;
+            --pubkey) shift; pubkey="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${input}" ]; then
+        fail "Missing --input <policy.json>"
+    fi
+    if [ -z "${pubkey}" ]; then
+        pubkey="${KEYS_DIR}/policy-signing.pub"
+    fi
+
+    if [ ! -f "${input}" ]; then
+        fail "Policy file not found: ${input}"
+    fi
+    if [ ! -f "${pubkey}" ]; then
+        fail "Public key not found: ${pubkey}"
+    fi
+
+    echo -e "${BOLD}Verifying policy signature${NC}"
+
+    # Extract signature
+    local sig_value
+    sig_value=$(grep -o '"value"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
+
+    if [ -z "${sig_value}" ] || [ "${sig_value}" = "" ]; then
+        fail "Policy has no signature (empty value field)"
+    fi
+
+    # Use a private temp directory — prevents symlink attacks on crypto material
+    local tmpdir
+    tmpdir=$(mktemp -d /tmp/zlar-oc-verify.XXXXXX)
+    chmod 700 "${tmpdir}"
+    # shellcheck disable=SC2064
+    trap "rm -rf '${tmpdir}'" RETURN
+
+    local canon_file="${tmpdir}/canon.json"
+    local hash_file="${tmpdir}/hash.bin"
+    local sig_file="${tmpdir}/sig.bin"
+
+    # Create canonical form
+    if command -v jq &>/dev/null; then
+        jq '.signature.value = ""' "${input}" > "${canon_file}"
+    else
+        sed 's/"value"[[:space:]]*:[[:space:]]*"[^"]*"/"value": ""/' "${input}" > "${canon_file}"
+    fi
+
+    shasum -a 256 "${canon_file}" | awk '{print $1}' | tr -d '\n' > "${hash_file}"
+
+    # Validate and decode base64 — fail explicitly on bad input
+    if ! echo "${sig_value}" | base64 -d > "${sig_file}" 2>&1; then
+        fail "Signature is not valid base64"
+    fi
+    if [ ! -s "${sig_file}" ]; then
+        fail "Decoded signature is empty"
+    fi
+
+    # Verify
+    if ${OPENSSL_BIN} pkeyutl -verify \
+        -pubin -inkey "${pubkey}" -rawin \
+        -sigfile "${sig_file}" \
+        -in "${hash_file}" 2>/dev/null; then
+        ok "Signature is VALID"
+    else
+        fail "Signature is INVALID"
+    fi
+
+    # Show policy metadata
+    local version author desc
+    version=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    author=$(grep -o '"author"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    info "Version: ${version}"
+    info "Author:  ${author}"
+}
+
+# ─── Deploy ──────────────────────────────────────────────────────────────────
+
+cmd_deploy() {
+    local input=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --input) shift; input="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${input}" ]; then
+        fail "Missing --input <signed-policy.json>"
+    fi
+    if [ ! -f "${input}" ]; then
+        fail "Policy file not found: ${input}"
+    fi
+
+    echo -e "${BOLD}Deploying policy${NC}"
+
+    # Verify signature first
+    local pubkey="${KEYS_DIR}/policy-signing.pub"
+    if [ -f "${pubkey}" ]; then
+        info "Verifying signature before deploy..."
+        # Inline verification
+        local sig_value
+        sig_value=$(grep -o '"value"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
+        if [ -z "${sig_value}" ] || [ "${sig_value}" = "" ]; then
+            fail "Cannot deploy unsigned policy"
+        fi
+    fi
+
+    # Archive current policy if it exists
+    if [ -f "${ACTIVE_POLICY}" ]; then
+        local current_version
+        current_version=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "${ACTIVE_POLICY}" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+        local archive_dir="${POLICY_DIR}/archive"
+        mkdir -p "${archive_dir}"
+        cp "${ACTIVE_POLICY}" "${archive_dir}/v${current_version}.policy.json"
+        ok "Archived current policy (v${current_version})"
+    fi
+
+    # Deploy
+    mkdir -p "${POLICY_DIR}"
+    cp "${input}" "${ACTIVE_POLICY}"
+    chmod 640 "${ACTIVE_POLICY}"
+
+    local new_version
+    new_version=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "${ACTIVE_POLICY}" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+
+    ok "Deployed policy v${new_version} to ${ACTIVE_POLICY}"
+    echo ""
+    info "The gate will detect the change within 5 seconds and reload."
+    info "Check: tail -f /var/log/zlar-oc/gate.log"
+}
+
+# ─── Inspect ─────────────────────────────────────────────────────────────────
+
+cmd_inspect() {
+    local input=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --input) shift; input="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${input}" ]; then
+        input="${ACTIVE_POLICY}"
+    fi
+    if [ ! -f "${input}" ]; then
+        fail "Policy file not found: ${input}"
+    fi
+
+    echo -e "${BOLD}Policy: ${input}${NC}"
+    echo ""
+
+    local version author description created default_action
+    version=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    author=$(grep -o '"author"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    description=$(grep -o '"description"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    created=$(grep -o '"created_at"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    default_action=$(grep -o '"default_action"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+
+    echo "  Version:        ${version}"
+    echo "  Author:         ${author}"
+    echo "  Created:        ${created}"
+    echo "  Default action: ${default_action}"
+    echo "  Description:    ${description}"
+    echo ""
+
+    # Check signature
+    local sig_value
+    sig_value=$(grep -o '"value"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    if [ -n "${sig_value}" ] && [ "${sig_value}" != "" ]; then
+        echo -e "  Signature:      ${GREEN}present${NC} (${#sig_value} chars)"
+    else
+        echo -e "  Signature:      ${YELLOW}unsigned${NC}"
+    fi
+
+    # List rules
+    if command -v jq &>/dev/null; then
+        echo ""
+        echo -e "  ${BOLD}Rules:${NC}"
+        local rule_count
+        rule_count=$(jq '.rules | length' "${input}" 2>/dev/null || echo 0)
+
+        local i=0
+        while [ ${i} -lt "${rule_count}" ]; do
+            local id enabled action severity desc
+            id=$(jq -r ".rules[${i}].id" "${input}")
+            enabled=$(jq -r ".rules[${i}].enabled" "${input}")
+            action=$(jq -r ".rules[${i}].action" "${input}")
+            severity=$(jq -r ".rules[${i}].severity // \"info\"" "${input}")
+            desc=$(jq -r ".rules[${i}].description" "${input}")
+
+            local status_icon="●"
+            if [ "${enabled}" = "false" ]; then
+                status_icon="○"
+            fi
+
+            local action_color="${NC}"
+            case "${action}" in
+                allow) action_color="${GREEN}" ;;
+                deny)  action_color="${RED}" ;;
+                ask)   action_color="${YELLOW}" ;;
+                log)   action_color="${BLUE}" ;;
+            esac
+
+            printf "    %s %-5s  ${action_color}%-6s${NC}  %-8s  %s\n" \
+                "${status_icon}" "${id}" "${action}" "[${severity}]" "${desc}"
+
+            i=$((i + 1))
+        done
+    fi
+
+    echo ""
+}
+
+# ─── Diff ────────────────────────────────────────────────────────────────────
+
+cmd_diff() {
+    local old="" new=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --old) shift; old="$1"; shift ;;
+            --new) shift; new="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${old}" ] || [ -z "${new}" ]; then
+        fail "Usage: zlar-oc-policy diff --old <policy1.json> --new <policy2.json>"
+    fi
+
+    echo -e "${BOLD}Policy Diff${NC}"
+    echo ""
+
+    if command -v jq &>/dev/null; then
+        local old_ver new_ver
+        old_ver=$(jq -r '.version' "${old}" 2>/dev/null)
+        new_ver=$(jq -r '.version' "${new}" 2>/dev/null)
+        echo "  Old: v${old_ver}  →  New: v${new_ver}"
+        echo ""
+
+        # Compare rule sets
+        local old_ids new_ids
+        old_ids=$(jq -r '.rules[].id' "${old}" 2>/dev/null | sort)
+        new_ids=$(jq -r '.rules[].id' "${new}" 2>/dev/null | sort)
+
+        # Added rules
+        local added
+        added=$(comm -13 <(echo "${old_ids}") <(echo "${new_ids}"))
+        if [ -n "${added}" ]; then
+            echo -e "  ${GREEN}Added:${NC}"
+            for id in ${added}; do
+                local desc
+                desc=$(jq -r --arg id "${id}" '.rules[] | select(.id == $id) | .description' "${new}" 2>/dev/null)
+                echo -e "    ${GREEN}+ ${id}${NC}: ${desc}"
+            done
+        fi
+
+        # Removed rules
+        local removed
+        removed=$(comm -23 <(echo "${old_ids}") <(echo "${new_ids}"))
+        if [ -n "${removed}" ]; then
+            echo -e "  ${RED}Removed:${NC}"
+            for id in ${removed}; do
+                local desc
+                desc=$(jq -r --arg id "${id}" '.rules[] | select(.id == $id) | .description' "${old}" 2>/dev/null)
+                echo -e "    ${RED}- ${id}${NC}: ${desc}"
+            done
+        fi
+
+        # Modified rules (same ID, different content)
+        local common
+        common=$(comm -12 <(echo "${old_ids}") <(echo "${new_ids}"))
+        local modified_found="false"
+        for id in ${common}; do
+            local old_rule new_rule
+            old_rule=$(jq -c --arg id "${id}" '.rules[] | select(.id == $id)' "${old}" 2>/dev/null)
+            new_rule=$(jq -c --arg id "${id}" '.rules[] | select(.id == $id)' "${new}" 2>/dev/null)
+            if [ "${old_rule}" != "${new_rule}" ]; then
+                if [ "${modified_found}" = "false" ]; then
+                    echo -e "  ${YELLOW}Modified:${NC}"
+                    modified_found="true"
+                fi
+                echo -e "    ${YELLOW}~ ${id}${NC}"
+            fi
+        done
+
+        if [ -z "${added}" ] && [ -z "${removed}" ] && [ "${modified_found}" = "false" ]; then
+            info "No rule differences found"
+        fi
+    else
+        # Fallback: use diff
+        diff --color "${old}" "${new}" || true
+    fi
+
+    echo ""
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+ACTION="${1:-help}"
+shift || true
+
+# ─── Prune (#14 Autophagy) ──────────────────────────────────────────────────
+# Analyze audit trail to find dead rules, stale allowlist entries,
+# and boundary widening trends. The treatment for what policy-health detects.
+
+cmd_prune() {
+    local audit="" policy="" since="30d"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --audit)  shift; audit="$1"; shift ;;
+            --policy) shift; policy="$1"; shift ;;
+            --since)  shift; since="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${audit}" ]; then
+        audit="/var/log/zlar-oc/audit.jsonl"
+    fi
+    if [ -z "${policy}" ]; then
+        policy="${ACTIVE_POLICY}"
+        if [ ! -f "${policy}" ]; then
+            policy="$(dirname "$0")/../etc/zlar-oc/policies/default.policy.json"
+        fi
+    fi
+
+    if [ ! -f "${audit}" ]; then
+        fail "Audit file not found: ${audit}"
+    fi
+    if [ ! -f "${policy}" ]; then
+        fail "Policy file not found: ${policy}"
+    fi
+    if ! command -v jq &>/dev/null; then
+        fail "jq is required for prune"
+    fi
+
+    echo -e "${BOLD}ZLAR-OC Policy Autophagy Report${NC}"
+    echo "  Policy: ${policy}"
+    echo "  Audit:  ${audit}"
+    echo "  Period: last ${since}"
+    echo ""
+
+    # Compute cutoff timestamp
+    local value="${since%[hHdDmMwW]}"
+    local unit="${since##*[0-9]}"
+    local seconds=0
+    case "${unit}" in
+        h|H) seconds=$((value * 3600)) ;;
+        d|D) seconds=$((value * 86400)) ;;
+        w|W) seconds=$((value * 604800)) ;;
+        *)   seconds=$((value * 86400)) ;;
+    esac
+    local now cutoff
+    now=$(date +%s)
+    cutoff=$((now - seconds))
+    local cutoff_ts
+    cutoff_ts=$(date -u -r "${cutoff}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+                date -u -d "@${cutoff}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+                echo "1970-01-01T00:00:00Z")
+
+    # Get all rule IDs from the policy
+    local all_rule_ids
+    all_rule_ids=$(jq -r '.rules[].id' "${policy}" 2>/dev/null | sort)
+
+    # Get rule IDs that matched at least once in the audit window
+    local matched_rule_ids
+    matched_rule_ids=$(jq -r "select(.ts >= \"${cutoff_ts}\") | .rule // empty" "${audit}" 2>/dev/null | sort -u)
+
+    # ─── Dead Rules (never matched) ──────────────────────────────────────────
+    echo -e "  ${BOLD}Dead Rules (never matched in ${since})${NC}"
+    echo "  ────────────────────────────────────────────────────"
+
+    local dead_count=0
+    for rule_id in ${all_rule_ids}; do
+        if [ -z "${rule_id}" ]; then continue; fi
+        if ! echo "${matched_rule_ids}" | grep -q "^${rule_id}$"; then
+            local desc
+            desc=$(jq -r --arg id "${rule_id}" '.rules[] | select(.id == $id) | .description' "${policy}" 2>/dev/null)
+            local action
+            action=$(jq -r --arg id "${rule_id}" '.rules[] | select(.id == $id) | .action' "${policy}" 2>/dev/null)
+            echo -e "    ${YELLOW}○${NC} ${rule_id} [${action}]: ${desc}"
+            dead_count=$((dead_count + 1))
+        fi
+    done
+
+    if [ ${dead_count} -eq 0 ]; then
+        echo -e "    ${GREEN}All rules matched at least once${NC}"
+    else
+        echo ""
+        echo -e "    ${YELLOW}${dead_count} dead rules.${NC} Consider: are they still needed?"
+        echo "    Deny rules may be dead because threats haven't occurred (keep them)."
+        echo "    Allow rules may be dead because no one uses that path (prune candidate)."
+    fi
+    echo ""
+
+    # ─── Stale R021 Hosts (known hosts not seen recently) ─────────────────────
+    echo -e "  ${BOLD}Stale Allowlist Hosts (R021 hosts not seen in ${since})${NC}"
+    echo "  ────────────────────────────────────────────────────"
+
+    local r021_hosts
+    r021_hosts=$(jq -r '.rules[] | select(.id == "R021") | .match.detail.dst_host.in[]' "${policy}" 2>/dev/null || echo "")
+
+    if [ -n "${r021_hosts}" ]; then
+        local seen_hosts
+        seen_hosts=$(jq -r "select(.ts >= \"${cutoff_ts}\") | select(.rule == \"R021\") | .detail.dst_host // empty" "${audit}" 2>/dev/null | sort -u)
+
+        local stale_count=0
+        for host in ${r021_hosts}; do
+            if ! echo "${seen_hosts}" | grep -q "^${host}$"; then
+                echo -e "    ${YELLOW}○${NC} ${host} — not seen in ${since}"
+                stale_count=$((stale_count + 1))
+            else
+                echo -e "    ${GREEN}●${NC} ${host} — active"
+            fi
+        done
+
+        if [ ${stale_count} -gt 0 ]; then
+            echo ""
+            echo -e "    ${YELLOW}${stale_count} stale hosts.${NC} Still needed, or can they be removed?"
+        fi
+    else
+        echo "    No R021 allowlist hosts found in policy"
+    fi
+    echo ""
+
+    # ─── R022 Unknown Domains (growing list = membrane widening) ──────────────
+    echo -e "  ${BOLD}Unknown HTTPS Growth (R022 domains over time)${NC}"
+    echo "  ────────────────────────────────────────────────────"
+
+    local r022_domains
+    r022_domains=$(jq -r "select(.ts >= \"${cutoff_ts}\") | select(.rule == \"R022\") | .detail.dst_host // .detail.dst_ip // empty" "${audit}" 2>/dev/null | sort -u)
+    local r022_count
+    r022_count=$(echo "${r022_domains}" | grep -c . || echo 0)
+
+    if [ "${r022_count}" -gt 0 ]; then
+        echo -e "    ${YELLOW}${r022_count} unique unknown destinations in ${since}:${NC}"
+        echo "${r022_domains}" | while IFS= read -r domain; do
+            if [ -n "${domain}" ]; then
+                local hit_count
+                hit_count=$(jq -r "select(.ts >= \"${cutoff_ts}\") | select(.rule == \"R022\") | select((.detail.dst_host // .detail.dst_ip // \"\") == \"${domain}\")" "${audit}" 2>/dev/null | wc -l | tr -d '[:space:]')
+                echo "      ${domain} (${hit_count} connections)"
+            fi
+        done
+        echo ""
+        echo "    Action: promote to R021 allowlist, or investigate and block."
+    else
+        echo -e "    ${GREEN}No unknown HTTPS destinations${NC}"
+    fi
+    echo ""
+
+    # ─── Allowlist Growth Trend ───────────────────────────────────────────────
+    echo -e "  ${BOLD}Policy Change Frequency${NC}"
+    echo "  ────────────────────────────────────────────────────"
+
+    local policy_changes
+    policy_changes=$(jq -r "select(.ts >= \"${cutoff_ts}\") | select(.domain == \"policy\") | select(.action == \"mutation\" or .action == \"loaded\")" "${audit}" 2>/dev/null | wc -l | tr -d '[:space:]')
+    echo "    Policy reloads in ${since}: ${policy_changes}"
+
+    if [ "${policy_changes}" -gt 10 ]; then
+        echo -e "    ${YELLOW}High change frequency. Review for convenience creep.${NC}"
+    elif [ "${policy_changes}" -gt 0 ]; then
+        echo -e "    ${GREEN}Normal change frequency${NC}"
+    fi
+    echo ""
+
+    # ─── Recommendations ─────────────────────────────────────────────────────
+    echo -e "  ${BOLD}Autophagy Recommendations${NC}"
+    echo "  ────────────────────────────────────────────────────"
+
+    local recommendations=0
+
+    if [ ${dead_count} -gt 2 ]; then
+        echo -e "    ${YELLOW}•${NC} Review ${dead_count} dead rules — remove unused allow rules"
+        recommendations=$((recommendations + 1))
+    fi
+
+    if [ "${r022_count}" -gt 5 ]; then
+        echo -e "    ${YELLOW}•${NC} ${r022_count} unknown destinations — review and classify"
+        recommendations=$((recommendations + 1))
+    fi
+
+    if [ "${policy_changes}" -gt 10 ]; then
+        echo -e "    ${YELLOW}•${NC} High policy churn — slow down and batch changes"
+        recommendations=$((recommendations + 1))
+    fi
+
+    if [ ${recommendations} -eq 0 ]; then
+        echo -e "    ${GREEN}•${NC} Membrane is clean. No pruning needed."
+    fi
+    echo ""
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+case "${ACTION}" in
+    keygen)   cmd_keygen ;;
+    sign)     cmd_sign "$@" ;;
+    verify)   cmd_verify "$@" ;;
+    deploy)   cmd_deploy "$@" ;;
+    inspect)  cmd_inspect "$@" ;;
+    diff)     cmd_diff "$@" ;;
+    prune)    cmd_prune "$@" ;;
+    *)
+        echo "ZLAR-OC Policy CLI"
+        echo ""
+        echo "Usage: $0 <command> [options]"
+        echo ""
+        echo "Commands:"
+        echo "  keygen                        Generate Ed25519 signing keypair"
+        echo "  sign   --input F --key K      Sign a policy file"
+        echo "  verify --input F              Verify policy signature"
+        echo "  deploy --input F              Deploy signed policy to active"
+        echo "  inspect [--input F]           Show policy summary"
+        echo "  diff   --old F --new F        Compare two policies"
+        echo "  prune  [--audit F] [--since D]  Autophagy: find dead rules and stale entries"
+        echo ""
+        echo "Workflow:"
+        echo "  1. zlar-oc-policy keygen"
+        echo "  2. Edit policy:  vim ${POLICY_DIR}/draft.json"
+        echo "  3. zlar-oc-policy sign --input draft.json --output signed.json"
+        echo "  4. zlar-oc-policy verify --input signed.json"
+        echo "  5. zlar-oc-policy deploy --input signed.json"
+        echo ""
+        echo "Maintenance:"
+        echo "  zlar-oc-policy prune --since 30d    Review for dead rules and drift"
+        echo ""
+        exit 1
+        ;;
+esac

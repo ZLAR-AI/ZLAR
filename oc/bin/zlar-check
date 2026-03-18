@@ -1,0 +1,174 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# zlar-check — Voluntary HITL Check
+#
+# An agent calls this BEFORE taking a significant action. It emits a structured
+# event to the gate (via the OpenClaw stderr log) and blocks until the human
+# approves or denies via Telegram.
+#
+# This is the voluntary side of the HITL loop: the reactive side catches
+# violations after the fact; this side asks permission before acting.
+#
+# Usage:
+#   zlar-check --domain exec --action "npm install express"
+#   zlar-check --domain fs --action "write /etc/config" \
+#     --detail '{"path":"/etc/config"}' --agent bohm-openclaw
+#   zlar-check --domain net.outbound --action "curl api.example.com" --timeout 60
+#
+# Exit codes:
+#   0 — allowed (human approved or policy auto-allowed)
+#   1 — denied  (human denied or policy denied)
+#   2 — timeout (no response within deadline)
+#
+# Prints outcome to stdout: "allow", "deny", or "timeout"
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+# ─── Configuration ───────────────────────────────────────────────────────────
+
+ZLAR_OC_ROOT="/usr/local/etc/zlar-oc"
+GATE_CONFIG="${ZLAR_OC_ROOT}/gate.json"
+
+# Defaults — overridden by env vars or gate.json
+OPENCLAW_LOG="${OPENCLAW_LOG:-/var/log/zlar-oc/openclaw-stderr.log}"
+DECISION_DIR="${DECISION_DIR:-/var/run/zlar-oc/decisions}"
+
+# Load paths from gate.json if available
+if [ "${OPENCLAW_LOG}" = "/var/log/zlar-oc/openclaw-stderr.log" ] && \
+   [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    OPENCLAW_LOG=$(jq -r '.openclaw_stderr_log // "/var/log/zlar-oc/openclaw-stderr.log"' "${GATE_CONFIG}" 2>/dev/null)
+fi
+
+POLL_INTERVAL=1  # seconds between decision file checks
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+gen_id() {
+    local ts_hex
+    ts_hex=$(printf '%012x' "$(date +%s%3N)" 2>/dev/null || printf '%012x' "$(date +%s)000")
+    local rand
+    rand=$(od -An -tx1 -N10 /dev/urandom | tr -d ' \n')
+    echo "${ts_hex:0:8}-${ts_hex:8:4}-7${rand:0:3}-${rand:3:4}-${rand:7:12}"
+}
+
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\t'/\\t}"
+    echo -n "${s}"
+}
+
+die() { echo "zlar-check: $*" >&2; exit 1; }
+
+usage() {
+    cat >&2 <<'EOF'
+Usage: zlar-check --domain DOMAIN --action ACTION [OPTIONS]
+
+Required:
+  --domain DOMAIN    Event domain (exec, fs, net.outbound, etc.)
+  --action ACTION    Description of the action to check
+
+Options:
+  --detail JSON      Additional detail as JSON object (default: {})
+  --agent  ID        Agent identifier (default: from gate.json or "aiagent")
+  --timeout SECS     Max seconds to wait for decision (default: 120)
+  -h, --help         Show this help
+EOF
+    exit 1
+}
+
+# ─── Argument Parsing ────────────────────────────────────────────────────────
+
+DOMAIN=""
+ACTION=""
+DETAIL="{}"
+AGENT_ID=""
+TIMEOUT=120
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --domain)  DOMAIN="$2"; shift 2 ;;
+        --action)  ACTION="$2"; shift 2 ;;
+        --detail)  DETAIL="$2"; shift 2 ;;
+        --agent)   AGENT_ID="$2"; shift 2 ;;
+        --timeout) TIMEOUT="$2"; shift 2 ;;
+        -h|--help) usage ;;
+        *) die "unknown option: $1" ;;
+    esac
+done
+
+[ -z "${DOMAIN}" ] && die "missing required --domain"
+[ -z "${ACTION}" ] && die "missing required --action"
+
+# Resolve agent ID: flag > gate.json > default
+if [ -z "${AGENT_ID}" ]; then
+    if [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+        AGENT_ID=$(jq -r '.agent_user // "aiagent"' "${GATE_CONFIG}" 2>/dev/null)
+    else
+        AGENT_ID="aiagent"
+    fi
+fi
+
+# ─── Pre-flight ──────────────────────────────────────────────────────────────
+
+[ -f "${OPENCLAW_LOG}" ] || die "openclaw log not found: ${OPENCLAW_LOG} (is the gate running?)"
+[ -d "${DECISION_DIR}" ] || die "decision dir not found: ${DECISION_DIR} (is the gate running?)"
+
+# ─── Emit Event ──────────────────────────────────────────────────────────────
+
+REQUEST_ID=$(gen_id)
+
+# Write structured JSON to the OpenClaw log — the gate tails this file.
+# Format matches what parse_openclaw_log() expects: domain, action, request_id, detail
+printf '{"domain":"%s","action":"%s","request_id":"%s","detail":%s,"source":"zlar-check","agent_id":"%s","ts":"%s"}\n' \
+    "$(json_escape "${DOMAIN}")" \
+    "$(json_escape "${ACTION}")" \
+    "$(json_escape "${REQUEST_ID}")" \
+    "${DETAIL}" \
+    "$(json_escape "${AGENT_ID}")" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    >> "${OPENCLAW_LOG}"
+
+# ─── Wait for Decision ───────────────────────────────────────────────────────
+
+DECISION_FILE="${DECISION_DIR}/${REQUEST_ID}.json"
+ELAPSED=0
+
+while [ ${ELAPSED} -lt ${TIMEOUT} ]; do
+    if [ -f "${DECISION_FILE}" ]; then
+        OUTCOME=""
+        if command -v jq &>/dev/null; then
+            OUTCOME=$(jq -r '.outcome // ""' "${DECISION_FILE}" 2>/dev/null)
+        else
+            OUTCOME=$(grep -o '"outcome":"[^"]*"' "${DECISION_FILE}" | head -1 | cut -d'"' -f4)
+        fi
+
+        # Clean up decision file
+        rm -f "${DECISION_FILE}" 2>/dev/null || true
+
+        case "${OUTCOME}" in
+            allow)
+                echo "allow"
+                exit 0
+                ;;
+            deny)
+                echo "deny"
+                exit 1
+                ;;
+            *)
+                echo "deny"
+                exit 1
+                ;;
+        esac
+    fi
+
+    sleep "${POLL_INTERVAL}"
+    ELAPSED=$((ELAPSED + POLL_INTERVAL))
+done
+
+# Timeout — no decision received
+echo "timeout"
+exit 2

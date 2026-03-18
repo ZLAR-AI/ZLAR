@@ -1,0 +1,32 @@
+{
+  "policy_file": "/usr/local/etc/zlar-oc/policies/active.policy.json",
+  "policy_pubkey": "/usr/local/etc/zlar-oc/keys/policy-signing.pub",
+  "audit_file": "/var/log/zlar-oc/audit.jsonl",
+  "log_file": "/var/log/zlar-oc/gate.log",
+  "openclaw_stderr_log": "/var/log/zlar-oc/openclaw-stderr.log",
+  "agent_user": "aiagent",
+  "policy_poll_interval_s": 5,
+  "signature_required": true,
+
+  "availability": {
+    "state_file": "/var/run/zlar-oc-availability.state",
+    "default_mode": "active",
+    "_modes": {
+      "active": "Human is available. Ask actions flow to Telegram normally.",
+      "away": "Human is unavailable. Events below away_auto_allow_threshold proceed. Above threshold: queued. Destructive: halted.",
+      "review": "Human has returned. Gate presents queued events summary before resuming normal operation."
+    },
+    "away_auto_allow_threshold": 30,
+    "away_queue_file": "/var/log/zlar-oc/away-queue.jsonl",
+    "away_halt_on_critical": true,
+    "away_notify_on_return": true,
+    "_comment": "Threshold: risk_score < 30 auto-allows in Away mode. 30-79 queued for Review. >= 80 halts agent."
+  },
+
+  "telegram": {
+    "enabled": false,
+    "bot_token": "",
+    "chat_id": "",
+    "_setup": "1. Create bot via @BotFather, get token. 2. Send /start to bot. 3. Get chat_id via: curl https://api.telegram.org/bot<TOKEN>/getUpdates"
+  }
+}

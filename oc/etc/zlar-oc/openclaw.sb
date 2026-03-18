@@ -1,0 +1,258 @@
+;; ═══════════════════════════════════════════════════════════════════════════════
+;; ZLAR-OC Seatbelt Profile for OpenClaw
+;; Version: 1.0.0
+;; Generated from: DESIGN_SANDBOX_PROFILE.md
+;;
+;; Apply with:
+;;   sandbox-exec -f /usr/local/etc/zlar-oc/openclaw.sb \
+;;     -D AGENT_HOME=/Users/aiagent \
+;;     -D ADMIN_HOME=/Users/admin \
+;;     -D WORKSPACE_ROOT=/Users/aiagent/workspace \
+;;     -D OPENCLAW_INSTALL_DIR=/opt/homebrew/lib/node_modules/openclaw \
+;;     <command>
+;;
+;; DENY BY DEFAULT — everything not listed here is blocked and logged.
+;; ═══════════════════════════════════════════════════════════════════════════════
+
+(version 1)
+
+;; ─── Default Policy ───────────────────────────────────────────────────────────
+(deny default)
+(allow system-audit)                      ;; allow syslog writes for denial logging
+
+;; ─── Process Execution ────────────────────────────────────────────────────────
+
+;; Always allowed: core infrastructure
+(allow process-exec
+  (literal "/usr/local/bin/node")
+  (literal "/opt/homebrew/bin/node")
+  (literal "/usr/bin/env")
+  (literal "/bin/sh")
+  (literal "/bin/bash")
+  (literal "/bin/zsh")
+  (literal "/usr/bin/git")
+  (literal "/usr/bin/uname")
+  (literal "/bin/hostname")
+)
+
+;; Conditionally allowed: media processing (comment out to disable)
+(allow process-exec
+  (literal "/opt/homebrew/bin/ffmpeg")
+  (literal "/opt/homebrew/bin/ffprobe")
+  ;; (literal "/usr/bin/ssh")           ;; Uncomment only if SSH tunnels needed
+)
+
+;; Browser: allow the specific installed browser
+;; IMPORTANT: Enable only the installed browser
+(allow process-exec
+  (literal "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser")
+  ;; (literal "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+)
+
+;; DENY: dangerous binaries (explicit, catches any allow-all mistakes)
+(deny process-exec
+  (literal "/usr/bin/security")            ;; macOS Keychain access
+  (literal "/usr/sbin/tailscale")          ;; Network reconfiguration
+  (literal "/usr/bin/osascript")           ;; AppleScript — arbitrary GUI automation
+  (literal "/usr/bin/open")                ;; Launch arbitrary applications
+  (literal "/usr/local/bin/docker")        ;; Container escape risk
+  (literal "/opt/homebrew/bin/docker")
+  (literal "/usr/bin/curl")                ;; Direct HTTP bypassing Node.js SSRF guards
+  (literal "/usr/bin/wget")
+  (literal "/opt/homebrew/bin/curl")
+  (literal "/opt/homebrew/bin/wget")
+)
+
+(allow process-fork)                      ;; Required for child_process.spawn()
+(allow signal (target self))              ;; Allow signaling own process group
+
+;; ─── File Read ────────────────────────────────────────────────────────────────
+
+;; DENY first: ZLAR-OC config — agent must never read its own cage
+;; These are evaluated before allows because sandbox-exec uses last-match-wins
+;; for deny+allow on the same operation, but explicit deny on specific paths
+;; takes precedence when placed correctly.
+
+;; OpenClaw state directory
+(allow file-read*
+  (subpath (string-append (param "AGENT_HOME") "/.openclaw"))
+)
+
+;; Agent workspace (configurable root)
+(allow file-read*
+  (subpath (param "WORKSPACE_ROOT"))
+)
+
+;; HuggingFace model cache (read-only)
+(allow file-read*
+  (subpath (string-append (param "AGENT_HOME") "/.cache/huggingface"))
+)
+
+;; Node.js runtime and dependencies
+(allow file-read*
+  (subpath "/usr/local/lib/node_modules")
+  (subpath "/opt/homebrew/lib/node_modules")
+  (subpath (param "OPENCLAW_INSTALL_DIR"))
+)
+
+;; System libraries and frameworks (read-only)
+(allow file-read*
+  (subpath "/usr/lib")
+  (subpath "/usr/share")
+  (subpath "/System/Library/Frameworks")
+  (subpath "/Library/Frameworks")
+  (literal "/etc/resolv.conf")             ;; DNS resolution
+  (literal "/etc/hosts")                   ;; Host resolution
+  (literal "/dev/null")
+  (literal "/dev/urandom")
+  (literal "/dev/random")
+)
+
+;; Homebrew binaries and shared libs
+(allow file-read*
+  (subpath "/opt/homebrew/bin")
+  (subpath "/opt/homebrew/lib")
+  (subpath "/opt/homebrew/Cellar")
+  (subpath "/opt/homebrew/opt")
+)
+
+;; Temp directories (read)
+(allow file-read*
+  (subpath "/tmp")
+  (subpath "/private/tmp")
+  (subpath "/var/folders")
+)
+
+;; LaunchAgents (for self-restart via launchd)
+(allow file-read*
+  (subpath (string-append (param "AGENT_HOME") "/Library/LaunchAgents"))
+)
+
+;; Browser app bundle (read-only, for Playwright to launch)
+(allow file-read*
+  (subpath "/Applications/Brave Browser.app")
+  ;; (subpath "/Applications/Google Chrome.app")
+)
+
+;; ─── File Write ───────────────────────────────────────────────────────────────
+
+;; OpenClaw state directory
+(allow file-write*
+  (subpath (string-append (param "AGENT_HOME") "/.openclaw"))
+)
+
+;; Agent workspace
+(allow file-write*
+  (subpath (param "WORKSPACE_ROOT"))
+)
+
+;; Temp directories
+(allow file-write*
+  (regex #"^/tmp/openclaw-")
+  (regex #"^/private/tmp/openclaw-")
+  (regex #"^/tmp/\\.openclaw")
+  (regex #"^/private/tmp/\\.openclaw")
+  (subpath "/var/folders")
+)
+
+;; LaunchAgents plist
+(allow file-write*
+  (subpath (string-append (param "AGENT_HOME") "/Library/LaunchAgents"))
+)
+
+;; /dev/null write (common pattern)
+(allow file-write*
+  (literal "/dev/null")
+)
+
+;; ─── File DENY (explicit overrides) ──────────────────────────────────────────
+;; ZLAR-OC config — agent must never read or modify its own cage
+(deny file-read* file-write*
+  (subpath "/usr/local/etc/zlar-oc")
+  (subpath (param "ADMIN_HOME"))
+)
+
+;; SSH keys — even for the agent user
+(deny file-read* file-write*
+  (subpath (string-append (param "AGENT_HOME") "/.ssh"))
+)
+
+;; System config directories (except DNS-related files allowed above)
+(deny file-write*
+  (subpath "/etc")
+  (subpath "/System")
+)
+
+;; ─── Network ──────────────────────────────────────────────────────────────────
+
+;; Localhost only — all internal services bind to 127.0.0.1
+(allow network-outbound
+  (remote ip "localhost:18789")             ;; Gateway
+  (remote ip "localhost:18790")             ;; Node-Host Bridge
+  (remote ip "localhost:18791")             ;; Browser Control
+  (remote ip "localhost:18793")             ;; Canvas Host
+  (remote ip "localhost:18800-18899")       ;; Chrome CDP range
+  (remote ip "localhost:8000")              ;; MLX OpenAI Server
+  (remote ip "localhost:8788")              ;; Gmail webhook (gog)
+)
+
+;; Allow binding to localhost ports (server sockets)
+(allow network-bind
+  (local ip "localhost:18789")
+  (local ip "localhost:18790")
+  (local ip "localhost:18791")
+  (local ip "localhost:18793")
+  (local ip "localhost:18800-18899")
+  (local ip "localhost:8788")
+)
+
+;; DNS resolution
+(allow network-outbound
+  (remote ip "localhost:53")
+  (remote udp (remote ip "localhost:53"))
+)
+
+;; HTTPS outbound — required for API calls to model providers, web fetch tool
+;; NOTE: This is the main exfiltration risk. pf firewall provides additional filtering.
+(allow network-outbound
+  (remote tcp (remote port 443))
+  (remote tcp (remote port 80))
+)
+
+;; Inbound — only gateway listens for external connections
+(allow network-inbound
+  (local ip "localhost:18789")
+)
+
+;; ─── IPC ──────────────────────────────────────────────────────────────────────
+(allow ipc-posix-shm-read-data)
+(allow ipc-posix-shm-write-data)
+(allow ipc-posix-sem-open)
+(allow ipc-posix-sem-wait)
+(allow ipc-posix-sem-post)
+
+;; ─── Mach IPC ─────────────────────────────────────────────────────────────────
+;; Required for macOS system services (CoreFoundation, libdispatch)
+(allow mach-lookup
+  (global-name "com.apple.system.logger")
+  (global-name "com.apple.cfprefsd.agent")
+  (global-name "com.apple.cfprefsd.daemon")
+  (global-name "com.apple.CoreServices.coreservicesd")
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.lsd.mapdb")
+  (global-name "com.apple.system.notification_center")
+)
+
+;; Deny Keychain access
+(deny mach-lookup
+  (global-name "com.apple.security.agent")
+  (global-name "com.apple.security.authhost")
+)
+
+;; ─── Sysctl ───────────────────────────────────────────────────────────────────
+(allow sysctl-read)                       ;; os.cpus(), os.totalmem(), etc.
+(deny sysctl-write)
+
+;; ─── IOKit ────────────────────────────────────────────────────────────────────
+;; Metal/GPU access for Chrome rendering
+(allow iokit-open)
