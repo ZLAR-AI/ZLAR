@@ -296,18 +296,18 @@ ok "Core files installed to ${INSTALL_DIR}"
 step "Phase 5: Keys and policy"
 
 # Generate Ed25519 keypair (if no existing key)
-if [ -f "${HOME}/.zlarsigning.key" ] && [ -f "${INSTALL_DIR}/etc/keys/policy-signing.pub" ]; then
+if [ -f "${HOME}/.zlar-signing.key" ] && [ -f "${INSTALL_DIR}/etc/keys/policy-signing.pub" ]; then
     ok "Signing keypair already exists — reusing"
-elif [ -f "${HOME}/.zlarsigning.key" ]; then
+elif [ -f "${HOME}/.zlar-signing.key" ]; then
     # Private key exists (from Gate or CC) but no pub key in LT — derive it
-    info "Found existing signing key at ~/.zlarsigning.key — deriving public key"
-    openssl pkey -in "${HOME}/.zlarsigning.key" -pubout -out "${INSTALL_DIR}/etc/keys/policy-signing.pub" 2>/dev/null
+    info "Found existing signing key at ~/.zlar-signing.key — deriving public key"
+    openssl pkey -in "${HOME}/.zlar-signing.key" -pubout -out "${INSTALL_DIR}/etc/keys/policy-signing.pub" 2>/dev/null
     ok "Public key derived from existing signing key"
 else
     info "Generating Ed25519 signing keypair..."
     "${INSTALL_DIR}/bin/zlar-policy" keygen 2>/dev/null
     ok "Keypair generated"
-    info "Private key: ~/.zlarsigning.key (keep this safe)"
+    info "Private key: ~/.zlar-signing.key (keep this safe)"
     info "Public key:  ${INSTALL_DIR}/etc/keys/policy-signing.pub"
 fi
 
@@ -315,10 +315,10 @@ fi
 cp "${INSTALL_DIR}/etc/policies/lt-default.policy.json" "${INSTALL_DIR}/etc/policies/active.policy.json"
 
 # Sign the policy
-if [ -f "${HOME}/.zlarsigning.key" ]; then
+if [ -f "${HOME}/.zlar-signing.key" ]; then
     "${INSTALL_DIR}/bin/zlar-policy" sign \
         --input "${INSTALL_DIR}/etc/policies/active.policy.json" \
-        --key "${HOME}/.zlarsigning.key" 2>/dev/null
+        --key "${HOME}/.zlar-signing.key" 2>/dev/null
     ok "Default policy signed"
 else
     fail "Could not sign policy — signing key not found"

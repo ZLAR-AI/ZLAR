@@ -2,7 +2,7 @@
   "version": "2.1.0",
   "created_at": "2026-03-01T00:00:00Z",
   "author": "your-username",
-  "description": "ZLAR Gate — universal hook policy for Claude Code, Cursor, Windsurf. Deny-first rule ordering.",
+  "description": "ZLAR — universal hook policy for Claude Code, Cursor, Windsurf. Deny-first rule ordering.",
   "signature": {
     "algorithm": "ed25519",
     "public_key": "GENERATE_WITH_bin/zlar-policy_keygen",

@@ -1,8 +1,8 @@
 {
   "version": "1.0.0",
   "created_at": "2026-03-13T00:00:00Z",
-  "author": "zlar-lt-installer",
-  "description": "ZLAR-LT default policy — deny-first, zero-config. Allows reads, writes, edits, searches. Denies deletes, escalation, persistence, exfiltration, deployment. All 'ask' actions from ZLAR Gate converted to 'deny' (no Telegram = instant deny, not 5-min hang).",
+  "author": "zlar-installer",
+  "description": "ZLAR default policy — deny-first, zero-config. Allows reads, writes, edits, searches. Denies deletes, escalation, persistence, exfiltration, deployment. All 'ask' actions from ZLAR Gate converted to 'deny' (no Telegram = instant deny, not 5-min hang).",
   "signature": {
     "algorithm": "ed25519",
     "public_key": "GENERATED_AT_INSTALL",
@@ -44,7 +44,7 @@
       "action": "deny",
       "severity": "critical",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks recursive or forced file deletion. This protects against irreversible data loss.",
+      "deny_reason": "ZLAR blocks recursive or forced file deletion. This protects against irreversible data loss.",
       "match": {
         "detail": {
           "command": {
@@ -66,7 +66,7 @@
       "action": "deny",
       "severity": "critical",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks privilege escalation commands (sudo, visudo, dscl). Enable Telegram approval to allow case-by-case review.",
+      "deny_reason": "ZLAR blocks privilege escalation commands (sudo, visudo, dscl). Enable Telegram approval to allow case-by-case review.",
       "match": {
         "detail": {
           "command": {
@@ -88,7 +88,7 @@
       "action": "deny",
       "severity": "critical",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks persistence mechanisms (nohup, launchctl, crontab, background jobs). These allow processes to survive session end.",
+      "deny_reason": "ZLAR blocks persistence mechanisms (nohup, launchctl, crontab, background jobs). These allow processes to survive session end.",
       "match": {
         "detail": {
           "command": {
@@ -110,7 +110,7 @@
       "action": "deny",
       "severity": "critical",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks resource amplification patterns. These can crash your machine.",
+      "deny_reason": "ZLAR blocks resource amplification patterns. These can crash your machine.",
       "match": {
         "detail": {
           "command": {
@@ -132,7 +132,7 @@
       "action": "deny",
       "severity": "warn",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks outbound network commands (curl, wget, ssh, scp, rsync, nc). Enable Telegram approval to review these individually.",
+      "deny_reason": "ZLAR blocks outbound network commands (curl, wget, ssh, scp, rsync, nc). Enable Telegram approval to review these individually.",
       "match": {
         "detail": {
           "command": {
@@ -154,7 +154,7 @@
       "action": "deny",
       "severity": "warn",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks git push. Code deployment should be a human decision. Enable Telegram approval to review pushes individually.",
+      "deny_reason": "ZLAR blocks git push. Code deployment should be a human decision. Enable Telegram approval to review pushes individually.",
       "match": {
         "detail": {
           "command": {
@@ -176,7 +176,7 @@
       "action": "deny",
       "severity": "warn",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks file deletion. Enable Telegram approval to review deletions individually.",
+      "deny_reason": "ZLAR blocks file deletion. Enable Telegram approval to review deletions individually.",
       "match": {
         "detail": {
           "command": {
@@ -198,7 +198,7 @@
       "action": "deny",
       "severity": "warn",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks compound shell commands (pipes, chains, subshells). These can combine safe commands into unsafe sequences. Enable Telegram approval to review individually.",
+      "deny_reason": "ZLAR blocks compound shell commands (pipes, chains, subshells). These can combine safe commands into unsafe sequences. Enable Telegram approval to review individually.",
       "match": {
         "detail": {
           "command": {
@@ -220,7 +220,7 @@
       "action": "deny",
       "severity": "warn",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks unrecognized shell commands by default. Add rules to the policy to allow specific commands, or enable Telegram approval for case-by-case review.",
+      "deny_reason": "ZLAR blocks unrecognized shell commands by default. Add rules to the policy to allow specific commands, or enable Telegram approval for case-by-case review.",
       "match": {
         "domain": "bash"
       },
@@ -238,7 +238,7 @@
       "action": "deny",
       "severity": "critical",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks writes to .ssh directories. SSH keys are security-critical credentials.",
+      "deny_reason": "ZLAR blocks writes to .ssh directories. SSH keys are security-critical credentials.",
       "match": {
         "detail": {
           "path": {
@@ -260,7 +260,7 @@
       "action": "deny",
       "severity": "warn",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks writes to .env files. These often contain secrets and API keys. Enable Telegram approval to review individually.",
+      "deny_reason": "ZLAR blocks writes to .env files. These often contain secrets and API keys. Enable Telegram approval to review individually.",
       "match": {
         "detail": {
           "path": {
@@ -277,16 +277,16 @@
     {
       "id": "R032",
       "enabled": true,
-      "description": "Write/edit to ZLAR-LT infrastructure — blocked (self-protection)",
+      "description": "Write/edit to ZLAR infrastructure — blocked (self-protection)",
       "domain": "write",
       "action": "deny",
       "severity": "critical",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks writes to its own infrastructure files (bin/, adapters/, etc/, var/). The gate cannot be modified by the agent it governs.",
+      "deny_reason": "ZLAR blocks writes to its own infrastructure files (bin/, adapters/, etc/, var/). The gate cannot be modified by the agent it governs.",
       "match": {
         "detail": {
           "path": {
-            "contains": ".zlar-lt/"
+            "contains": ".zlar/"
           }
         }
       },
@@ -299,16 +299,16 @@
     {
       "id": "R033",
       "enabled": true,
-      "description": "Edit to ZLAR-LT infrastructure — blocked (self-protection)",
+      "description": "Edit to ZLAR infrastructure — blocked (self-protection)",
       "domain": "edit",
       "action": "deny",
       "severity": "critical",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks edits to its own infrastructure files. The gate cannot be modified by the agent it governs.",
+      "deny_reason": "ZLAR blocks edits to its own infrastructure files. The gate cannot be modified by the agent it governs.",
       "match": {
         "detail": {
           "path": {
-            "contains": ".zlar-lt/"
+            "contains": ".zlar/"
           }
         }
       },
@@ -326,7 +326,7 @@
       "action": "deny",
       "severity": "critical",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks reads of the signing key. The private key must never be accessible to the agent.",
+      "deny_reason": "ZLAR blocks reads of the signing key. The private key must never be accessible to the agent.",
       "match": {
         "detail": {
           "path": {
@@ -408,7 +408,7 @@
       "action": "deny",
       "severity": "warn",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks web fetch requests. Enable Telegram approval to review network requests individually.",
+      "deny_reason": "ZLAR blocks web fetch requests. Enable Telegram approval to review network requests individually.",
       "match": {
         "domain": "webfetch"
       },
@@ -438,7 +438,7 @@
       "action": "deny",
       "severity": "warn",
       "audit": true,
-      "deny_reason": "ZLAR-LT blocks all MCP tool calls by default. MCP tools have arbitrary capabilities. Enable Telegram approval to review individually, or add specific MCP tools to the policy.",
+      "deny_reason": "ZLAR blocks all MCP tool calls by default. MCP tools have arbitrary capabilities. Enable Telegram approval to review individually, or add specific MCP tools to the policy.",
       "match": {
         "domain": "unknown"
       },
