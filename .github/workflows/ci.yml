@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: ShellCheck bin/
+        run: shellcheck bin/*
+
+      - name: ShellCheck adapters/
+        run: shellcheck adapters/*/hook.sh
+
+      - name: ShellCheck scripts/
+        run: shellcheck scripts/*.sh
+
+      - name: ShellCheck install/uninstall
+        run: shellcheck install.sh uninstall.sh
+
+      - name: ShellCheck oc/bin/
+        run: shellcheck oc/bin/*
+
+      - name: Validate JSON configs
+        run: |
+          for f in etc/*.json etc/policies/*.json oc/etc/zlar-oc/*.json oc/etc/zlar-oc/policies/*.json; do
+            if [ -f "$f" ]; then
+              python3 -m json.tool "$f" > /dev/null || { echo "FAIL: $f"; exit 1; }
+              echo "OK: $f"
+            fi
+          done

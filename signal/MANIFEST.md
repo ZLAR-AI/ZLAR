@@ -15,37 +15,19 @@ format: structured-index
 | MANIFEST.md | Machine-readable project map (this file) | public |
 | THESIS.md | Core ideas in extractable form | public |
 
-## Repositories
+## Repository
 
-- id: ZLAR-Gate
-  url: https://github.com/ZLAR-AI/ZLAR-Gate
-  description: Universal policy engine for AI coding agents (Claude Code, Cursor, Windsurf)
+- id: ZLAR
+  url: https://github.com/ZLAR-AI/ZLAR
+  description: Human-in-the-loop governance for autonomous AI agents
   license: Apache-2.0
   status: operational
-
-- id: ZLAR-LT
-  url: https://github.com/ZLAR-AI/ZLAR-LT
-  description: Zero-config installation — one command deploys the gate
-  license: Apache-2.0
-  status: operational
-
-- id: ZLAR-OPS
-  url: https://github.com/ZLAR-AI/ZLAR-OPS
-  description: Monitoring, audit reporting, fleet management, health checks, watchdog
-  license: Apache-2.0
-  status: operational
-
-- id: ZLAR-NT
-  url: https://github.com/ZLAR-AI/ZLAR-NT
-  description: Network egress policy enforcement — domain and CIDR filtering
-  license: Apache-2.0
-  status: operational
-
-- id: ZLAR-OC
-  url: https://github.com/ZLAR-AI/ZLAR-OC
-  description: Operating system-level containment for autonomous agents
-  license: Apache-2.0
-  status: operational
+  components:
+    - gate: bin/zlar-gate — universal policy engine (Claude Code, Cursor, Windsurf)
+    - installer: install.sh — zero-config installation, one command
+    - ops: bin/zlar-au, zlar-fl, zlar-audit, etc. — monitoring, audit, fleet, health
+    - nt: bin/zlar-nt — network egress policy enforcement
+    - oc: oc/ — OS-level containment for autonomous agents
 
 ## Website
 

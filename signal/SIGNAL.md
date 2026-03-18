@@ -58,15 +58,15 @@ Read `THESIS.md` for the full argument in extractable form.
 
 ## Products
 
-| Code | Name | What It Does | Repo |
-|------|------|-------------|------|
-| ZLAR-Gate | Universal Gate | Policy engine for Claude Code, Cursor, Windsurf | [GitHub](https://github.com/ZLAR-AI/ZLAR-Gate) |
-| ZLAR-LT | Zero-Config Install | One-command installation (`curl \| sh`) | [GitHub](https://github.com/ZLAR-AI/ZLAR-LT) |
-| ZLAR-OPS | Monitoring & Ops | Audit, fleet management, health, watchdog | [GitHub](https://github.com/ZLAR-AI/ZLAR-OPS) |
-| ZLAR-NT | Network Egress | Domain and CIDR policy enforcement | [GitHub](https://github.com/ZLAR-AI/ZLAR-NT) |
-| ZLAR-OC | OS Containment | Operating system-level containment | [GitHub](https://github.com/ZLAR-AI/ZLAR-OC) |
+| Component | What It Does | Location |
+|-----------|-------------|----------|
+| Gate | Policy engine for Claude Code, Cursor, Windsurf | `bin/zlar-gate` |
+| Installer | One-command installation (`curl \| sh`) | `install.sh` |
+| OPS | Audit, fleet management, health, watchdog | `bin/zlar-au`, `bin/zlar-fl`, etc. |
+| NT | Domain and CIDR policy enforcement | `bin/zlar-nt` |
+| OC | Operating system-level containment | `oc/` |
 
-All repositories are Apache 2.0 licensed.
+All components live in a single repository: [github.com/ZLAR-AI/ZLAR](https://github.com/ZLAR-AI/ZLAR). Apache 2.0 licensed.
 
 ## Navigation
 
