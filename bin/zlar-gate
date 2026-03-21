@@ -100,6 +100,15 @@ _load_env() {
 }
 _load_env
 
+# Source session state library (thin stateful layer for velocity/loop/burst detection)
+# shellcheck source=../lib/session-state.sh
+if [ -f "${PROJECT_DIR}/lib/session-state.sh" ]; then
+    source "${PROJECT_DIR}/lib/session-state.sh"
+    SESSION_STATE_ENABLED="true"
+else
+    SESSION_STATE_ENABLED="false"
+fi
+
 # Env var overrides
 TELEGRAM_TOKEN="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-7662799203}"
@@ -926,6 +935,11 @@ main() {
     # Sanitize SESSION_ID — prevent path traversal
     SESSION_ID=$(echo "${SESSION_ID}" | tr -cd 'a-zA-Z0-9_-' | head -c 64)
 
+    # Initialize session state (velocity/loop/burst tracking)
+    if [ "${SESSION_STATE_ENABLED}" = "true" ]; then
+        session_state_init "${SESSION_ID}"
+    fi
+
     if [ -z "${tool_name}" ]; then
         log "No tool_name in input — denying"
         respond_deny "No tool name" "gate_error"
@@ -986,7 +1000,14 @@ main() {
         fi
     fi
 
-    # 9. Route based on action
+    # 9. Session state escalation check
+    # If policy says "allow" but session velocity/loops/bursts are anomalous,
+    # escalate to "ask" — the human decides, not the counter.
+    if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ "${MATCHED_ACTION}" = "allow" ]; then
+        MATCHED_ACTION=$(session_check_escalation "${MATCHED_ACTION}" "${DOMAIN}" "${TOOL_DISPLAY}" "allow")
+    fi
+
+    # 10. Route based on action
     case "${MATCHED_ACTION}" in
         allow)
             if [ "${MATCHED_AUDIT}" = "true" ]; then
@@ -997,6 +1018,10 @@ main() {
 
         deny)
             emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "policy"
+            # Track denial for burst detection
+            if [ "${SESSION_STATE_ENABLED}" = "true" ]; then
+                session_state_update "${DOMAIN}" "${TOOL_DISPLAY}" "deny" 2>/dev/null || true
+            fi
             respond_deny "Blocked by rule ${MATCHED_RULE}: $(echo "${POLICY_RULES_JSON}" | jq -r ".[] | select(.id == \"${MATCHED_RULE}\") | .description" 2>/dev/null || echo "policy denied")" "policy"
             ;;
 
