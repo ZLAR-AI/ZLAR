@@ -332,6 +332,8 @@ case "${COMMAND}" in
     telegram)  cmd_telegram ;;
     uninstall) cmd_uninstall ;;
     version)   cmd_version ;;
+    off)       touch "$HOME/.claude/.gate-disabled" && echo "⚡ Gate OFF — Claude unblocked" ;;
+    on)        rm -f "$HOME/.claude/.gate-disabled" && echo "🔒 Gate ON — policy enforced" ;;
     help|--help|-h) cmd_help ;;
     *)
         echo "Unknown command: ${COMMAND}"

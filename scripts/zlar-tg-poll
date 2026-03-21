@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# zlar-tg-poll — Shared Telegram callback dispatcher for ZLAR gates
+# Routes callback_query responses to per-gate inbox directories.
+# Only one instance should run at a time (enforced by PID file).
+set -euo pipefail
+
+readonly RUNTIME_DIR="/var/run/zlar-tg"
+readonly PIDFILE="${RUNTIME_DIR}/poll.pid"
+readonly INBOX_DIR="${RUNTIME_DIR}/inbox"
+readonly TOKEN_FILE="${RUNTIME_DIR}/token"
+readonly LOG_FILE="/var/log/zlar-tg-poll.log"
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+log_poll() {
+    printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "${LOG_FILE}" 2>/dev/null || true
+}
+
+die() {
+    log_poll "FATAL: $*"
+    echo "FATAL: $*" >&2
+    exit 1
+}
+
+cleanup() {
+    rm -f "${PIDFILE}" 2>/dev/null || true
+    log_poll "Dispatcher stopped (PID $$)"
+}
+trap cleanup EXIT INT TERM
+
+# ─── Preflight ────────────────────────────────────────────────────────────────
+
+[ -f "${TOKEN_FILE}" ] || die "Token file not found: ${TOKEN_FILE}"
+TELEGRAM_BOT_TOKEN=$(cat "${TOKEN_FILE}" | tr -d '[:space:]')
+[ -n "${TELEGRAM_BOT_TOKEN}" ] || die "Token file is empty: ${TOKEN_FILE}"
+
+TELEGRAM_CHAT_ID="${ZLAR_TELEGRAM_CHAT_ID:-7662799203}"
+
+mkdir -p "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" 2>/dev/null || true
+
+# PID file — check for stale
+if [ -f "${PIDFILE}" ]; then
+    old_pid=$(cat "${PIDFILE}" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null; then
+        die "Already running (PID ${old_pid})"
+    fi
+    rm -f "${PIDFILE}"
+fi
+echo $$ > "${PIDFILE}"
+
+log_poll "Dispatcher started (PID $$)"
+
+# ─── Telegram API ─────────────────────────────────────────────────────────────
+
+telegram_api() {
+    local method="$1" data="$2"
+    local response http_code
+    response=$(curl -s -w '\n%{http_code}' -X POST \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}" \
+        -H "Content-Type: application/json" \
+        -d "${data}" \
+        --connect-timeout 5 \
+        --max-time 10 \
+        2>/dev/null) || { log_poll "CURL FAILED: ${method}"; return 1; }
+    http_code=$(echo "${response}" | tail -1)
+    response=$(echo "${response}" | sed '$d')
+    if [ "${http_code}" != "200" ]; then
+        log_poll "API ERROR: ${method} HTTP ${http_code}: ${response}"
+        return 1
+    fi
+    echo "${response}"
+}
+
+# ─── Main Loop ────────────────────────────────────────────────────────────────
+
+LAST_UPDATE_ID=0
+
+while true; do
+    poll_body=$(printf '{"offset":%d,"timeout":5,"allowed_updates":["callback_query"]}' \
+        "$((LAST_UPDATE_ID + 1))")
+
+        updates=$(telegram_api "getUpdates" "${poll_body}") || continue
+    [ -n "${updates}" ] || continue
+
+    count=$(echo "${updates}" | jq '.result | length' 2>/dev/null || echo 0)
+    [ "${count}" -gt 0 ] || continue
+
+    j=0
+    while [ "${j}" -lt "${count}" ]; do
+        update=$(echo "${updates}" | jq -c ".result[${j}]" 2>/dev/null)
+        update_id=$(echo "${update}" | jq -r '.update_id' 2>/dev/null)
+
+        # Advance offset
+        if [ -n "${update_id}" ] && [ "${update_id}" != "null" ]; then
+            LAST_UPDATE_ID="${update_id}"
+        fi
+
+        cb_data=$(echo "${update}" | jq -r '.callback_query.data // ""' 2>/dev/null)
+        cb_id=$(echo "${update}" | jq -r '.callback_query.id // ""' 2>/dev/null)
+        cb_from=$(echo "${update}" | jq -r '.callback_query.from.id // ""' 2>/dev/null)
+
+        # Skip if no callback data
+        if [ -z "${cb_data}" ] || [ "${cb_data}" = "noop" ]; then
+            j=$((j + 1))
+            continue
+        fi
+
+        # Verify sender
+        if [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
+            log_poll "UNAUTHORIZED callback from ${cb_from}"
+            telegram_api "answerCallbackQuery" \
+                "$(printf '{"callback_query_id":"%s","text":"Unauthorized"}' "${cb_id}")" >/dev/null 2>&1
+            j=$((j + 1))
+            continue
+        fi
+
+        # Answer callback immediately (clears loading spinner)
+        answer_text="Received"
+        case "${cb_data}" in
+            *:approve:*) answer_text="✅ Approved" ;;
+            *:deny:*)    answer_text="❌ Denied" ;;
+        esac
+        answer_body=$(jq -n -c --arg id "${cb_id}" --arg text "${answer_text}" \
+            '{callback_query_id: $id, text: $text}')
+        if ! telegram_api "answerCallbackQuery" "${answer_body}" >/dev/null; then
+            log_poll "answerCallbackQuery FAILED for cb_id=${cb_id}"
+        fi
+
+        # Update message to show result (immediate visual feedback)
+        cb_msg_id=$(echo "${update}" | jq -r '.callback_query.message.message_id // ""' 2>/dev/null)
+        cb_chat_id=$(echo "${update}" | jq -r '.callback_query.message.chat.id // ""' 2>/dev/null)
+        if [ -n "${cb_msg_id}" ] && [ -n "${cb_chat_id}" ]; then
+            case "${cb_data}" in
+                *:approve:*)
+    case "${cb_data}" in cc:*) pfx="🖥️";; oc:*) pfx="🦞";; *) pfx="";; esac
+    edit_text="${pfx} ☑️ Approved"
+    ;;
+*:deny:*)
+    case "${cb_data}" in cc:*) pfx="🖥️";; oc:*) pfx="🦞";; *) pfx="";; esac
+    edit_text="${pfx} ▪️ Denied"
+    ;;
+*)
+    edit_text="▪️ Processed"
+    ;;
+            esac
+            edit_body=$(jq -n -c \
+                --arg chat_id "${cb_chat_id}" \
+                --argjson msg_id "${cb_msg_id}" \
+                --arg text "${edit_text}" \
+                '{chat_id: $chat_id, message_id: $msg_id, text: $text, parse_mode: ""}')
+            if ! telegram_api "editMessageText" "${edit_body}" >/dev/null; then
+                log_poll "editMessageText FAILED for msg_id=${cb_msg_id}"
+            fi
+        fi
+
+        # Route by prefix
+        target_dir=""
+        case "${cb_data}" in
+            cc:*) target_dir="${INBOX_DIR}/cc" ;;
+            oc:*) target_dir="${INBOX_DIR}/oc" ;;
+            *)
+                log_poll "Unknown callback prefix: ${cb_data}"
+                j=$((j + 1))
+                continue
+                ;;
+        esac
+
+        # Write callback to inbox
+        cb_file="${target_dir}/${update_id}.json"
+        printf '{"data":"%s","from_id":"%s","callback_query_id":"%s"}\n' \
+            "${cb_data}" "${cb_from}" "${cb_id}" > "${cb_file}"
+
+        log_poll "Routed: ${cb_data} → ${cb_file}"
+
+        j=$((j + 1))
+    done
+done
