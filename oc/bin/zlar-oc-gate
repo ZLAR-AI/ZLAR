@@ -44,7 +44,7 @@ SIGNATURE_REQUIRED="true"
 
 GATE_CONFIG="${ZLAR_OC_ROOT}/gate.json"  # Default gate config path
 OPENCLAW_LOG="/var/log/zlar-oc/openclaw-stderr.log"
-_OPENCLAW_JSON_LOG=""  # Auto-detected from /tmp/.openclaw/
+OPENCLAW_JSON_LOG=""  # Auto-detected from /tmp/.openclaw/
 
 # Decision bridge: gate writes outcomes here for OpenClaw to poll
 DECISION_DIR="/var/run/zlar-oc/decisions"
@@ -146,6 +146,7 @@ resolve_ask_with_availability() {
 
             if [ "${severity}" = "critical" ] && [ "${AWAY_HALT_ON_CRITICAL}" = "true" ]; then
                 # HALT: This is destructive. Agent must stop until human returns.
+            EVAL_AUTHORIZER="gate:away_halt"
                 log_gate "AWAY HALT: Critical event blocked while human unavailable (rule: ${rule_id}, domain: ${domain})"
                 emit_event "availability" "halt" "deny" "gate" \
                     "$(printf '{"event":"away_halt","rule":"%s","domain":"%s","risk_score":%s,"reason":"critical_while_away"}' \
@@ -159,6 +160,7 @@ resolve_ask_with_availability() {
 
             if [ "${risk_score}" -lt "${AWAY_AUTO_ALLOW_THRESHOLD}" ] 2>/dev/null; then
                 # AUTO-ALLOW: Low risk, let the agent proceed
+            EVAL_AUTHORIZER="gate:away_auto_allow"
                 log_gate "AWAY AUTO-ALLOW: Low risk event auto-allowed (rule: ${rule_id}, risk: ${risk_score})"
                 emit_event "availability" "away_auto_allow" "allow" "gate" \
                     "$(printf '{"event":"away_auto_allow","rule":"%s","domain":"%s","risk_score":%s,"threshold":%d}' \
@@ -169,6 +171,7 @@ resolve_ask_with_availability() {
             fi
 
             # QUEUE: Medium risk, save for human review
+            EVAL_AUTHORIZER="gate:away_queued"
             log_gate "AWAY QUEUE: Event queued for review (rule: ${rule_id}, risk: ${risk_score})"
             queue_for_review "${rule_id}" "${domain}" "${action}" "${detail}" "${risk_score}"
             emit_event "availability" "away_queued" "queued" "gate" \
@@ -300,6 +303,7 @@ write_decision() {
     local rule_id="${3:-}"
     local domain="${4:-}"
     local action="${5:-}"
+    local authorizer="${6:-}"
 
     if [ ! -d "${DECISION_DIR}" ]; then
         mkdir -p "${DECISION_DIR}" 2>/dev/null
@@ -314,11 +318,12 @@ write_decision() {
     local decision_file="${DECISION_DIR}/${request_id}.json"
 
     local bridge_agent="${CURRENT_EVENT_AGENT_ID:-${AGENT_ID}}"
-    printf '{"request_id":"%s","outcome":"%s","rule":"%s","domain":"%s","action":"%s","ts":"%s","agent_id":"%s","session_id":"%s"}\n' \
+    printf '{"request_id":"%s","outcome":"%s","rule":"%s","domain":"%s","action":"%s","ts":"%s","agent_id":"%s","session_id":"%s","authorizer":"%s"}\n' \
         "$(json_escape "${request_id}")" "$(json_escape "${outcome}")" \
         "$(json_escape "${rule_id}")" "$(json_escape "${domain}")" \
         "$(json_escape "${action}")" "$(json_escape "${ts}")" \
         "$(json_escape "${bridge_agent}")" "$(json_escape "${SESSION_ID}")" \
+        "$(json_escape "${authorizer}")" \
         > "${tmp_file}"
 
     mv "${tmp_file}" "${decision_file}"
@@ -454,9 +459,9 @@ load_policy_lightweight() {
     local policy_path="$1"
 
     # Extract rule blocks using awk
-    local _in_rules=0
-    local _brace_depth=0
-    local _current_rule=""
+    local in_rules=0
+    local brace_depth=0
+    local current_rule=""
 
     while IFS= read -r line; do
         # Detect rule ID — signals a new rule
@@ -487,32 +492,32 @@ load_policy_lightweight() {
         if echo "${line}" | grep -q '"enabled"'; then
             local val
             val=$(echo "${line}" | grep -o '"enabled"[[:space:]]*:[[:space:]]*[a-z]*' | awk -F: '{gsub(/[[:space:]]/, "", $2); print $2}')
-            RULE_ENABLED[idx]="${val:-true}"
+            RULE_ENABLED[${idx}]="${val:-true}"
         fi
         if echo "${line}" | grep -q '"domain"'; then
             local val
             val=$(echo "${line}" | grep -o '"domain"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')
-            RULE_DOMAINS[idx]="${val}"
+            RULE_DOMAINS[${idx}]="${val}"
         fi
         if echo "${line}" | grep -q '"source"' && ! echo "${line}" | grep -q '"source":.*{'; then
             local val
             val=$(echo "${line}" | grep -o '"source"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')
-            RULE_SOURCES[idx]="${val}"
+            RULE_SOURCES[${idx}]="${val}"
         fi
         if echo "${line}" | grep -q '"action"' && ! echo "${line}" | grep -q '"default_action"'; then
             local val
             val=$(echo "${line}" | grep -o '"action"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')
-            RULE_ACTION[idx]="${val}"
+            RULE_ACTION[${idx}]="${val}"
         fi
         if echo "${line}" | grep -q '"severity"'; then
             local val
             val=$(echo "${line}" | grep -o '"severity"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')
-            RULE_SEVERITY[idx]="${val}"
+            RULE_SEVERITY[${idx}]="${val}"
         fi
         if echo "${line}" | grep -q '"audit"'; then
             local val
             val=$(echo "${line}" | grep -o '"audit"[[:space:]]*:[[:space:]]*[a-z]*' | awk -F: '{gsub(/[[:space:]]/, "", $2); print $2}')
-            RULE_AUDIT[idx]="${val:-true}"
+            RULE_AUDIT[${idx}]="${val:-true}"
         fi
     done < "${policy_path}"
 
@@ -538,7 +543,6 @@ verify_policy_signature() {
     local tmpdir
     tmpdir=$(mktemp -d /tmp/zlar-oc-verify.XXXXXX)
     chmod 700 "${tmpdir}"
-    # shellcheck disable=SC2064
     trap "rm -rf '${tmpdir}'" RETURN
 
     local canon_file="${tmpdir}/canon.json"
@@ -588,6 +592,7 @@ verify_policy_signature() {
 # Also sets EVAL_RULE_ID and EVAL_SEVERITY as side effects.
 
 EVAL_RULE_ID=""
+EVAL_AUTHORIZER=""
 EVAL_SEVERITY="info"
 
 evaluate_event() {
@@ -597,6 +602,7 @@ evaluate_event() {
     local event_detail="$4"
 
     EVAL_RULE_ID=""
+    EVAL_AUTHORIZER=""
     EVAL_SEVERITY="info"
 
     if [ "${POLICY_LOADED}" != "true" ]; then
@@ -605,7 +611,7 @@ evaluate_event() {
     fi
 
     local i=0
-    while [ "${i}" -lt "${POLICY_RULE_COUNT}" ]; do
+    while [ ${i} -lt ${POLICY_RULE_COUNT} ]; do
         # Skip disabled rules
         if [ "${RULE_ENABLED[${i}]}" = "false" ]; then
             i=$((i + 1))
@@ -638,6 +644,7 @@ evaluate_event() {
 
         if [ "${matched}" = "true" ]; then
             EVAL_RULE_ID="${RULE_IDS[${i}]}"
+            EVAL_AUTHORIZER="policy"
 
             # Stage 2: if scoring is enabled for this rule, compute risk score
             # and derive action from thresholds instead of using static action
@@ -773,7 +780,7 @@ match_detail() {
                 ;;
             glob)
                 # Bash glob matching using [[ pattern ]]
-                if [[ ! "${event_value}" == "${matcher_value}" ]]; then
+                if [[ ! "${event_value}" == ${matcher_value} ]]; then
                     return 1
                 fi
                 ;;
@@ -914,20 +921,24 @@ telegram_ask() {
         description="${description}\nDestination: \`${dst_host}\`"
     fi
 
-    local message
     local display_agent="${CURRENT_EVENT_AGENT_ID:-${AGENT_ID}}"
-    # shellcheck disable=SC2016
-    message=$(printf '🔒 *ZLAR-OC Ask*\n\nRule: `%s`\nDomain: `%s`\nAction: `%s`\nRisk Score: %s/100\n%s\n\nAgent: `%s`\nSession: `%s`\nTimeout: %ss' \
-        "${rule_id}" "${domain}" "${action}" "${risk_score}" \
+    local agent_emoji="🦞"
+    if [ "${display_agent}" != "aiagent" ] && [ "${display_agent}" != "${AGENT_ID}" ] && [ -n "${display_agent}" ]; then
+        agent_emoji="🦞🔷"
+    fi
+
+    local message
+    message=$(printf '🔒 %s *ZLAR Gate*\n\nRule: `%s`\nDomain: `%s`\nAction: `%s`\nRisk Score: %s/100\n%s\n\nAgent: `%s`\nSession: `%s`\nTimeout: %ss' \
+        "${agent_emoji}" "${rule_id}" "${domain}" "${action}" "${risk_score}" \
         "${description}" "${display_agent}" "${SESSION_ID}" "${timeout_s}")
 
     # Escape for JSON
     local json_message
-    json_message=$(echo "${message}" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+    json_message=$(echo "${message}" | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}' | sed 's/\\n$//')
 
     # Send with inline keyboard
-    local callback_approve="zlar_approve_${event_id}"
-    local callback_deny="zlar_deny_${event_id}"
+    local callback_approve="oc:approve:${event_id}"
+    local callback_deny="oc:deny:${event_id}"
 
     local send_data
     send_data=$(printf '{
@@ -968,61 +979,41 @@ telegram_ask() {
     start_time=$(date +%s)
     local decision=""
 
+    # Poll for response via shared inbox
+    local inbox_dir="/var/run/zlar-tg/inbox/oc"
+    mkdir -p "${inbox_dir}" 2>/dev/null || true
+
     while true; do
         local elapsed
         elapsed=$(( $(date +%s) - start_time ))
-        if [ "${elapsed}" -ge "${timeout_s}" ]; then
+        if [ ${elapsed} -ge ${timeout_s} ]; then
             log_gate "Telegram ask timed out after ${timeout_s}s (event: ${event_id})"
             decision="timeout"
             break
         fi
 
-        # Poll for callback queries
-        local poll_data
-        poll_data=$(printf '{"offset": %d, "timeout": 5, "allowed_updates": ["callback_query"]}' \
-            "${TELEGRAM_LAST_UPDATE_ID}")
+        for cb_file in "${inbox_dir}"/*.json; do
+            [ -f "${cb_file}" ] || continue
+            local cb_data cb_from
+            cb_data=$(jq -r '.data // ""' "${cb_file}" 2>/dev/null)
+            cb_from=$(jq -r '.from_id // ""' "${cb_file}" 2>/dev/null)
 
-        local updates
-        updates=$(telegram_api "getUpdates" "${poll_data}" 2>/dev/null || echo "")
+            if [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
+                rm -f "${cb_file}"
+                continue
+            fi
 
-        if [ -n "${updates}" ] && [ "${updates}" != "" ]; then
-            # Check each update for our callback
-            local update_count
-            update_count=$(echo "${updates}" | jq '.result | length' 2>/dev/null || echo 0)
-
-            local j=0
-            while [ ${j} -lt "${update_count}" ]; do
-                local update_id callback_data
-                update_id=$(echo "${updates}" | jq -r ".result[${j}].update_id" 2>/dev/null)
-                callback_data=$(echo "${updates}" | jq -r ".result[${j}].callback_query.data // \"\"" 2>/dev/null)
-
-                # Track update offset
-                if [ -n "${update_id}" ] && [ "${update_id}" != "null" ]; then
-                    TELEGRAM_LAST_UPDATE_ID=$((update_id + 1))
-                fi
-
-                if [ "${callback_data}" = "${callback_approve}" ]; then
-                    decision="approve"
-                    # Answer the callback to remove the loading indicator
-                    local cb_id
-                    cb_id=$(echo "${updates}" | jq -r ".result[${j}].callback_query.id" 2>/dev/null)
-                    telegram_api "answerCallbackQuery" \
-                        "$(printf '{"callback_query_id":"%s","text":"✅ Approved"}' "${cb_id}")" >/dev/null 2>&1
-                    break 2
-                elif [ "${callback_data}" = "${callback_deny}" ]; then
-                    decision="deny"
-                    local cb_id
-                    cb_id=$(echo "${updates}" | jq -r ".result[${j}].callback_query.id" 2>/dev/null)
-                    telegram_api "answerCallbackQuery" \
-                        "$(printf '{"callback_query_id":"%s","text":"❌ Denied"}' "${cb_id}")" >/dev/null 2>&1
-                    break 2
-                fi
-
-                j=$((j + 1))
-            done
-        fi
-
-        sleep 2
+            if [ "${cb_data}" = "${callback_approve}" ]; then
+                rm -f "${cb_file}"
+                decision="approve"
+                break 2
+            elif [ "${cb_data}" = "${callback_deny}" ]; then
+                rm -f "${cb_file}"
+                decision="deny"
+                break 2
+            fi
+        done
+        sleep 1
     done
 
     # Map decision to outcome
@@ -1030,14 +1021,17 @@ telegram_ask() {
     case "${decision}" in
         approve)
             outcome="allow"
+            EVAL_AUTHORIZER="human:${TELEGRAM_CHAT_ID}"
             log_gate "Telegram ask APPROVED (event: ${event_id})"
             ;;
         deny)
             outcome="deny"
+            EVAL_AUTHORIZER="human:${TELEGRAM_CHAT_ID}"
             log_gate "Telegram ask DENIED (event: ${event_id})"
             ;;
         timeout)
             outcome="deny"
+            EVAL_AUTHORIZER="gate:timeout"
             log_gate "Telegram ask TIMED OUT → deny (event: ${event_id})"
             ;;
     esac
@@ -1086,7 +1080,7 @@ resolve_ask() {
     if [ -n "${rule_id}" ] && command -v jq &>/dev/null; then
         # Find rule index and read ask.timeout_s
         local i=0
-        while [ "${i}" -lt "${POLICY_RULE_COUNT}" ]; do
+        while [ ${i} -lt ${POLICY_RULE_COUNT} ]; do
             if [ "${RULE_IDS[${i}]}" = "${rule_id}" ]; then
                 # We'd need to store ask config too, but for now use the policy file
                 local rule_timeout
@@ -1153,6 +1147,15 @@ process_openclaw_event() {
 
     local outcome
     outcome=$(evaluate_event "${domain}" "${action}" "${source}" "${detail}")
+
+    # If no rule matched, notify human instead of silent deny
+    if [ -z "${EVAL_RULE_ID}" ] && [ "${outcome}" = "deny" ] && [ "${TELEGRAM_ENABLED}" = "true" ]; then
+        log_gate "UNMATCHED EVENT: no rule matched for domain=${domain} action=${action} — notifying human"
+        EVAL_RULE_ID="unmatched"
+        EVAL_SEVERITY="warn"
+        EVAL_AUTHORIZER="gate:unmatched"
+        outcome="ask"
+    fi
     outcome=$(resolve_ask_with_availability "${outcome}" "${EVAL_RULE_ID}" "${domain}" "${action}" "${detail}" "${EVAL_RISK_SCORE}" "${EVAL_SEVERITY}")
 
     emit_event "${domain}" "${action}" "${outcome}" "${source}" "${detail}" \
@@ -1160,7 +1163,7 @@ process_openclaw_event() {
 
     # Decision bridge: write outcome to file for OpenClaw to poll
     if [ -n "${CURRENT_REQUEST_ID}" ]; then
-        write_decision "${CURRENT_REQUEST_ID}" "${outcome}" "${EVAL_RULE_ID}" "${domain}" "${action}"
+        write_decision "${CURRENT_REQUEST_ID}" "${outcome}" "${EVAL_RULE_ID}" "${domain}" "${action}" "${EVAL_AUTHORIZER}"
     fi
 }
 
@@ -1201,9 +1204,9 @@ parse_sandbox_denial() {
 parse_pf_drop() {
     local line="$1"
 
-    local proto _src_ip dst_ip dst_port
+    local proto src_ip dst_ip dst_port
     if [[ "${line}" =~ ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)\ \>\ ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+) ]]; then
-        _src_ip="${BASH_REMATCH[1]}"
+        src_ip="${BASH_REMATCH[1]}"
         dst_ip="${BASH_REMATCH[3]}"
         dst_port="${BASH_REMATCH[4]}"
     else
@@ -1262,6 +1265,11 @@ parse_openclaw_log() {
         else
             detail=$(echo "${line}" | grep -o '"detail":{[^}]*}' | head -1 | sed 's/^"detail"://')
             [ -z "${detail}" ] && detail="{}"
+        fi
+
+        # Dedup: skip if this request_id was already processed (#BUG: tail -F double-delivery)
+        if [ -n "${request_id}" ] && [ -f "${DECISION_DIR}/${request_id}.json" ]; then
+            return 0
         fi
 
         # Stash request_id and per-event agent_id for this event's lifecycle
@@ -1334,7 +1342,7 @@ start_openclaw_log_watcher() {
     TAIL_PIDS+=($!)
 
     local json_log
-    json_log=$(find /tmp/.openclaw -name "openclaw-*.log" -type f 2>/dev/null | sort -r | head -1 || true)
+    json_log=$(ls -1t /tmp/.openclaw/openclaw-*.log 2>/dev/null | head -1 || true)
     if [ -n "${json_log}" ]; then
         log_gate "Tailing OpenClaw JSON log: ${json_log}"
         tail -F "${json_log}" 2>/dev/null | while IFS= read -r line; do
@@ -1410,7 +1418,7 @@ start_policy_watcher() {
 
 cleanup() {
     log_gate "Gate daemon shutting down"
-    for pid in "${TAIL_PIDS[@]}"; do
+    for pid in "${TAIL_PIDS[@]+"${TAIL_PIDS[@]}"}"; do
         kill "${pid}" 2>/dev/null || true
     done
     rm -f "${PIDFILE}"
@@ -1468,16 +1476,15 @@ start_daemon() {
     log_gate "Human availability mode: ${AVAILABILITY_MODE}"
 
     # Emit startup event
-    local _startup_detail
-    _startup_detail=$(printf '{"event":"gate.start","pid":%d,"policy_version":"%s","policy_rules":%d,"telegram_enabled":%s,"availability_mode":"%s"}' \
-        $$ "${POLICY_VERSION}" "${POLICY_RULE_COUNT}" "${TELEGRAM_ENABLED}" "${AVAILABILITY_MODE}")
-    emit_event "system" "gate.start" "allow" "gate" "${_startup_detail}" "" "info"
+    emit_event "system" "gate.start" "allow" "gate" \
+        $(printf '{"event":"gate.start","pid":%d,"policy_version":"%s","policy_rules":%d,"telegram_enabled":%s,"availability_mode":"%s"}' \
+            $$ "${POLICY_VERSION}" "${POLICY_RULE_COUNT}" "${TELEGRAM_ENABLED}" "${AVAILABILITY_MODE}") \
+        "" "info"
 
     # Send Telegram startup notification
     if [ "${TELEGRAM_ENABLED}" = "true" ]; then
         local startup_msg
-        # shellcheck disable=SC2016
-        startup_msg=$(printf '🚦 *ZLAR-OC: shield is online*\n\nHost: `%s`\nPolicy: v%s — %d rules\nMode: %s\nPID: %d' \
+        startup_msg=$(printf '🚦 🦞 *ZLAR Gate: shield is online*\\n\\nHost: `%s`\\nPolicy: v%s — %d rules\\nMode: %s\\nPID: %d' \
             "${HOSTNAME}" "${POLICY_VERSION}" "${POLICY_RULE_COUNT}" "${AVAILABILITY_MODE}" $$)
         telegram_api "sendMessage" \
             "{\"chat_id\":\"${TELEGRAM_CHAT_ID}\",\"text\":\"${startup_msg}\",\"parse_mode\":\"Markdown\"}" \
