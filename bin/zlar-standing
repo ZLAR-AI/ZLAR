@@ -1,0 +1,246 @@
+#!/bin/bash
+# zlar-standing — standing authority view for ZLAR
+#
+# Shows what the agent can currently do without asking again.
+# This is the answer to: "What powers exist right now?"
+#
+# Design principle:
+# - standing authority matters more than momentary interruption
+# - the human should be able to see what continues when they're not looking
+# - visibility into standing authority is necessary for real sovereignty
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# shellcheck source=../lib/audit-reader.sh
+source "${PROJECT_DIR}/lib/audit-reader.sh"
+
+# Session approval store
+SESSION_APPROVALS_DIR="${ZLAR_SESSION_DIR:-${PROJECT_DIR}/var/sessions}"
+
+# ── Usage ──
+
+usage() {
+    cat <<'EOF'
+Usage: zlar-standing [command] [options]
+
+Commands:
+  view              Show all standing authority (default)
+  sessions          Show active session-scoped approvals
+  policy            Show what the policy auto-allows
+  scheduled         Show known scheduled agent actions
+  revoke <id>       Revoke a session-scoped approval
+
+The human should always be able to answer:
+"What can the agent do right now without asking me?"
+
+If you can't answer that, you're not governing. You're reacting.
+EOF
+    exit 0
+}
+
+# ── Standing authority from policy ──
+
+show_policy_standing() {
+    local policy_file="${ZLAR_POLICY_FILE:-}"
+
+    # Find policy file
+    if [[ -z "${policy_file}" ]]; then
+        for candidate in \
+            "${ZLAR_PROJECT_DIR:-}/etc/policies/active.policy.json" \
+            "$HOME/Desktop/ZLAR/repo/etc/policies/active.policy.json"; do
+            if [[ -f "${candidate}" ]]; then
+                policy_file="${candidate}"
+                break
+            fi
+        done
+    fi
+
+    if [[ ! -f "${policy_file:-}" ]]; then
+        echo "  Policy file not found."
+        return
+    fi
+
+    echo "  ── Policy Auto-Allows ──"
+    echo "  (Actions the gate approves without asking)"
+    echo ""
+
+    jq -r '.rules[] | select(.action == "allow" and .enabled == true) |
+        "  [\(.id)] \(.description)\n    Domain: \(.domain)\n"' "${policy_file}"
+
+    echo "  ── Policy Auto-Denies ──"
+    echo "  (Actions the gate blocks without asking)"
+    echo ""
+
+    jq -r '.rules[] | select(.action == "deny" and .enabled == true) |
+        "  [\(.id)] \(.description)\n    Domain: \(.domain)\n"' "${policy_file}"
+
+    echo "  ── Policy Asks Human ──"
+    echo "  (Actions that require Telegram approval)"
+    echo ""
+
+    jq -r '.rules[] | select(.action == "ask" and .enabled == true) |
+        "  [\(.id)] \(.description)\n    Domain: \(.domain)  Risk: \(.risk_score.irreversibility // "?")/\(.risk_score.consequence // "?")/\(.risk_score.blast_radius // "?")\n"' "${policy_file}"
+
+    echo "  ── Scoring Thresholds ──"
+    echo ""
+    jq -r '.scoring_thresholds | "  Auto-allow: ≤\(.allow)\n  Log only:   ≤\(.log)\n  Ask human:  ≤\(.ask)\n  Above \(.ask): deny"' "${policy_file}"
+
+    echo ""
+    echo "  ── Disabled Rules ──"
+    echo ""
+    local disabled_count
+    disabled_count=$(jq '[.rules[] | select(.enabled == false)] | length' "${policy_file}")
+    if [[ "${disabled_count}" == "0" ]]; then
+        echo "  None."
+    else
+        jq -r '.rules[] | select(.enabled == false) |
+            "  [\(.id)] \(.description) — DISABLED"' "${policy_file}"
+    fi
+}
+
+# ── Session-scoped approvals ──
+
+show_session_approvals() {
+    echo "  ── Session-Scoped Approvals ──"
+    echo "  (Patterns approved for the duration of a session)"
+    echo ""
+
+    if [[ ! -d "${SESSION_APPROVALS_DIR}" ]]; then
+        echo "  No session approval directory found."
+        echo "  Session-scope approval is not yet implemented in the gate."
+        echo "  This is a planned capability."
+        return
+    fi
+
+    local found=false
+    for session_file in "${SESSION_APPROVALS_DIR}"/*.approvals.json; do
+        [[ -f "${session_file}" ]] || continue
+        found=true
+
+        local session_id
+        session_id=$(basename "${session_file}" .approvals.json)
+
+        echo "  Session: ${session_id}"
+        jq -r '.[] | "    [\(.rule)] \(.pattern) — approved at \(.approved_at)"' "${session_file}" 2>/dev/null || \
+            echo "    (unreadable)"
+        echo ""
+    done
+
+    if [[ "${found}" == "false" ]]; then
+        echo "  No active session-scoped approvals."
+    fi
+}
+
+# ── Scheduled actions ──
+
+show_scheduled() {
+    echo "  ── Known Scheduled Actions ──"
+    echo "  (Future actions the agent has arranged)"
+    echo ""
+
+    # Check crontab
+    local cron_entries
+    cron_entries=$(crontab -l 2>/dev/null | grep -i "zlar\|bohm\|openclaw" || true)
+
+    if [[ -n "${cron_entries}" ]]; then
+        echo "  System crontab (ZLAR-related):"
+        echo "${cron_entries}" | while read -r line; do
+            echo "    ${line}"
+        done
+        echo ""
+    fi
+
+    # Check for Claude Code scheduled tasks
+    local claude_tasks_dir="$HOME/.claude/scheduled-tasks"
+    if [[ -d "${claude_tasks_dir}" ]]; then
+        local task_count
+        task_count=$(find "${claude_tasks_dir}" -name "SKILL.md" 2>/dev/null | wc -l | tr -d ' ')
+        if [[ ${task_count} -gt 0 ]]; then
+            echo "  Claude Code scheduled tasks: ${task_count}"
+            find "${claude_tasks_dir}" -name "SKILL.md" -exec dirname {} \; 2>/dev/null | while read -r dir; do
+                echo "    $(basename "${dir}")"
+            done
+            echo ""
+        fi
+    fi
+
+    # Check for launchd agents
+    local launch_agents
+    launch_agents=$(ls "$HOME/Library/LaunchAgents/" 2>/dev/null | grep -i "zlar\|bohm" || true)
+
+    if [[ -n "${launch_agents}" ]]; then
+        echo "  LaunchAgents (ZLAR-related):"
+        echo "${launch_agents}" | while read -r agent; do
+            echo "    ${agent}"
+        done
+        echo ""
+    fi
+
+    # Note about visibility limits
+    echo "  ── Visibility Limits ──"
+    echo "  This view shows scheduled actions discoverable from this machine."
+    echo "  It cannot see:"
+    echo "    - Bohm's OpenClaw crons (run in OC sandbox)"
+    echo "    - External service webhooks"
+    echo "    - Scheduled tasks in other agent runtimes"
+    echo "  Uncertainty remains where visibility is incomplete."
+}
+
+# ── Main view ──
+
+view_all() {
+    echo "═══════════════════════════════════════════════════"
+    echo "  ZLAR Standing Authority"
+    echo "  Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "═══════════════════════════════════════════════════"
+    echo ""
+    echo "  What the agent can do without asking:"
+    echo ""
+
+    show_policy_standing
+    echo ""
+    show_session_approvals
+    echo ""
+    show_scheduled
+
+    echo ""
+    echo "  ─────────────────────────────────────────────────"
+    echo "  If you cannot answer 'what can the agent do"
+    echo "  right now without asking me?' then you are"
+    echo "  reacting to interruptions, not governing."
+    echo "  ─────────────────────────────────────────────────"
+}
+
+# ── Command dispatch ──
+
+CMD="${1:-view}"
+shift || true
+
+case "${CMD}" in
+    view)
+        view_all
+        ;;
+    sessions)
+        show_session_approvals
+        ;;
+    policy)
+        show_policy_standing
+        ;;
+    scheduled)
+        show_scheduled
+        ;;
+    revoke)
+        echo "Session-scope revocation is not yet implemented."
+        echo "To revoke all session approvals, restart the gate."
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unknown command: ${CMD}" >&2
+        usage
+        ;;
+esac

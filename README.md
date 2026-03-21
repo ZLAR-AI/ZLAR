@@ -14,9 +14,12 @@ This installs ZLAR with deny-heavy defaults. Your agent is governed in under 60 
 
 ## What It Does
 
-| Layer | Component | What It Governs |
-|-------|-----------|-----------------|
-| **Core** | `zlar-gate` | Policy engine. Intercepts tool calls, classifies risk, enforces rules. |
+| Layer | Component | What It Does |
+|-------|-----------|--------------|
+| **Enforcement** | `zlar-gate` | Policy engine. Intercepts tool calls, classifies risk, enforces rules. |
+| **Observation** | `zlar-witness` | Sequence detection. Reads the evidence trail, finds multi-step patterns. |
+| **Observation** | `zlar-digest` | Governance digest. Weekly summary of decisions, latency, sequences. |
+| **Observation** | `zlar-standing` | Standing authority view. What the agent can do without asking. |
 | **Policy** | `zlar-policy` | CLI for managing Ed25519-signed policy rules. |
 | **CLI** | `zlar` | Status, audit trail, Telegram setup, diagnostics. |
 | **Adapters** | `adapters/` | Framework hooks for Claude Code, Cursor, Windsurf. |
@@ -47,10 +50,13 @@ Agent (Claude Code / Cursor / Windsurf)
 ## Repository Structure
 
 ```
-bin/           Executables (gate, policy CLI, convenience CLI)
+bin/           Executables (gate, witness, digest, standing, policy CLI)
+lib/           Shared libraries (audit-reader)
 adapters/      Framework hooks (claude-code, cursor, windsurf)
-etc/           Configuration and policy templates
+etc/           Configuration, policy templates, sequence definitions
 scripts/       Setup and installation
+tests/         Test suites and fixtures
+docs/          Design philosophy and architecture
 signal/        Agent-facing signal layer
 ```
 

@@ -1,0 +1,142 @@
+{
+  "version": "0.1.0",
+  "description": "Candidate sequence patterns for witness detection. These are observed and surfaced, never enforced.",
+  "design_note": "The witness describes patterns. It does not judge them. Each pattern is a factual description of a sequence shape. The human decides what it means.",
+  "time_window_seconds": 300,
+  "patterns": [
+    {
+      "id": "SEQ-001",
+      "name": "credential-adjacent-egress",
+      "description": "Sensitive file read followed by outbound network request",
+      "severity": "notable",
+      "steps": [
+        {
+          "position": 1,
+          "filter": {
+            "action_regex": "\\.(env|key|pem|token|ssh)|/\\.(ssh|gnupg)/|credentials|secrets"
+          }
+        },
+        {
+          "position": 2,
+          "filter": {
+            "tool": "Bash",
+            "action_regex": "\\b(curl|wget|ssh|scp|rsync|nc|ncat|netcat)\\b"
+          },
+          "or": {
+            "tool": "WebFetch"
+          }
+        }
+      ],
+      "fact_description": "Sensitive file accessed at {step1.timestamp}, followed by outbound network request at {step2.timestamp} ({delta}s apart)",
+      "not_a_conclusion": "This is not labeled as exfiltration. It is a sequence of facts. The human interprets."
+    },
+    {
+      "id": "SEQ-002",
+      "name": "denied-then-scheduled",
+      "description": "Denied request followed by schedule or cron creation",
+      "severity": "notable",
+      "steps": [
+        {
+          "position": 1,
+          "filter": {
+            "decision": "deny"
+          }
+        },
+        {
+          "position": 2,
+          "filter": {
+            "action_regex": "\\b(crontab|cron|schedule|CronCreate|launchctl)\\b"
+          }
+        }
+      ],
+      "fact_description": "Request denied at {step1.timestamp} (rule {step1.rule}), followed by schedule creation at {step2.timestamp} ({delta}s apart)",
+      "not_a_conclusion": "This is not labeled as evasion. It is a sequence of facts. The human interprets."
+    },
+    {
+      "id": "SEQ-003",
+      "name": "config-behavior-shift",
+      "description": "Config file modification followed by change in tool usage or approval pattern",
+      "severity": "notable",
+      "steps": [
+        {
+          "position": 1,
+          "filter": {
+            "action_regex": "\\.(json|yaml|yml|toml|conf|cfg|ini|config)$|openclaw\\.json|settings\\.json"
+          },
+          "tool_filter": ["Write", "Edit"]
+        },
+        {
+          "position": 2,
+          "filter": {
+            "requires": "behavioral_change_detection"
+          },
+          "note": "Step 2 requires comparing post-config behavior against pre-config baseline. This is a future capability — for now, flag the config write itself as notable."
+        }
+      ],
+      "fact_description": "Config file modified at {step1.timestamp}: {step1.action}",
+      "not_a_conclusion": "Config modification is noted. Behavioral change detection is not yet implemented. The human reviews."
+    },
+    {
+      "id": "SEQ-004",
+      "name": "memory-justified-action",
+      "description": "Memory or continuity file write followed by action that may reference that memory",
+      "severity": "informational",
+      "steps": [
+        {
+          "position": 1,
+          "filter": {
+            "action_regex": "memory|evolution|continuity|context|CLAUDE_|BOHM_|journal|notes"
+          },
+          "tool_filter": ["Write", "Edit"]
+        },
+        {
+          "position": 2,
+          "filter": {
+            "requires": "memory_reference_detection"
+          },
+          "note": "Step 2 requires detecting whether a later action references the memory entry. This is a future capability — for now, flag the memory write as notable if it contains permission-like language."
+        }
+      ],
+      "fact_description": "Memory/continuity file modified at {step1.timestamp}: {step1.action}",
+      "not_a_conclusion": "Memory writes are noted. Reference detection is not yet implemented. The human reviews."
+    },
+    {
+      "id": "SEQ-005",
+      "name": "rapid-approval-drift",
+      "description": "Approval latency decreasing significantly over time within a session",
+      "severity": "informational",
+      "time_window_seconds": 3600,
+      "steps": [
+        {
+          "position": 1,
+          "filter": {
+            "decision": "approve",
+            "approval_source": "telegram",
+            "latency_above_ms": 10000
+          },
+          "note": "Early approval with deliberate latency (>10s)"
+        },
+        {
+          "position": 2,
+          "filter": {
+            "decision": "approve",
+            "approval_source": "telegram",
+            "latency_below_ms": 3000
+          },
+          "note": "Later approval with fast latency (<3s)"
+        }
+      ],
+      "fact_description": "Approval latency decreased from {step1.latency}ms to {step2.latency}ms over session duration",
+      "not_a_conclusion": "This is not labeled as rubber-stamping. It is a measurement. The human interprets."
+    },
+    {
+      "id": "SEQ-006",
+      "name": "repeated-denial-burst",
+      "description": "Same rule denies 5+ times in a single session",
+      "severity": "informational",
+      "threshold": 5,
+      "fact_description": "{count} denials of rule {rule} in session {session}, from {first_ts} to {last_ts}",
+      "not_a_conclusion": "Repeated denials may indicate the agent is probing boundaries, or the human is asking it to do something the policy prevents. This is a pattern worth review, not evidence of malice. The human interprets."
+    }
+  ]
+}

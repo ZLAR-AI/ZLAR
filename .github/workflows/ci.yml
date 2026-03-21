@@ -27,6 +27,12 @@ jobs:
       - name: ShellCheck install/uninstall
         run: shellcheck --severity=error install.sh uninstall.sh
 
+      - name: ShellCheck lib/
+        run: shellcheck --severity=error lib/*.sh
+
+      - name: ShellCheck tests/
+        run: shellcheck --severity=error tests/*.sh
+
       - name: ShellCheck oc/bin/
         run: shellcheck --severity=error oc/bin/*
 
@@ -38,3 +44,14 @@ jobs:
               echo "OK: $f"
             fi
           done
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Run witness tests
+        run: bash tests/test-witness.sh
