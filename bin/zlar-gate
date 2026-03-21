@@ -56,6 +56,16 @@ LOCKDOWN_FILE="${PROJECT_DIR}/var/log/watchdog.lock"
 SESSION_DIR="${PROJECT_DIR}/var/log/sessions"
 LOG_FILE="${PROJECT_DIR}/var/log/gate.log"
 
+# ─── Cryptographic Metadata (PQC Phase 1) ────────────────────────────────────
+# Label every audit entry with the algorithms used. When migration to ML-DSA
+# happens, tooling reads these fields to know which entries need re-signing.
+SIGNATURE_ALGORITHM="Ed25519"
+HASH_ALGORITHM="SHA-256"
+PUBLIC_KEY_ID="unknown"
+if [ -f "${POLICY_PUBKEY}" ]; then
+    PUBLIC_KEY_ID=$(shasum -a 256 "${POLICY_PUBKEY}" 2>/dev/null | awk '{print substr($1,1,16)}')
+fi
+
 # Load overrides from gate.json if present
 if [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
     _cfg() { jq -r "$1 // empty" "${GATE_CONFIG}" 2>/dev/null; }
@@ -222,11 +232,16 @@ emit_event() {
         --arg severity "${severity}" \
         --arg prev_hash "${prev_hash}" \
         --arg authorizer "${authorizer}" \
+        --arg sig_alg "${SIGNATURE_ALGORITHM}" \
+        --arg hash_alg "${HASH_ALGORITHM}" \
+        --arg pubkey_id "${PUBLIC_KEY_ID}" \
         '{id:$id,ts:$ts,seq:$seq,source:$source,host:$host,user:$user,
           agent_id:$agent_id,session_id:$session_id,domain:$domain,
           action:$action,outcome:$outcome,risk_score:$risk_score,
           detail:$detail,rule:$rule,policy_version:$policy_version,
-          severity:$severity,prev_hash:$prev_hash,authorizer:$authorizer}')
+          severity:$severity,prev_hash:$prev_hash,authorizer:$authorizer,
+          signature_algorithm:$sig_alg,hash_algorithm:$hash_alg,
+          public_key_id:$pubkey_id}')
 
     if ! echo "${event}" >> "${AUDIT_FILE}" 2>/dev/null; then
         log "CRITICAL: Failed to write audit event — audit trail may be incomplete"
@@ -848,8 +863,9 @@ handle_subagent_start() {
     TOOL_DISPLAY="SubagentStart: ${agent_type}"
     DETAIL=$(jq -n -c --arg t "${agent_type}" --arg p "${prompt}" '{agent_type:$t,prompt:$p}')
 
-    telegram_ask "${action_id}" "SubagentStart" "${TOOL_DISPLAY}" "subagent-launch" "50" "warn"
-    local ask_result=$?
+    # CRITICAL: || ask_result=$? pattern required. See PreToolUse path comment.
+    local ask_result=0
+    telegram_ask "${action_id}" "SubagentStart" "${TOOL_DISPLAY}" "subagent-launch" "50" "warn" || ask_result=$?
 
     case ${ask_result} in
         0)
@@ -1013,8 +1029,14 @@ main() {
                     local action_id
                     action_id=$(gen_id)
 
-                    telegram_ask "${action_id}" "${tool_name}" "${TOOL_DISPLAY}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}" "${MATCHED_SEVERITY}"
-                    local ask_result=$?
+                    # CRITICAL: Do NOT simplify this to a direct call + $?.
+                    # telegram_ask returns non-zero for deny (1), rate limit (3),
+                    # timeout (4), and send failure (2). Under set -e, a direct
+                    # call kills the script before respond_deny can execute.
+                    # The || ask_result=$? pattern captures the exit code safely.
+                    # See: v1.2.0 CHANGELOG "Human deny path was silently broken"
+                    local ask_result=0
+                    telegram_ask "${action_id}" "${tool_name}" "${TOOL_DISPLAY}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}" "${MATCHED_SEVERITY}" || ask_result=$?
 
                     case ${ask_result} in
                         0)

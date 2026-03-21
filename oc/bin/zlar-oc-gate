@@ -54,6 +54,16 @@ CURRENT_EVENT_AGENT_ID=""  # Per-event agent_id extracted from incoming JSON
 HOSTNAME="$(hostname -s)"
 SEQ=0
 
+# ─── Cryptographic Metadata (PQC Phase 1) ────────────────────────────────────
+# Label every audit entry with the algorithms used. When migration to ML-DSA
+# happens, tooling reads these fields to know which entries need re-signing.
+SIGNATURE_ALGORITHM="Ed25519"
+HASH_ALGORITHM="SHA-256"
+PUBLIC_KEY_ID="unknown"
+if [ -f "${POLICY_PUBKEY}" ]; then
+    PUBLIC_KEY_ID=$(shasum -a 256 "${POLICY_PUBKEY}" 2>/dev/null | awk '{print substr($1,1,16)}')
+fi
+
 # Multi-agent prep (#21): identity fields on every event
 AGENT_ID="aiagent"
 SESSION_ID=""  # Set on startup, unique per gate session
@@ -285,13 +295,14 @@ emit_event() {
     # Includes agent_id, session_id (#21), and risk_score (#4 boundedness gate)
     # String fields are escaped to prevent JSON injection via crafted filenames or messages
     local risk_score="${EVAL_RISK_SCORE:-0}"
-    printf '{"id":"%s","ts":"%s","seq":%d,"source":"%s","host":"%s","user":"%s","agent_id":"%s","session_id":"%s","domain":"%s","action":"%s","outcome":"%s","risk_score":%d,"detail":%s,"rule":"%s","policy_version":"%s","severity":"%s"}\n' \
+    printf '{"id":"%s","ts":"%s","seq":%d,"source":"%s","host":"%s","user":"%s","agent_id":"%s","session_id":"%s","domain":"%s","action":"%s","outcome":"%s","risk_score":%d,"detail":%s,"rule":"%s","policy_version":"%s","severity":"%s","signature_algorithm":"%s","hash_algorithm":"%s","public_key_id":"%s"}\n' \
         "$(json_escape "${id}")" "$(json_escape "${ts}")" "${seq}" \
         "$(json_escape "${source}")" "$(json_escape "${HOSTNAME}")" "$(json_escape "${AGENT_USER:-aiagent}")" \
         "$(json_escape "${CURRENT_EVENT_AGENT_ID:-${AGENT_ID}}")" "$(json_escape "${SESSION_ID}")" \
         "$(json_escape "${domain}")" "$(json_escape "${action}")" "$(json_escape "${outcome}")" \
         "${risk_score}" "${detail}" \
         "$(json_escape "${rule}")" "$(json_escape "${policy_ver}")" "$(json_escape "${severity}")" \
+        "$(json_escape "${SIGNATURE_ALGORITHM}")" "$(json_escape "${HASH_ALGORITHM}")" "$(json_escape "${PUBLIC_KEY_ID}")" \
         >> "${AUDIT_FILE}"
 }
 
