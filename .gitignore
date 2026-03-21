@@ -1,6 +1,11 @@
-# Runtime
+# Runtime state
 var/
 *.log
+
+# Live config (generated at install, not distributable)
+etc/gate.json
+etc/jq.sha256
+etc/policies/active.policy.json
 
 # Keys (generated at install)
 etc/keys/
@@ -15,3 +20,7 @@ etc/keys/
 
 # Environment (may contain Telegram tokens)
 .env
+
+# Backup files
+*.bak*
+*.save

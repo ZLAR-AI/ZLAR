@@ -1267,15 +1267,21 @@ parse_openclaw_log() {
             [ -z "${detail}" ] && detail="{}"
         fi
 
-        # Dedup: skip if this request_id was already processed (#BUG: tail -F double-delivery)
-        if [ -n "${request_id}" ] && [ -f "${DECISION_DIR}/${request_id}.json" ]; then
-            return 0
+        # Dedup: skip if this request_id was already processed or is being processed
+        if [ -n "${request_id}" ]; then
+            if [ -f "${DECISION_DIR}/${request_id}.json" ] || [ -f "${DECISION_DIR}/.${request_id}.lock" ]; then
+                return 0
+            fi
+            # Lock: claim this request_id before processing
+            touch "${DECISION_DIR}/.${request_id}.lock" 2>/dev/null
         fi
 
         # Stash request_id and per-event agent_id for this event's lifecycle
         CURRENT_REQUEST_ID="${request_id}"
         CURRENT_EVENT_AGENT_ID="${event_agent_id:-${AGENT_ID}}"
         process_openclaw_event "${event_domain}" "${event_action}" "openclaw" "${detail}"
+        # Clean up lock file
+        [ -n "${request_id}" ] && rm -f "${DECISION_DIR}/.${request_id}.lock" 2>/dev/null
         CURRENT_REQUEST_ID=""
         CURRENT_EVENT_AGENT_ID=""
         return 0
