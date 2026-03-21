@@ -1,0 +1,384 @@
+#!/bin/bash
+# zlar-digest — governance digest for ZLAR (renamed from zlar-brief)
+#
+# Produces a structured summary of governance activity.
+# Designed to train governance intuition, not just report events.
+#
+# Design principles:
+# - fact before narrative
+# - observation before interpretation
+# - uncertainty remains visible
+# - the brief expands what the human can see
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# shellcheck source=../lib/audit-reader.sh
+source "${PROJECT_DIR}/lib/audit-reader.sh"
+
+TELEGRAM_TOKEN="${TELEGRAM_BOT_TOKEN:-${ZLAR_TELEGRAM_TOKEN:-}}"
+TELEGRAM_CHAT_ID="${ZLAR_TELEGRAM_CHAT_ID:-}"
+
+# ── Usage ──
+
+usage() {
+    cat <<'EOF'
+Usage: zlar-digest [command] [options]
+
+Commands:
+  generate          Generate governance brief (default)
+  send              Generate and send via Telegram
+  schedule          Show how to schedule weekly briefs
+
+Options:
+  --period <N>      Period in seconds (default: 604800 = 7 days)
+  --format human    Human-readable (default)
+  --format json     JSON output
+  --format telegram Telegram-formatted message
+
+The brief surfaces what happened. The human interprets what it means.
+EOF
+    exit 0
+}
+
+# ── Brief generation ──
+
+generate_brief() {
+    local period="${1:-604800}"  # default: 7 days
+    local format="${2:-human}"
+
+    # Collect events
+    local tmp_events
+    tmp_events=$(mktemp)
+    trap "rm -f ${tmp_events}" EXIT
+
+    audit_events_since "${period}" > "${tmp_events}"
+
+    local total_events
+    total_events=$(wc -l < "${tmp_events}" | tr -d ' ')
+
+    if [[ ${total_events} -eq 0 ]]; then
+        if [[ "${format}" == "telegram" ]]; then
+            echo "📋 *ZLAR Governance Brief*"
+            echo ""
+            echo "Period: last $(( period / 86400 )) days"
+            echo "Events: 0"
+            echo ""
+            echo "No governance activity recorded."
+        elif [[ "${format}" == "human" ]]; then
+            echo "No governance activity in the last $(( period / 86400 )) days."
+        else
+            echo '{"period_days":'$(( period / 86400 ))',"total_events":0}'
+        fi
+        return
+    fi
+
+    # ── Facts ──
+
+    # Decision counts (using real audit trail .outcome values)
+    local authorized allowed pending
+    authorized=$(jq -c 'select(.outcome == "authorized")' "${tmp_events}" | wc -l | tr -d ' ')
+    allowed=$(jq -c 'select(.outcome == "allow")' "${tmp_events}" | wc -l | tr -d ' ')
+    pending=$(jq -c 'select(.outcome == "pending")' "${tmp_events}" | wc -l | tr -d ' ')
+
+    # Denied counts — separated by who denied and why
+    # Policy denied: gate auto-blocked (authorizer="policy" or null for early events)
+    # Human denied: human clicked Deny on Telegram
+    # Timeout denied: Telegram poll expired without response
+    local policy_denied human_denied timeout_denied
+    policy_denied=$(jq -c 'select((.outcome == "deny" or .outcome == "denied") and (.authorizer == "policy" or .authorizer == null))' "${tmp_events}" | wc -l | tr -d ' ')
+    human_denied=$(jq -c 'select((.outcome == "deny" or .outcome == "denied") and ((.authorizer // "") | startswith("human:")))' "${tmp_events}" | wc -l | tr -d ' ')
+    timeout_denied=$(jq -c 'select((.outcome == "deny" or .outcome == "denied") and .authorizer == "gate:timeout")' "${tmp_events}" | wc -l | tr -d ' ')
+
+    # Human-authorized (via Telegram) vs policy-authorized vs gate-authorized
+    local human_approved policy_approved gate_approved
+    human_approved=$(jq -c 'select((.authorizer // "" | startswith("human:")) and .outcome == "authorized")' "${tmp_events}" | wc -l | tr -d ' ')
+    policy_approved=$(jq -c 'select(.authorizer == "policy")' "${tmp_events}" | wc -l | tr -d ' ')
+    gate_approved=$(jq -c 'select(.authorizer == "gate")' "${tmp_events}" | wc -l | tr -d ' ')
+
+    # Approval latency stats (from pending→authorized pairs)
+    local latency_data avg_latency min_latency max_latency latency_count
+    latency_data=$(audit_approval_latencies "${tmp_events}" 2>/dev/null || true)
+    if [[ -n "${latency_data}" ]]; then
+        latency_count=$(echo "${latency_data}" | jq -s 'length')
+        avg_latency=$(echo "${latency_data}" | jq -s 'if length > 0 then [.[].delta_seconds] | add / length | floor else 0 end')
+        min_latency=$(echo "${latency_data}" | jq -s 'if length > 0 then [.[].delta_seconds] | min else 0 end')
+        max_latency=$(echo "${latency_data}" | jq -s 'if length > 0 then [.[].delta_seconds] | max else 0 end')
+    else
+        latency_count=0
+        avg_latency=0
+        min_latency=0
+        max_latency=0
+    fi
+
+    # Top domains
+    local top_domains
+    top_domains=$(jq -r '.domain' "${tmp_events}" | sort | uniq -c | sort -rn | head -5)
+
+    # Top rules fired
+    local top_rules
+    top_rules=$(jq -r '.rule // "none"' "${tmp_events}" | sort | uniq -c | sort -rn | head -5)
+
+    # Rule labels for human-readable output
+    local rule_labels
+    rule_labels=$(audit_all_rule_labels)
+
+    # Unique sessions
+    local unique_sessions
+    unique_sessions=$(jq -r '.session_id // "unknown"' "${tmp_events}" | sort -u | wc -l | tr -d ' ')
+
+    # Sensitive file accesses
+    local sensitive_count
+    sensitive_count=$(jq -c '
+        select(
+            (.detail.command // "" | test("\\.(env|key|pem|token|ssh)"; "i")) or
+            (.detail.path // "" | test("\\.(env|key|pem|token|ssh)"; "i")) or
+            (.action // "" | test("\\.(env|key|pem|token|ssh)"; "i"))
+        )' "${tmp_events}" | wc -l | tr -d ' ')
+
+    # Egress events
+    local egress_count
+    egress_count=$(jq -c '
+        select(
+            (.detail.command // "" | test("\\b(curl|wget|ssh|scp|rsync)\\b")) or
+            (.domain == "webfetch")
+        )' "${tmp_events}" | wc -l | tr -d ' ')
+
+    # Run witness scan
+    local witness_output
+    witness_output=$("${SCRIPT_DIR}/zlar-witness" scan --since "${period}" --format json 2>/dev/null || echo '{"sequence_count":0,"sequences":[]}')
+    local sequence_count
+    sequence_count=$(echo "${witness_output}" | jq -r '.sequence_count // 0')
+
+    # ── Format output ──
+
+    case "${format}" in
+        telegram)
+            echo "📋 *ZLAR Governance Brief*"
+            echo ""
+            echo "📅 Period: last $(( period / 86400 )) days"
+            echo "📊 Total events: ${total_events}"
+            echo "🔑 Sessions: ${unique_sessions}"
+            echo ""
+            echo "── Decisions ──"
+            echo "✅ Auto-allowed: ${allowed}"
+            echo "📲 Human-approved: ${human_approved}"
+            echo "🚫 Policy denied: ${policy_denied}"
+            echo "👤 Human denied: ${human_denied}"
+            echo "⏰ Timeout denied: ${timeout_denied}"
+            if [[ ${latency_count} -gt 0 ]]; then
+                echo ""
+                echo "── Approval Latency ──"
+                echo "⏱ Approvals measured: ${latency_count}"
+                echo "⏱ Avg: ${avg_latency}s | Min: ${min_latency}s | Max: ${max_latency}s"
+            fi
+            echo ""
+            echo "── Notable ──"
+            if [[ ${sensitive_count} -gt 0 ]]; then
+                echo "🔐 Sensitive file accesses: ${sensitive_count}"
+            fi
+            if [[ ${egress_count} -gt 0 ]]; then
+                echo "🌐 Egress events: ${egress_count}"
+            fi
+            if [[ ${sequence_count} -gt 0 ]]; then
+                echo "🔗 Sequence patterns detected: ${sequence_count}"
+                echo "${witness_output}" | jq -r '.sequences[] | "  → [\(.pattern)] \(.fact)"'
+            fi
+            echo ""
+            echo "── Top Rules ──"
+            echo "${top_rules}" | head -5 | while read -r count rule; do
+                local label=""
+                if [[ -n "${rule_labels}" ]]; then
+                    label=$(echo "${rule_labels}" | grep "^${rule}|" | head -1 | cut -d'|' -f2)
+                fi
+                if [[ -n "${label}" ]]; then
+                    echo "  ${rule} (${label}): ${count}x"
+                else
+                    echo "  ${rule}: ${count}x"
+                fi
+            done
+            echo ""
+            echo "── Glossary ──"
+            echo "Egress = outbound network (curl, wget, ssh)"
+            echo "Sensitive = .env, .ssh, .key, credentials"
+            echo "Sequence = chain of related actions"
+            echo "Policy denied = blocked by rule, no human involved"
+            echo ""
+            echo "_The brief surfaces facts. The human interprets._"
+            ;;
+
+        human)
+            echo "═══════════════════════════════════════════════════"
+            echo "  ZLAR Governance Brief"
+            echo "  Period: last $(( period / 86400 )) days"
+            echo "  Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "═══════════════════════════════════════════════════"
+            echo ""
+            echo "  Total events:        ${total_events}"
+            echo "  Sessions:            ${unique_sessions}"
+            echo "  Auto-allowed:        ${allowed}"
+            echo "  Human-approved:      ${human_approved}"
+            echo "  Policy-authorized:   ${policy_approved}"
+            echo "  Policy denied:       ${policy_denied}"
+            echo "  Human denied:        ${human_denied}"
+            echo "  Timeout denied:      ${timeout_denied}"
+            echo ""
+            if [[ ${latency_count} -gt 0 ]]; then
+                echo "  ── Approval Latency ──"
+                echo "  Measured approvals:  ${latency_count}"
+                echo "  Average:             ${avg_latency}s"
+                echo "  Fastest:             ${min_latency}s"
+                echo "  Slowest:             ${max_latency}s"
+            fi
+            echo ""
+            echo "  ── Notable ──"
+            echo "  Sensitive accesses: ${sensitive_count}"
+            echo "  Egress events:      ${egress_count}"
+            echo "  Sequence patterns:  ${sequence_count}"
+            echo ""
+            if [[ ${sequence_count} -gt 0 ]]; then
+                echo "  ── Detected Sequences ──"
+                echo "${witness_output}" | jq -r '.sequences[] | "  [\(.pattern)] \(.name)\n    \(.fact)\n    Note: \(.note)\n"'
+            fi
+            echo "  ── Top Rules Fired ──"
+            echo "${top_rules}" | head -5 | while read -r count rule; do
+                local label=""
+                if [[ -n "${rule_labels}" ]]; then
+                    label=$(echo "${rule_labels}" | grep "^${rule}|" | head -1 | cut -d'|' -f2)
+                fi
+                if [[ -n "${label}" ]]; then
+                    echo "    ${rule} (${label}): ${count}x"
+                else
+                    echo "    ${rule}: ${count}x"
+                fi
+            done
+            echo ""
+            echo "  ── Top Domains ──"
+            echo "${top_domains}" | head -5 | while read -r count domain; do
+                echo "    ${domain}: ${count}x"
+            done
+            echo ""
+            echo "  ── Glossary ──"
+            echo "  Egress          Outbound network call (curl, wget, ssh, scp, rsync)"
+            echo "  Sensitive       Files matching .env, .ssh, .key, .pem, .token, credentials"
+            echo "  Sequence        A chain of related actions detected by the witness"
+            echo "  Policy denied   Blocked automatically by a policy rule (no human involved)"
+            echo "  Human denied    Blocked by a human via Telegram"
+            echo "  Timeout denied  Telegram approval expired without response"
+            echo ""
+            echo "  ─────────────────────────────────────────────────"
+            echo "  The brief surfaces facts. The human interprets."
+            echo "  Uncertainty remains where evidence is insufficient."
+            echo "  ─────────────────────────────────────────────────"
+            ;;
+
+        json)
+            jq -n \
+                --argjson total "${total_events}" \
+                --argjson sessions "${unique_sessions}" \
+                --argjson allowed "${allowed}" \
+                --argjson human_approved "${human_approved}" \
+                --argjson policy_approved "${policy_approved}" \
+                --argjson policy_denied "${policy_denied}" \
+                --argjson human_denied "${human_denied}" \
+                --argjson timeout_denied "${timeout_denied}" \
+                --argjson sensitive "${sensitive_count}" \
+                --argjson egress "${egress_count}" \
+                --argjson seq_count "${sequence_count}" \
+                --argjson sequences "$(echo "${witness_output}" | jq '.sequences')" \
+                --arg period_days "$(( period / 86400 ))" \
+                --arg generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                '{
+                    generated: $generated,
+                    period_days: ($period_days | tonumber),
+                    total_events: $total,
+                    sessions: $sessions,
+                    decisions: {
+                        auto_allowed: $allowed,
+                        human_approved: $human_approved,
+                        policy_authorized: $policy_approved,
+                        policy_denied: $policy_denied,
+                        human_denied: $human_denied,
+                        timeout_denied: $timeout_denied
+                    },
+                    notable: {
+                        sensitive_accesses: $sensitive,
+                        egress_events: $egress,
+                        sequence_patterns: $seq_count
+                    },
+                    sequences: $sequences,
+                    note: "The brief surfaces facts. The human interprets."
+                }'
+            ;;
+    esac
+}
+
+# ── Telegram send ──
+
+send_telegram() {
+    local message="$1"
+
+    if [[ -z "${TELEGRAM_TOKEN}" || -z "${TELEGRAM_CHAT_ID}" ]]; then
+        echo "ERROR: TELEGRAM_BOT_TOKEN and ZLAR_TELEGRAM_CHAT_ID must be set." >&2
+        exit 1
+    fi
+
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+        -d "chat_id=${TELEGRAM_CHAT_ID}" \
+        -d "text=${message}" \
+        -d "parse_mode=Markdown" \
+        > /dev/null
+}
+
+# ── Command dispatch ──
+
+CMD="${1:-generate}"
+shift || true
+
+case "${CMD}" in
+    generate)
+        PERIOD="604800"
+        FORMAT="human"
+
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --period) PERIOD="$2"; shift 2 ;;
+                --format) FORMAT="$2"; shift 2 ;;
+                *) echo "Unknown option: $1" >&2; exit 1 ;;
+            esac
+        done
+
+        generate_brief "${PERIOD}" "${FORMAT}"
+        ;;
+    send)
+        PERIOD="604800"
+
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --period) PERIOD="$2"; shift 2 ;;
+                *) echo "Unknown option: $1" >&2; exit 1 ;;
+            esac
+        done
+
+        message=$(generate_brief "${PERIOD}" "telegram")
+        send_telegram "${message}"
+        echo "Brief sent via Telegram."
+        ;;
+    schedule)
+        echo "To schedule weekly governance briefs:"
+        echo ""
+        echo "  Add to crontab:"
+        echo "  0 9 * * 1 ${SCRIPT_DIR}/zlar-digest send --period 604800"
+        echo ""
+        echo "  This sends a brief every Monday at 9am covering the previous 7 days."
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unknown command: ${CMD}" >&2
+        usage
+        ;;
+esac

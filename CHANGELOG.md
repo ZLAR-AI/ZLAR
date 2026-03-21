@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.1.0 — 2026-03-21
+
+Added observation layer. The gate enforces — the witness observes. Two layers, one product.
+
+### Added
+
+- **Sequence detection** (`bin/zlar-witness`) — reads the audit trail after the fact, finds multi-step behavioral patterns (credential-adjacent-egress, denied-then-scheduled, approval-drift, repeated-denial-burst)
+- **Governance digest** (`bin/zlar-digest`) — weekly summary of decisions, approval latency, detected sequences. Sends to Telegram.
+- **Standing authority view** (`bin/zlar-standing`) — shows what the agent can do right now without asking
+- **Shared audit library** (`lib/audit-reader.sh`) — fact extraction from audit trails. Multi-audit support: reads from both CC and OC gate trails via `ZLAR_AUDIT_FILES`
+- **Sequence definitions** (`etc/sequences.json`) — pattern catalog for witness detection
+- **Test suite** (`tests/test-witness.sh`) — 20+ assertions covering witness, digest, standing, and audit-reader
+- **Design documentation** (`docs/witness.md`) — observation layer design philosophy
+
+### Changed
+
+- CI now includes ShellCheck for `lib/` and `tests/`, plus witness test execution
+
 ## 1.0.0 — 2026-03-18
 
 Consolidated release. Five repositories (ZLAR-Gate, ZLAR-LT, ZLAR-OPS, ZLAR-NT, ZLAR-OC) unified into a single ZLAR repository.
