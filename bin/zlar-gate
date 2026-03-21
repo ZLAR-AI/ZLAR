@@ -1003,7 +1003,9 @@ main() {
     # 9. Session state escalation check
     # If policy says "allow" but session velocity/loops/bursts are anomalous,
     # escalate to "ask" — the human decides, not the counter.
-    if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ "${MATCHED_ACTION}" = "allow" ]; then
+    # Skip for risk-0 actions — they are structurally safe and should never
+    # consume human attention regardless of velocity. (Human Attention principle.)
+    if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ "${MATCHED_ACTION}" = "allow" ] && [ "${MATCHED_RISK_SCORE}" -gt 0 ]; then
         MATCHED_ACTION=$(session_check_escalation "${MATCHED_ACTION}" "${DOMAIN}" "${TOOL_DISPLAY}" "allow")
     fi
 
