@@ -20,6 +20,7 @@ This installs ZLAR with deny-heavy defaults. Your agent is governed in under 60 
 | **Observation** | `zlar-witness` | Sequence detection. Reads the evidence trail, finds multi-step patterns. |
 | **Observation** | `zlar-digest` | Governance digest. Weekly summary of decisions, latency, sequences. |
 | **Observation** | `zlar-standing` | Standing authority view. What the agent can do without asking. |
+| **Observation** | `zlar-registry` | Agent inventory. Every agent the gate has seen, what they did, when. |
 | **Policy** | `zlar-policy` | CLI for managing Ed25519-signed policy rules. |
 | **CLI** | `zlar` | Status, audit trail, Telegram setup, diagnostics. |
 | **Adapters** | `adapters/` | Framework hooks for Claude Code, Cursor, Windsurf. |

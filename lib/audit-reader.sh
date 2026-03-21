@@ -1,23 +1,33 @@
 #!/bin/bash
 # audit-reader.sh — shared library for reading ZLAR gate audit trails
-# Used by zlar-witness, zlar-digest, zlar-standing
+# Used by zlar-witness, zlar-digest, zlar-standing, zlar-registry
 #
 # Design principle: this library produces FACTS, not conclusions.
 # It reads, filters, and structures audit events.
 # It does not label, judge, or classify risk.
 #
-# Audit trail schema (from gateway-poc bash gate):
-#   .ts           — ISO 8601 timestamp
-#   .seq          — sequence number (1=initial, 2=resolution of pending)
-#   .session_id   — session UUID
-#   .domain       — tool domain (bash, read, write, edit, glob, grep, agent, internal, unknown)
-#   .action       — what was attempted (or "ask_sent" for pending Telegram requests)
-#   .outcome      — "allow" (auto), "deny", "authorized" (human-approved), "pending"
-#   .rule         — policy rule that matched
-#   .risk_score   — numeric risk score (0-100)
-#   .detail       — { command, path, cwd, content_length, content_sha256, ... }
-#   .authorizer   — "policy", "gate", or "human:<telegram_user_id>"
-#   .prev_hash    — SHA-256 chain hash (tamper detection)
+# Audit trail schema (CC gate — OC gate omits prev_hash and authorizer):
+#   .id                    — unique event ID (hex timestamp + random)
+#   .ts                    — ISO 8601 timestamp
+#   .seq                   — sequence number (1=initial, 2=resolution of pending)
+#   .source                — "gate"
+#   .host                  — hostname
+#   .user                  — OS user
+#   .agent_id              — agent identity ("claude-code", "bohm-openclaw", etc.)
+#   .session_id            — session UUID
+#   .domain                — tool domain (bash, read, write, edit, glob, grep, agent, internal, unknown)
+#   .action                — what was attempted (or "ask_sent" for pending Telegram requests)
+#   .outcome               — "allow" (auto), "deny", "authorized" (human-approved), "pending"
+#   .risk_score            — numeric risk score (0-100)
+#   .detail                — { command, path, cwd, content_length, content_sha256, ... }
+#   .rule                  — policy rule that matched
+#   .policy_version        — version of the signed policy
+#   .severity              — "info", "warn", "critical"
+#   .prev_hash             — SHA-256 chain hash (tamper detection) [CC gate only]
+#   .authorizer            — "policy", "gate", or "human:<telegram_user_id>" [CC gate only]
+#   .signature_algorithm   — "Ed25519" (PQC Phase 1 — labels current signing algorithm)
+#   .hash_algorithm        — "SHA-256" (PQC Phase 1 — labels chain hash algorithm)
+#   .public_key_id         — first 16 chars of SHA-256 of policy-signing.pub
 
 set -euo pipefail
 
