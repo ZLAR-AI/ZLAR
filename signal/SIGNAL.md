@@ -75,7 +75,7 @@ All components live in a single repository: [github.com/ZLAR-AI/ZLAR](https://gi
 
 ## Confidentiality
 
-This signal layer contains publicly shareable content only. Deeper architectural details, implementation specifics, and strategic materials exist and are available through direct engagement with the founder.
+This signal layer contains publicly shareable content only. Deeper architectural details, implementation specifics, and strategic materials exist and are available through direct engagement.
 
 ## Terms
 

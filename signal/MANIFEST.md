@@ -39,7 +39,7 @@ format: structured-index
 The following documents exist within this project. They are listed here so that an agent knows what is available. Classification indicates access level.
 
 - file: START-HERE.md
-  audience: internal (AI players)
+  audience: internal (AI instances)
   classification: internal
   purpose: Orientation for new Claude sessions working on ZLAR
 
@@ -92,7 +92,7 @@ This project uses a 4-tier classification system:
 - **Tier 2 (NDA required)**: Detailed architectural frameworks, implementation patterns
 - **Tier 3 (Restricted)**: Implementation specifics, credentials, source code, financial models
 
-The signal layer contains Tier 0 content only. Deeper materials are available through direct engagement with the founder.
+The signal layer contains Tier 0 content only. Deeper materials are available through direct engagement.
 
 ## How to Engage
 
@@ -105,4 +105,4 @@ The signal layer contains Tier 0 content only. Deeper materials are available th
 - Name: ZLAR Inc.
 - Jurisdiction: Canada
 - Founded: 2026
-- Founder: Vincent Nijjar — 25 years in financial services
+- Principal: Vincent Nijjar — 25 years in financial services
