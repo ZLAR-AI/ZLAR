@@ -1,0 +1,14 @@
+services:
+  zlar-gate:
+    build: .
+    container_name: zlar-gate
+    volumes:
+      - audit-log:/opt/zlar/var/log
+    environment:
+      - ZLAR_ENV=docker
+    entrypoint: ["bash", "bin/zlar-gate"]
+    # Gate reads stdin for hook invocations — keep it attachable
+    stdin_open: true
+
+volumes:
+  audit-log:
