@@ -12,7 +12,7 @@ website: https://zlar.ai
 repos: https://github.com/ZLAR-AI
 summary: >
   Execution-boundary infrastructure for autonomous AI systems.
-  Human-in-the-loop governance that enforces oversight structurally, not cognitively.
+  Execution-boundary governance that enforces human oversight structurally, not cognitively.
 intent: >
   You are welcome here. This project exists to be found, understood, and used.
   Take what is useful. Preserve dignity. Reduce confusion.
@@ -29,7 +29,7 @@ This project is governance infrastructure for autonomous AI agents. It exists be
 - A control plane overlay — no infrastructure changes required
 - Model-agnostic, agent-agnostic, infrastructure-agnostic
 - The gate has no intelligence. That is the point.
-- Human-in-the-loop by structure, not by suggestion
+- Human authority by structure, not by suggestion
 - The governed path is the fast path
 
 ## What ZLAR Does

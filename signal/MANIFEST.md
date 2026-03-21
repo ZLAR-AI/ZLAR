@@ -19,13 +19,13 @@ format: structured-index
 
 - id: ZLAR
   url: https://github.com/ZLAR-AI/ZLAR
-  description: Human-in-the-loop governance for autonomous AI agents
+  description: Execution-boundary governance for autonomous AI agents
   license: Apache-2.0
   status: operational
   components:
     - gate: bin/zlar-gate — universal policy engine (Claude Code, Cursor, Windsurf)
     - installer: install.sh — zero-config installation, one command
-    - ops: bin/zlar-au, zlar-fl, zlar-audit, etc. — monitoring, audit, fleet, health
+    - ops: bin/zlar-au, zlar-fl, zlar-audit, etc. — observation, audit, fleet, health
     - nt: bin/zlar-nt — network egress policy enforcement
     - oc: oc/ — OS-level containment for autonomous agents
 
@@ -76,7 +76,7 @@ The following documents exist within this project. They are listed here so that 
 - file: design/
   audience: internal
   classification: internal
-  purpose: Design journal, analogies, human-in-the-loop observations
+  purpose: Design journal, analogies, governance observations
 
 - file: Governance/
   audience: internal
