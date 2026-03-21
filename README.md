@@ -1,132 +1,239 @@
 # ZLAR
 
-**Human-in-the-loop governance for autonomous AI agents.**
+Autonomous agents can now execute shell commands, write files, make API calls, and deploy code. Nothing sits between the decision to act and the act itself. ZLAR is that missing layer — a governance primitive that intercepts every agent action at the execution boundary, enforces signed policy, and produces cryptographic evidence of what happened, who authorized it, and when.
 
-ZLAR intercepts every tool call an AI agent makes — shell commands, file writes, network requests — evaluates it against a signed policy, and routes risky actions to a human via Telegram before execution. If the gate is down, everything is denied. No exceptions.
+This is not a smarter monitor. The gate has no intelligence. That is the security property.
 
-## Quick Start
+## The structural failure this addresses
+
+Current approaches to AI governance put intelligence in the monitor — systems that watch what agents do and try to decide whether the action is acceptable. This fails for a reason that cannot be patched: intelligence can be persuaded. Prompt injection, context drift, reasoning that convinces the monitor the same way it convinced the agent. The attack surface is the reasoning itself.
+
+You cannot solve this by making the monitor smarter. A smarter monitor is a larger attack surface.
+
+ZLAR separates the defense surface from the attack surface. The reasoning layer is where intelligence lives — and where attacks happen. The execution boundary is where actions become real — and where governance belongs. The gate checks whether an action has authorization. It checks paperwork, not quality. It has no opinions. This is why it cannot be persuaded.
+
+## How it works
+
+```
+Agent issues tool call (shell command, file write, API request)
+  │
+  ├─ Gate intercepts at execution boundary
+  │
+  ├─ Loads Ed25519-signed policy (agents cannot modify the rules that govern them)
+  │
+  ├─ Evaluates: which rule matches? what is the action?
+  │   ├─ allow  → tool executes, audit entry written
+  │   ├─ deny   → tool blocked, audit entry written
+  │   └─ ask    → human notified via Telegram, agent waits
+  │               ├─ human approves → tool executes, audit entry written
+  │               ├─ human denies   → tool blocked, audit entry written
+  │               └─ timeout        → tool blocked (fail-closed)
+  │
+  └─ Hash-chained audit entry records the decision
+```
+
+The gate runs synchronously on every tool call. No daemon. No server. No database. The process is the pending state. Unprotected actions experience zero added latency. Delay happens only where delay is the point.
+
+Two enforcement surfaces share the same policy and the same audit trail:
+
+- **Bash gate** — hooks into Claude Code, Cursor, Windsurf via PreToolUse. Pure bash. Zero dependencies beyond `jq` and `openssl`.
+- **MCP gate** — TCP proxy that sits between any MCP client and any MCP server. Intercepts `tools/call` JSON-RPC messages. Same policy engine, same evidence format.
+
+The agent does not volunteer to be governed. It is governed by architecture.
+
+## What the audit trail produces
+
+Every gate decision writes a hash-chained, algorithm-labeled audit entry. Two entries for a human decision — the request and the resolution:
+
+```json
+{
+  "ts": "2026-03-21T09:14:22Z",
+  "agent_id": "claude-code",
+  "domain": "bash",
+  "action": "git push origin main",
+  "outcome": "pending",
+  "risk_score": 75,
+  "rule": "R014",
+  "authorizer": "gate",
+  "prev_hash": "a1b2c3...",
+  "signature_algorithm": "Ed25519",
+  "hash_algorithm": "SHA-256",
+  "public_key_id": "88aaeeaca05eba4d"
+}
+```
+```json
+{
+  "ts": "2026-03-21T09:14:31Z",
+  "outcome": "denied",
+  "authorizer": "human:7662799203",
+  "prev_hash": "d4e5f6..."
+}
+```
+
+What this proves:
+
+- **`authorizer: "human:7662799203"`** — a specific human, identified by Telegram ID, made this decision. Not "system denied." Non-repudiable.
+- **`prev_hash`** — SHA-256 of the previous entry. Tamper with any record and every subsequent hash breaks. Chain integrity without consensus overhead.
+- **`signature_algorithm` / `hash_algorithm`** — every entry labels its own cryptographic assumptions. When NIST deprecates Ed25519 post-2030, migration tooling reads these fields and knows exactly which entries need re-signing under ML-DSA. Designed for this today.
+
+This is not the agent's account of what it did. This is the infrastructure's record of what happened.
+
+## Why deterministic
+
+The gate does not evaluate whether an action *should* proceed. It checks whether the action *has authorization*. It pattern-matches against signed policy rules. It counts. It compares. It looks up. It never reasons, interprets, or forms an opinion.
+
+This is the architectural argument in three sentences: If the enforcement layer uses intelligence, the enforcement layer can be attacked with intelligence. If the enforcement layer is deterministic, the only attack is against the policy itself — which is a human artifact, signed with Ed25519, stored outside agent context. The absence of intelligence in the gate is the security property.
+
+## What the gate does not protect against
+
+A security tool should state its own boundaries, not just its competitors' failures.
+
+- **Compromised signing key.** If the Ed25519 private key is stolen, an attacker can sign a permissive policy. Mitigation: the key never lives on the agent's machine. Key rotation invalidates all prior signatures. The `public_key_id` in every audit entry ties evidence to a specific key era.
+- **Compromised gate process.** If the gate binary itself is replaced, all enforcement is lost. Mitigation: the gate's self-protection rules (R012) block agents from modifying their own governance infrastructure. External integrity monitoring (filesystem checksums, host-level IDS) is the defense layer below the gate.
+- **Hash chain limitations.** The chain detects post-hoc tampering by external actors — alter any entry and subsequent hashes break. It does not prevent a compromised gate from writing valid-looking entries with correct hashes. The chain is evidence integrity, not execution integrity. Execution integrity is the gate's job; evidence integrity is the chain's job.
+- **Risk score is rule-derived.** The `risk_score` in each audit entry is the maximum of three policy-defined values (irreversibility, consequence, blast radius) from the matching rule. It is deterministic, not heuristic. No model evaluates risk.
+- **Actions the gate cannot see.** If an agent has a channel that bypasses the hook or proxy — direct filesystem access outside tool calls, out-of-band network requests — the gate cannot intercept it. The gate governs tool calls. OS-level containment (sandboxing, network policy) governs everything else.
+
+## Session state
+
+The gate is stateless by design — each tool call evaluated independently. But some governance failures are only visible across multiple calls:
+
+- **Velocity tracking** — too many calls per window escalates to human
+- **Loop detection** — same action repeated N times escalates to human
+- **Denial burst detection** — consecutive denials signal something adversarial
+
+The counters inform the gate. The human decides. The counter never overrides policy.
+
+## Quick start
 
 ```bash
-curl -fsSL https://zlar.ai/install.sh | bash
+# Review the install script first (this is a security tool — inspect before you trust):
+# https://github.com/ZLAR-AI/ZLAR/blob/main/install.sh
+
+curl -fsSL https://raw.githubusercontent.com/ZLAR-AI/ZLAR/main/install.sh | bash
 ```
 
-This installs ZLAR with deny-heavy defaults. Your agent is governed in under 60 seconds. No Telegram required — risky actions are simply blocked until you configure approval.
-
-## What It Does
-
-| Layer | Component | What It Does |
-|-------|-----------|--------------|
-| **Enforcement** | `zlar-gate` | Policy engine. Intercepts tool calls, classifies risk, enforces rules. |
-| **Observation** | `zlar-witness` | Sequence detection. Reads the evidence trail, finds multi-step patterns. |
-| **Observation** | `zlar-digest` | Governance digest. Weekly summary of decisions, latency, sequences. |
-| **Observation** | `zlar-standing` | Standing authority view. What the agent can do without asking. |
-| **Observation** | `zlar-registry` | Agent inventory. Every agent the gate has seen, what they did, when. |
-| **Policy** | `zlar-policy` | CLI for managing Ed25519-signed policy rules. |
-| **CLI** | `zlar` | Status, audit trail, Telegram setup, diagnostics. |
-| **Adapters** | `adapters/` | Framework hooks for Claude Code, Cursor, Windsurf. |
-
-## How It Works
-
-```
-Agent (Claude Code / Cursor / Windsurf)
-  │
-  ├─ PreToolUse hook fires
-  │
-  ├─ Adapter translates to ZLAR protocol
-  │
-  ├─ zlar-gate evaluates against signed policy
-  │   ├─ allow → tool executes
-  │   ├─ deny  → tool blocked
-  │   └─ ask   → Telegram approval (or deny on timeout)
-  │
-  └─ Response returned to agent
+Or clone and install manually:
+```bash
+git clone https://github.com/ZLAR-AI/ZLAR.git
+cd ZLAR && bash install.sh
 ```
 
-**Key properties:**
-- **Fail-closed.** Gate down = all actions denied.
-- **Policy is a human artifact.** Ed25519-signed. Agents cannot modify the rules that govern them.
-- **Zero dependencies.** Pure bash. Runs on macOS and Linux.
-- **No intelligence in the gate.** It classifies and enforces. It does not decide what's safe.
+Installs with deny-heavy defaults. Your agent is governed in under 60 seconds. No Telegram required — risky actions are blocked until you configure approval.
 
-## Repository Structure
-
-```
-bin/           Executables (gate, witness, digest, standing, policy CLI)
-lib/           Shared libraries (audit-reader)
-adapters/      Framework hooks (claude-code, cursor, windsurf)
-etc/           Configuration, policy templates, sequence definitions
-scripts/       Setup and installation
-tests/         Test suites and fixtures
-docs/          Design philosophy and architecture
-signal/        Agent-facing signal layer
-```
-
-## Tuning — Set Your Own Speed
-
-ZLAR ships locked down. As you build trust, open it up.
-
-**Level 1: Deny-heavy (default)**
-Everything risky is blocked. Reads and writes allowed. No Telegram needed. This is where you start.
-
-**Level 2: Add Telegram approval**
-Risky actions go to your phone instead of being blocked. You approve or deny from anywhere.
+**Add human-in-the-loop approval:**
 ```bash
 zlar telegram
 ```
 
-**Level 3: Raise thresholds**
-Auto-approve low-risk actions. Only get pinged for the real decisions. Edit the `scoring_thresholds` in your active policy:
+**Tune thresholds** — choose what interrupts you, not what gets observed:
 ```json
 "scoring_thresholds": {
-    "allow": 50,
-    "log": 51,
-    "ask": 71
+  "allow": 50,
+  "log": 51,
+  "ask": 71
 }
 ```
-- **≤50:** auto-approve silently — safe commands, compound commands, routine operations
-- **51–70:** approve and log — moderate risk, recorded in audit trail
-- **71+:** Telegram approval required — network, deployments, permissions, deletions
+Then re-sign: `zlar-policy sign --input ~/.zlar/etc/policies/active.policy.json --key ~/.zlar-signing.key`
 
-Then re-sign and restart:
-```bash
-zlar-policy sign --input ~/.zlar/etc/policies/active.policy.json --key ~/.zlar-signing.key
-# Restart your editor to pick up the new policy
+The deny rules (rm -rf, sudo, persistence mechanisms) always block regardless of threshold. The audit trail records everything regardless of threshold.
+
+## Architecture
+
+| Layer | Component | What it does |
+|-------|-----------|-------------|
+| **Enforcement** | `zlar-gate` | Policy engine. Intercepts tool calls, classifies, evaluates signed rules, writes audit trail. |
+| **Enforcement** | `mcp-gate` | TCP proxy for MCP. Same policy, same audit format, any MCP-connected agent. |
+| **Observation** | `zlar-witness` | Sequence detection. Reads the audit trail, finds multi-step patterns (credential read followed by network egress, denial followed by schedule creation). Detected, not enforced. |
+| **Observation** | `zlar-digest` | Governance summary. Decisions, latency, sequences, novelty. |
+| **Observation** | `zlar-standing` | Standing authority view. What the agent can do right now without asking. |
+| **Observation** | `zlar-registry` | Agent inventory. Every agent the gate has seen, derived from the audit trail. No registration required. |
+| **Policy** | `zlar-policy` | CLI for Ed25519-signed policy rules. Keygen, sign, verify. |
+| **Session** | `session-state` | Velocity, loop detection, denial bursts. Thin counters, not reasoning. |
+| **Adapters** | `adapters/` | Framework hooks for Claude Code, Cursor, Windsurf. Thin wrappers — the gate is the gate. |
+
+## The witness layer
+
+The witness reads the gate's audit trail. It does not intercept, block, or modify agent actions. The gate remains the sole enforcement point.
+
+```
+Gate (enforces) → audit.jsonl → Witness (observes) → Brief (surfaces) → Human (ratifies) → Policy (gate enforces)
 ```
 
-The deny rules (rm -rf, sudo, persistence mechanisms) always block regardless of threshold. The audit trail records everything regardless of threshold. You're choosing what interrupts you, not what gets observed.
+Candidate sequence patterns — detected, not blocked:
+
+| Pattern | What it detects |
+|---------|----------------|
+| `credential-adjacent-egress` | Sensitive file read followed by outbound network request |
+| `denied-then-scheduled` | Denied request followed by cron/schedule creation |
+| `rapid-approval-drift` | Human approval latency decreasing within a session |
+| `repeated-denial-burst` | Same rule denying 5+ times in one session |
+
+The witness can be smart. The gate must remain simple. The witness does not become sovereign.
+
+## Design tests
+
+If a proposed feature fails any of these, it does not belong:
+
+- If it requires the gate to form an opinion about whether an action should be allowed, it does not belong.
+- If it requires access to the content of an agent's reasoning, it does not belong.
+- If it adds latency to actions that are not protected, it violates the performance contract.
+- If it creates dependency on a specific model, agent framework, or infrastructure provider, it breaks portability.
+
+## Repository structure
+
+```
+bin/           Gate, witness, digest, standing, registry, policy CLI
+lib/           Shared libraries (audit reader, session state)
+adapters/      Framework hooks (claude-code, cursor, windsurf)
+mcp-gate/      MCP TCP proxy gate (Node.js)
+etc/           Configuration, policy templates, sequence definitions, signing keys
+scripts/       Setup, installation, Telegram bootstrap
+tests/         Test suites
+docs/          Architecture and design
+signal/        Agent-facing signal layer (thesis, manifest)
+cedar-poc/     Cedar formal policy verification (14/14 tests passing)
+oc/            OS-level containment (OpenClaw integration)
+```
+
+## Running tests
+
+```bash
+bash scripts/smoke-test.sh        # Full suite: syntax, dependencies, Cedar, MCP gate
+bash tests/test-witness.sh        # Observation layer: 23 assertions
+bash tests/test-session-state.sh  # Session counters: 16 assertions
+node cedar-poc/test.mjs           # Cedar formal verification: 14 assertions
+node mcp-gate/test.mjs            # MCP proxy gate: 7 assertions
+```
+
+All tests pass on macOS (arm64) and Linux (Alpine aarch64 via Docker).
+
+## Requirements
+
+- bash 3.2+ (macOS default works)
+- jq (JSON processing)
+- openssl (Ed25519 key generation)
+- Optional: Telegram bot token (for human-in-the-loop approval)
+- Optional: Node.js 18+ (for MCP gate)
 
 ## Uninstall
-
-Clean removal. Hooks removed from all frameworks. Signing key preserved.
 
 ```bash
 zlar uninstall
 ```
 
-Or directly:
-```bash
-~/.zlar/uninstall.sh
-```
+Clean removal. Hooks removed from all frameworks. Signing key preserved.
 
-## For Agents
+## Further reading
 
-See [`AGENTS.md`](AGENTS.md) for discovery. See [`signal/`](signal/) for the thesis, manifest, and structured project map.
-
-## Requirements
-
-- bash 3.2+ (macOS default works)
-- openssl (for Ed25519 key generation)
-- jq (for JSON processing)
-- Optional: Telegram bot token (for human-in-the-loop approval)
+- [signal/THESIS.md](signal/THESIS.md) — Why intelligence in the monitor fails. Why the governed path is the fast path.
+- [signal/SIGNAL.md](signal/SIGNAL.md) — Project declaration and structured overview.
+- [AGENTS.md](AGENTS.md) — Agent discovery layer.
+- [LEGAL.md](LEGAL.md) — Regulatory classification.
+- [SECURITY.md](SECURITY.md) — Security policy.
 
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).
-
-## More
-
-- [LEGAL.md](LEGAL.md) — Regulatory classification
-- [signal/THESIS.md](signal/THESIS.md) — Why governance matters now
-- [signal/SIGNAL.md](signal/SIGNAL.md) — What this project is
 
 Built by [ZLAR Inc.](https://zlar.ai)
