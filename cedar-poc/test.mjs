@@ -172,7 +172,7 @@ for (const t of tests) {
       policy_version: '2.4.0',
     },
     schema,
-    validateRequest: false,
+    validateRequest: true,
     policies: { staticPolicies: policies },
     entities: [
       {
