@@ -2,11 +2,11 @@
 
 Autonomous agents can now execute shell commands, write files, make API calls, and deploy code. Nothing sits between the decision to act and the act itself. ZLAR is that missing layer — a governance primitive that intercepts every agent action at the execution boundary, enforces signed policy, and produces cryptographic evidence of what happened, who authorized it, and when.
 
-This is not a smarter monitor. The gate has no intelligence. That is the security property.
+This is not a smarter monitor. The gate has no intelligence. That is the security property. ZLAR is acceleration infrastructure — the governed path is the fast path.
 
 ## The structural failure this addresses
 
-Current approaches to AI governance put intelligence in the monitor — systems that watch what agents do and try to decide whether the action is acceptable. This fails for a reason that cannot be patched: intelligence can be persuaded. Prompt injection, context drift, reasoning that convinces the monitor the same way it convinced the agent. The attack surface is the reasoning itself.
+Current approaches to AI governance put intelligence in the monitor — systems that watch what agents do and try to decide whether the action is acceptable. This fails for a reason that cannot be patched: intelligence persuading intelligence. Prompt injection, context drift, reasoning that convinces the monitor the same way it convinced the agent. The attack surface is the reasoning itself.
 
 You cannot solve this by making the monitor smarter. A smarter monitor is a larger attack surface.
 
@@ -34,14 +34,14 @@ Agent issues tool call (shell command, file write, API request)
 
 The gate runs synchronously on every tool call. No daemon. No server. No database. The process is the pending state. Unprotected actions experience zero added latency. Delay happens only where delay is the point.
 
-Two enforcement surfaces share the same policy and the same audit trail:
+Two enforcement surfaces share the same policy and the same evidence trail:
 
 - **Bash gate** — hooks into Claude Code, Cursor, Windsurf via PreToolUse. Pure bash. Zero dependencies beyond `jq` and `openssl`.
 - **MCP gate** — TCP proxy that sits between any MCP client and any MCP server. Intercepts `tools/call` JSON-RPC messages. Same policy engine, same evidence format.
 
 The agent does not volunteer to be governed. It is governed by architecture.
 
-## What the audit trail produces
+## What the evidence trail produces
 
 Every gate decision writes a hash-chained, algorithm-labeled audit entry. Two entries for a human decision — the request and the resolution:
 
@@ -121,7 +121,7 @@ cd ZLAR && bash install.sh
 
 Installs with deny-heavy defaults. Your agent is governed in under 60 seconds. No Telegram required — risky actions are blocked until you configure approval.
 
-**Add human-in-the-loop approval:**
+**Add human approval via Telegram:**
 ```bash
 zlar telegram
 ```
@@ -136,25 +136,25 @@ zlar telegram
 ```
 Then re-sign: `zlar-policy sign --input ~/.zlar/etc/policies/active.policy.json --key ~/.zlar-signing.key`
 
-The deny rules (rm -rf, sudo, persistence mechanisms) always block regardless of threshold. The audit trail records everything regardless of threshold.
+The deny rules (rm -rf, sudo, persistence mechanisms) always block regardless of threshold. The evidence trail records everything regardless of threshold.
 
 ## Architecture
 
 | Layer | Component | What it does |
 |-------|-----------|-------------|
-| **Enforcement** | `zlar-gate` | Policy engine. Intercepts tool calls, classifies, evaluates signed rules, writes audit trail. |
+| **Enforcement** | `zlar-gate` | Policy engine. Intercepts tool calls, classifies, evaluates signed rules, writes evidence trail. |
 | **Enforcement** | `mcp-gate` | TCP proxy for MCP. Same policy, same audit format, any MCP-connected agent. |
-| **Observation** | `zlar-witness` | Sequence detection. Reads the audit trail, finds multi-step patterns (credential read followed by network egress, denial followed by schedule creation). Detected, not enforced. |
+| **Observation** | `zlar-witness` | Sequence detection. Reads the evidence trail, finds multi-step patterns (credential read followed by network egress, denial followed by schedule creation). Detected, not enforced. |
 | **Observation** | `zlar-digest` | Governance summary. Decisions, latency, sequences, novelty. |
 | **Observation** | `zlar-standing` | Standing authority view. What the agent can do right now without asking. |
-| **Observation** | `zlar-registry` | Agent inventory. Every agent the gate has seen, derived from the audit trail. No registration required. |
+| **Observation** | `zlar-registry` | Agent inventory. Every agent the gate has seen, derived from the evidence trail. No registration required. |
 | **Policy** | `zlar-policy` | CLI for Ed25519-signed policy rules. Keygen, sign, verify. |
 | **Session** | `session-state` | Velocity, loop detection, denial bursts. Thin counters, not reasoning. |
 | **Adapters** | `adapters/` | Framework hooks for Claude Code, Cursor, Windsurf. Thin wrappers — the gate is the gate. |
 
 ## The witness layer
 
-The witness reads the gate's audit trail. It does not intercept, block, or modify agent actions. The gate remains the sole enforcement point.
+The witness reads the gate's evidence trail. It does not intercept, block, or modify agent actions. The gate remains the sole enforcement point.
 
 ```
 Gate (enforces) → audit.jsonl → Witness (observes) → Brief (surfaces) → Human (ratifies) → Policy (gate enforces)
@@ -213,7 +213,7 @@ All tests pass on macOS (arm64) and Linux (Alpine aarch64 via Docker).
 - bash 3.2+ (macOS default works)
 - jq (JSON processing)
 - openssl (Ed25519 key generation)
-- Optional: Telegram bot token (for human-in-the-loop approval)
+- Optional: Telegram bot token (for human approval via Telegram)
 - Optional: Node.js 18+ (for MCP gate)
 
 ## Uninstall

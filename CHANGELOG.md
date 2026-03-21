@@ -6,14 +6,14 @@ Agent inventory and cryptographic agility. You cannot govern what you cannot see
 
 ### Added
 
-- **Agent registry** (`bin/zlar-registry`) — reads the audit trail, surfaces every agent the gate has seen: identity, sessions, activity, denial rates, domains touched. Supports multi-audit trails. Closes the agent inventory gap.
+- **Agent registry** (`bin/zlar-registry`) — reads the evidence trail, surfaces every agent the gate has seen: identity, sessions, activity, denial rates, domains touched. Supports multi-audit trails. Closes the agent inventory gap.
 - **PQC metadata** — every audit entry now carries `signature_algorithm`, `hash_algorithm`, and `public_key_id`. Zero behavior change, but migration tooling will know exactly which entries need re-signing when Ed25519 gives way to ML-DSA.
 - **Cedar proof-of-concept** (`cedar-poc/`) — three real gate rules (R012, R001, R014) translated to Cedar policy language, validated against schema, 14/14 tests passing. Proves the migration path from bash pattern matching to formal policy evaluation.
 - **Demo script** (`docs/demo-script.md`) — 5-minute deny path walkthrough for briefings.
 
 ### Fixed
 
-- **Human deny path was silently broken** — `set -e` (errexit) killed the gate process when `telegram_ask` returned exit code 1 (deny). The deny response never reached Claude Code, which defaulted to allowing the tool call. Every human deny since the gate was written was a no-op at the enforcement layer. The audit trail recorded the deny intent but the action executed anyway. Fixed by capturing the return code safely (`telegram_ask ... || ask_result=$?`). Both PreToolUse and SubagentStart paths patched. The architecture caught the bug: dogfooding + audit trail inspection revealed the gap. Approximately 29-30 historical audit entries have orphaned `pending` outcomes with no recorded resolution.
+- **Human deny path was silently broken** — `set -e` (errexit) killed the gate process when `telegram_ask` returned exit code 1 (deny). The deny response never reached Claude Code, which defaulted to allowing the tool call. Every human deny since the gate was written was a no-op at the enforcement layer. The evidence trail recorded the deny intent but the action executed anyway. Fixed by capturing the return code safely (`telegram_ask ... || ask_result=$?`). Both PreToolUse and SubagentStart paths patched. The architecture caught the bug: recursive trust proof + evidence trail inspection revealed the gap. Approximately 29-30 historical audit entries have orphaned `pending` outcomes with no recorded resolution.
 
 ### Known limitations
 
@@ -26,10 +26,10 @@ Added observation layer. The gate enforces — the witness observes. Two layers,
 
 ### Added
 
-- **Sequence detection** (`bin/zlar-witness`) — reads the audit trail after the fact, finds multi-step behavioral patterns (credential-adjacent-egress, denied-then-scheduled, approval-drift, repeated-denial-burst)
+- **Sequence detection** (`bin/zlar-witness`) — reads the evidence trail after the fact, finds multi-step behavioral patterns (credential-adjacent-egress, denied-then-scheduled, approval-drift, repeated-denial-burst)
 - **Governance digest** (`bin/zlar-digest`) — weekly summary of decisions, approval latency, detected sequences. Sends to Telegram.
 - **Standing authority view** (`bin/zlar-standing`) — shows what the agent can do right now without asking
-- **Shared audit library** (`lib/audit-reader.sh`) — fact extraction from audit trails. Multi-audit support: reads from both CC and OC gate trails via `ZLAR_AUDIT_FILES`
+- **Shared audit library** (`lib/audit-reader.sh`) — fact extraction from evidence trails. Multi-audit support: reads from both CC and OC gate trails via `ZLAR_AUDIT_FILES`
 - **Sequence definitions** (`etc/sequences.json`) — pattern catalog for witness detection
 - **Test suite** (`tests/test-witness.sh`) — 20+ assertions covering witness, digest, standing, and audit-reader
 - **Design documentation** (`docs/witness.md`) — observation layer design philosophy
@@ -55,6 +55,6 @@ Consolidated release. Five repositories (ZLAR-Gate, ZLAR-LT, ZLAR-OPS, ZLAR-NT, 
 
 - ZLAR-Gate v2.3.0 — universal gate engine with three-framework support
 - ZLAR-LT v1.0.0 — zero-config installer with deny-heavy defaults
-- ZLAR-OPS — monitoring, audit, fleet, and operational tooling
+- ZLAR-OPS — observation, audit, fleet, and operational tooling
 - ZLAR-NT — network egress policy enforcement
 - ZLAR-OC — OS-level containment for OpenClaw agents

@@ -18,7 +18,7 @@ From the [design notes](https://github.com/ZLAR-AI/ZLAR):
 
 ## Architecture
 
-The witness reads the gate's audit trail (`audit.jsonl`). It does not intercept, block, or modify agent actions. The gate remains the sole enforcement point.
+The witness reads the gate's evidence trail (`audit.jsonl`). It does not intercept, block, or modify agent actions. The gate remains the sole enforcement point.
 
 ```
 Gate (enforces) → audit.jsonl → Witness (observes) → Brief (surfaces to human) → Human (ratifies) → Policy (gate enforces)
@@ -30,7 +30,7 @@ The witness expands what the human can see. Not what the machine may unilaterall
 
 | Tool | Purpose |
 |------|---------|
-| `bin/zlar-witness` | Sequence detection — reads audit trail, detects candidate patterns, tags them |
+| `bin/zlar-witness` | Sequence detection — reads evidence trail, detects candidate patterns, tags them |
 | `bin/zlar-brief` | Governance brief — weekly digest of actions, latencies, patterns, novelty |
 | `bin/zlar-standing` | Standing authority view — what the agent can currently do without asking |
 
