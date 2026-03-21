@@ -283,6 +283,7 @@ emit_event() {
     local rule="${6:-}"
     local severity="${7:-info}"
     local policy_ver="${8:-${POLICY_VERSION}}"
+    local authorizer="${9:-${source}}"
 
     local id
     id=$(gen_id)
@@ -291,17 +292,25 @@ emit_event() {
     local seq
     seq=$(next_seq)
 
+    # Hash chain — compute prev_hash from last audit line (schema alignment with CC gate)
+    local prev_hash="genesis"
+    if [ -f "${AUDIT_FILE}" ] && [ -s "${AUDIT_FILE}" ]; then
+        prev_hash=$(tail -1 "${AUDIT_FILE}" 2>/dev/null | shasum -a 256 | awk '{print $1}')
+    fi
+
     # Build JSON — using printf to avoid dependency on jq for core path
-    # Includes agent_id, session_id (#21), and risk_score (#4 boundedness gate)
+    # Includes agent_id, session_id (#21), risk_score (#4 boundedness gate),
+    # prev_hash and authorizer (schema alignment with CC gate, v1.2.0)
     # String fields are escaped to prevent JSON injection via crafted filenames or messages
     local risk_score="${EVAL_RISK_SCORE:-0}"
-    printf '{"id":"%s","ts":"%s","seq":%d,"source":"%s","host":"%s","user":"%s","agent_id":"%s","session_id":"%s","domain":"%s","action":"%s","outcome":"%s","risk_score":%d,"detail":%s,"rule":"%s","policy_version":"%s","severity":"%s","signature_algorithm":"%s","hash_algorithm":"%s","public_key_id":"%s"}\n' \
+    printf '{"id":"%s","ts":"%s","seq":%d,"source":"%s","host":"%s","user":"%s","agent_id":"%s","session_id":"%s","domain":"%s","action":"%s","outcome":"%s","risk_score":%d,"detail":%s,"rule":"%s","policy_version":"%s","severity":"%s","prev_hash":"%s","authorizer":"%s","signature_algorithm":"%s","hash_algorithm":"%s","public_key_id":"%s"}\n' \
         "$(json_escape "${id}")" "$(json_escape "${ts}")" "${seq}" \
         "$(json_escape "${source}")" "$(json_escape "${HOSTNAME}")" "$(json_escape "${AGENT_USER:-aiagent}")" \
         "$(json_escape "${CURRENT_EVENT_AGENT_ID:-${AGENT_ID}}")" "$(json_escape "${SESSION_ID}")" \
         "$(json_escape "${domain}")" "$(json_escape "${action}")" "$(json_escape "${outcome}")" \
         "${risk_score}" "${detail}" \
         "$(json_escape "${rule}")" "$(json_escape "${policy_ver}")" "$(json_escape "${severity}")" \
+        "$(json_escape "${prev_hash}")" "$(json_escape "${authorizer}")" \
         "$(json_escape "${SIGNATURE_ALGORITHM}")" "$(json_escape "${HASH_ALGORITHM}")" "$(json_escape "${PUBLIC_KEY_ID}")" \
         >> "${AUDIT_FILE}"
 }
@@ -1062,10 +1071,17 @@ telegram_ask() {
     fi
 
     # Emit ask-resolved audit event
+    # Authorizer: human for approve/deny, gate for timeout/error
+    local resolved_authorizer="gate"
+    if [ "${decision}" = "allow" ] || [ "${decision}" = "deny" ]; then
+        resolved_authorizer="human:${TELEGRAM_CHAT_ID}"
+    elif [ "${decision}" = "timeout" ]; then
+        resolved_authorizer="gate:timeout"
+    fi
     emit_event "ask" "resolved" "${outcome}" "gate" \
         "$(printf '{"event":"ask_resolved","decision":"%s","event_id":"%s","rule":"%s","elapsed_s":%d}' \
             "${decision}" "${event_id}" "${rule_id}" "$(( $(date +%s) - start_time ))")" \
-        "${rule_id}" "warn"
+        "${rule_id}" "warn" "${POLICY_VERSION}" "${resolved_authorizer}"
 
     echo "${outcome}"
 }
