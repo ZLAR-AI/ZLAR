@@ -72,9 +72,9 @@ The governed path is the fast path.
 
 Organizations can deploy autonomous agents with structural proof of oversight — verifiable, auditable, independent of the agent's own claims about its behavior.
 
-Humans get a role they can actually perform. Not reading every line of agent output. Not trying to evaluate whether an AI's reasoning is sound. Instead: defining boundaries, authorizing protected actions, reviewing audit trails. Governance as a human-scale activity, not a superhuman demand.
+Humans get a role they can actually perform. Not reading every line of agent output. Not trying to evaluate whether an AI's reasoning is sound. Instead: defining boundaries, authorizing protected actions, reviewing evidence trails. Governance as a human-scale activity, not a superhuman demand.
 
-Governance becomes independently verifiable. The audit trail exists at the execution boundary. It records what was attempted, what was authorized, by whom, and when. This is not the agent's account of what it did. This is the infrastructure's record of what happened.
+Governance becomes independently verifiable. The evidence trail exists at the execution boundary. It records what was attempted, what was authorized, by whom, and when. This is not the agent's account of what it did. This is the infrastructure's record of what happened.
 
 ## Invitation
 
