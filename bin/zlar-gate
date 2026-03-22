@@ -38,6 +38,11 @@ _gate_crash() {
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 
+# Source cryptographic abstraction layer
+export _CRYPTO_PROJECT_DIR="${PROJECT_DIR}"
+# shellcheck source=../lib/crypto.sh
+source "${PROJECT_DIR}/lib/crypto.sh"
+
 # ─── Private temp directory ──────────────────────────────────────────────────
 # Not /tmp (world-readable). Gate-private directory for policy verification.
 GATE_TMP="${PROJECT_DIR}/var/tmp"
@@ -59,11 +64,12 @@ LOG_FILE="${PROJECT_DIR}/var/log/gate.log"
 # ─── Cryptographic Metadata (PQC Phase 1) ────────────────────────────────────
 # Label every audit entry with the algorithms used. When migration to ML-DSA
 # happens, tooling reads these fields to know which entries need re-signing.
-SIGNATURE_ALGORITHM="Ed25519"
-HASH_ALGORITHM="SHA-256"
+# Algorithm labels resolved via lib/crypto.sh abstraction layer.
+SIGNATURE_ALGORITHM=$(zlar_crypto_label)
+HASH_ALGORITHM=$(zlar_crypto_hash_label)
 PUBLIC_KEY_ID="unknown"
 if [ -f "${POLICY_PUBKEY}" ]; then
-    PUBLIC_KEY_ID=$(shasum -a 256 "${POLICY_PUBKEY}" 2>/dev/null | awk '{print substr($1,1,16)}')
+    PUBLIC_KEY_ID=$(zlar_crypto_pubkey_fingerprint "${POLICY_PUBKEY}")
 fi
 
 # Load overrides from gate.json if present
@@ -390,7 +396,7 @@ load_policy() {
         return 1
     fi
 
-    # Policy verification cache — skip Ed25519 if content hash unchanged
+    # Policy verification cache — skip signature check if content hash unchanged
     local cache_file="${PROJECT_DIR}/var/log/.policy-cache"
     local policy_hash
     policy_hash=$(shasum -a 256 "${POLICY_FILE}" 2>/dev/null | awk '{print $1}')
@@ -413,10 +419,11 @@ load_policy() {
         return 1
     fi
 
-    # Verify signature using private temp directory
+    # Verify signature using private temp directory and crypto abstraction layer
     {
-        local sig_value
+        local sig_value sig_algo
         sig_value=$(jq -r '.signature.value // ""' "${POLICY_FILE}" 2>/dev/null)
+        sig_algo=$(jq -r '.signature.algorithm // "ed25519"' "${POLICY_FILE}" 2>/dev/null)
         if [ -z "${sig_value}" ] || [ "${sig_value}" = "" ]; then
             log "FATAL: Policy is unsigned"
             return 1
@@ -428,16 +435,12 @@ load_policy() {
         hash_file=$(mktemp "${GATE_TMP}/hash.XXXXXX")
         sig_file=$(mktemp "${GATE_TMP}/sig.XXXXXX")
 
-        # Guaranteed cleanup
-
         jq '.signature.value = ""' "${POLICY_FILE}" > "${canon_file}" 2>/dev/null
-        shasum -a 256 "${canon_file}" | awk '{print $1}' | tr -d '\n' > "${hash_file}"
+        zlar_crypto_hash "${canon_file}" "${hash_file}"
         echo "${sig_value}" | base64 -d > "${sig_file}" 2>/dev/null
 
-        if ! openssl pkeyutl -verify \
-            -pubin -inkey "${POLICY_PUBKEY}" -rawin \
-            -sigfile "${sig_file}" \
-            -in "${hash_file}" &>/dev/null; then
+        # Verify using the algorithm declared in the policy file
+        if ! zlar_crypto_verify "${POLICY_PUBKEY}" "${hash_file}" "${sig_file}" "${sig_algo}"; then
             rm -f "${canon_file}" "${hash_file}" "${sig_file}"
             log "FATAL: Policy signature INVALID"
             return 1

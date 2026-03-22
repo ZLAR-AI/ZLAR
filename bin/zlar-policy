@@ -5,7 +5,7 @@
 # Manages policy lifecycle: generate keys, sign, verify, deploy, inspect, prune.
 #
 # Usage:
-#   zlar-policy keygen                         Generate Ed25519 signing keypair
+#   zlar-policy keygen                         Generate signing keypair (algorithm-agile)
 #   zlar-policy sign   --input F --key K       Sign a policy file
 #   zlar-policy verify --input F               Verify policy signature
 #   zlar-policy deploy --input F               Deploy signed policy to active
@@ -20,6 +20,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# Source cryptographic abstraction layer
+export _CRYPTO_PROJECT_DIR="${PROJECT_DIR}"
+# shellcheck source=../lib/crypto.sh
+source "${PROJECT_DIR}/lib/crypto.sh"
+
 ZLAR_ROOT="${PROJECT_DIR}/etc"
 KEYS_DIR="${ZLAR_ROOT}/keys"
 POLICY_DIR="${ZLAR_ROOT}/policies"
@@ -43,7 +49,9 @@ info() { echo -e "${BLUE}  ℹ${NC} $*"; }
 # ─── Key Generation ──────────────────────────────────────────────────────────
 
 cmd_keygen() {
-    echo -e "${BOLD}Generating Ed25519 signing keypair${NC}"
+    local algo_label
+    algo_label=$(zlar_crypto_label)
+    echo -e "${BOLD}Generating ${algo_label} signing keypair${NC}"
     echo ""
 
     local privkey="${HOME}/.zlar-signing.key"
@@ -59,18 +67,15 @@ cmd_keygen() {
         fi
     fi
 
-    # Generate Ed25519 private key
-    openssl genpkey -algorithm Ed25519 -out "${privkey}" 2>/dev/null
-    chmod 600 "${privkey}"
+    # Generate keypair via abstraction layer
+    if ! zlar_crypto_keygen "${privkey}" "${pubkey}"; then
+        fail "Key generation failed"
+    fi
     ok "Private key: ${privkey} (mode 600)"
-
-    # Extract public key
-    mkdir -p "${KEYS_DIR}"
-    openssl pkey -in "${privkey}" -pubout -out "${pubkey}" 2>/dev/null
-    chmod 644 "${pubkey}"
     ok "Public key:  ${pubkey} (mode 644)"
 
     echo ""
+    info "Algorithm: ${algo_label}"
     info "Private key is stored in your home directory."
     info "It should NEVER be accessible to an AI agent."
     info "The public key is deployed to ${KEYS_DIR}/ for the gate to verify."
@@ -78,8 +83,8 @@ cmd_keygen() {
 
     # Display public key fingerprint
     local fingerprint
-    fingerprint=$(openssl pkey -pubin -in "${pubkey}" -outform DER 2>/dev/null | shasum -a 256 | awk '{print $1}')
-    info "Public key fingerprint (SHA-256): ${fingerprint:0:16}..."
+    fingerprint=$(zlar_crypto_pubkey_fingerprint "${pubkey}")
+    info "Public key fingerprint (SHA-256): ${fingerprint}..."
 }
 
 # ─── Sign ────────────────────────────────────────────────────────────────────
@@ -138,9 +143,15 @@ cmd_sign() {
         info "Rules: ${rule_count}"
     fi
 
+    # Resolve algorithm via abstraction layer
+    local algo algo_label
+    algo=$(zlar_crypto_algorithm)
+    algo_label=$(zlar_crypto_label)
+    info "Signing algorithm: ${algo_label}"
+
     # Extract public key from private key for embedding
     local pubkey_b64
-    pubkey_b64=$(openssl pkey -in "${key}" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n')
+    pubkey_b64=$(zlar_crypto_pubkey_b64 "${key}")
 
     # Create canonical form (with empty signature) for signing
     local canon_file
@@ -148,7 +159,8 @@ cmd_sign() {
 
     if command -v jq &>/dev/null; then
         jq --arg pubkey "${pubkey_b64}" \
-           '.signature.algorithm = "ed25519" | .signature.public_key = $pubkey | .signature.value = ""' \
+           --arg algo "${algo}" \
+           '.signature.algorithm = $algo | .signature.public_key = $pubkey | .signature.value = ""' \
            "${input}" > "${canon_file}"
     else
         cp "${input}" "${canon_file}"
@@ -158,15 +170,15 @@ cmd_sign() {
     # Hash the canonical form
     local hash_file
     hash_file=$(mktemp /tmp/zlar-hash.XXXXXX)
-    shasum -a 256 "${canon_file}" | awk '{print $1}' | tr -d '\n' > "${hash_file}"
+    zlar_crypto_hash "${canon_file}" "${hash_file}"
 
-    # Sign with Ed25519
+    # Sign via abstraction layer
     local sig_file
     sig_file=$(mktemp /tmp/zlar-sig.XXXXXX)
-    openssl pkeyutl -sign \
-        -inkey "${key}" -rawin \
-        -in "${hash_file}" \
-        -out "${sig_file}" 2>/dev/null
+    if ! zlar_crypto_sign "${key}" "${hash_file}" "${sig_file}"; then
+        rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+        fail "Signing failed"
+    fi
 
     local sig_b64
     sig_b64=$(base64 < "${sig_file}" | tr -d '\n')
@@ -177,7 +189,8 @@ cmd_sign() {
     if command -v jq &>/dev/null; then
         jq --arg pubkey "${pubkey_b64}" \
            --arg sig "${sig_b64}" \
-           '.signature.algorithm = "ed25519" | .signature.public_key = $pubkey | .signature.value = $sig' \
+           --arg algo "${algo}" \
+           '.signature.algorithm = $algo | .signature.public_key = $pubkey | .signature.value = $sig' \
            "${input}" > "${signed_tmp}"
     else
         sed "s|\"value\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"value\": \"${sig_b64}\"|" "${canon_file}" > "${signed_tmp}"
@@ -227,13 +240,16 @@ cmd_verify() {
 
     echo -e "${BOLD}Verifying policy signature${NC}"
 
-    # Extract signature
-    local sig_value
+    # Extract signature and algorithm
+    local sig_value sig_algo
     sig_value=$(grep -o '"value"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    sig_algo=$(grep -o '"algorithm"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
 
     if [ -z "${sig_value}" ] || [ "${sig_value}" = "" ]; then
         fail "Policy has no signature (empty value field)"
     fi
+
+    info "Signature algorithm: ${sig_algo:-unknown}"
 
     # Create canonical form
     local canon_file
@@ -247,18 +263,15 @@ cmd_verify() {
     # Hash
     local hash_file
     hash_file=$(mktemp /tmp/zlar-verify-hash.XXXXXX)
-    shasum -a 256 "${canon_file}" | awk '{print $1}' | tr -d '\n' > "${hash_file}"
+    zlar_crypto_hash "${canon_file}" "${hash_file}"
 
     # Decode signature
     local sig_file
     sig_file=$(mktemp /tmp/zlar-verify-sig.XXXXXX)
     echo "${sig_value}" | base64 -d > "${sig_file}" 2>/dev/null
 
-    # Verify
-    if openssl pkeyutl -verify \
-        -pubin -inkey "${pubkey}" -rawin \
-        -sigfile "${sig_file}" \
-        -in "${hash_file}" 2>/dev/null; then
+    # Verify via abstraction layer (use the algorithm from the policy file)
+    if zlar_crypto_verify "${pubkey}" "${hash_file}" "${sig_file}" "${sig_algo:-ed25519}"; then
         ok "Signature is VALID"
     else
         rm -f "${canon_file}" "${hash_file}" "${sig_file}"
@@ -705,7 +718,8 @@ case "${ACTION}" in
         echo "Usage: $0 <command> [options]"
         echo ""
         echo "Commands:"
-        echo "  keygen                        Generate Ed25519 signing keypair"
+        echo "  keygen                        Generate signing keypair (default: Ed25519)"
+        echo "                                Set ZLAR_SIGN_ALGORITHM=ml-dsa-44|hybrid to change"
         echo "  sign   --input F --key K      Sign a policy file"
         echo "  verify --input F              Verify policy signature"
         echo "  deploy --input F              Deploy signed policy to active"
