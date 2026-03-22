@@ -1,0 +1,59 @@
+// ZLAR E-23 Governance Schema — Cedar
+//
+// Extends the base ZLAR schema for OSFI Guideline E-23 compliance.
+// Uses bank risk management vocabulary: position limits, pre-execution
+// checks, kill switches — not governance jargon.
+//
+// E-23 Principle 2.3 requires risk-based control intensity:
+//   Tier 1 (Critical): highest autonomy, highest risk → tightest controls
+//   Tier 2 (Elevated): significant autonomy, material risk → approval required
+//   Tier 3 (Standard): limited autonomy, bounded risk → monitoring only
+//
+// E-23 Principle 3.6 requires processes for "autonomous decision making,
+// autonomous re-parametrization, and elevated potential for model drift."
+//
+// The "rogue trader" analogy from FIFAI II Workshop 3 (Oct 2025):
+//   44% of participants identified autonomous AI as primary systemic risk.
+//   These policies implement the same controls banks use for traders:
+//   position limits, pre-trade checks, kill switches, escalation ladders.
+
+namespace ZLAR {
+
+  // The AI agent requesting an action
+  entity Agent = {
+    // E-23 Principle 2.2: risk rating incorporating level of autonomy
+    "risk_tier": Long,           // 1=critical, 2=elevated, 3=standard
+    "model_id": String,          // Model inventory ID (E-23 Principle 2.1)
+    "owner": String,             // Accountable business owner
+  };
+
+  // Execution domain (bash, read, write, api, payment, trade, etc.)
+  entity Domain;
+
+  // A specific action being evaluated at the execution boundary
+  entity ToolCall = {
+    "command": String,           // The action being attempted
+    "path": String,              // Target resource path
+    "risk_score": Long,          // 0-100 composite risk score
+    "amount": Long,              // Financial value (cents) — for position limits
+    "currency": String,          // ISO 4217 currency code
+    "counterparty": String,      // Target entity for financial actions
+    "is_irreversible": __cedar::Bool,  // Whether the action cannot be undone
+  };
+
+  // Gate evaluation action
+  action "evaluate" appliesTo {
+    principal: [Agent],
+    resource: [ToolCall],
+    context: {
+      "domain": String,
+      "severity": String,
+      "policy_version": String,
+      // E-23 context extensions
+      "business_line": String,     // Which BU owns this agent
+      "environment": String,       // prod, staging, dev
+      "confidence": Long,          // Agent's self-reported confidence (0-100)
+      "session_deny_count": Long,  // Denials in this session (burst detection)
+    },
+  };
+}

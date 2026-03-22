@@ -1307,6 +1307,239 @@ cmd_verify_chain() {
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
+# ─── ATTEST ──────────────────────────────────────────────────────────────────
+# Machine-readable governance attestation bundle.
+#
+# The proof layer: a self-contained, cryptographically signed JSON document
+# packaging audit evidence for external consumption by:
+#   - Regulators (OSFI E-23 compliance evidence)
+#   - Insurers (underwriting signal for AI governance coverage)
+#   - Courts (litigation defense documentation)
+#   - Auditors (SOC 2 / ISO 42001 conformance evidence)
+#
+# The attestation includes:
+#   - All audit events in the time window
+#   - Hash chain verification proof
+#   - Policy metadata (version, rule count, signing algorithm)
+#   - Cryptographic metadata (algorithms used, key fingerprints)
+#   - Summary statistics (total events, outcomes, domains, risk profile)
+#   - A SHA-256 hash of the entire bundle for integrity verification
+#
+# Output is a single JSON object suitable for machine parsing.
+# If a signing key is available, the bundle includes a cryptographic signature.
+
+cmd_attest() {
+    local since="24h" output="" session="" sign_key=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since)   shift; since="$1"; shift ;;
+            --output)  shift; output="$1"; shift ;;
+            --session) shift; session="$1"; shift ;;
+            --key)     shift; sign_key="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+
+    # Source crypto abstraction if not already loaded
+    if [ -z "${_ZLAR_CRYPTO_LOADED:-}" ]; then
+        export _CRYPTO_PROJECT_DIR="${PROJECT_DIR}"
+        source "${PROJECT_DIR}/lib/crypto.sh"
+    fi
+
+    local since_ts
+    since_ts=$(since_to_filter "${since}")
+
+    # ── Collect audit events ──
+    local events_file
+    events_file=$(mktemp /tmp/zlar-attest-events.XXXXXX)
+
+    local filter='.'
+    if [ -n "${since_ts}" ]; then
+        filter="select(.ts >= \"${since_ts}\")"
+    fi
+    if [ -n "${session}" ]; then
+        filter="${filter} | select(.session_id == \"${session}\")"
+    fi
+    jq -c "${filter}" "${AUDIT_FILE}" 2>/dev/null > "${events_file}"
+
+    local event_count
+    event_count=$(wc -l < "${events_file}" | tr -d ' ')
+
+    if [ "${event_count}" -eq 0 ]; then
+        rm -f "${events_file}"
+        echo "ERROR: No audit events found in the specified window" >&2
+        return 1
+    fi
+
+    # ── Verify hash chain within the window ──
+    local chain_total=0 chain_verified=0 chain_breaks=0
+    local prev_line="" line_num=0
+    while IFS= read -r line; do
+        line_num=$((line_num + 1))
+        chain_total=$((chain_total + 1))
+        [ -z "${line}" ] && continue
+
+        local curr_prev_hash
+        curr_prev_hash=$(echo "${line}" | jq -r '.prev_hash // ""' 2>/dev/null)
+
+        if [ "${curr_prev_hash}" = "genesis" ]; then
+            chain_verified=$((chain_verified + 1))
+        elif [ -n "${prev_line}" ]; then
+            local expected_hash
+            expected_hash=$(printf '%s' "${prev_line}" | shasum -a 256 | awk '{print $1}')
+            if [ "${curr_prev_hash}" = "${expected_hash}" ]; then
+                chain_verified=$((chain_verified + 1))
+            else
+                chain_breaks=$((chain_breaks + 1))
+            fi
+        fi
+        prev_line="${line}"
+    done < "${events_file}"
+
+    local chain_verdict="INTACT"
+    if [ ${chain_breaks} -gt 2 ]; then
+        chain_verdict="COMPROMISED"
+    elif [ ${chain_breaks} -gt 0 ]; then
+        chain_verdict="GAPS"
+    fi
+
+    # ── Summary statistics ──
+    local summary
+    summary=$(jq -s '{
+        total_events: length,
+        outcomes: (group_by(.outcome) | map({key: .[0].outcome, value: length}) | from_entries),
+        domains: (group_by(.domain) | map({key: .[0].domain, value: length}) | from_entries),
+        authorizers: (group_by(.authorizer) | map({key: (.[0].authorizer // "unknown"), value: length}) | from_entries),
+        risk_profile: {
+            max_risk: (map(.risk_score // 0) | max),
+            avg_risk: ((map(.risk_score // 0) | add) / length | . * 100 | round / 100),
+            high_risk_count: (map(select((.risk_score // 0) > 70)) | length)
+        },
+        time_range: {
+            first: (sort_by(.ts) | first | .ts),
+            last: (sort_by(.ts) | last | .ts)
+        }
+    }' "${events_file}" 2>/dev/null)
+
+    # ── Policy metadata ──
+    local policy_meta="{}"
+    local policy_file="${ZLAR_ROOT}/policies/active.policy.json"
+    if [ -f "${policy_file}" ] && command -v jq &>/dev/null; then
+        policy_meta=$(jq -c '{
+            version: .version,
+            author: .author,
+            rule_count: (.rules | length),
+            signature_algorithm: .signature.algorithm,
+            default_action: .default_action
+        }' "${policy_file}" 2>/dev/null || echo '{}')
+    fi
+
+    # ── Crypto metadata ──
+    local crypto_meta
+    crypto_meta=$(jq -n -c \
+        --arg sig_algo "$(zlar_crypto_label)" \
+        --arg hash_algo "$(zlar_crypto_hash_label)" \
+        --arg pubkey_file "${ZLAR_ROOT}/keys/policy-signing.pub" \
+        --arg pubkey_fp "$(zlar_crypto_pubkey_fingerprint "${ZLAR_ROOT}/keys/policy-signing.pub" 2>/dev/null || echo 'unavailable')" \
+        '{signing_algorithm:$sig_algo,hash_algorithm:$hash_algo,
+          public_key_fingerprint:$pubkey_fp}')
+
+    # ── Build the attestation bundle ──
+    local now_ts
+    now_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    # Build bundle using temp files to avoid argument-length limits on large trails
+    local bundle_file
+    bundle_file=$(mktemp /tmp/zlar-attest-bundle.XXXXXX)
+
+    # Build the metadata envelope (without events)
+    local envelope
+    envelope=$(jq -n -c \
+        --arg version "1.0.0" \
+        --arg generated_at "${now_ts}" \
+        --arg generator "zlar-audit attest" \
+        --arg since "${since_ts}" \
+        --argjson summary "${summary}" \
+        --argjson policy "${policy_meta}" \
+        --argjson crypto "${crypto_meta}" \
+        --argjson chain "{\"total\":${chain_total},\"verified\":${chain_verified},\"breaks\":${chain_breaks},\"verdict\":\"${chain_verdict}\"}" \
+        '{
+            attestation_version: $version,
+            generated_at: $generated_at,
+            generator: $generator,
+            window: {since: $since},
+            chain_integrity: $chain,
+            summary: $summary,
+            policy: $policy,
+            cryptography: $crypto
+        }')
+
+    # Merge envelope with events array using file-based jq
+    local events_array_file
+    events_array_file=$(mktemp /tmp/zlar-attest-arr.XXXXXX)
+    jq -s '.' "${events_file}" > "${events_array_file}" 2>/dev/null
+
+    echo "${envelope}" | jq --slurpfile evts "${events_array_file}" '. + {events: $evts[0]}' > "${bundle_file}"
+    rm -f "${events_array_file}"
+
+    local bundle
+    bundle=$(cat "${bundle_file}")
+
+    # ── Compute content hash ──
+    local content_hash
+    content_hash=$(shasum -a 256 "${bundle_file}" | awk '{print $1}')
+
+    # ── Sign if key available ──
+    local signature_value="unsigned"
+    if [ -n "${sign_key}" ] && [ -f "${sign_key}" ]; then
+        local hash_file sig_file
+        hash_file=$(mktemp /tmp/zlar-attest-hash.XXXXXX)
+        sig_file=$(mktemp /tmp/zlar-attest-sig.XXXXXX)
+        printf '%s' "${content_hash}" > "${hash_file}"
+
+        if zlar_crypto_sign "${sign_key}" "${hash_file}" "${sig_file}" 2>/dev/null; then
+            signature_value=$(base64 < "${sig_file}" | tr -d '\n')
+        fi
+        rm -f "${hash_file}" "${sig_file}"
+    elif [ -f "${HOME}/.zlar-signing.key" ]; then
+        local hash_file sig_file
+        hash_file=$(mktemp /tmp/zlar-attest-hash.XXXXXX)
+        sig_file=$(mktemp /tmp/zlar-attest-sig.XXXXXX)
+        printf '%s' "${content_hash}" > "${hash_file}"
+
+        if zlar_crypto_sign "${HOME}/.zlar-signing.key" "${hash_file}" "${sig_file}" 2>/dev/null; then
+            signature_value=$(base64 < "${sig_file}" | tr -d '\n')
+        fi
+        rm -f "${hash_file}" "${sig_file}"
+    fi
+
+    # ── Final bundle with seal ──
+    local final_file
+    final_file=$(mktemp /tmp/zlar-attest-final.XXXXXX)
+    jq -c \
+        --arg content_hash "${content_hash}" \
+        --arg signature "${signature_value}" \
+        --arg sig_algo "$(zlar_crypto_label)" \
+        '. + {seal: {content_hash: $content_hash, signature: $signature, algorithm: $sig_algo}}' \
+        "${bundle_file}" > "${final_file}"
+
+    # ── Output ──
+    if [ -n "${output}" ]; then
+        jq '.' "${final_file}" > "${output}"
+        echo "Attestation written to: ${output}" >&2
+        echo "  Events: ${event_count}" >&2
+        echo "  Chain:  ${chain_verdict} (${chain_verified}/${chain_total} verified)" >&2
+        echo "  Signed: $([ "${signature_value}" != "unsigned" ] && echo 'yes' || echo 'no')" >&2
+    else
+        jq '.' "${final_file}"
+    fi
+
+    rm -f "${events_file}" "${bundle_file}" "${final_file}"
+}
+
 COMMAND="${1:-help}"
 shift || true
 
@@ -1320,6 +1553,7 @@ case "${COMMAND}" in
     stats)        cmd_stats "$@" ;;
     evolve)       cmd_evolve "$@" ;;
     verify-chain) cmd_verify_chain "$@" ;;
+    attest)       cmd_attest "$@" ;;
     *)
         echo "ZLAR Audit Engine — The Living Memory"
         echo ""
@@ -1335,6 +1569,7 @@ case "${COMMAND}" in
         echo "  evolve       Propose policy rule changes from observation data"
         echo "  verify-chain Walk the hash chain and report any breaks or tampering"
         echo "  stats        Quick statistics overview"
+        echo "  attest       Generate signed governance attestation bundle (proof layer)"
         echo ""
         echo "Common options:"
         echo "  --since TIME    Time window (1h, 24h, 7d, 30d, or ISO timestamp)"
