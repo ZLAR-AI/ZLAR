@@ -12,7 +12,7 @@ Do not open a public issue for security vulnerabilities. We will acknowledge rec
 
 | Version | Supported |
 |---------|-----------|
-| 1.0.x   | Yes       |
+| 1.x.x   | Yes       |
 
 ## Security Design
 

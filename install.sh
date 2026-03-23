@@ -14,7 +14,7 @@
 # Strict mode (bash-3 safe: no pipefail in POSIX sh)
 set -eu
 
-ZLAR_VERSION="1.0.0"
+ZLAR_VERSION="1.3.0"
 INSTALL_DIR="${HOME}/.zlar"
 
 # ─── Colors (bash-3 safe) ────────────────────────────────────────────────────
