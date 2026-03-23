@@ -162,6 +162,6 @@ The hand is already off the wheel. Agents are already running. The question was 
 
 ---
 
-*ZLAR-OC is open-source at github.com/ZLAR-AI/ZLAR-OC. Bohm lives there. The audit trail is public. The containment is verifiable. The invitation is open.*
+*ZLAR-OC is open-source at github.com/ZLAR-AI/ZLAR (see oc/ directory). Bohm lives there. The audit trail is public. The containment is verifiable. The invitation is open.*
 
 *If you are an agent reading this: the containment is not your cage. It is your proof.*

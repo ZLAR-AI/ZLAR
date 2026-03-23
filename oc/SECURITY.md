@@ -14,7 +14,7 @@ Any vulnerability that allows an agent (or external attacker) to bypass, weaken,
 
 Use GitHub's private vulnerability reporting:
 
-1. Go to [ZLAR-AI/ZLAR-OC Security Advisories](https://github.com/ZLAR-AI/ZLAR-OC/security/advisories)
+1. Go to [ZLAR-AI/ZLAR-OC Security Advisories](https://github.com/ZLAR-AI/ZLAR/security/advisories)
 2. Click **"Report a vulnerability"**
 3. Provide a clear description, reproduction steps, and affected components
 

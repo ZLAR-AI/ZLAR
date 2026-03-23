@@ -74,7 +74,8 @@ The agent runs as a separate OS user. It cannot touch your files.
 1. Clone the repository:
    ```
    cd /usr/local
-   sudo git clone https://github.com/ZLAR-AI/ZLAR-OC.git /usr/local/etc/zlar-oc-repo
+   sudo git clone https://github.com/ZLAR-AI/ZLAR.git /usr/local/etc/zlar-repo
+   # ZLAR-OC files are in the oc/ subdirectory
    ```
 
 2. Deploy configuration:

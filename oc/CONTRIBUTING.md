@@ -12,7 +12,7 @@ If you find a bug, a gap in documentation, or have a suggestion, open an issue. 
 
 ### Security Disclosures
 
-If you discover a security vulnerability in ZLAR-OC, **do not open a public issue.** Use [GitHub's private vulnerability reporting](https://github.com/ZLAR-AI/ZLAR-OC/security/advisories) instead. See [SECURITY.md](SECURITY.md) for our full disclosure policy.
+If you discover a security vulnerability in ZLAR-OC, **do not open a public issue.** Use [GitHub's private vulnerability reporting](https://github.com/ZLAR-AI/ZLAR/security/advisories) instead. See [SECURITY.md](SECURITY.md) for our full disclosure policy.
 
 ### Pull Requests
 
