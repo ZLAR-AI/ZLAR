@@ -48,7 +48,6 @@ AUDIT_FILE="${ZLAR_AUDIT_FILE:-}"
 if [[ -z "${AUDIT_FILES}" && -z "${AUDIT_FILE}" ]]; then
     for candidate in \
         "${ZLAR_PROJECT_DIR:-}/var/log/audit.jsonl" \
-        "$HOME/Desktop/ZLAR/repo/var/log/audit.jsonl" \
         "/var/log/zlar/audit.jsonl"; do
         if [[ -f "${candidate}" ]]; then
             AUDIT_FILE="${candidate}"
@@ -296,7 +295,6 @@ audit_find_policy_file() {
     if [[ -z "${policy_file}" ]]; then
         for candidate in \
             "${ZLAR_PROJECT_DIR:-}/etc/policies/active.policy.json" \
-            "$HOME/Desktop/ZLAR/repo/etc/policies/active.policy.json" \
             "/usr/local/etc/zlar/policy.json"; do
             if [[ -f "${candidate}" ]]; then
                 policy_file="${candidate}"

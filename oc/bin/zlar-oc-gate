@@ -893,7 +893,7 @@ load_telegram_config() {
 
 }
 
-# Source shared HMAC library — resolve through symlinks
+# Source shared HMAC library — resolve through symlinks or /usr/local/bin copies
 _oc_self="$0"
 if command -v readlink &>/dev/null; then
     _oc_resolved=$(readlink -f "${_oc_self}" 2>/dev/null || readlink "${_oc_self}" 2>/dev/null || echo "${_oc_self}")

@@ -10,7 +10,7 @@ readonly INBOX_DIR="${RUNTIME_DIR}/inbox"
 readonly TOKEN_FILE="${RUNTIME_DIR}/token"
 readonly LOG_FILE="/var/log/zlar-tg-poll.log"
 
-# Resolve project root — handle symlinks and /usr/local/bin deployment
+# Resolve project root — handle symlinks and /usr/local/bin copies
 _poll_self="$0"
 if command -v readlink &>/dev/null; then
     _poll_resolved=$(readlink -f "${_poll_self}" 2>/dev/null || readlink "${_poll_self}" 2>/dev/null || echo "${_poll_self}")
@@ -20,12 +20,13 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${_poll_resolved}")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 
-# Source shared HMAC library
+# Source shared HMAC library (die not yet defined, so use echo+exit)
 if [ -f "${PROJECT_DIR}/lib/hmac.sh" ]; then
     # shellcheck source=../lib/hmac.sh
     source "${PROJECT_DIR}/lib/hmac.sh"
 else
-    die "Cannot find lib/hmac.sh (looked in ${PROJECT_DIR}/lib/). Re-deploy from repo."
+    echo "FATAL: Cannot find lib/hmac.sh (tried ${PROJECT_DIR}/lib/)" >&2
+    exit 1
 fi
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -105,6 +106,10 @@ while true; do
         "$((LAST_UPDATE_ID + 1))")
 
         updates=$(telegram_api "getUpdates" "${poll_body}") || continue
+
+    # Heartbeat: prove this poll cycle completed (watchdog checks staleness)
+    date +%s > "${RUNTIME_DIR}/heartbeat" 2>/dev/null || true
+
     [ -n "${updates}" ] || continue
 
     count=$(echo "${updates}" | jq '.result | length' 2>/dev/null || echo 0)
