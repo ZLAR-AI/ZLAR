@@ -50,6 +50,11 @@ LOCKDOWN_FILE="${PROJECT_DIR}/var/log/watchdog.lock"
 
 GATE_SCRIPT="${PROJECT_DIR}/bin/zlar-gate"
 HOOK_SCRIPT="${PROJECT_DIR}/adapters/claude-code/hook.sh"
+
+DISPATCHER_PIDFILE="/var/run/zlar-tg/poll.pid"
+DISPATCHER_HEARTBEAT="/var/run/zlar-tg/heartbeat"
+DISPATCHER_HEARTBEAT_WARN=60    # seconds before warning
+DISPATCHER_HEARTBEAT_FAIL=120   # seconds before failure
 POLICY_CLI="${PROJECT_DIR}/bin/zlar-policy"
 
 TELEGRAM_API="https://api.telegram.org"
@@ -340,6 +345,111 @@ check_openssl() {
     fi
 }
 
+# ─── Dispatcher Checks ─────────────────────────────────────────────────────
+
+DISPATCHER_FAILED=0
+
+check_dispatcher_alive() {
+    run_check
+    if [ ! -f "${DISPATCHER_PIDFILE}" ]; then
+        fail "Dispatcher PID file not found (${DISPATCHER_PIDFILE})"
+        FAILURES=$((FAILURES + 1))
+        DISPATCHER_FAILED=1
+        return 1
+    fi
+
+    local pid
+    pid=$(cat "${DISPATCHER_PIDFILE}" 2>/dev/null | tr -d '[:space:]')
+    if [ -z "${pid}" ]; then
+        fail "Dispatcher PID file is empty"
+        FAILURES=$((FAILURES + 1))
+        DISPATCHER_FAILED=1
+        return 1
+    fi
+
+    # Use ps instead of kill -0 — dispatcher runs as root, watchdog as user
+    local proc_name
+    proc_name=$(ps -p "${pid}" -o comm= 2>/dev/null | xargs)
+    if [ -z "${proc_name}" ]; then
+        fail "Dispatcher process ${pid} is NOT running (stale PID file)"
+        FAILURES=$((FAILURES + 1))
+        DISPATCHER_FAILED=1
+        return 1
+    fi
+
+    if [ "${proc_name}" = "zlar-tg-poll" ] || [ "${proc_name}" = "bash" ]; then
+        pass "Dispatcher is alive (PID ${pid}, ${proc_name})"
+        return 0
+    else
+        fail "PID ${pid} is NOT the dispatcher (found: ${proc_name})"
+        FAILURES=$((FAILURES + 1))
+        DISPATCHER_FAILED=1
+        return 1
+    fi
+}
+
+check_dispatcher_heartbeat() {
+    run_check
+    if [ ! -f "${DISPATCHER_HEARTBEAT}" ]; then
+        skip "No heartbeat file — dispatcher may not have started yet"
+        return 0
+    fi
+
+    local hb_ts now age
+    hb_ts=$(cat "${DISPATCHER_HEARTBEAT}" 2>/dev/null | tr -d '[:space:]')
+    if [ -z "${hb_ts}" ]; then
+        skip "Heartbeat file is empty"
+        return 0
+    fi
+
+    now=$(date +%s)
+    age=$((now - hb_ts))
+
+    if [ "${age}" -le "${DISPATCHER_HEARTBEAT_WARN}" ]; then
+        pass "Dispatcher heartbeat is fresh (${age}s ago)"
+        return 0
+    elif [ "${age}" -le "${DISPATCHER_HEARTBEAT_FAIL}" ]; then
+        skip "Dispatcher heartbeat is stale (${age}s ago) — may be unhealthy"
+        return 0
+    else
+        fail "Dispatcher heartbeat is STALE (${age}s ago) — likely dead or hung"
+        FAILURES=$((FAILURES + 1))
+        DISPATCHER_FAILED=1
+        return 1
+    fi
+}
+
+alert_dispatcher_down() {
+    # Send a direct Telegram alert bypassing the dead dispatcher
+    local token="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
+    if [ -z "${token}" ] && [ -f "/var/run/zlar-tg/token" ]; then
+        token=$(cat "/var/run/zlar-tg/token" 2>/dev/null | tr -d '[:space:]')
+    fi
+    if [ -z "${token}" ]; then
+        log_wd "ALERT: Dispatcher is down but no Telegram token available for alert"
+        return 1
+    fi
+
+    local chat_id="${ZLAR_TELEGRAM_CHAT_ID:-}"
+    if [ -z "${chat_id}" ] && [ -f "/var/run/zlar-tg/chat-id" ]; then
+        chat_id=$(cat "/var/run/zlar-tg/chat-id" 2>/dev/null | tr -d '[:space:]')
+    fi
+    if [ -z "${chat_id}" ]; then
+        log_wd "ALERT: Dispatcher is down but no chat ID available for alert"
+        return 1
+    fi
+
+    local msg="⚠️ ZLAR WATCHDOG: Dispatcher (zlar-tg-poll) is DOWN. Human approvals will fail silently. Restart: sudo zlar-tg-boot.sh"
+
+    curl -s -o /dev/null --max-time 5 \
+        --config - <<CURL_EOF
+url = "https://api.telegram.org/bot${token}/sendMessage"
+-d = "chat_id=${chat_id}&text=${msg}"
+CURL_EOF
+
+    log_wd "ALERT: Dispatcher-down notification sent to Telegram"
+}
+
 # ─── Lockdown Management ────────────────────────────────────────────────────
 # The lockdown file is a simple marker. When it exists, the gate should
 # refuse all actions. The file contains a JSON payload with reason and
@@ -468,32 +578,41 @@ cmd_check() {
 
     echo -e "${BOLD}  Prerequisites${NC}"
     echo "  ─────────────────────────────────────────────────────"
-    check_jq
-    check_openssl
+    check_jq || true
+    check_openssl || true
     echo ""
 
     echo -e "${BOLD}  Policy${NC}"
     echo "  ─────────────────────────────────────────────────────"
-    check_policy_exists
-    check_policy_signature_file
-    check_policy_signature_valid
+    check_policy_exists || true
+    check_policy_signature_file || true
+    check_policy_signature_valid || true
     echo ""
 
     echo -e "${BOLD}  Audit${NC}"
     echo "  ─────────────────────────────────────────────────────"
-    check_audit_writable
+    check_audit_writable || true
     echo ""
 
     echo -e "${BOLD}  Gate Scripts${NC}"
     echo "  ─────────────────────────────────────────────────────"
-    check_hook_script
-    check_gate_script
+    check_hook_script || true
+    check_gate_script || true
     echo ""
 
     echo -e "${BOLD}  Telegram${NC}"
     echo "  ─────────────────────────────────────────────────────"
-    check_telegram_token
-    check_telegram_reachable
+    check_telegram_token || true
+    check_telegram_reachable || true
+    echo ""
+
+    echo -e "${BOLD}  Dispatcher${NC}"
+    echo "  ─────────────────────────────────────────────────────"
+    check_dispatcher_alive || true
+    check_dispatcher_heartbeat || true
+    if [ "${DISPATCHER_FAILED}" -gt 0 ]; then
+        alert_dispatcher_down
+    fi
     echo ""
 
     # ─── Verdict ─────────────────────────────────────────────────────────────
