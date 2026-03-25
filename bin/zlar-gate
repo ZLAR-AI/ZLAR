@@ -147,8 +147,13 @@ if [ -f "${KARMA_THRESHOLDS}" ] && command -v jq &>/dev/null; then
     fi
 fi
 
+# Approval directory for deny-then-retry pattern
+# Claude Code hooks must respond fast — we cannot poll for Telegram responses
+# in-process. Instead: deny immediately, write pending file, check on retry.
+APPROVAL_DIR="${PROJECT_DIR}/var/log/approvals"
+
 # Ensure log directories exist
-mkdir -p "$(dirname "${AUDIT_FILE}")" "${SESSION_DIR}" 2>/dev/null
+mkdir -p "$(dirname "${AUDIT_FILE}")" "${SESSION_DIR}" "${APPROVAL_DIR}" 2>/dev/null
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STARTUP — handled by wrapper (~/.claude/zlar-gate.sh).
@@ -450,11 +455,6 @@ load_policy() {
     POLICY_RULES_JSON=$(jq -c '.rules' "${POLICY_FILE}" 2>/dev/null)
     POLICY_LOADED="true"
 
-    # Update verification cache
-    if [ -n "${policy_hash}" ]; then
-        echo "${policy_hash}" > "${cache_file}" 2>/dev/null || true
-    fi
-
     log "Policy loaded: v${POLICY_VERSION}, default=${POLICY_DEFAULT_ACTION}"
 }
 
@@ -693,15 +693,89 @@ url = "https://api.telegram.org/bot${TELEGRAM_TOKEN}/${method}"
 EOF
 }
 
-telegram_ask() {
+# ─── Deny-then-retry approval pattern ──────────────────────────────────────
+# Claude Code hooks must return fast — blocking for Telegram polling doesn't
+# work (CC proceeds without waiting for stdout). Pattern:
+#   1. First invocation: send Telegram ask, write pending file, return deny
+#   2. Human taps approve/deny on phone → dispatcher writes to inbox
+#   3. Retry invocation: gate checks inbox for pending action's callback
+#
+# Pending file format: ${APPROVAL_DIR}/${rule}-${SESSION_ID}.pending
+# Contains: action_id (used to match Telegram callback)
+#
+# Returns: 0 = approved, 1 = denied, 2 = still pending (no response yet)
+check_pending_approval() {
+    local rule="$1"
+    local pending_file="${APPROVAL_DIR}/${rule}-${SESSION_ID}.pending"
+
+    if [ ! -f "${pending_file}" ]; then
+        return 2  # No pending request
+    fi
+
+    local pending_action_id
+    pending_action_id=$(cat "${pending_file}" 2>/dev/null | tr -d '[:space:]')
+    if [ -z "${pending_action_id}" ]; then
+        rm -f "${pending_file}"
+        return 2
+    fi
+
+    # Check inbox for callback matching this action_id
+    local inbox_dir="/var/run/zlar-tg/inbox/cc"
+    for cb_file in "${inbox_dir}"/*.json; do
+        [ -f "${cb_file}" ] || continue
+        local cb_data cb_from cb_id_field cb_hmac
+        cb_data=$(jq -r '.data // ""' "${cb_file}" 2>/dev/null)
+        cb_from=$(jq -r '.from_id // ""' "${cb_file}" 2>/dev/null)
+        cb_id_field=$(jq -r '.callback_query_id // ""' "${cb_file}" 2>/dev/null)
+        cb_hmac=$(jq -r '.hmac // ""' "${cb_file}" 2>/dev/null)
+
+        if [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
+            rm -f "${cb_file}"
+            continue
+        fi
+
+        # Verify HMAC
+        if ! zlar_hmac_verify "${cb_data}" "${cb_from}" "${cb_id_field}" "${cb_hmac}"; then
+            log "SECURITY: inbox HMAC mismatch in pending check: ${cb_file}"
+            rm -f "${cb_file}"
+            continue
+        fi
+
+        if [ "${cb_data}" = "cc:approve:${pending_action_id}" ]; then
+            rm -f "${cb_file}" "${pending_file}"
+            log "Pending approval FOUND: ${rule} approved by human"
+            return 0
+        elif [ "${cb_data}" = "cc:deny:${pending_action_id}" ]; then
+            rm -f "${cb_file}" "${pending_file}"
+            log "Pending approval FOUND: ${rule} denied by human"
+            return 1
+        fi
+    done
+
+    # Check if pending request is stale (older than TELEGRAM_TIMEOUT_S)
+    local pending_age
+    pending_age=$(( $(date +%s) - $(stat -f %m "${pending_file}" 2>/dev/null || echo 0) ))
+    if [ "${pending_age}" -gt "${TELEGRAM_TIMEOUT_S}" ]; then
+        log "Pending approval EXPIRED: ${rule} (age=${pending_age}s > ${TELEGRAM_TIMEOUT_S}s)"
+        rm -f "${pending_file}"
+        return 2  # Expired — will trigger fresh ask
+    fi
+
+    return 2  # Still waiting
+}
+
+# Send Telegram ask and return immediately (non-blocking).
+# Writes pending file for check_pending_approval to find on retry.
+# Returns: 0 = message sent, 1 = send failed, 2 = no token, 3 = rate limited
+telegram_ask_async() {
     local action_id="$1" tool_name="$2" display="$3" rule="$4" risk_score="$5" severity="$6"
 
     if [ -z "${TELEGRAM_TOKEN}" ]; then
-        log "No Telegram token — denying ask action"
-        return 2  # 2 = no token (distinct from 1 = human denied)
+        log "No Telegram token — cannot send ask"
+        return 2
     fi
 
-    # H3: Rate limiting
+    # Rate limiting
     local now_ms
     now_ms=$(date +%s%N 2>/dev/null | cut -c1-13 || echo "$(($(date +%s) * 1000))")
     if [ -f "${RATE_LIMIT_FILE}" ]; then
@@ -710,13 +784,13 @@ telegram_ask() {
         last_ms=${last_ms:-0}
         local elapsed_ms=$((now_ms - last_ms))
         if [ "${elapsed_ms}" -lt "${TELEGRAM_FLOOD_GUARD_MS}" ]; then
-            log "RATE LIMITED: ${elapsed_ms}ms since last ask (guard=${TELEGRAM_FLOOD_GUARD_MS}ms)"
-            return 3  # 3 = rate limited
+            log "RATE LIMITED: ${elapsed_ms}ms since last ask"
+            return 3
         fi
     fi
     echo "${now_ms}" > "${RATE_LIMIT_FILE}" 2>/dev/null || true
 
-    # Format message — structured receipt
+    # Format message
     local emoji="⚡"
     [ "${severity}" = "critical" ] && emoji="🔴"
     [ "${severity}" = "warn" ] && emoji="🟡"
@@ -729,7 +803,6 @@ telegram_ask() {
 *Rule:* ${rule}
 *Session:* \`${SESSION_ID:-unknown}\`"
 
-    # Escape special chars for Telegram MarkdownV2
     text=$(echo "${text}" | sed 's/[_\[\]()~>#+=|{}.!-]/\\&/g' | sed 's/\\`/`/g' | sed 's/\\\*/*/g')
 
     local keyboard
@@ -755,63 +828,15 @@ telegram_ask() {
 
     if [ -z "${msg_id}" ]; then
         log "Failed to send Telegram message: ${send_result}"
-        return 2  # send failure
+        return 1
     fi
 
-    log "Telegram ask sent: msg_id=${msg_id}, action_id=${action_id}"
+    log "Telegram ask sent (async): msg_id=${msg_id}, action_id=${action_id}, rule=${rule}"
 
-    # Record send time for audit
-    emit_event "${DOMAIN}" "ask_sent" "pending" "${DETAIL}" "${rule}" "${severity}" "${risk_score}" "gate"
+    # Write pending file for retry check
+    echo "${action_id}" > "${APPROVAL_DIR}/${rule}-${SESSION_ID}.pending" 2>/dev/null
 
-    # Poll for response via shared inbox
-    local deadline=$(($(date +%s) + TELEGRAM_TIMEOUT_S))
-    local inbox_dir="/var/run/zlar-tg/inbox/cc"
-    mkdir -p "${inbox_dir}" 2>/dev/null || true
-
-    while [ "$(date +%s)" -lt "${deadline}" ]; do
-        for cb_file in "${inbox_dir}"/*.json; do
-            [ -f "${cb_file}" ] || continue
-            local cb_data cb_from
-            cb_data=$(jq -r '.data // ""' "${cb_file}" 2>/dev/null)
-            cb_from=$(jq -r '.from_id // ""' "${cb_file}" 2>/dev/null)
-            cb_id_field=$(jq -r '.callback_query_id // ""' "${cb_file}" 2>/dev/null)
-            cb_hmac=$(jq -r '.hmac // ""' "${cb_file}" 2>/dev/null)
-
-            if [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
-                rm -f "${cb_file}"
-                continue
-            fi
-
-            # Verify HMAC — reject forged inbox files
-            if ! zlar_hmac_verify "${cb_data}" "${cb_from}" "${cb_id_field}" "${cb_hmac}"; then
-                log "SECURITY: inbox file HMAC mismatch — possible forgery: ${cb_file}"
-                rm -f "${cb_file}"
-                continue
-            fi
-
-            if [ "${cb_data}" = "cc:approve:${action_id}" ]; then
-                rm -f "${cb_file}"
-                local edit_body
-                edit_body=$(jq -n -c \
-                    --arg chat_id "${TELEGRAM_CHAT_ID}" \
-                    --argjson msg_id "${msg_id}" \
-                    --arg text "☑️ Approved — ${display}" \
-                    '{chat_id: $chat_id, message_id: $msg_id, text: $text, parse_mode: ""}')
-                log "Telegram: APPROVED by human (user_id=${cb_from})"
-                return 0
-            elif [ "${cb_data}" = "cc:deny:${action_id}" ]; then
-                rm -f "${cb_file}"
-                local edit_body
-                log "Telegram: DENIED by human (user_id=${cb_from})"
-                return 1
-            fi
-        done
-        sleep 1
-    done
-
-    # Timeout — dispatcher handles the Telegram message update
-    log "Telegram: TIMED OUT after ${TELEGRAM_TIMEOUT_S}s"
-    return 4  # 4 = timeout
+    return 0
 }
 
 # ─── Session Write Counter (atomic via flock) ───────────────────────────────
@@ -874,35 +899,50 @@ handle_subagent_start() {
             ;;
     esac
 
-    # All other subagent types → ask human via Telegram
+    # All other subagent types → deny-then-retry via Telegram
     log "SubagentStart: type '${agent_type}' requires approval"
-    local action_id
-    action_id=$(gen_id)
 
     DOMAIN="subagent"
     TOOL_DISPLAY="SubagentStart: ${agent_type}"
     DETAIL=$(jq -n -c --arg t "${agent_type}" --arg p "${prompt}" '{agent_type:$t,prompt:$p}')
 
-    # CRITICAL: || ask_result=$? pattern required. See PreToolUse path comment.
-    local ask_result=0
-    telegram_ask "${action_id}" "SubagentStart" "${TOOL_DISPLAY}" "subagent-launch" "50" "warn" || ask_result=$?
+    # Step 1: Check for pending approval from a previous ask
+    local pending_result
+    check_pending_approval "subagent-launch" && pending_result=0 || pending_result=$?
 
-    case ${ask_result} in
+    case ${pending_result} in
         0)
             emit_event "subagent" "${agent_type}" "authorized" "${DETAIL}" "subagent-launch" "warn" 50 "human:${TELEGRAM_CHAT_ID}"
+            log "SubagentStart: APPROVED (previous ask)"
             respond_subagent_allow
             ;;
         1)
             emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "human:${TELEGRAM_CHAT_ID}"
+            log "SubagentStart: DENIED by human"
             respond_subagent_deny "Subagent launch denied by human" "human"
             ;;
-        4)
-            emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "gate:timeout"
-            respond_subagent_deny "Subagent launch timed out waiting for approval" "timeout"
-            ;;
         *)
-            emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "gate:error"
-            respond_subagent_deny "Could not reach human for subagent approval" "gate_error"
+            # No approval yet — send Telegram ask and deny immediately
+            local action_id
+            action_id=$(gen_id)
+
+            local send_result=0
+            telegram_ask_async "${action_id}" "SubagentStart" "${TOOL_DISPLAY}" "subagent-launch" "50" "warn" || send_result=$?
+
+            case ${send_result} in
+                0)
+                    emit_event "subagent" "${agent_type}" "ask_pending" "${DETAIL}" "subagent-launch" "warn" 50 "gate"
+                    respond_subagent_deny "⏳ Awaiting Telegram approval for subagent ${agent_type}. Approve on phone, then retry." "pending"
+                    ;;
+                3)
+                    emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "gate:rate_limit"
+                    respond_subagent_deny "Rate limited — too many approval requests." "rate_limit"
+                    ;;
+                *)
+                    emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "gate:error"
+                    respond_subagent_deny "Could not reach human for subagent approval" "gate_error"
+                    ;;
+            esac
             ;;
     esac
 }
@@ -1064,43 +1104,52 @@ main() {
                     ;;
 
                 active|review|*)
-                    local action_id
-                    action_id=$(gen_id)
+                    # ── Deny-then-retry pattern ──
+                    # Claude Code hooks must respond fast. We cannot poll for
+                    # Telegram responses in-process. Instead:
+                    #   1. Check if a previous ask for this rule was already approved
+                    #   2. If not, send Telegram ask, deny immediately, await retry
 
-                    # CRITICAL: Do NOT simplify this to a direct call + $?.
-                    # telegram_ask returns non-zero for deny (1), rate limit (3),
-                    # timeout (4), and send failure (2). Under set -e, a direct
-                    # call kills the script before respond_deny can execute.
-                    # The || ask_result=$? pattern captures the exit code safely.
-                    # See: v1.2.0 CHANGELOG "Human deny path was silently broken"
-                    local ask_result=0
-                    telegram_ask "${action_id}" "${tool_name}" "${TOOL_DISPLAY}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}" "${MATCHED_SEVERITY}" || ask_result=$?
+                    # Step 1: Check for pending approval from a previous ask
+                    local pending_result
+                    check_pending_approval "${MATCHED_RULE}" && pending_result=0 || pending_result=$?
 
-                    case ${ask_result} in
+                    case ${pending_result} in
                         0)
-                            # Human approved
+                            # Human approved on a previous ask — allow this retry
                             emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "authorized" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "human:${TELEGRAM_CHAT_ID}"
+                            log "Deny-then-retry: ${MATCHED_RULE} APPROVED (previous ask)"
                             respond_allow
                             ;;
                         1)
-                            # Human denied
+                            # Human denied on a previous ask
                             emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "human:${TELEGRAM_CHAT_ID}"
+                            log "Deny-then-retry: ${MATCHED_RULE} DENIED by human"
                             respond_deny "Denied by human (rule ${MATCHED_RULE})" "human"
                             ;;
-                        3)
-                            # Rate limited
-                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:rate_limit"
-                            respond_deny "Rate limited — too many approval requests. Try again shortly." "rate_limit"
-                            ;;
-                        4)
-                            # Timeout
-                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:timeout"
-                            respond_deny "Timed out waiting for human approval (rule ${MATCHED_RULE})" "timeout"
-                            ;;
                         *)
-                            # Send failure or no token
-                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:error"
-                            respond_deny "Could not reach human for approval (rule ${MATCHED_RULE})" "gate_error"
+                            # No approval yet — send Telegram ask and deny immediately
+                            local action_id
+                            action_id=$(gen_id)
+
+                            local send_result=0
+                            telegram_ask_async "${action_id}" "${tool_name}" "${TOOL_DISPLAY}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}" "${MATCHED_SEVERITY}" || send_result=$?
+
+                            case ${send_result} in
+                                0)
+                                    # Message sent — deny now, human will approve/deny on phone
+                                    emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "ask_pending" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate"
+                                    respond_deny "⏳ Awaiting Telegram approval (rule ${MATCHED_RULE}). Approve on phone, then retry." "pending"
+                                    ;;
+                                3)
+                                    emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:rate_limit"
+                                    respond_deny "Rate limited — too many approval requests. Try again shortly." "rate_limit"
+                                    ;;
+                                *)
+                                    emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:error"
+                                    respond_deny "Could not reach human for approval (rule ${MATCHED_RULE})" "gate_error"
+                                    ;;
+                            esac
                             ;;
                     esac
                     ;;

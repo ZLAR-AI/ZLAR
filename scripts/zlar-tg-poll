@@ -209,7 +209,7 @@ while true; do
             --arg hmac "${cb_hmac}" \
             '{data: $data, from_id: $from_id, callback_query_id: $cb_id, hmac: $hmac}' \
             > "${cb_file}"
-        chmod 600 "${cb_file}"
+        chmod 640 "${cb_file}"
 
         log_poll "Routed: ${cb_data} → ${cb_file}"
 
