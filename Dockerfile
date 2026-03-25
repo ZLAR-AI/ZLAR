@@ -20,9 +20,10 @@ COPY . .
 # Create runtime directories
 RUN mkdir -p var/log var/tmp
 
-# Install Node dependencies for MCP gate and Cedar PoC
-RUN cd mcp-gate && npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts && cd ..
-RUN cd cedar-poc && npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts && cd ..
+# Install Node dependencies — npm ci only, no fallback to npm install.
+# Lockfiles are security-critical; if they're out of sync, fail the build.
+RUN cd mcp-gate && npm ci --ignore-scripts && cd ..
+RUN cd cedar-poc && npm ci --ignore-scripts && cd ..
 
 # Make all bin/ and scripts/ executable
 RUN chmod +x bin/* scripts/*

@@ -33,10 +33,17 @@ _CRYPTO_CONFIG="${_CRYPTO_PROJECT_DIR}/etc/crypto.json"
 
 # Resolve the active signing algorithm
 zlar_crypto_algorithm() {
-    # 1. Environment variable override
+    # 1. Environment variable override (validated against allowlist)
     if [ -n "${ZLAR_SIGN_ALGORITHM:-}" ]; then
-        echo "${ZLAR_SIGN_ALGORITHM}"
-        return 0
+        case "${ZLAR_SIGN_ALGORITHM}" in
+            ed25519|ml-dsa-44|hybrid)
+                echo "${ZLAR_SIGN_ALGORITHM}"
+                return 0
+                ;;
+            *)
+                echo "SECURITY: Invalid ZLAR_SIGN_ALGORITHM='${ZLAR_SIGN_ALGORITHM}' — ignoring" >&2
+                ;;
+        esac
     fi
 
     # 2. Config file

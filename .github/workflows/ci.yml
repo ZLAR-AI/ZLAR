@@ -10,7 +10,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install ShellCheck
         run: sudo apt-get install -y shellcheck
@@ -48,10 +48,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install jq
         run: sudo apt-get install -y jq
 
       - name: Run witness tests
         run: bash tests/test-witness.sh
+
+      - name: Run inbox HMAC tests
+        run: bash tests/test-inbox-hmac.sh
