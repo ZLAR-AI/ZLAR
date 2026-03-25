@@ -30,7 +30,10 @@ trap '_gate_crash $LINENO' ERR
 
 _gate_crash() {
     local line="$1"
-    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] CRASH at line ${line}" >> "${LOG_FILE:-/tmp/zlar-gate-crash.log}" 2>/dev/null || true
+    local crash_log="${LOG_FILE:-}"
+    [ -z "${crash_log}" ] && crash_log="${PROJECT_DIR:+${PROJECT_DIR}/var/log/gate-crash.log}"
+    [ -z "${crash_log}" ] && crash_log="/var/log/zlar-gate-crash.log"
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] CRASH at line ${line}" >> "${crash_log}" 2>/dev/null || true
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"ZLAR gate crash (line '"${line}"'). All actions blocked."}}'
     exit 0
 }
@@ -119,6 +122,11 @@ fi
 TELEGRAM_TOKEN="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-7662799203}"
 TELEGRAM_TIMEOUT_S="${TELEGRAM_TIMEOUT_S:-300}"
+
+# Source shared HMAC library for inbox integrity verification
+# shellcheck source=../lib/hmac.sh
+source "${PROJECT_DIR}/lib/hmac.sh"
+zlar_hmac_load_secret
 AWAY_THRESHOLD="${AWAY_THRESHOLD:-30}"
 SESSION_WRITE_LIMIT="${SESSION_WRITE_LIMIT:-50}"
 
@@ -396,22 +404,10 @@ load_policy() {
         return 1
     fi
 
-    # Policy verification cache — skip signature check if content hash unchanged
-    local cache_file="${PROJECT_DIR}/var/log/.policy-cache"
-    local policy_hash
-    policy_hash=$(shasum -a 256 "${POLICY_FILE}" 2>/dev/null | awk '{print $1}')
-    if [ -n "${policy_hash}" ] && [ -f "${cache_file}" ]; then
-        local cached_hash
-        cached_hash=$(cat "${cache_file}" 2>/dev/null | tr -d '[:space:]')
-        if [ "${policy_hash}" = "${cached_hash}" ]; then
-            POLICY_VERSION=$(jq -r '.version // "unknown"' "${POLICY_FILE}" 2>/dev/null)
-            POLICY_DEFAULT_ACTION=$(jq -r '.default_action // "deny"' "${POLICY_FILE}" 2>/dev/null)
-            POLICY_RULES_JSON=$(jq -c '.rules' "${POLICY_FILE}" 2>/dev/null)
-            POLICY_LOADED="true"
-            log "Policy loaded (cached, hash verified): v${POLICY_VERSION}"
-            return 0
-        fi
-    fi
+    # SECURITY: No policy cache — always verify signature.
+    # A cache that skips sig verification is a bypass seam (attacker writes
+    # malicious policy + matching hash → gate loads it unsigned).
+    # One openssl verify per hook invocation is ~5ms — acceptable.
 
     # Fail-closed: public key MUST exist for signature verification
     if [ ! -f "${POLICY_PUBKEY}" ]; then
@@ -687,11 +683,14 @@ queue_for_review() {
 
 telegram_api() {
     local method="$1" body="$2"
-    # Token passed via stdin to curl, not command line (invisible to ps)
+    # Token passed via --config stdin so it never appears in ps/cmdline
     curl -s --connect-timeout 5 --max-time 10 \
-        -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/${method}" \
+        -X POST \
         -H "Content-Type: application/json" \
-        -d "${body}" 2>/dev/null
+        -d "${body}" \
+        --config - 2>/dev/null <<EOF
+url = "https://api.telegram.org/bot${TELEGRAM_TOKEN}/${method}"
+EOF
 }
 
 telegram_ask() {
@@ -775,8 +774,17 @@ telegram_ask() {
             local cb_data cb_from
             cb_data=$(jq -r '.data // ""' "${cb_file}" 2>/dev/null)
             cb_from=$(jq -r '.from_id // ""' "${cb_file}" 2>/dev/null)
+            cb_id_field=$(jq -r '.callback_query_id // ""' "${cb_file}" 2>/dev/null)
+            cb_hmac=$(jq -r '.hmac // ""' "${cb_file}" 2>/dev/null)
 
             if [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
+                rm -f "${cb_file}"
+                continue
+            fi
+
+            # Verify HMAC — reject forged inbox files
+            if ! zlar_hmac_verify "${cb_data}" "${cb_from}" "${cb_id_field}" "${cb_hmac}"; then
+                log "SECURITY: inbox file HMAC mismatch — possible forgery: ${cb_file}"
                 rm -f "${cb_file}"
                 continue
             fi

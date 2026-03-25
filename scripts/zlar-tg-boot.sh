@@ -25,7 +25,17 @@ log "Boot setup starting"
 # ── Create volatile directories ──
 mkdir -p "${RUNTIME_DIR}/inbox/cc" "${RUNTIME_DIR}/inbox/oc"
 mkdir -p "${OC_RUNTIME_DIR}/decisions"
-log "Directories created"
+# Restrict inbox dirs — only dispatcher (root) and gate user can access.
+# Prevents forged approval files from other processes.
+chmod 700 "${RUNTIME_DIR}/inbox/cc" "${RUNTIME_DIR}/inbox/oc"
+log "Directories created (inbox dirs chmod 700)"
+
+# ── Generate per-boot HMAC secret for inbox integrity ──
+HMAC_SECRET_FILE="${RUNTIME_DIR}/inbox-hmac-secret"
+openssl rand -hex 32 > "${HMAC_SECRET_FILE}"
+chmod 600 "${HMAC_SECRET_FILE}"
+chown "${ADMIN_USER}:${ADMIN_GROUP}" "${HMAC_SECRET_FILE}"
+log "HMAC secret generated at ${HMAC_SECRET_FILE}"
 
 # ── Copy persistent token ──
 if [ -f "${PERSISTENT_TOKEN}" ]; then

@@ -10,6 +10,6 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@cedar-policy/cedar-wasm": "^4.9.1"
+    "@cedar-policy/cedar-wasm": "file:vendor/@cedar-policy/cedar-wasm"
   }
 }

@@ -10,6 +10,24 @@ readonly INBOX_DIR="${RUNTIME_DIR}/inbox"
 readonly TOKEN_FILE="${RUNTIME_DIR}/token"
 readonly LOG_FILE="/var/log/zlar-tg-poll.log"
 
+# Resolve project root — handle symlinks and /usr/local/bin deployment
+_poll_self="$0"
+if command -v readlink &>/dev/null; then
+    _poll_resolved=$(readlink -f "${_poll_self}" 2>/dev/null || readlink "${_poll_self}" 2>/dev/null || echo "${_poll_self}")
+else
+    _poll_resolved="${_poll_self}"
+fi
+SCRIPT_DIR="$(cd "$(dirname "${_poll_resolved}")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# Source shared HMAC library
+if [ -f "${PROJECT_DIR}/lib/hmac.sh" ]; then
+    # shellcheck source=../lib/hmac.sh
+    source "${PROJECT_DIR}/lib/hmac.sh"
+else
+    die "Cannot find lib/hmac.sh (looked in ${PROJECT_DIR}/lib/). Re-deploy from repo."
+fi
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 log_poll() {
@@ -34,9 +52,13 @@ trap cleanup EXIT INT TERM
 TELEGRAM_BOT_TOKEN=$(cat "${TOKEN_FILE}" | tr -d '[:space:]')
 [ -n "${TELEGRAM_BOT_TOKEN}" ] || die "Token file is empty: ${TOKEN_FILE}"
 
+zlar_hmac_load_secret
+[ -n "${ZLAR_INBOX_HMAC_SECRET}" ] || die "HMAC secret not loaded (check ${ZLAR_HMAC_SECRET_FILE})"
+
 TELEGRAM_CHAT_ID="${ZLAR_TELEGRAM_CHAT_ID:-7662799203}"
 
 mkdir -p "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" 2>/dev/null || true
+chmod 700 "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" 2>/dev/null || true
 
 # PID file — check for stale
 if [ -f "${PIDFILE}" ]; then
@@ -55,13 +77,16 @@ log_poll "Dispatcher started (PID $$)"
 telegram_api() {
     local method="$1" data="$2"
     local response http_code
+    # Token passed via --config stdin so it never appears in ps/cmdline
     response=$(curl -s -w '\n%{http_code}' -X POST \
-        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}" \
         -H "Content-Type: application/json" \
         -d "${data}" \
         --connect-timeout 5 \
         --max-time 10 \
-        2>/dev/null) || { log_poll "CURL FAILED: ${method}"; return 1; }
+        --config - 2>/dev/null <<EOF
+url = "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}"
+EOF
+    ) || { log_poll "CURL FAILED: ${method}"; return 1; }
     http_code=$(echo "${response}" | tail -1)
     response=$(echo "${response}" | sed '$d')
     if [ "${http_code}" != "200" ]; then
@@ -165,10 +190,21 @@ while true; do
                 ;;
         esac
 
-        # Write callback to inbox
+        # Write callback to inbox with HMAC for integrity verification
         cb_file="${target_dir}/${update_id}.json"
-        printf '{"data":"%s","from_id":"%s","callback_query_id":"%s"}\n' \
-            "${cb_data}" "${cb_from}" "${cb_id}" > "${cb_file}"
+        cb_hmac=$(zlar_hmac_compute "${cb_data}" "${cb_from}" "${cb_id}") || {
+            log_poll "ERROR: HMAC computation failed for update_id=${update_id}"
+            j=$((j + 1))
+            continue
+        }
+        jq -n -c \
+            --arg data "${cb_data}" \
+            --arg from_id "${cb_from}" \
+            --arg cb_id "${cb_id}" \
+            --arg hmac "${cb_hmac}" \
+            '{data: $data, from_id: $from_id, callback_query_id: $cb_id, hmac: $hmac}' \
+            > "${cb_file}"
+        chmod 600 "${cb_file}"
 
         log_poll "Routed: ${cb_data} → ${cb_file}"
 

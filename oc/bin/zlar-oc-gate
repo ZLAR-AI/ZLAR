@@ -560,8 +560,9 @@ verify_policy_signature() {
     fi
 
     # Use a private temp directory — prevents symlink attacks on crypto material
+    # SECURITY: Never use /tmp (world-writable). Use gate's own log dir.
     local tmpdir
-    tmpdir=$(mktemp -d /tmp/zlar-oc-verify.XXXXXX)
+    tmpdir=$(mktemp -d "${GATE_LOG%/*}/zlar-oc-verify.XXXXXX")
     chmod 700 "${tmpdir}"
     trap "rm -rf '${tmpdir}'" RETURN
 
@@ -889,7 +890,24 @@ load_telegram_config() {
             log_gate "Telegram ask channel configured (chat_id: ${TELEGRAM_CHAT_ID})"
         fi
     fi
+
 }
+
+# Source shared HMAC library — resolve through symlinks
+_oc_self="$0"
+if command -v readlink &>/dev/null; then
+    _oc_resolved=$(readlink -f "${_oc_self}" 2>/dev/null || readlink "${_oc_self}" 2>/dev/null || echo "${_oc_self}")
+else
+    _oc_resolved="${_oc_self}"
+fi
+_oc_script_dir="$(cd "$(dirname "${_oc_resolved}")" && pwd)"
+_oc_project_dir="$(dirname "$(dirname "${_oc_script_dir}")")"
+if [ -f "${_oc_project_dir}/lib/hmac.sh" ]; then
+    # shellcheck source=../../lib/hmac.sh
+    source "${_oc_project_dir}/lib/hmac.sh"
+else
+    log_gate "WARNING: Cannot find lib/hmac.sh (looked in ${_oc_project_dir}/lib/). HMAC verification disabled."
+fi
 
 telegram_api() {
     local method="$1"
@@ -1017,8 +1035,17 @@ telegram_ask() {
             local cb_data cb_from
             cb_data=$(jq -r '.data // ""' "${cb_file}" 2>/dev/null)
             cb_from=$(jq -r '.from_id // ""' "${cb_file}" 2>/dev/null)
+            cb_id_field=$(jq -r '.callback_query_id // ""' "${cb_file}" 2>/dev/null)
+            cb_hmac=$(jq -r '.hmac // ""' "${cb_file}" 2>/dev/null)
 
             if [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
+                rm -f "${cb_file}"
+                continue
+            fi
+
+            # Verify HMAC — reject forged inbox files
+            if ! zlar_hmac_verify "${cb_data}" "${cb_from}" "${cb_id_field}" "${cb_hmac}"; then
+                log_gate "SECURITY: inbox file HMAC mismatch — possible forgery: ${cb_file}"
                 rm -f "${cb_file}"
                 continue
             fi
@@ -1502,6 +1529,7 @@ start_daemon() {
 
     # Load Telegram config for ask channel
     load_telegram_config "${GATE_CONFIG}"
+    zlar_hmac_load_secret
 
     # Load availability configuration (#22 Active/Away/Review)
     load_availability_config "${GATE_CONFIG}"
