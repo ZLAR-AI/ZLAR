@@ -64,7 +64,8 @@ Every gate decision writes a hash-chained, algorithm-labeled audit entry. Two en
   "prev_hash": "a1b2c3...",
   "signature_algorithm": "Ed25519",
   "hash_algorithm": "SHA-256",
-  "public_key_id": "88aaeeaca05eba4d"
+  "public_key_id": "88aaeeaca05eba4d",
+  "signature": "mOiZF8E3MKFeyuRw..."
 }
 ```
 ```json
@@ -72,7 +73,8 @@ Every gate decision writes a hash-chained, algorithm-labeled audit entry. Two en
   "ts": "2026-03-21T09:14:31Z",
   "outcome": "denied",
   "authorizer": "human:7662799203",
-  "prev_hash": "d4e5f6..."
+  "prev_hash": "d4e5f6...",
+  "signature": "Kp7xR2vNcW4bQm3j..."
 }
 ```
 
@@ -81,6 +83,7 @@ What this proves:
 - **`authorizer: "human:7662799203"`** — a specific human, identified by Telegram ID, made this decision. Not "system denied." Non-repudiable.
 - **`prev_hash`** — SHA-256 of the previous entry. Tamper with any record and every subsequent hash breaks. Chain integrity without consensus overhead.
 - **`signature_algorithm` / `hash_algorithm`** — every entry labels its own cryptographic assumptions. When NIST deprecates Ed25519 post-2030, migration tooling reads these fields and knows exactly which entries need re-signing under ML-DSA. Designed for this today.
+- **`signature`** — Ed25519 signature over the SHA-256 hash of the entry. Every individual audit entry is cryptographically signed at write time. Satisfies SP 800-53 AU-10 (Non-Repudiation). If the signing key is unavailable, the field reads `"unsigned"` — evidence is never lost, only unsigned.
 
 This is not the agent's account of what it did. This is the infrastructure's record of what happened.
 
@@ -195,7 +198,7 @@ scripts/       Setup, installation, Telegram bootstrap
 tests/         Test suites
 docs/          Architecture and design
 signal/        Agent-facing signal layer (thesis, manifest)
-cedar-poc/     Cedar formal policy verification (14/14 tests passing)
+cedar-poc/     Cedar formal policy verification: base rules + E-23 risk-tiered governance
 oc/            OS-level containment (OpenClaw integration)
 ```
 
@@ -205,7 +208,10 @@ oc/            OS-level containment (OpenClaw integration)
 bash scripts/smoke-test.sh        # Full suite: syntax, dependencies, Cedar, MCP gate
 bash tests/test-witness.sh        # Observation layer: 23 assertions
 bash tests/test-session-state.sh  # Session counters: 16 assertions
-node cedar-poc/test.mjs           # Cedar formal verification: 14 assertions
+bash tests/test-crypto.sh         # Cryptographic abstraction: 46 assertions
+bash tests/test-inbox-hmac.sh     # Inbox HMAC verification
+node cedar-poc/test.mjs           # Cedar base rules: 14 assertions
+node cedar-poc/test-e23.mjs       # Cedar E-23 risk-tiered: 25 assertions
 node mcp-gate/test.mjs            # MCP proxy gate: 7 assertions
 ```
 
