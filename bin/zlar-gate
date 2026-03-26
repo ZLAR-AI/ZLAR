@@ -1,12 +1,17 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# ZLAR Gate v2.4.0 — Claude Code Hook Script
+# ZLAR Gate v2.5.0 — Claude Code Hook Script
 #
 # THE gate. Runs synchronously on every Claude Code PreToolUse hook invocation.
 # Reads tool call from stdin, classifies, evaluates policy, asks Telegram if
 # needed, writes audit trail, returns allow/deny on stdout.
 #
 # No daemon. No server. No database. The process IS the pending state.
+#
+# v2.5.0 changes:
+#   - Per-entry Ed25519 signing of audit trail entries (AU-10 non-repudiation)
+#   - AUDIT_SIGNING_KEY configuration for audit entry signatures
+#   - Graceful fallback to "unsigned" if signing key missing or signing fails
 #
 # v2.4.0 changes:
 #   - 9 new tool translations (TodoWrite, TaskOutput, TaskStop, Skill,
@@ -57,6 +62,7 @@ chmod 700 "${GATE_TMP}" 2>/dev/null || true
 GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
 POLICY_FILE="${PROJECT_DIR}/etc/policies/active.policy.json"
 POLICY_PUBKEY="${PROJECT_DIR}/etc/keys/policy-signing.pub"
+AUDIT_SIGNING_KEY="${HOME}/.zlar-signing.key"
 AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
 AVAILABILITY_STATE="${PROJECT_DIR}/var/log/availability.state"
 AWAY_QUEUE="${PROJECT_DIR}/var/log/away-queue.jsonl"
@@ -270,6 +276,33 @@ emit_event() {
           severity:$severity,prev_hash:$prev_hash,authorizer:$authorizer,
           signature_algorithm:$sig_alg,hash_algorithm:$hash_alg,
           public_key_id:$pubkey_id}')
+
+    # ── Per-entry Ed25519 signing ──
+    # Sign the event JSON to provide non-repudiation (SP 800-53 AU-10).
+    # The signature covers the entire event including prev_hash, binding
+    # this entry to the chain. Anyone with the public key can verify.
+    local signature="unsigned"
+    if [ -f "${AUDIT_SIGNING_KEY}" ]; then
+        local _sign_hash_file _sign_sig_file
+        _sign_hash_file="${GATE_TMP}/audit-sign-hash.$$"
+        _sign_sig_file="${GATE_TMP}/audit-sign-sig.$$"
+
+        # Hash the event JSON (canonical — jq -c produces deterministic output
+        # when built entirely from --arg, which is how we construct it above)
+        printf '%s' "${event}" | shasum -a 256 | awk '{print $1}' | tr -d '\n' > "${_sign_hash_file}" 2>/dev/null
+
+        # Sign with Ed25519 via crypto abstraction layer
+        if zlar_crypto_sign "${AUDIT_SIGNING_KEY}" "${_sign_hash_file}" "${_sign_sig_file}" 2>/dev/null; then
+            signature=$(base64 < "${_sign_sig_file}" | tr -d '\n')
+        else
+            log "WARN: Audit entry signing failed — entry will be written unsigned"
+        fi
+
+        rm -f "${_sign_hash_file}" "${_sign_sig_file}" 2>/dev/null
+    fi
+
+    # Append signature to the event
+    event=$(echo "${event}" | jq -c --arg sig "${signature}" '. + {signature: $sig}')
 
     if ! echo "${event}" >> "${AUDIT_FILE}" 2>/dev/null; then
         log "CRITICAL: Failed to write audit event — audit trail may be incomplete"
