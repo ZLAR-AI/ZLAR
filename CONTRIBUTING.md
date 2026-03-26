@@ -6,14 +6,16 @@
 2. Create a feature branch (`git checkout -b feature/your-feature`)
 3. Make your changes
 4. Run ShellCheck on any modified scripts
-5. Submit a pull request
+5. Run the test suite: `bash scripts/smoke-test.sh`
+6. Submit a pull request
 
 ## Code Standards
 
-- All scripts must be bash 3.2+ compatible (macOS default)
+- All bash scripts must be bash 3.2+ compatible (macOS default)
 - All scripts must pass ShellCheck
 - All JSON configs must be valid JSON
-- No external dependencies beyond bash, openssl, jq
+- Core gate and policy tools: no external dependencies beyond bash, openssl, jq
+- MCP gate and Cedar PoC: Node.js 18+ (optional components)
 
 ## Policy on AI Contributions
 

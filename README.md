@@ -129,10 +129,10 @@ Installs with deny-heavy defaults. Your agent is governed in under 60 seconds. N
 
 **Add human approval via Telegram:**
 ```bash
-zlar telegram
+~/.zlar/bin/zlar telegram
 ```
 
-**Tune thresholds** — choose what interrupts you, not what gets observed:
+**Tune thresholds** — defaults are `20/50/80` (deny-heavy). To widen the allow window:
 ```json
 "scoring_thresholds": {
   "allow": 50,
@@ -155,7 +155,7 @@ The deny rules (rm -rf, sudo, persistence mechanisms) always block regardless of
 | **Observation** | `zlar-standing` | Standing authority view. What the agent can do right now without asking. |
 | **Observation** | `zlar-registry` | Agent inventory. Every agent the gate has seen, derived from the audit trail. No registration required. |
 | **Policy** | `zlar-policy` | CLI for Ed25519-signed policy rules. Keygen, sign, verify. |
-| **Session** | `session-state` | Velocity, loop detection, denial bursts. Thin counters, not reasoning. |
+| **Session** | `lib/session-state.sh` | Velocity, loop detection, denial bursts. Thin counters, not reasoning. |
 | **Adapters** | `adapters/` | Framework hooks for Claude Code, Cursor, Windsurf. Thin wrappers — the gate is the gate. |
 
 ## The witness layer
@@ -228,7 +228,7 @@ All tests pass on macOS (arm64) and Linux (Alpine aarch64 via Docker).
 ## Uninstall
 
 ```bash
-zlar uninstall
+~/.zlar/bin/zlar uninstall
 ```
 
 Clean removal. Hooks removed from all frameworks. Signing key preserved.
