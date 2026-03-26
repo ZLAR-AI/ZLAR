@@ -48,13 +48,10 @@ show_policy_standing() {
 
     # Find policy file
     if [[ -z "${policy_file}" ]]; then
-        for candidate in \
-            "${ZLAR_PROJECT_DIR:-}/etc/policies/active.policy.json"; do
-            if [[ -f "${candidate}" ]]; then
-                policy_file="${candidate}"
-                break
-            fi
-        done
+        local candidate="${ZLAR_PROJECT_DIR:-}/etc/policies/active.policy.json"
+        if [[ -f "${candidate}" ]]; then
+            policy_file="${candidate}"
+        fi
     fi
 
     if [[ ! -f "${policy_file:-}" ]]; then
