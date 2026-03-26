@@ -58,8 +58,8 @@ zlar_hmac_load_secret
 
 TELEGRAM_CHAT_ID="${ZLAR_TELEGRAM_CHAT_ID:-7662799203}"
 
-mkdir -p "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" 2>/dev/null || true
-chmod 700 "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" 2>/dev/null || true
+mkdir -p "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" "${INBOX_DIR}/mcp" 2>/dev/null || true
+chmod 700 "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" "${INBOX_DIR}/mcp" 2>/dev/null || true
 
 # PID file — check for stale
 if [ -f "${PIDFILE}" ]; then
@@ -162,11 +162,11 @@ while true; do
         if [ -n "${cb_msg_id}" ] && [ -n "${cb_chat_id}" ]; then
             case "${cb_data}" in
                 *:approve:*)
-    case "${cb_data}" in cc:*) pfx="🖥️";; oc:*) pfx="🦞";; *) pfx="";; esac
+    case "${cb_data}" in cc:*) pfx="🖥️";; oc:*) pfx="🦞";; mcp:*) pfx="🔷";; *) pfx="";; esac
     edit_text="${pfx} ☑️ Approved"
     ;;
 *:deny:*)
-    case "${cb_data}" in cc:*) pfx="🖥️";; oc:*) pfx="🦞";; *) pfx="";; esac
+    case "${cb_data}" in cc:*) pfx="🖥️";; oc:*) pfx="🦞";; mcp:*) pfx="🔷";; *) pfx="";; esac
     edit_text="${pfx} ▪️ Denied"
     ;;
 *)
@@ -188,6 +188,7 @@ while true; do
         case "${cb_data}" in
             cc:*) target_dir="${INBOX_DIR}/cc" ;;
             oc:*) target_dir="${INBOX_DIR}/oc" ;;
+            mcp:*) target_dir="${INBOX_DIR}/mcp" ;;
             *)
                 log_poll "Unknown callback prefix: ${cb_data}"
                 j=$((j + 1))

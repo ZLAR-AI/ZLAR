@@ -51,5 +51,10 @@ zlar_hmac_verify() {
     computed=$(zlar_hmac_compute "${data}" "${from_id}" "${cb_id}") || return 1
     [ -n "${computed}" ] || return 1
 
-    [ "${computed}" = "${expected_hmac}" ]
+    # Constant-time compare: hash both values so comparison is fixed-length
+    # and does not short-circuit on first differing byte
+    local h_computed h_expected
+    h_computed=$(printf '%s' "${computed}" | shasum -a 256 | awk '{print $1}')
+    h_expected=$(printf '%s' "${expected_hmac}" | shasum -a 256 | awk '{print $1}')
+    [ "${h_computed}" = "${h_expected}" ]
 }
