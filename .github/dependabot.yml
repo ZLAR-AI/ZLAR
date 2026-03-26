@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: npm
+    directory: /cedar-poc
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: npm
+    directory: /mcp-gate
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps"

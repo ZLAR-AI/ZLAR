@@ -10,7 +10,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install ShellCheck
         run: sudo apt-get install -y shellcheck
@@ -48,13 +48,36 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install jq
-        run: sudo apt-get install -y jq
+      - name: Install dependencies
+        run: sudo apt-get install -y jq openssl
 
       - name: Run witness tests
         run: bash tests/test-witness.sh
 
       - name: Run inbox HMAC tests
         run: bash tests/test-inbox-hmac.sh
+
+      - name: Run crypto abstraction tests
+        run: bash tests/test-crypto.sh
+
+      - name: Run session state tests
+        run: bash tests/test-session-state.sh
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Cedar dependencies
+        run: cd cedar-poc && npm ci
+
+      - name: Run Cedar base tests
+        run: node cedar-poc/test.mjs
+
+      - name: Run Cedar E-23 tests
+        run: node cedar-poc/test-e23.mjs
+
+      - name: Run MCP gate tests
+        run: node mcp-gate/test.mjs
