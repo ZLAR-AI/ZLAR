@@ -8,8 +8,8 @@
 
 set -euo pipefail
 
-ADMIN_USER="vincentnijjar"
-ADMIN_GROUP="staff"
+ADMIN_USER="${ZLAR_ADMIN_USER:-$(whoami)}"
+ADMIN_GROUP="${ZLAR_ADMIN_GROUP:-staff}"
 PERSISTENT_TOKEN="/Users/${ADMIN_USER}/.config/zlar/tg-token"
 RUNTIME_DIR="/var/run/zlar-tg"
 OC_RUNTIME_DIR="/var/run/zlar-oc"

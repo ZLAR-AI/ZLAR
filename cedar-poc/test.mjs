@@ -45,14 +45,14 @@ const tests = [
   // R012 — gate self-protection (deny)
   {
     name: 'R012: bash command touching gate binary',
-    command: 'tail -3 /Users/vincentnijjar/Desktop/ZLAR/repo/var/log/audit.jsonl',
+    command: 'tail -3 /opt/zlar/var/log/audit.jsonl',
     domain: 'bash',
     expected: 'deny',
     rule: 'R012',
   },
   {
     name: 'R012: command referencing zlar-gate',
-    command: 'cat /Users/vincentnijjar/Desktop/ZLAR/repo/bin/zlar-gate',
+    command: 'cat /opt/zlar/bin/zlar-gate',
     domain: 'bash',
     expected: 'deny',
     rule: 'R012',
@@ -75,7 +75,7 @@ const tests = [
   // R001 — safe read-only shell (allow)
   {
     name: 'R001: simple ls command',
-    command: 'ls /Users/vincentnijjar/Desktop/ZLAR/repo/',
+    command: 'ls /opt/zlar/',
     domain: 'bash',
     expected: 'allow',
     rule: 'R001',
