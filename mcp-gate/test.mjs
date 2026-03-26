@@ -12,9 +12,26 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = join(__dirname, '..');
 const TEST_AUDIT = join(__dirname, 'test-audit.jsonl');
+const TEST_ALLOW_POLICY = join(__dirname, 'test-allow-policy.json');
 
-// Clean up test audit file
+// Clean up test files
 if (existsSync(TEST_AUDIT)) unlinkSync(TEST_AUDIT);
+
+// Create a self-contained allow policy so tests don't depend on a signed active policy
+writeFileSync(TEST_ALLOW_POLICY, JSON.stringify({
+  version: 'test-allow',
+  default_action: 'allow',
+  rules: [{
+    id: 'R095',
+    enabled: true,
+    description: 'MCP catch-all allow for testing',
+    domain: 'mcp',
+    action: 'allow',
+    severity: 'info',
+    match: { domain: 'mcp' },
+    risk_score: { irreversibility: 0, consequence: 0, blast_radius: 0 },
+  }],
+}));
 
 // ─── Mock MCP Server ─────────────────────────────────────────────────────────
 
@@ -84,6 +101,7 @@ async function runTests() {
     '--port', String(GATE_PORT),
     '--upstream', `localhost:${MOCK_PORT}`,
     '--audit-file', TEST_AUDIT,
+    '--policy-file', TEST_ALLOW_POLICY,
     '--agent-id', 'test-agent',
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
@@ -259,6 +277,7 @@ async function runTests() {
   gate.kill();
   mockServer.close();
   if (existsSync(TEST_AUDIT)) unlinkSync(TEST_AUDIT);
+  if (existsSync(TEST_ALLOW_POLICY)) unlinkSync(TEST_ALLOW_POLICY);
 
   process.exit(failed > 0 ? 1 : 0);
 }
