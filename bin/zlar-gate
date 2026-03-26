@@ -1,12 +1,17 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# ZLAR Gate v2.5.0 — Claude Code Hook Script
+# ZLAR Gate v2.5.1 — Claude Code Hook Script
 #
 # THE gate. Runs synchronously on every Claude Code PreToolUse hook invocation.
 # Reads tool call from stdin, classifies, evaluates policy, asks Telegram if
 # needed, writes audit trail, returns allow/deny on stdout.
 #
 # No daemon. No server. No database. The process IS the pending state.
+#
+# v2.5.1 changes:
+#   - Approval binding: approvals are now bound to SHA-256 hash of exact command
+#   - Hash chain atomicity via flock on Linux
+#   - Strict signed audit mode (ZLAR_REQUIRE_SIGNED_AUDIT)
 #
 # v2.5.0 changes:
 #   - Per-entry Ed25519 signing of audit trail entries (AU-10 non-repudiation)
@@ -63,6 +68,7 @@ GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
 POLICY_FILE="${PROJECT_DIR}/etc/policies/active.policy.json"
 POLICY_PUBKEY="${PROJECT_DIR}/etc/keys/policy-signing.pub"
 AUDIT_SIGNING_KEY="${HOME}/.zlar-signing.key"
+ZLAR_REQUIRE_SIGNED_AUDIT="${ZLAR_REQUIRE_SIGNED_AUDIT:-false}"
 AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
 AVAILABILITY_STATE="${PROJECT_DIR}/var/log/availability.state"
 AWAY_QUEUE="${PROJECT_DIR}/var/log/away-queue.jsonl"
@@ -88,6 +94,8 @@ if [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
     TELEGRAM_TIMEOUT_S=$(_cfg '.telegram.timeout_s')
     AWAY_THRESHOLD=$(_cfg '.availability.away_auto_allow_threshold')
     SESSION_WRITE_LIMIT=$(_cfg '.session_write_limit')
+    _req_signed=$(_cfg '.require_signed_audit')
+    [ -n "${_req_signed}" ] && ZLAR_REQUIRE_SIGNED_AUDIT="${_req_signed}"
 fi
 
 # ─── Load Telegram token from .env (parse, don't source) ────────────────────
@@ -241,6 +249,14 @@ emit_event() {
     rotate_audit_if_needed
 
     # Hash chain — compute prev_hash from last audit line
+    # Locked to prevent chain forks under concurrent invocations (Linux flock)
+    local _audit_lock_fd=""
+    if command -v flock &>/dev/null; then
+        exec 8>"${AUDIT_FILE}.lock"
+        flock -w 2 8 || log "WARN: Could not acquire audit lock — proceeding unlocked"
+        _audit_lock_fd="8"
+    fi
+
     local prev_hash="genesis"
     if [ -f "${AUDIT_FILE}" ] && [ -s "${AUDIT_FILE}" ]; then
         prev_hash=$(tail -1 "${AUDIT_FILE}" 2>/dev/null | shasum -a 256 | awk '{print $1}')
@@ -301,12 +317,22 @@ emit_event() {
         rm -f "${_sign_hash_file}" "${_sign_sig_file}" 2>/dev/null
     fi
 
+    # Strict signing mode: refuse to write unsigned entries when required
+    if [ "${signature}" = "unsigned" ] && [ "${ZLAR_REQUIRE_SIGNED_AUDIT}" = "true" ]; then
+        log "CRITICAL: Audit signing required but signing failed/key missing — denying"
+        [ -n "${_audit_lock_fd}" ] && exec 8>&- 2>/dev/null || true
+        return 1
+    fi
+
     # Append signature to the event
     event=$(echo "${event}" | jq -c --arg sig "${signature}" '. + {signature: $sig}')
 
     if ! echo "${event}" >> "${AUDIT_FILE}" 2>/dev/null; then
         log "CRITICAL: Failed to write audit event — audit trail may be incomplete"
     fi
+
+    # Release audit lock (Linux flock; macOS has no flock — single-invocation safety via synchronous hooks)
+    [ -n "${_audit_lock_fd}" ] && exec 8>&- 2>/dev/null || true
 }
 
 # ─── Tool Translation ──────────────────────────────────────────────────────
@@ -739,17 +765,28 @@ EOF
 # Returns: 0 = approved, 1 = denied, 2 = still pending (no response yet)
 check_pending_approval() {
     local rule="$1"
+    local expected_action_hash="${2:-}"
     local pending_file="${APPROVAL_DIR}/${rule}-${SESSION_ID}.pending"
 
     if [ ! -f "${pending_file}" ]; then
         return 2  # No pending request
     fi
 
-    local pending_action_id
-    pending_action_id=$(cat "${pending_file}" 2>/dev/null | tr -d '[:space:]')
+    local pending_action_id pending_action_hash
+    pending_action_id=$(sed -n '1p' "${pending_file}" 2>/dev/null | tr -d '[:space:]')
+    pending_action_hash=$(sed -n '2p' "${pending_file}" 2>/dev/null | tr -d '[:space:]')
     if [ -z "${pending_action_id}" ]; then
         rm -f "${pending_file}"
         return 2
+    fi
+
+    # Verify action hash matches — prevents approval replay across different commands
+    if [ -n "${expected_action_hash}" ] && [ -n "${pending_action_hash}" ]; then
+        if [ "${expected_action_hash}" != "${pending_action_hash}" ]; then
+            log "SECURITY: Action hash mismatch for ${rule} — approval bound to different command"
+            rm -f "${pending_file}"
+            return 2  # Force fresh ask
+        fi
     fi
 
     # Check inbox for callback matching this action_id
@@ -801,7 +838,7 @@ check_pending_approval() {
 # Writes pending file for check_pending_approval to find on retry.
 # Returns: 0 = message sent, 1 = send failed, 2 = no token, 3 = rate limited
 telegram_ask_async() {
-    local action_id="$1" tool_name="$2" display="$3" rule="$4" risk_score="$5" severity="$6"
+    local action_id="$1" tool_name="$2" display="$3" rule="$4" risk_score="$5" severity="$6" action_hash="${7:-}"
 
     if [ -z "${TELEGRAM_TOKEN}" ]; then
         log "No Telegram token — cannot send ask"
@@ -866,8 +903,8 @@ telegram_ask_async() {
 
     log "Telegram ask sent (async): msg_id=${msg_id}, action_id=${action_id}, rule=${rule}"
 
-    # Write pending file for retry check
-    echo "${action_id}" > "${APPROVAL_DIR}/${rule}-${SESSION_ID}.pending" 2>/dev/null
+    # Write pending file for retry check (action_id + action_hash for binding)
+    printf '%s\n%s\n' "${action_id}" "${action_hash}" > "${APPROVAL_DIR}/${rule}-${SESSION_ID}.pending" 2>/dev/null
 
     return 0
 }
@@ -940,8 +977,12 @@ handle_subagent_start() {
     DETAIL=$(jq -n -c --arg t "${agent_type}" --arg p "${prompt}" '{agent_type:$t,prompt:$p}')
 
     # Step 1: Check for pending approval from a previous ask
+    # Compute action hash to bind approval to this specific subagent launch
+    local action_hash
+    action_hash=$(printf '%s|%s' "SubagentStart" "${TOOL_DISPLAY}" | shasum -a 256 | awk '{print $1}')
+
     local pending_result
-    check_pending_approval "subagent-launch" && pending_result=0 || pending_result=$?
+    check_pending_approval "subagent-launch" "${action_hash}" && pending_result=0 || pending_result=$?
 
     case ${pending_result} in
         0)
@@ -960,7 +1001,7 @@ handle_subagent_start() {
             action_id=$(gen_id)
 
             local send_result=0
-            telegram_ask_async "${action_id}" "SubagentStart" "${TOOL_DISPLAY}" "subagent-launch" "50" "warn" || send_result=$?
+            telegram_ask_async "${action_id}" "SubagentStart" "${TOOL_DISPLAY}" "subagent-launch" "50" "warn" "${action_hash}" || send_result=$?
 
             case ${send_result} in
                 0)
@@ -1144,8 +1185,12 @@ main() {
                     #   2. If not, send Telegram ask, deny immediately, await retry
 
                     # Step 1: Check for pending approval from a previous ask
+                    # Compute action hash to bind approval to this specific command
+                    local action_hash
+                    action_hash=$(printf '%s|%s' "${tool_name}" "${TOOL_DISPLAY}" | shasum -a 256 | awk '{print $1}')
+
                     local pending_result
-                    check_pending_approval "${MATCHED_RULE}" && pending_result=0 || pending_result=$?
+                    check_pending_approval "${MATCHED_RULE}" "${action_hash}" && pending_result=0 || pending_result=$?
 
                     case ${pending_result} in
                         0)
@@ -1166,7 +1211,7 @@ main() {
                             action_id=$(gen_id)
 
                             local send_result=0
-                            telegram_ask_async "${action_id}" "${tool_name}" "${TOOL_DISPLAY}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}" "${MATCHED_SEVERITY}" || send_result=$?
+                            telegram_ask_async "${action_id}" "${tool_name}" "${TOOL_DISPLAY}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}" "${MATCHED_SEVERITY}" "${action_hash}" || send_result=$?
 
                             case ${send_result} in
                                 0)

@@ -250,6 +250,40 @@ async function runTests() {
   denyGate.kill();
   unlinkSync(denyPolicyPath);
 
+  // ─── Test: Fail-closed on missing policy ─────────────────────────────
+  const FAILCLOSED_GATE_PORT = 3103;
+  const failClosedGate = spawn('node', [
+    join(__dirname, 'gate.mjs'),
+    '--port', String(FAILCLOSED_GATE_PORT),
+    '--upstream', `localhost:${MOCK_PORT}`,
+    '--audit-file', TEST_AUDIT,
+    '--policy-file', '/nonexistent/policy.json',
+    '--agent-id', 'test-failclosed-agent',
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+  await new Promise((resolve) => {
+    failClosedGate.stdout.on('data', (data) => {
+      if (data.toString().includes('listening')) resolve();
+    });
+    setTimeout(resolve, 2000);
+  });
+
+  try {
+    const resp = await sendMessage(FAILCLOSED_GATE_PORT, { jsonrpc: '2.0', id: 20, method: 'tools/call', params: { name: 'read_file', arguments: {} } });
+    if (resp.error) {
+      console.log(`✓ missing policy → fail-closed (deny) → ${resp.error.message.substring(0, 60)}`);
+      passed++;
+    } else {
+      console.log(`✗ missing policy should fail-closed (deny), got allow`);
+      failed++;
+    }
+  } catch (e) {
+    console.log(`✗ fail-closed test error: ${e.message}`);
+    failed++;
+  }
+
+  failClosedGate.kill();
+
   // ─── Verify Audit Trail ────────────────────────────────────────────────
 
   console.log('\n--- Audit Trail ---');

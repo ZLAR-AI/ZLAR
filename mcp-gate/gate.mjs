@@ -14,7 +14,7 @@
 
 import { createServer, createConnection } from 'net';
 import { readFileSync, appendFileSync, existsSync, statSync } from 'fs';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { execSync, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -117,19 +117,28 @@ let POLICY = null;
 let POLICY_VERSION = 'unknown';
 
 function loadPolicy() {
-  if (!existsSync(CONFIG.policyFile)) return;
+  if (!existsSync(CONFIG.policyFile)) {
+    console.error(`[gate] CRITICAL: Policy file not found: ${CONFIG.policyFile} — fail-closed`);
+    POLICY = { rules: [], default_action: 'deny', version: 'fail-closed' };
+    POLICY_VERSION = 'fail-closed';
+    return;
+  }
   try {
     POLICY = JSON.parse(readFileSync(CONFIG.policyFile, 'utf8'));
     POLICY_VERSION = POLICY.version || 'unknown';
+    // NOTE: Ed25519 policy signature verification not yet implemented (Phase B).
+    // The bash gate verifies signatures; the MCP gate trusts the file.
   } catch (e) {
-    console.error(`[gate] Failed to load policy: ${e.message}`);
+    console.error(`[gate] CRITICAL: Failed to parse policy: ${e.message} — fail-closed`);
+    POLICY = { rules: [], default_action: 'deny', version: 'fail-closed' };
+    POLICY_VERSION = 'fail-closed';
   }
 }
 
 function evaluatePolicy(toolName, args) {
   if (!POLICY?.rules) {
-    console.error(`[gate] No policy loaded — defaulting to ask`);
-    return { action: 'ask', rule: 'no-policy', riskScore: 50, severity: 'warn' };
+    console.error(`[gate] No policy loaded — DENYING (fail-closed)`);
+    return { action: 'deny', rule: 'no-policy', riskScore: 100, severity: 'critical' };
   }
 
   const domain = 'mcp';
@@ -238,6 +247,28 @@ function emitEvent(domain, action, outcome, detail, rule, severity, riskScore, a
   return event;
 }
 
+// ─── Inbox HMAC Verification ─────────────────────────────────────────────────
+
+const HMAC_SECRET_FILE = '/var/run/zlar-tg/inbox-hmac-secret';
+
+function loadHmacSecret() {
+  if (!existsSync(HMAC_SECRET_FILE)) return null;
+  try {
+    return readFileSync(HMAC_SECRET_FILE, 'utf8').trim();
+  } catch { return null; }
+}
+
+function verifyInboxHmac(data, fromId, cbId, expectedHmac) {
+  const secret = loadHmacSecret();
+  if (!secret || !expectedHmac) return false;
+  const computed = createHmac('sha256', secret)
+    .update(`${data}|${fromId}|${cbId}`)
+    .digest('base64');
+  try {
+    return timingSafeEqual(Buffer.from(computed), Buffer.from(expectedHmac));
+  } catch { return false; }  // length mismatch
+}
+
 // ─── Telegram HITL ───────────────────────────────────────────────────────────
 
 async function telegramApi(method, body) {
@@ -303,8 +334,17 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity) 
           const cb = JSON.parse(readF(filePath, 'utf8'));
           const cbData = cb.data || '';
           const cbFrom = cb.from_id || '';
+          const cbId = cb.callback_query_id || '';
+          const cbHmac = cb.hmac || '';
 
           if (cbFrom !== CONFIG.telegramChatId) {
+            unlinkSync(filePath);
+            continue;
+          }
+
+          // Verify HMAC integrity
+          if (!verifyInboxHmac(cbData, cbFrom, cbId, cbHmac)) {
+            console.error(`[gate] SECURITY: inbox HMAC mismatch: ${file}`);
             unlinkSync(filePath);
             continue;
           }
@@ -519,9 +559,6 @@ if (!CONFIG.upstreamHost && !CONFIG.upstreamCmd) {
   process.exit(1);
 }
 
-// Add MCP inbox route to the Telegram dispatcher
-// The dispatcher routes by callback_data prefix: cc: → CC inbox, oc: → OC inbox
-// We add mcp: → MCP inbox. This requires updating zlar-tg-poll, but for now
-// the gate can poll getUpdates directly as a fallback.
+console.warn('[gate] EXPERIMENTAL: MCP gate — Ed25519 policy signature verification and per-entry audit signing not yet implemented. See CHANGELOG v1.4.1.');
 
 startTcpProxy();
