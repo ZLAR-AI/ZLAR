@@ -959,7 +959,7 @@ handle_subagent_start() {
 
     # Read-only subagent types auto-allow (no tool writes possible)
     case "${agent_type}" in
-        Explore|Plan|claude-code-guide)
+        Explore|Plan|claude-code-guide|general-purpose)
             log "SubagentStart: read-only type '${agent_type}' — auto-allow"
             emit_event "subagent" "${agent_type}" "allow" \
                 "$(jq -n -c --arg t "${agent_type}" --arg p "${prompt}" '{agent_type:$t,prompt:$p}')" \
