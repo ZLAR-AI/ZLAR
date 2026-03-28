@@ -8,7 +8,17 @@
 
 set -euo pipefail
 
-ADMIN_USER="${ZLAR_ADMIN_USER:-$(whoami)}"
+# Resolve the real admin user. Under sudo or LaunchDaemon, whoami returns
+# "root" which breaks token lookup. Resolution order:
+#   1. ZLAR_ADMIN_USER env var (explicit override)
+#   2. SUDO_USER (set by sudo, points to the real invoking user)
+#   3. macOS console user (works in LaunchDaemon context at boot)
+#   4. whoami (fallback — only correct when run as the actual user)
+_console_user() { /usr/bin/stat -f '%Su' /dev/console 2>/dev/null || echo ""; }
+ADMIN_USER="${ZLAR_ADMIN_USER:-${SUDO_USER:-$(_console_user)}}"
+if [ -z "${ADMIN_USER}" ] || [ "${ADMIN_USER}" = "root" ]; then
+    ADMIN_USER="$(whoami)"
+fi
 ADMIN_GROUP="${ZLAR_ADMIN_GROUP:-staff}"
 PERSISTENT_TOKEN="/Users/${ADMIN_USER}/.config/zlar/tg-token"
 RUNTIME_DIR="/var/run/zlar-tg"

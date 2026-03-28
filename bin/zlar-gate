@@ -977,9 +977,10 @@ handle_subagent_start() {
     DETAIL=$(jq -n -c --arg t "${agent_type}" --arg p "${prompt}" '{agent_type:$t,prompt:$p}')
 
     # Step 1: Check for pending approval from a previous ask
-    # Compute action hash to bind approval to this specific subagent launch
+    # Compute action hash from rule ID — binds approval to the matched rule,
+    # not the exact subagent display string.
     local action_hash
-    action_hash=$(printf '%s|%s' "SubagentStart" "${TOOL_DISPLAY}" | shasum -a 256 | awk '{print $1}')
+    action_hash=$(printf '%s|%s' "subagent-launch" "SubagentStart" | shasum -a 256 | awk '{print $1}')
 
     local pending_result
     check_pending_approval "subagent-launch" "${action_hash}" && pending_result=0 || pending_result=$?
@@ -1185,9 +1186,12 @@ main() {
                     #   2. If not, send Telegram ask, deny immediately, await retry
 
                     # Step 1: Check for pending approval from a previous ask
-                    # Compute action hash to bind approval to this specific command
+                    # Compute action hash from rule ID — binds approval to the matched
+                    # rule, not the exact command string. This prevents hash mismatches
+                    # when Claude Code varies the command between invocations (e.g.
+                    # "git push" vs "cd /path && git push") while the same rule matches.
                     local action_hash
-                    action_hash=$(printf '%s|%s' "${tool_name}" "${TOOL_DISPLAY}" | shasum -a 256 | awk '{print $1}')
+                    action_hash=$(printf '%s|%s' "${MATCHED_RULE}" "${tool_name}" | shasum -a 256 | awk '{print $1}')
 
                     local pending_result
                     check_pending_approval "${MATCHED_RULE}" "${action_hash}" && pending_result=0 || pending_result=$?
