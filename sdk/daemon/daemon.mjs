@@ -418,7 +418,8 @@ function signAuditEntry(entry, cfg) {
 }
 
 function writeAuditEntry(cfg, { domain, action, outcome, detail, rule,
-                                 severity, riskScore, authorizer, sessionId, agentId }) {
+                                 severity, riskScore, authorizer, sessionId, agentId,
+                                 chainDepth }) {
   SEQ++;
   const prevHash = computePrevHash(cfg);
   const entry = {
@@ -440,6 +441,7 @@ function writeAuditEntry(cfg, { domain, action, outcome, detail, rule,
     severity:            severity || 'info',
     prev_hash:           prevHash,
     authorizer:          authorizer || 'policy',
+    ...(chainDepth != null ? { chain_depth: chainDepth } : {}),
     signature_algorithm: 'Ed25519',
     hash_algorithm:      'SHA-256',
     public_key_id:       PUBLIC_KEY_ID,
@@ -665,11 +667,15 @@ async function telegramAsk(cfg, actionId, toolName, display, rule, riskScore, se
 // ─── Request Handler ──────────────────────────────────────────────────────────
 
 async function handleEvaluate(cfg, params) {
-  const toolName    = params.tool_name   || 'unknown';
-  const toolInput   = params.tool_input  || {};
-  const sessionId   = params.session_id  || genId();
-  const agentId     = params.agent_id    || 'sdk-agent';
-  const auditCtx    = { sessionId, agentId };
+  const toolName    = params.tool_name        || 'unknown';
+  const toolInput   = params.tool_input       || {};
+  const sessionId   = params.session_id       || genId();
+  const agentId     = params.agent_id         || 'sdk-agent';
+  const chain       = params.delegation_chain || null;
+  const chainDepth  = Array.isArray(chain) && chain.length > 0
+    ? chain.length - 1
+    : null;
+  const auditCtx    = { sessionId, agentId, chainDepth };
 
   // Translate to domain + detail (DETAIL Schema Contract)
   const { domain, detail, display } = translateTool(toolName, toolInput);
@@ -793,6 +799,72 @@ async function handleEvaluate(cfg, params) {
   }
 }
 
+// ─── Delegation Chain — Register ─────────────────────────────────────────────
+//
+// Issues a daemon-endorsed root delegation token.
+// The daemon signs with its audit key — the strongest trust anchor available.
+// The membrane can verify root tokens with get_daemon_key.
+
+function tokenCanonical(t) {
+  return [t.jti, t.sub, t.pub, String(t.depth), String(t.iat), t.parent_jti ?? ''].join('|');
+}
+
+function handleRegister(cfg, params) {
+  const { agent_id, session_id, public_key } = params || {};
+  if (!agent_id || !public_key) {
+    return { error: { code: -32602, message: 'register requires agent_id and public_key' } };
+  }
+
+  const token = {
+    v: 1, jti: genId(), sub: agent_id, pub: public_key,
+    depth: 0, iat: Math.floor(Date.now() / 1000), parent_jti: null,
+    sig_alg: 'ed25519', sig: null,
+  };
+
+  // Sign with daemon's audit key (fail gracefully if key unavailable)
+  let daemonPubkey = null;
+  try {
+    const canonical = tokenCanonical(token);
+    const hash      = createHash('sha256').update(canonical).digest('hex');
+    const privKey   = createPrivateKey(readFileSync(cfg.auditSigningKey));
+    token.sig       = cryptoSign(null, Buffer.from(hash), privKey).toString('base64');
+    daemonPubkey    = Buffer.from(
+      createPublicKey(privKey).export({ type: 'spki', format: 'der' })
+    ).toString('base64');
+  } catch (e) {
+    log(`[register] Daemon signing key unavailable: ${e.message} — token unsigned`);
+    token.sig = 'unsigned';
+  }
+
+  writeAuditEntry(cfg, {
+    domain:     'delegation',
+    action:     `register:${agent_id}`,
+    outcome:    'registered',
+    detail:     { agent_id, depth: 0, pub_prefix: public_key.slice(0, 16) },
+    rule:       'chain:root',
+    severity:   'info',
+    riskScore:  0,
+    authorizer: 'daemon:register',
+    sessionId:  session_id ?? 'unknown',
+    agentId:    agent_id,
+    chainDepth: 0,
+  });
+
+  return { chain_token: token, daemon_pubkey: daemonPubkey };
+}
+
+function handleGetDaemonKey(cfg) {
+  try {
+    const privKey = createPrivateKey(readFileSync(cfg.auditSigningKey));
+    const pubKeyB64 = Buffer.from(
+      createPublicKey(privKey).export({ type: 'spki', format: 'der' })
+    ).toString('base64');
+    return { daemon_pubkey: pubKeyB64, sig_alg: 'ed25519' };
+  } catch (e) {
+    return { daemon_pubkey: null, error: e.message };
+  }
+}
+
 async function handleRequest(cfg, msg) {
   if (!msg?.jsonrpc || msg.jsonrpc !== '2.0' || !msg.method) {
     return { jsonrpc: '2.0', id: msg?.id ?? null,
@@ -814,6 +886,15 @@ async function handleRequest(cfg, msg) {
           policy_version:   POLICY_VERSION,
           protocol_version: PROTOCOL_VERSION,
         }};
+
+      case 'register': {
+        const result = handleRegister(cfg, msg.params || {});
+        if (result.error) return { jsonrpc: '2.0', id: msg.id, ...result };
+        return { jsonrpc: '2.0', id: msg.id, result };
+      }
+
+      case 'get_daemon_key':
+        return { jsonrpc: '2.0', id: msg.id, result: handleGetDaemonKey(cfg) };
 
       default:
         return { jsonrpc: '2.0', id: msg.id,
