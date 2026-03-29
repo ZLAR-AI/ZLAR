@@ -344,9 +344,11 @@ emit_event() {
         _sign_hash_file="${GATE_TMP}/audit-sign-hash.$$"
         _sign_sig_file="${GATE_TMP}/audit-sign-sig.$$"
 
-        # Hash the event JSON (canonical — jq -c produces deterministic output
-        # when built entirely from --arg, which is how we construct it above)
-        printf '%s' "${event}" | shasum -a 256 | awk '{print $1}' | tr -d '\n' > "${_sign_hash_file}" 2>/dev/null
+        # Hash the event JSON in canonical form (sorted keys, compact).
+        # jq -S sorts all keys recursively including nested objects.
+        # This ensures the hash is reproducible by any JSON implementation,
+        # not just the jq version that constructed the event.
+        printf '%s' "${event}" | jq -S -c '.' | shasum -a 256 | awk '{print $1}' | tr -d '\n' > "${_sign_hash_file}" 2>/dev/null
 
         # Sign with Ed25519 via crypto abstraction layer
         if zlar_crypto_sign "${AUDIT_SIGNING_KEY}" "${_sign_hash_file}" "${_sign_sig_file}" 2>/dev/null; then
