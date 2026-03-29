@@ -72,6 +72,7 @@ function loadConfig() {
     telegramToken:         null,
     telegramChatId:        null,
     telegramTimeoutS:      300,
+    telegramInboxDir:      '/var/run/zlar-tg/inbox/cc',  // override via gate.json telegram.inbox_dir
     requireSignedAudit:    false,
     socketPath:            resolveSocketPath(),
     logFile:               join(PROJECT_DIR, 'var/log/gate.log'),
@@ -83,6 +84,7 @@ function loadConfig() {
       const gc = JSON.parse(readFileSync(gateConfigPath, 'utf8'));
       if (gc.telegram?.chat_id)       cfg.telegramChatId     = gc.telegram.chat_id;
       if (gc.telegram?.timeout_s)     cfg.telegramTimeoutS   = gc.telegram.timeout_s;
+      if (gc.telegram?.inbox_dir)     cfg.telegramInboxDir   = gc.telegram.inbox_dir;
       if (gc.require_signed_audit)    cfg.requireSignedAudit = gc.require_signed_audit;
     } catch {}
   }
@@ -408,9 +410,9 @@ function signAuditEntry(entry, cfg) {
   if (!existsSync(cfg.auditSigningKey)) return 'unsigned';
   try {
     const canonical = sortedJSON(entry);
-    const hashHex   = createHash('sha256').update(canonical).digest('hex');
+    const hash      = createHash('sha256').update(canonical).digest();  // raw bytes, not hex string
     const privKey   = createPrivateKey(readFileSync(cfg.auditSigningKey));
-    return cryptoSign(null, Buffer.from(hashHex), privKey).toString('base64');
+    return cryptoSign(null, hash, privKey).toString('base64');
   } catch (e) {
     log(`WARN: Audit signing failed: ${e.message}`);
     return 'unsigned';
@@ -534,7 +536,7 @@ function checkPendingApproval(cfg, rule, actionHash, sessionId) {
     }
 
     // Scan inbox
-    const inboxDir = '/var/run/zlar-tg/inbox/cc';
+    const inboxDir = cfg.telegramInboxDir;
     try {
       for (const file of readdirSync(inboxDir).filter(f => f.endsWith('.json'))) {
         const fpath = join(inboxDir, file);
@@ -664,6 +666,77 @@ async function telegramAsk(cfg, actionId, toolName, display, rule, riskScore, se
   return 'timeout';
 }
 
+// ─── Delegation Chain Verification ───────────────────────────────────────────
+//
+// Called at the evaluate() boundary. Every chain is verified before any
+// policy evaluation runs. Fail-closed on any verification failure.
+//
+// Checks:
+//   1. Root token is signed by the daemon's own key
+//   2. Each subsequent token is signed by the previous token's public key
+//   3. parent_jti links are consistent
+//   4. depth fields are sequential (0, 1, 2, …)
+//
+// Returns { valid: true, depth: number } or { valid: false, reason: string }
+
+function verifyChain(cfg, chain) {
+  if (!Array.isArray(chain) || chain.length === 0) return { valid: true, depth: null };
+
+  // Load daemon public key — fail-closed if unavailable
+  let daemonPubB64;
+  try {
+    const privKey = createPrivateKey(readFileSync(cfg.auditSigningKey));
+    daemonPubB64  = Buffer.from(
+      createPublicKey(privKey).export({ type: 'spki', format: 'der' })
+    ).toString('base64');
+  } catch (e) {
+    log(`WARN: verifyChain: cannot load daemon key — ${e.message}`);
+    return { valid: false, reason: 'daemon key unavailable for chain verification' };
+  }
+
+  let prevJti = null;
+
+  for (let i = 0; i < chain.length; i++) {
+    const token = chain[i];
+
+    // Structural checks
+    if (!token || typeof token !== 'object')
+      return { valid: false, reason: `token[${i}]: not an object` };
+    if (typeof token.jti !== 'string' || !token.jti)
+      return { valid: false, reason: `token[${i}]: missing jti` };
+    if (typeof token.sub !== 'string' || !token.sub)
+      return { valid: false, reason: `token[${i}]: missing sub` };
+    if (typeof token.pub !== 'string' || !token.pub)
+      return { valid: false, reason: `token[${i}]: missing pub` };
+    if (token.depth !== i)
+      return { valid: false, reason: `token[${i}]: depth field ${token.depth} ≠ expected ${i}` };
+    if (typeof token.sig !== 'string' || !token.sig || token.sig === 'unsigned')
+      return { valid: false, reason: `token[${i}]: missing or unsigned sig` };
+
+    // Parent JTI link
+    const actualParent   = token.parent_jti ?? null;
+    const expectedParent = i === 0 ? null : prevJti;
+    if (actualParent !== expectedParent)
+      return { valid: false, reason: `token[${i}]: parent_jti mismatch` };
+
+    // Signature verification — root signed by daemon, children signed by parent
+    const signerPubB64 = i === 0 ? daemonPubB64 : chain[i - 1].pub;
+    try {
+      const canonical = tokenCanonical(token);
+      const hash      = createHash('sha256').update(canonical).digest();  // raw bytes
+      const pubKey    = createPublicKey({ key: Buffer.from(signerPubB64, 'base64'), type: 'spki', format: 'der' });
+      const ok        = cryptoVerify(null, hash, pubKey, Buffer.from(token.sig, 'base64'));
+      if (!ok) return { valid: false, reason: `token[${i}]: signature invalid` };
+    } catch (e) {
+      return { valid: false, reason: `token[${i}]: crypto error — ${e.message}` };
+    }
+
+    prevJti = token.jti;
+  }
+
+  return { valid: true, depth: chain[chain.length - 1].depth };
+}
+
 // ─── Request Handler ──────────────────────────────────────────────────────────
 
 async function handleEvaluate(cfg, params) {
@@ -671,11 +744,29 @@ async function handleEvaluate(cfg, params) {
   const toolInput   = params.tool_input       || {};
   const sessionId   = params.session_id       || genId();
   const agentId     = params.agent_id         || 'sdk-agent';
-  const chain       = params.delegation_chain || null;
-  const chainDepth  = Array.isArray(chain) && chain.length > 0
-    ? chain.length - 1
-    : null;
-  const auditCtx    = { sessionId, agentId, chainDepth };
+  const chain = params.delegation_chain || null;
+  let   chainDepth = null;
+
+  // Verify the delegation chain cryptographically before any policy evaluation.
+  // Fail-closed: invalid or unverifiable chain → immediate deny.
+  if (Array.isArray(chain) && chain.length > 0) {
+    const cv = verifyChain(cfg, chain);
+    if (!cv.valid) {
+      log(`[${sessionId.slice(0,8)}] CHAIN VERIFY FAILED: ${cv.reason}`);
+      writeAuditEntry(cfg, {
+        domain:    'delegation', action: 'chain:verify:fail', outcome: 'deny',
+        detail:    { reason: cv.reason }, rule: 'chain:verify',
+        severity:  'critical', riskScore: 100, authorizer: 'gate',
+        sessionId, agentId, chainDepth: null,
+      });
+      return { decision: 'deny', denied_by: 'chain_verification',
+               reason: `[gate] Invalid delegation chain — ${cv.reason}`,
+               rule: 'chain:verify', risk_score: 100 };
+    }
+    chainDepth = cv.depth;
+  }
+
+  const auditCtx = { sessionId, agentId, chainDepth };
 
   // Translate to domain + detail (DETAIL Schema Contract)
   const { domain, detail, display } = translateTool(toolName, toolInput);
@@ -825,9 +916,9 @@ function handleRegister(cfg, params) {
   let daemonPubkey = null;
   try {
     const canonical = tokenCanonical(token);
-    const hash      = createHash('sha256').update(canonical).digest('hex');
+    const hash      = createHash('sha256').update(canonical).digest();  // raw bytes, not hex string
     const privKey   = createPrivateKey(readFileSync(cfg.auditSigningKey));
-    token.sig       = cryptoSign(null, Buffer.from(hash), privKey).toString('base64');
+    token.sig       = cryptoSign(null, hash, privKey).toString('base64');
     daemonPubkey    = Buffer.from(
       createPublicKey(privKey).export({ type: 'spki', format: 'der' })
     ).toString('base64');

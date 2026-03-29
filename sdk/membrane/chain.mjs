@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // ZLAR SDK Delegation Chain — chain.mjs
 //
-// Phase 2: RFC 8693-style delegation chains for multi-agent systems.
+// Phase 2: Cryptographic delegation chains for multi-agent systems.
 //
 // The gap in every major agent framework (AutoGen, CrewAI, LangGraph,
 // Google ADK, Semantic Kernel): immediate-caller identity exists, but
@@ -13,7 +13,7 @@
 // it. Policy can be written against depth (agents at depth > 2 cannot
 // write files). The audit trail has a complete provenance record.
 //
-// Chain structure (RFC 8693 inspired):
+// Chain structure:
 //
 //   Root token  (depth 0) — daemon-signed, or self-signed
 //     │ signed by root's Ed25519 key
@@ -51,21 +51,21 @@ function tokenCanonical(t) {
 
 function signToken(token, privKeyPem) {
   const canonical = tokenCanonical(token);
-  const hash      = createHash('sha256').update(canonical).digest('hex');
+  const hash      = createHash('sha256').update(canonical).digest();  // raw bytes, not hex string
   const privKey   = createPrivateKey(privKeyPem);
-  return cryptoSign(null, Buffer.from(hash), privKey).toString('base64');
+  return cryptoSign(null, hash, privKey).toString('base64');
 }
 
 function verifyTokenSig(token, pubKeyDerB64) {
   const canonical = tokenCanonical(token);
-  const hash      = createHash('sha256').update(canonical).digest('hex');
+  const hash      = createHash('sha256').update(canonical).digest();  // raw bytes, not hex string
   const pubKey    = createPublicKey({
     key:    Buffer.from(pubKeyDerB64, 'base64'),
     type:   'spki',
     format: 'der',
   });
   try {
-    return cryptoVerify(null, Buffer.from(hash), pubKey, Buffer.from(token.sig, 'base64'));
+    return cryptoVerify(null, hash, pubKey, Buffer.from(token.sig, 'base64'));
   } catch (_) {
     return false;
   }
