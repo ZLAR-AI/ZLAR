@@ -450,9 +450,11 @@ translate_tool() {
         mcp__*)
             DOMAIN="mcp"
             # Extract server name and tool name from mcp__server__tool format
+            # Server and tool names can contain underscores (e.g., Claude_Preview,
+            # preview_click), so we split on __ (double underscore) via awk.
             local mcp_server mcp_tool
-            mcp_server=$(echo "${tool_name}" | sed 's/^mcp__//;s/__.*$//')
-            mcp_tool=$(echo "${tool_name}" | sed 's/^mcp__[^_]*__//')
+            mcp_server=$(echo "${tool_name}" | awk -F'__' '{print $2}')
+            mcp_tool=$(echo "${tool_name}" | awk -F'__' '{print $NF}')
             DETAIL=$(jq -n -c --arg s "${mcp_server}" --arg t "${mcp_tool}" --arg full "${tool_name}" '{server: $s, tool: $t, full_name: $full}')
             TOOL_DISPLAY="MCP:${mcp_server}/${mcp_tool}"
             ;;

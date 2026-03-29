@@ -50,8 +50,9 @@ log "HMAC secret generated at ${HMAC_SECRET_FILE}"
 # ── Copy persistent token ──
 if [ -f "${PERSISTENT_TOKEN}" ]; then
     cp "${PERSISTENT_TOKEN}" "${RUNTIME_DIR}/token"
-    chmod 600 "${RUNTIME_DIR}/token"
-    log "Token copied from ${PERSISTENT_TOKEN}"
+    chmod 640 "${RUNTIME_DIR}/token"
+    chown "root:${ADMIN_GROUP}" "${RUNTIME_DIR}/token"
+    log "Token copied from ${PERSISTENT_TOKEN} (readable by ${ADMIN_GROUP})"
 else
     log "FATAL: Persistent token not found at ${PERSISTENT_TOKEN}"
     exit 1
