@@ -463,6 +463,26 @@ sanitize_path() {
     printf '%s' "${clean_path}"
 }
 
+# ─── DETAIL Schema Contract ────────────────────────────────────────────────
+# The DETAIL JSON per tool type is load-bearing for the action fingerprint
+# (approval binding hash). Adding, removing, or renaming a field in any
+# tool's DETAIL breaks all existing approval hashes for that tool type.
+# Changes to DETAIL shape require explicit versioning.
+#
+# Frozen schemas:
+#   Bash:         {command, cwd}
+#   Write:        {path, content_length, content_sha256}
+#   Edit:         {path, old_string, new_string}
+#   Read:         {path}
+#   NotebookEdit: {path}
+#   Glob:         {pattern, path}
+#   Grep:         {pattern, path}
+#   Agent/Task:   {prompt}
+#   WebFetch:     {url}
+#   WebSearch:    {query}
+#   MCP:          {server, tool, args}
+# ───────────────────────────────────────────────────────────────────────────
+
 translate_tool() {
     local tool_name="$1"
     local tool_input="$2"
