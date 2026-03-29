@@ -29,6 +29,6 @@ It is possible to build a structural boundary that intelligence cannot reason th
 
 The gate is absolute. The human decides what passes through. That's the architecture. Everything else — how precisely the door opens, how the evidence is recorded — that's engineering. The engineering is ongoing.
 
-It's open source. It works today. It's free. My ideas are your ideas.
+It's open source. It works today. It's free.
 
 How can I help?
