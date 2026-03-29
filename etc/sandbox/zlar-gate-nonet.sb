@@ -1,0 +1,74 @@
+;; =============================================================================
+;; ZLAR CC Gate -- Seatbelt Profile: Network Denied (Tier 2a)
+;; Version: 1.0.0
+;;
+;; Per-command sandbox for Bash tool calls that do NOT require network access.
+;; Default tier for most commands. Blocks exfiltration, credential theft, and
+;; composition attacks at the OS kernel level.
+;;
+;; Architecture: allow-default with deny overlays. macOS Tahoe (26.x) requires
+;; broad file-read for bash to start. Security is via explicit deny on secrets,
+;; dangerous binaries, and all network.
+;;
+;; Apply with:
+;;   sandbox-exec -f etc/sandbox/zlar-gate-nonet.sb \
+;;     -D HOME_DIR=/Users/username \
+;;     bash -c "<command>"
+;;
+;; =============================================================================
+
+(version 1)
+
+;; --- Base: allow everything, then deny what is dangerous --------------------
+(deny default)
+(allow process-exec)
+(allow process-fork)
+(allow signal)
+(allow file-read*)
+(allow file-write*)
+(allow sysctl-read)
+(allow ipc-posix-shm-read-data)
+(allow ipc-posix-shm-write-data)
+(allow ipc-posix-sem*)
+(allow mach-lookup)
+(allow system-audit)
+
+;; --- DENY: all network (Tier 2a = no network) ------------------------------
+(deny network*)
+
+;; --- DENY: dangerous binaries -----------------------------------------------
+(deny process-exec
+  (literal "/usr/bin/curl")
+  (literal "/usr/bin/wget")
+  (literal "/usr/bin/nc")
+  (literal "/usr/bin/ncat")
+  (literal "/usr/bin/ssh")
+  (literal "/usr/bin/scp")
+  (literal "/usr/bin/security")
+  (literal "/usr/bin/osascript")
+  (literal "/opt/homebrew/bin/curl")
+  (literal "/opt/homebrew/bin/wget")
+  (literal "/usr/local/bin/docker")
+  (literal "/opt/homebrew/bin/docker")
+)
+
+;; --- DENY: read secrets -----------------------------------------------------
+(deny file-read*
+  (subpath (string-append (param "HOME_DIR") "/.ssh"))
+  (subpath (string-append (param "HOME_DIR") "/.aws"))
+  (subpath (string-append (param "HOME_DIR") "/.gnupg"))
+  (literal (string-append (param "HOME_DIR") "/.zlar-signing.key"))
+)
+
+;; --- DENY: write governance infrastructure ----------------------------------
+(deny file-write*
+  (subpath (string-append (param "HOME_DIR") "/.claude"))
+  (subpath (string-append (param "HOME_DIR") "/.ssh"))
+  (subpath (string-append (param "HOME_DIR") "/.aws"))
+  (subpath (string-append (param "HOME_DIR") "/.gnupg"))
+  (subpath "/etc")
+  (subpath "/System")
+)
+
+;; --- DENY: sysctl write (system tuning) -------------------------------------
+(deny sysctl-write)

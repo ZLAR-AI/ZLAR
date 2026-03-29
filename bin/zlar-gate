@@ -73,6 +73,24 @@ AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
 AVAILABILITY_STATE="${PROJECT_DIR}/var/log/availability.state"
 AWAY_QUEUE="${PROJECT_DIR}/var/log/away-queue.jsonl"
 LOCKDOWN_FILE="${PROJECT_DIR}/var/log/watchdog.lock"
+
+# ── Sandbox Configuration ───────────────────────────────────────────────────
+# Per-command macOS Seatbelt sandboxing (Phase C perimeter closure).
+# Two tiers: nonet (default, denies all network) and net (allows network).
+SANDBOX_PROFILE_NONET="${PROJECT_DIR}/etc/sandbox/zlar-gate-nonet.sb"
+SANDBOX_PROFILE_NET="${PROJECT_DIR}/etc/sandbox/zlar-gate-net.sb"
+SANDBOX_ENABLED="false"
+if [ -f "${SANDBOX_PROFILE_NONET}" ] && command -v sandbox-exec &>/dev/null; then
+    SANDBOX_ENABLED="true"
+fi
+# Override via gate.json: {"sandbox": {"enabled": false}}
+if [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    _sbx=$(jq -r '.sandbox.enabled // ""' "${GATE_CONFIG}" 2>/dev/null)
+    [ "${_sbx}" = "false" ] && SANDBOX_ENABLED="false"
+fi
+# Network-requiring rules: matched rule determines which sandbox tier to use.
+# Rules whose commands legitimately need outbound network get Tier 2b (net).
+SANDBOX_NET_RULES="R001|R014|R014a|R016|R018"
 SESSION_DIR="${PROJECT_DIR}/var/log/sessions"
 LOG_FILE="${PROJECT_DIR}/var/log/gate.log"
 
@@ -228,6 +246,47 @@ log() {
 
 respond_allow() {
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
+}
+
+respond_allow_or_sandbox() {
+    # Convenience: if sandbox is enabled and domain is bash, sandbox it.
+    # Otherwise, plain allow.
+    if [ "${DOMAIN}" = "bash" ] && [ "${SANDBOX_ENABLED}" = "true" ]; then
+        local _cmd
+        _cmd=$(echo "${DETAIL}" | jq -r '.command // ""' 2>/dev/null)
+        respond_allow_sandboxed "${_cmd}" "${MATCHED_RULE}"
+    else
+        respond_allow
+    fi
+}
+
+respond_allow_sandboxed() {
+    # Wrap the bash command in sandbox-exec, returning updatedInput so
+    # Claude Code executes the sandboxed version transparently.
+    local original_command="$1"
+    local matched_rule="${2:-}"
+    local profile="${SANDBOX_PROFILE_NONET}"
+
+    # Select tier: if the matched rule is in the network-allowed set, use Tier 2b
+    if echo "${matched_rule}" | grep -qE "^(${SANDBOX_NET_RULES})$" 2>/dev/null; then
+        profile="${SANDBOX_PROFILE_NET}"
+    fi
+
+    if [ ! -f "${profile}" ]; then
+        log "WARN: Sandbox profile not found (${profile}) — allowing without sandbox"
+        respond_allow
+        return
+    fi
+
+    # Build the wrapped command. Use single-quote escaping for safety.
+    local escaped_command
+    escaped_command=$(printf '%s' "${original_command}" | sed "s/'/'\\\\''/g")
+    local wrapped="sandbox-exec -f '${profile}' -D 'HOME_DIR=${HOME}' bash -c '${escaped_command}'"
+
+    # Return updatedInput with the wrapped command
+    local escaped_wrapped
+    escaped_wrapped=$(printf '%s' "${wrapped}" | jq -Rrs '.' | sed 's/^"//;s/"$//')
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"%s"}}}\n' "${escaped_wrapped}"
 }
 
 respond_deny() {
@@ -1280,7 +1339,7 @@ main() {
             if [ "${MATCHED_AUDIT}" = "true" ]; then
                 emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "allow" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "policy"
             fi
-            respond_allow
+            respond_allow_or_sandbox
             ;;
 
         deny)
@@ -1305,7 +1364,7 @@ main() {
                         respond_deny "Away mode: write/edit actions require review." "policy"
                     elif [ "${MATCHED_RISK_SCORE}" -lt "${AWAY_THRESHOLD}" ]; then
                         emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "away_auto_allow" "${DETAIL}" "${MATCHED_RULE}" "info" "${MATCHED_RISK_SCORE}" "gate"
-                        respond_allow
+                        respond_allow_or_sandbox
                     elif [ "${MATCHED_SEVERITY}" = "critical" ]; then
                         queue_for_review "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}"
                         emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "away_halt" "${DETAIL}" "${MATCHED_RULE}" "critical" "${MATCHED_RISK_SCORE}" "gate"
@@ -1326,7 +1385,7 @@ main() {
                     # If a standing approval matches, allow immediately — no Telegram.
                     if check_standing_approval "${MATCHED_RULE}" "${TOOL_DISPLAY}"; then
                         emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "authorized" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "standing:${STANDING_APPROVAL_ID}"
-                        respond_allow
+                        respond_allow_or_sandbox
                     else
 
                     # ── Deny-then-retry pattern ──
@@ -1360,7 +1419,7 @@ main() {
                                 fi
                             fi
 
-                            respond_allow
+                            respond_allow_or_sandbox
                             ;;
                         1)
                             # Human denied on a previous ask
@@ -1400,7 +1459,7 @@ main() {
 
         log)
             emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "logged" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "policy"
-            respond_allow
+            respond_allow_or_sandbox
             ;;
 
         *)

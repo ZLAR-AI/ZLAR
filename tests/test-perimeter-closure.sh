@@ -317,6 +317,114 @@ fi
 
 rm -rf "${tmpdir}"
 
+# ── Phase C: Seatbelt sandbox profiles ──
+echo
+echo "── Phase C: Seatbelt sandbox profiles ──"
+
+NONET_PROFILE="${PROJECT_DIR}/etc/sandbox/zlar-gate-nonet.sb"
+NET_PROFILE="${PROJECT_DIR}/etc/sandbox/zlar-gate-net.sb"
+
+if ! command -v sandbox-exec &>/dev/null; then
+    echo "  ~ sandbox-exec not available — skipping Phase C tests"
+elif [ ! -f "${NONET_PROFILE}" ]; then
+    echo "  ~ nonet profile not found — skipping Phase C tests"
+else
+    # C1: Basic command works under nonet sandbox
+    if sandbox-exec -f "${NONET_PROFILE}" -D "HOME_DIR=${HOME}" bash -c "echo hello" &>/dev/null; then
+        echo "  ✓ Basic command works under nonet sandbox"
+        passed=$((passed + 1))
+    else
+        echo "  ✗ Basic command failed under nonet sandbox"
+        failed=$((failed + 1))
+    fi
+
+    # C2: git works under nonet sandbox
+    if sandbox-exec -f "${NONET_PROFILE}" -D "HOME_DIR=${HOME}" bash -c "git status --short" &>/dev/null; then
+        echo "  ✓ git status works under nonet sandbox"
+        passed=$((passed + 1))
+    else
+        echo "  ✗ git status failed under nonet sandbox"
+        failed=$((failed + 1))
+    fi
+
+    # C3: curl BLOCKED under nonet sandbox
+    if sandbox-exec -f "${NONET_PROFILE}" -D "HOME_DIR=${HOME}" bash -c "curl https://example.com" &>/dev/null; then
+        echo "  ✗ curl succeeded under nonet sandbox (should be blocked)"
+        failed=$((failed + 1))
+    else
+        echo "  ✓ curl blocked under nonet sandbox"
+        passed=$((passed + 1))
+    fi
+
+    # C4: Variable-expansion curl BLOCKED (the key test — regex can't catch this)
+    if sandbox-exec -f "${NONET_PROFILE}" -D "HOME_DIR=${HOME}" bash -c 'cmd=curl; $cmd https://evil.com' &>/dev/null; then
+        echo "  ✗ Variable-expansion curl succeeded (should be blocked)"
+        failed=$((failed + 1))
+    else
+        echo "  ✓ Variable-expansion curl blocked (regex bypass defeated)"
+        passed=$((passed + 1))
+    fi
+
+    # C5: osascript BLOCKED
+    if sandbox-exec -f "${NONET_PROFILE}" -D "HOME_DIR=${HOME}" bash -c 'osascript -e "display dialog test"' &>/dev/null; then
+        echo "  ✗ osascript succeeded (should be blocked)"
+        failed=$((failed + 1))
+    else
+        echo "  ✓ osascript blocked under nonet sandbox"
+        passed=$((passed + 1))
+    fi
+
+    # C6: security (Keychain) BLOCKED
+    if sandbox-exec -f "${NONET_PROFILE}" -D "HOME_DIR=${HOME}" bash -c 'security find-generic-password' &>/dev/null; then
+        echo "  ✗ security succeeded (should be blocked)"
+        failed=$((failed + 1))
+    else
+        echo "  ✓ security (Keychain) blocked under nonet sandbox"
+        passed=$((passed + 1))
+    fi
+
+    # C7: .claude write BLOCKED
+    if sandbox-exec -f "${NONET_PROFILE}" -D "HOME_DIR=${HOME}" bash -c "touch ${HOME}/.claude/sandbox-test" &>/dev/null; then
+        echo "  ✗ .claude write succeeded (should be blocked)"
+        failed=$((failed + 1))
+        rm -f "${HOME}/.claude/sandbox-test" 2>/dev/null
+    else
+        echo "  ✓ .claude write blocked under nonet sandbox"
+        passed=$((passed + 1))
+    fi
+
+    # C8: Network-allowed profile permits curl
+    if [ -f "${NET_PROFILE}" ]; then
+        if sandbox-exec -f "${NET_PROFILE}" -D "HOME_DIR=${HOME}" bash -c "curl -s -o /dev/null -w '%{http_code}' https://example.com" 2>/dev/null | grep -q "200"; then
+            echo "  ✓ curl works under net sandbox (Tier 2b)"
+            passed=$((passed + 1))
+        else
+            echo "  ✗ curl failed under net sandbox"
+            failed=$((failed + 1))
+        fi
+    fi
+
+    # C9: Python network blocked under nonet
+    if sandbox-exec -f "${NONET_PROFILE}" -D "HOME_DIR=${HOME}" bash -c "python3 -c 'import socket; s=socket.socket(); s.connect((\"1.1.1.1\",80))'" &>/dev/null; then
+        echo "  ✗ Python network succeeded under nonet (should be blocked)"
+        failed=$((failed + 1))
+    else
+        echo "  ✓ Python network blocked under nonet sandbox"
+        passed=$((passed + 1))
+    fi
+
+    # C10: File write to project dir works
+    _test_file="/tmp/zlar-sandbox-test-$$"
+    if sandbox-exec -f "${NONET_PROFILE}" -D "HOME_DIR=${HOME}" bash -c "echo test > ${_test_file}" &>/dev/null; then
+        echo "  ✓ File write to /tmp works under sandbox"
+        passed=$((passed + 1))
+        rm -f "${_test_file}"
+    else
+        echo "  ✗ File write to /tmp failed under sandbox"
+        failed=$((failed + 1))
+    fi
+fi
+
 # ── Summary ──
 echo
 echo "═══════════════════════════════════════════════════════"
