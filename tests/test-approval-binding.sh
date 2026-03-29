@@ -49,8 +49,12 @@ echo
 # ── Test 1: Pending file with hash — matching action ──
 echo "── Matching action hash ──"
 
+# Hash format matches gate: sha256(MATCHED_RULE|tool_name|DETAIL_JSON)
+# DETAIL is key-sorted canonical JSON from translate_tool()
+detail_a='{"command":"git status","cwd":""}'
+detail_a_canonical=$(echo "${detail_a}" | jq -S -c '.')
 action_id="test-$(openssl rand -hex 8)"
-action_hash_a=$(printf '%s|%s' "Bash" "git status" | shasum -a 256 | awk '{print $1}')
+action_hash_a=$(printf '%s|%s|%s' "R014" "Bash" "${detail_a_canonical}" | shasum -a 256 | awk '{print $1}')
 printf '%s\n%s\n' "${action_id}" "${action_hash_a}" > "${APPROVAL_DIR}/R014-${SESSION_ID}.pending"
 
 # Read the pending file
@@ -61,7 +65,7 @@ assert_eq "Pending file stores action_id on line 1" "${action_id}" "${stored_id}
 assert_eq "Pending file stores action_hash on line 2" "${action_hash_a}" "${stored_hash}"
 
 # Same action hash should match
-check_hash_a=$(printf '%s|%s' "Bash" "git status" | shasum -a 256 | awk '{print $1}')
+check_hash_a=$(printf '%s|%s|%s' "R014" "Bash" "${detail_a_canonical}" | shasum -a 256 | awk '{print $1}')
 if [ "${check_hash_a}" = "${stored_hash}" ]; then
     assert_eq "Identical action produces matching hash" "match" "match"
 else
@@ -75,11 +79,13 @@ echo
 echo "── Different action hash (governance bypass prevention) ──"
 
 action_id="test-$(openssl rand -hex 8)"
-action_hash_a=$(printf '%s|%s' "Bash" "git status" | shasum -a 256 | awk '{print $1}')
+action_hash_a=$(printf '%s|%s|%s' "R014" "Bash" "${detail_a_canonical}" | shasum -a 256 | awk '{print $1}')
 printf '%s\n%s\n' "${action_id}" "${action_hash_a}" > "${APPROVAL_DIR}/R014-${SESSION_ID}.pending"
 
-# Different action — same rule R014 but different command
-action_hash_b=$(printf '%s|%s' "Bash" "git push origin main" | shasum -a 256 | awk '{print $1}')
+# Different action — same rule R014 but different command (MUST produce different hash)
+detail_b='{"command":"git push origin main","cwd":""}'
+detail_b_canonical=$(echo "${detail_b}" | jq -S -c '.')
+action_hash_b=$(printf '%s|%s|%s' "R014" "Bash" "${detail_b_canonical}" | shasum -a 256 | awk '{print $1}')
 
 stored_hash=$(sed -n '2p' "${APPROVAL_DIR}/R014-${SESSION_ID}.pending" | tr -d '[:space:]')
 if [ "${action_hash_b}" != "${stored_hash}" ]; then
@@ -120,12 +126,17 @@ fi
 rm -f "${APPROVAL_DIR}/R014-${SESSION_ID}.pending"
 echo
 
-# ── Test 4: Action hash determinism ──
+# ── Test 4: Action hash determinism (new format: rule|tool|detail) ──
 echo "── Hash determinism ──"
 
-hash_1=$(printf '%s|%s' "Bash" "rm -rf /tmp/test" | shasum -a 256 | awk '{print $1}')
-hash_2=$(printf '%s|%s' "Bash" "rm -rf /tmp/test" | shasum -a 256 | awk '{print $1}')
-hash_3=$(printf '%s|%s' "Bash" "rm -rf /tmp/test2" | shasum -a 256 | awk '{print $1}')
+det_1='{"command":"rm -rf /tmp/test","cwd":""}'
+det_1_c=$(echo "${det_1}" | jq -S -c '.')
+det_2='{"command":"rm -rf /tmp/test2","cwd":""}'
+det_2_c=$(echo "${det_2}" | jq -S -c '.')
+
+hash_1=$(printf '%s|%s|%s' "R017" "Bash" "${det_1_c}" | shasum -a 256 | awk '{print $1}')
+hash_2=$(printf '%s|%s|%s' "R017" "Bash" "${det_1_c}" | shasum -a 256 | awk '{print $1}')
+hash_3=$(printf '%s|%s|%s' "R017" "Bash" "${det_2_c}" | shasum -a 256 | awk '{print $1}')
 
 assert_eq "Same input produces same hash" "${hash_1}" "${hash_2}"
 if [ "${hash_1}" != "${hash_3}" ]; then
@@ -138,8 +149,8 @@ echo
 # ── Test 5: SubagentStart binding ──
 echo "── SubagentStart binding ──"
 
-hash_agent_a=$(printf '%s|%s' "SubagentStart" "SubagentStart: general-purpose" | shasum -a 256 | awk '{print $1}')
-hash_agent_b=$(printf '%s|%s' "SubagentStart" "SubagentStart: code-review" | shasum -a 256 | awk '{print $1}')
+hash_agent_a=$(printf '%s|%s|%s' "subagent-launch" "SubagentStart" "general-purpose" | shasum -a 256 | awk '{print $1}')
+hash_agent_b=$(printf '%s|%s|%s' "subagent-launch" "SubagentStart" "code-review" | shasum -a 256 | awk '{print $1}')
 
 if [ "${hash_agent_a}" != "${hash_agent_b}" ]; then
     assert_eq "Different subagent types produce different hashes" "different" "different"
