@@ -29,11 +29,14 @@
 //
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { createConnection } from 'net';
-import { randomUUID }       from 'crypto';
-import { homedir }          from 'os';
-import { join }             from 'path';
-import { existsSync }       from 'fs';
+import { createConnection }                    from 'net';
+import { randomUUID }                          from 'crypto';
+import { homedir }                             from 'os';
+import { join }                                from 'path';
+import { existsSync }                          from 'fs';
+import { DelegationChain, generateAgentKeyPair } from './chain.mjs';
+
+export { DelegationChain, DelegationToken } from './chain.mjs';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -176,6 +179,7 @@ export class ZlarAgent {
   #pending;       // Map<id, { resolve, reject, timer }>
   #connected;
   #onDisconnect;
+  #chain;         // DelegationChain | null — attached via registerChain()
 
   // Private constructor — use ZlarAgent.connect()
   constructor(options = {}) {
@@ -185,11 +189,12 @@ export class ZlarAgent {
       connectTimeout: options.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT,
       rpcTimeout:     options.rpcTimeout     ?? DEFAULT_RPC_TIMEOUT,
     };
-    this.#sessionId   = options.sessionId ?? randomUUID();
-    this.#nextId      = 1;
-    this.#pending     = new Map();
-    this.#connected   = false;
+    this.#sessionId    = options.sessionId ?? randomUUID();
+    this.#nextId       = 1;
+    this.#pending      = new Map();
+    this.#connected    = false;
     this.#onDisconnect = options.onDisconnect ?? null;
+    this.#chain        = null;
   }
 
   // ── Factory ───────────────────────────────────────────────────────────────
@@ -325,12 +330,64 @@ export class ZlarAgent {
    * @returns {Promise<{decision: string, reason: string, rule: string, risk_score: number}>}
    */
   async evaluate(toolName, toolInput) {
-    return this.#rpc('evaluate', {
+    const params = {
       tool_name:  toolName,
       tool_input: toolInput,
       session_id: this.#sessionId,
       agent_id:   this.#cfg.agentId,
+    };
+    if (this.#chain) {
+      params.delegation_chain = this.#chain.toJSON();
+    }
+    return this.#rpc('evaluate', params);
+  }
+
+  /**
+   * Register this agent with the gate daemon and attach a delegation chain.
+   * The daemon issues a signed root token establishing this agent as a
+   * trust anchor. The chain is forwarded on all subsequent evaluate() calls.
+   *
+   * For sub-agents, use parentChain.delegate(childId) and pass the result
+   * to ZlarAgent.connect({ chain: childChain }) instead.
+   *
+   * @returns {Promise<DelegationChain>}
+   */
+  async registerChain() {
+    const { privKeyPem, pubKeyDerB64 } = generateAgentKeyPair();
+    const result = await this.#rpc('register', {
+      agent_id:   this.#cfg.agentId,
+      session_id: this.#sessionId,
+      public_key: pubKeyDerB64,
     });
+    const chain      = DelegationChain.fromDaemon(result, privKeyPem, pubKeyDerB64);
+    this.#chain      = chain;
+    return chain;
+  }
+
+  /**
+   * Get the daemon's signing public key (DER base64).
+   * Use to verify daemon-issued chain tokens: chain.verify(daemonPubkey).
+   *
+   * @returns {Promise<string>}  — daemon pubkey DER base64, or null if unavailable
+   */
+  async getDaemonKey() {
+    const result = await this.#rpc('get_daemon_key', {});
+    return result.daemon_pubkey ?? null;
+  }
+
+  /**
+   * Attach an existing DelegationChain to this agent.
+   * Use when constructing a child agent that received a chain from its parent:
+   *
+   *   const parentChain  = await orchestrator.registerChain();
+   *   const childChain   = parentChain.delegate('child-agent');
+   *   const child        = await ZlarAgent.connect({ agentId: 'child-agent' });
+   *   child.attachChain(childChain);
+   *
+   * @param {DelegationChain} chain
+   */
+  attachChain(chain) {
+    this.#chain = chain;
   }
 
   /**
@@ -399,6 +456,9 @@ export class ZlarAgent {
 
   /** True if daemon connection is live. */
   get connected() { return this.#connected; }
+
+  /** The attached DelegationChain, or null if not registered. */
+  get chain() { return this.#chain; }
 
   /** Session ID — present on every audit entry from this agent. */
   get sessionId() { return this.#sessionId; }

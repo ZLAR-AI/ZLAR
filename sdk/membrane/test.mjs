@@ -22,7 +22,10 @@ import {
   ZlarDeniedError,
   ZlarGateTimeoutError,
   ZlarProtocolError,
+  DelegationChain,
+  DelegationToken,
 } from './index.mjs';
+import { generateAgentKeyPair } from './chain.mjs';
 
 // ─── Test Harness ─────────────────────────────────────────────────────────────
 
@@ -270,6 +273,154 @@ await test('sessionId is a UUID string', () => {
   assert(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id));
 });
 
+// ─── Delegation Chain Unit Tests ─────────────────────────────────────────────
+
+header('DelegationChain — Unit');
+
+await test('DelegationToken: constructs and freezes', () => {
+  const raw = {
+    v: 1, jti: randomUUID(), sub: 'agent-a', pub: 'fakepub==',
+    depth: 0, iat: 1000, parent_jti: null, sig_alg: 'ed25519', sig: 'fakesig==',
+  };
+  const tok = new DelegationToken(raw);
+  assertEqual(tok.sub, 'agent-a');
+  assertEqual(tok.depth, 0);
+  assert(tok.isRoot, 'depth-0 with no parent_jti is root');
+  assert(Object.isFrozen(tok), 'token should be frozen');
+});
+
+await test('DelegationToken: throws on missing field', () => {
+  let threw = false;
+  try { new DelegationToken({ v: 1, jti: 'x' }); } catch (_) { threw = true; }
+  assert(threw, 'Should throw on missing required fields');
+});
+
+await test('DelegationChain.create(): returns root chain (depth 0)', () => {
+  const chain = DelegationChain.create('orchestrator');
+  assertEqual(chain.depth,   0);
+  assertEqual(chain.agentId, 'orchestrator');
+  assertEqual(chain.rootId,  'orchestrator');
+  assertEqual(chain.ancestors.length, 0);
+  assert(typeof chain.publicKey === 'string', 'publicKey should be string');
+  assert(typeof chain.jti       === 'string', 'jti should be string');
+});
+
+await test('DelegationChain.create(): toJSON() returns array with one token', () => {
+  const chain = DelegationChain.create('agent-x');
+  const json  = chain.toJSON();
+  assertEqual(json.length, 1);
+  assertEqual(json[0].sub,   'agent-x');
+  assertEqual(json[0].depth, 0);
+  assert(typeof json[0].sig === 'string', 'token should have sig');
+  assertEqual(json[0].sig_alg, 'ed25519');
+});
+
+await test('DelegationChain.create(): self-signed root verifies', () => {
+  const chain  = DelegationChain.create('agent-root');
+  const result = chain.verify(); // no daemonPubkey — self-verify
+  assert(result.valid, `Expected valid, got: ${JSON.stringify(result)}`);
+});
+
+await test('chain.delegate(): creates child at depth 1', () => {
+  const root  = DelegationChain.create('orchestrator');
+  const child = root.delegate('worker-1');
+  assertEqual(child.depth,   1);
+  assertEqual(child.agentId, 'worker-1');
+  assertEqual(child.rootId,  'orchestrator');
+  assertEqual(child.ancestors.length, 1);
+  assertEqual(child.ancestors[0], 'orchestrator');
+  assertEqual(child.tokens.length, 2);
+});
+
+await test('chain.delegate(): child token has correct parent_jti', () => {
+  const root      = DelegationChain.create('orchestrator');
+  const rootJti   = root.jti;
+  const child     = root.delegate('worker-1');
+  const childTok  = child.tokens[1];
+  assertEqual(childTok.parent_jti, rootJti);
+});
+
+await test('chain.delegate(): child chain verifies (parent-signed)', () => {
+  const root   = DelegationChain.create('orchestrator');
+  const child  = root.delegate('worker-1');
+  const result = child.verify();
+  assert(result.valid, `Child chain should verify: ${JSON.stringify(result)}`);
+});
+
+await test('chain.delegate().delegate(): grandchild at depth 2', () => {
+  const root       = DelegationChain.create('root');
+  const child      = root.delegate('child');
+  const grandchild = child.delegate('grandchild');
+  assertEqual(grandchild.depth, 2);
+  assertEqual(grandchild.agentId, 'grandchild');
+  assertEqual(grandchild.ancestors.length, 2);
+  assertEqual(grandchild.ancestors[0], 'root');
+  assertEqual(grandchild.ancestors[1], 'child');
+  assertEqual(grandchild.tokens.length, 3);
+});
+
+await test('three-hop chain verifies fully', () => {
+  const root       = DelegationChain.create('root');
+  const child      = root.delegate('child');
+  const grandchild = child.delegate('grandchild');
+  const result     = grandchild.verify();
+  assert(result.valid, `3-hop chain should verify: ${JSON.stringify(result)}`);
+});
+
+await test('verify() fails if sig is tampered', () => {
+  const root  = DelegationChain.create('agent');
+  const json  = root.toJSON();
+  json[0].sig = 'invalidsig=='; // corrupt sig
+  // Reconstruct from tampered tokens
+  const { privKeyPem, pubKeyDerB64 } = generateAgentKeyPair();
+  const tampered = DelegationChain.fromJSON(json, privKeyPem, pubKeyDerB64);
+  const result   = tampered.verify();
+  assert(!result.valid, 'Tampered chain should not verify');
+  assertEqual(result.failedAt, 0);
+});
+
+await test('verify() fails if sub is tampered (sig mismatch)', () => {
+  const root     = DelegationChain.create('agent');
+  const json     = root.toJSON();
+  json[0].sub    = 'different-agent'; // tamper sub (invalidates sig)
+  const { privKeyPem, pubKeyDerB64 } = generateAgentKeyPair();
+  const tampered = DelegationChain.fromJSON(json, privKeyPem, pubKeyDerB64);
+  const result   = tampered.verify();
+  assert(!result.valid, 'Sub-tampered chain should not verify');
+});
+
+await test('verify() on child fails if parent sig tampered', () => {
+  const root     = DelegationChain.create('root');
+  const child    = root.delegate('child');
+  const json     = child.toJSON();
+  json[0].sig    = 'invalidsig=='; // corrupt root sig
+  const { privKeyPem, pubKeyDerB64 } = generateAgentKeyPair();
+  const tampered = DelegationChain.fromJSON(json, privKeyPem, pubKeyDerB64);
+  const result   = tampered.verify();
+  assert(!result.valid, 'Tampered parent sig should fail');
+  assertEqual(result.failedAt, 0);
+});
+
+await test('fromJSON(): round-trips through toJSON()', () => {
+  const original = DelegationChain.create('agent').delegate('child');
+  const json     = original.toJSON();
+  const { privKeyPem, pubKeyDerB64 } = generateAgentKeyPair();
+  // fromJSON gives us a chain that can verify the existing tokens
+  const restored = DelegationChain.fromJSON(json, privKeyPem, pubKeyDerB64);
+  const result   = restored.verify();
+  assert(result.valid, `Restored chain should verify: ${JSON.stringify(result)}`);
+  assertEqual(restored.depth,   1);
+  assertEqual(restored.agentId, 'child');
+  assertEqual(restored.rootId,  'agent');
+});
+
+await test('generateAgentKeyPair(): returns valid key pair', () => {
+  const { privKeyPem, pubKeyDerB64 } = generateAgentKeyPair();
+  assert(privKeyPem.includes('PRIVATE KEY'), 'Should be PEM private key');
+  assert(typeof pubKeyDerB64 === 'string', 'Public key should be base64 string');
+  assert(pubKeyDerB64.length > 0, 'Public key should not be empty');
+});
+
 // ─── Integration Tests (start real daemon, test against live policy) ──────────
 
 header('Integration (live daemon)');
@@ -491,6 +642,88 @@ if (!daemonStarted) {
           `Expected ZlarDaemonUnreachableError, got ${e.constructor.name}`);
       }
       assert(threw, 'Should throw after close()');
+    });
+
+    // ── Delegation Chain Integration ────────────────────────────────────────
+
+    header('Integration (delegation chain)');
+
+    await test('getDaemonKey(): returns base64 public key', async () => {
+      const key = await integrationAgent.getDaemonKey();
+      assert(key !== null, 'Daemon key should be available');
+      assert(typeof key === 'string', 'Key should be a string');
+      assert(key.length > 0, 'Key should not be empty');
+      // Should be valid base64
+      const decoded = Buffer.from(key, 'base64');
+      assert(decoded.length > 0, 'Decoded key should have bytes');
+    });
+
+    await test('registerChain(): returns DelegationChain', async () => {
+      const chain = await integrationAgent.registerChain();
+      assert(chain instanceof DelegationChain, 'Should return DelegationChain');
+      assertEqual(chain.depth,   0);
+      assertEqual(chain.agentId, 'membrane-test');
+      assert(typeof chain.jti === 'string');
+    });
+
+    await test('registerChain(): agent.chain is set after registration', async () => {
+      // registerChain() was already called above — chain should be attached
+      assert(integrationAgent.chain instanceof DelegationChain);
+      assertEqual(integrationAgent.chain.depth, 0);
+    });
+
+    await test('registerChain(): daemon-signed token verifies with daemon key', async () => {
+      const daemonPubkey = await integrationAgent.getDaemonKey();
+      const chain        = integrationAgent.chain;
+      const result       = chain.verify(daemonPubkey);
+      assert(result.valid, `Chain should verify with daemon key: ${JSON.stringify(result)}`);
+    });
+
+    await test('evaluate() with chain: forwards chain_depth to daemon', async () => {
+      // evaluate() attaches delegation_chain — we verify by checking it succeeds
+      const result = await integrationAgent.evaluate('Bash', { command: 'ls', cwd: '/tmp' });
+      assertEqual(result.decision, 'allow');
+    });
+
+    await test('delegate(): child chain is valid and at depth 1', async () => {
+      const parentChain  = integrationAgent.chain;
+      const childChain   = parentChain.delegate('child-agent');
+      assertEqual(childChain.depth,   1);
+      assertEqual(childChain.agentId, 'child-agent');
+      assertEqual(childChain.rootId,  'membrane-test');
+      // Root was daemon-signed — need daemon pubkey to verify the full chain
+      const daemonPubkey = await integrationAgent.getDaemonKey();
+      const result       = childChain.verify(daemonPubkey);
+      assert(result.valid, `Child chain should verify: ${JSON.stringify(result)}`);
+    });
+
+    await test('child agent with attached chain can evaluate', async () => {
+      const parentChain = integrationAgent.chain;
+      const childChain  = parentChain.delegate('sub-agent-1');
+      const child       = await ZlarAgent.connect({
+        agentId:    'sub-agent-1',
+        socketPath: SOCK_PATH,
+      });
+      child.attachChain(childChain);
+      assertEqual(child.chain.depth, 1);
+      const result = await child.evaluate('Bash', { command: 'ls', cwd: '/tmp' });
+      assertEqual(result.decision, 'allow');
+      await child.close();
+    });
+
+    await test('three-hop chain: grandchild evaluate succeeds', async () => {
+      const root        = integrationAgent.chain;
+      const child       = root.delegate('child-1');
+      const grandchild  = child.delegate('grandchild-1');
+      const gc          = await ZlarAgent.connect({
+        agentId:    'grandchild-1',
+        socketPath: SOCK_PATH,
+      });
+      gc.attachChain(grandchild);
+      assertEqual(gc.chain.depth, 2);
+      const result = await gc.evaluate('Bash', { command: 'pwd', cwd: '/tmp' });
+      assertEqual(result.decision, 'allow');
+      await gc.close();
     });
 
   } catch (startErr) {
