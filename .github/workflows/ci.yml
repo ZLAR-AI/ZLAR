@@ -66,6 +66,9 @@ jobs:
       - name: Run session state tests
         run: bash tests/test-session-state.sh
 
+      - name: Run policy loading tests
+        run: bash tests/test-policy-loading.sh
+
       - name: Setup Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:

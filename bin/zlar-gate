@@ -408,8 +408,9 @@ emit_event() {
 
         # Hash the event JSON in canonical form (sorted keys, compact).
         # jq -S sorts all keys recursively including nested objects.
-        # This ensures the hash is reproducible by any JSON implementation,
-        # not just the jq version that constructed the event.
+        # Deterministic within the jq toolchain. NOTE: jq -S -c is not a
+        # formal cross-language canonicalization standard (see JCS/RFC 8785).
+        # External verifiers must also use jq -S -c to reproduce this hash.
         printf '%s' "${event}" | jq -S -c '.' | shasum -a 256 | awk '{print $1}' | tr -d '\n' > "${_sign_hash_file}" 2>/dev/null
 
         # Sign with Ed25519 via crypto abstraction layer
@@ -1031,7 +1032,7 @@ check_pending_approval() {
 
     # Check if pending request is stale (older than TELEGRAM_TIMEOUT_S)
     local pending_age
-    pending_age=$(( $(date +%s) - $(stat -f %m "${pending_file}" 2>/dev/null || echo 0) ))
+    pending_age=$(( $(date +%s) - $(stat -f %m "${pending_file}" 2>/dev/null || stat -c %Y "${pending_file}" 2>/dev/null || echo 0) ))
     if [ "${pending_age}" -gt "${TELEGRAM_TIMEOUT_S}" ]; then
         log "Pending approval EXPIRED: ${rule} (age=${pending_age}s > ${TELEGRAM_TIMEOUT_S}s)"
         rm -f "${pending_file}"
