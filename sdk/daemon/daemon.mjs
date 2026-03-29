@@ -28,6 +28,7 @@ import { execSync, spawnSync }                      from 'child_process';
 import { join, dirname }                            from 'path';
 import { homedir }                                  from 'os';
 import { fileURLToPath }                            from 'url';
+import { tokenCanonical }                          from '../shared/token-canonical.mjs';
 
 const __filename  = fileURLToPath(import.meta.url);
 const __dirname   = dirname(__filename);
@@ -446,6 +447,7 @@ function writeAuditEntry(cfg, { domain, action, outcome, detail, rule,
     ...(chainDepth != null ? { chain_depth: chainDepth } : {}),
     signature_algorithm: 'Ed25519',
     hash_algorithm:      'SHA-256',
+    signature_encoding:  'raw',       // v2: signs raw SHA-256 bytes (32B), not hex string (64B)
     public_key_id:       PUBLIC_KEY_ID,
   };
 
@@ -896,9 +898,7 @@ async function handleEvaluate(cfg, params) {
 // The daemon signs with its audit key — the strongest trust anchor available.
 // The membrane can verify root tokens with get_daemon_key.
 
-function tokenCanonical(t) {
-  return [t.jti, t.sub, t.pub, String(t.depth), String(t.iat), t.parent_jti ?? ''].join('|');
-}
+// tokenCanonical imported from ../shared/token-canonical.mjs — single source of truth
 
 function handleRegister(cfg, params) {
   const { agent_id, session_id, public_key } = params || {};

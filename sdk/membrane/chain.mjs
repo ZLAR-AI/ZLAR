@@ -31,23 +31,9 @@ import { generateKeyPairSync, createHash,
          sign as cryptoSign, verify as cryptoVerify,
          createPublicKey, createPrivateKey }  from 'crypto';
 import { randomUUID }                         from 'crypto';
+import { tokenCanonical }                     from '../shared/token-canonical.mjs';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Deterministic canonical string for signing/verifying a token.
- * Field separator '|' prevents any field from bleeding into adjacent fields.
- */
-function tokenCanonical(t) {
-  return [
-    t.jti,
-    t.sub,
-    t.pub,
-    String(t.depth),
-    String(t.iat),
-    t.parent_jti ?? '',
-  ].join('|');
-}
 
 function signToken(token, privKeyPem) {
   const canonical = tokenCanonical(token);
