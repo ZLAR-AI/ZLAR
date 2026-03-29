@@ -132,6 +132,15 @@ else
     SESSION_STATE_ENABLED="false"
 fi
 
+# Source canary library (governance health probes for human-in-the-loop integrity)
+# shellcheck source=../lib/canary.sh
+CANARY_LOADED="false"
+if [ -f "${PROJECT_DIR}/lib/canary.sh" ]; then
+    source "${PROJECT_DIR}/lib/canary.sh"
+    canary_load_config "${GATE_CONFIG}"
+    CANARY_LOADED="true"
+fi
+
 # Env var overrides
 TELEGRAM_TOKEN="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-7662799203}"
@@ -865,8 +874,16 @@ telegram_ask_async() {
     [ "${severity}" = "critical" ] && emoji="🔴"
     [ "${severity}" = "warn" ] && emoji="🟡"
 
-    local text="${emoji} 🖥️ *ZLAR Gate*
+    # Fatigue warning — if canary detected rubber-stamping, add friction
+    local fatigue_banner=""
+    if [ "${CANARY_LOADED}" = "true" ] && canary_is_fatigued "${SESSION_ID:-unknown}" 2>/dev/null; then
+        fatigue_banner="
+⚠️ *Governance fatigue detected — please review carefully*
+"
+    fi
 
+    local text="${emoji} 🖥️ *ZLAR Gate*
+${fatigue_banner}
 *Tool:* \`${tool_name}\`
 *Action:* \`${display}\`
 *Risk:* ${risk_score}/100
@@ -1066,6 +1083,11 @@ main() {
         session_state_init "${SESSION_ID}"
     fi
 
+    # Passively check for canary results (non-blocking, fail-safe)
+    if [ "${CANARY_LOADED}" = "true" ]; then
+        canary_check_result "${SESSION_ID}" 2>/dev/null || true
+    fi
+
     if [ -z "${tool_name}" ]; then
         log "No tool_name in input — denying"
         respond_deny "No tool name" "gate_error"
@@ -1201,6 +1223,15 @@ main() {
                             # Human approved on a previous ask — allow this retry
                             emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "authorized" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "human:${TELEGRAM_CHAT_ID}"
                             log "Deny-then-retry: ${MATCHED_RULE} APPROVED (previous ask)"
+
+                            # Canary: record approval, maybe send a canary after
+                            if [ "${CANARY_LOADED}" = "true" ]; then
+                                canary_record_approval "${SESSION_ID}" 2>/dev/null || true
+                                if canary_should_trigger "${SESSION_ID}" 2>/dev/null; then
+                                    canary_send "${SESSION_ID}" 2>/dev/null || true
+                                fi
+                            fi
+
                             respond_allow
                             ;;
                         1)

@@ -147,8 +147,10 @@ while true; do
         # Answer callback immediately (clears loading spinner)
         answer_text="Received"
         case "${cb_data}" in
-            *:approve:*) answer_text="✅ Approved" ;;
-            *:deny:*)    answer_text="❌ Denied" ;;
+            *:canary:approve:*) answer_text="⚠️ Canary — governance test" ;;
+            *:canary:deny:*)    answer_text="✅ Canary passed" ;;
+            *:approve:*)        answer_text="✅ Approved" ;;
+            *:deny:*)           answer_text="❌ Denied" ;;
         esac
         answer_body=$(jq -n -c --arg id "${cb_id}" --arg text "${answer_text}" \
             '{callback_query_id: $id, text: $text}')
@@ -161,7 +163,13 @@ while true; do
         cb_chat_id=$(echo "${update}" | jq -r '.callback_query.message.chat.id // ""' 2>/dev/null)
         if [ -n "${cb_msg_id}" ] && [ -n "${cb_chat_id}" ]; then
             case "${cb_data}" in
-                *:approve:*)
+                *:canary:approve:*)
+    edit_text="⚠️ CANARY FAILED — You approved a suspicious action. This was a governance health check."
+    ;;
+*:canary:deny:*)
+    edit_text="✅ Canary passed — governance check healthy"
+    ;;
+*:approve:*)
     case "${cb_data}" in cc:*) pfx="🖥️";; oc:*) pfx="🦞";; mcp:*) pfx="🔷";; *) pfx="";; esac
     edit_text="${pfx} ☑️ Approved"
     ;;
