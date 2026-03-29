@@ -384,6 +384,23 @@ DOMAIN=""
 DETAIL="{}"
 TOOL_DISPLAY=""
 
+sanitize_path() {
+    # Strip newlines (injection vector), resolve symlinks (laundering vector).
+    # Handles macOS /var → /private/var, /tmp → /private/tmp.
+    # Falls back to sanitized-only path if realpath fails (new files).
+    local raw_path="$1"
+    local clean_path
+    clean_path=$(echo "${raw_path}" | tr '\n\r' '  ' | sed 's/  */ /g; s/^ //; s/ $//')
+    if [ -n "${clean_path}" ] && command -v realpath &>/dev/null; then
+        local resolved
+        resolved=$(realpath "${clean_path}" 2>/dev/null)
+        if [ -n "${resolved}" ]; then
+            clean_path="${resolved}"
+        fi
+    fi
+    printf '%s' "${clean_path}"
+}
+
 translate_tool() {
     local tool_name="$1"
     local tool_input="$2"
@@ -401,20 +418,26 @@ translate_tool() {
             ;;
         Write)
             DOMAIN="write"
+            local write_path
+            write_path=$(sanitize_path "$(echo "${tool_input}" | jq -r '.file_path // ""' 2>/dev/null)")
             local content_hash
             content_hash=$(echo "${tool_input}" | jq -r '.content // ""' 2>/dev/null | shasum -a 256 | awk '{print $1}')
-            DETAIL=$(echo "${tool_input}" | jq -c --arg hash "${content_hash}" '{path: (.file_path // ""), content_length: ((.content // "") | length), content_sha256: $hash}' 2>/dev/null || echo '{"path":""}')
-            TOOL_DISPLAY=$(echo "${tool_input}" | jq -r '.file_path // ""' 2>/dev/null)
+            DETAIL=$(jq -n -c --arg p "${write_path}" --arg hash "${content_hash}" --argjson len "$(echo "${tool_input}" | jq '((.content // "") | length)' 2>/dev/null || echo 0)" '{path: $p, content_length: $len, content_sha256: $hash}')
+            TOOL_DISPLAY=$(echo "${write_path}" | head -c 200)
             ;;
         Edit)
             DOMAIN="edit"
-            DETAIL=$(echo "${tool_input}" | jq -c '{path: (.file_path // ""), old_string: ((.old_string // "")[0:80]), new_string: ((.new_string // "")[0:80])}' 2>/dev/null || echo '{"path":""}')
-            TOOL_DISPLAY=$(echo "${tool_input}" | jq -r '.file_path // ""' 2>/dev/null)
+            local edit_path
+            edit_path=$(sanitize_path "$(echo "${tool_input}" | jq -r '.file_path // ""' 2>/dev/null)")
+            DETAIL=$(echo "${tool_input}" | jq -c --arg p "${edit_path}" '{path: $p, old_string: ((.old_string // "")[0:80]), new_string: ((.new_string // "")[0:80])}' 2>/dev/null || echo '{"path":""}')
+            TOOL_DISPLAY=$(echo "${edit_path}" | head -c 200)
             ;;
         Read)
             DOMAIN="read"
-            DETAIL=$(echo "${tool_input}" | jq -c '{path: (.file_path // "")}' 2>/dev/null || echo '{"path":""}')
-            TOOL_DISPLAY=$(echo "${tool_input}" | jq -r '.file_path // ""' 2>/dev/null)
+            local read_path
+            read_path=$(sanitize_path "$(echo "${tool_input}" | jq -r '.file_path // ""' 2>/dev/null)")
+            DETAIL=$(jq -n -c --arg p "${read_path}" '{path: $p}')
+            TOOL_DISPLAY=$(echo "${read_path}" | head -c 200)
             ;;
         Glob)
             DOMAIN="glob"
@@ -428,8 +451,10 @@ translate_tool() {
             ;;
         NotebookEdit)
             DOMAIN="notebook"
-            DETAIL=$(echo "${tool_input}" | jq -c '{path: (.notebook_path // "")}' 2>/dev/null || echo '{"path":""}')
-            TOOL_DISPLAY=$(echo "${tool_input}" | jq -r '.notebook_path // ""' 2>/dev/null)
+            local notebook_path
+            notebook_path=$(sanitize_path "$(echo "${tool_input}" | jq -r '.notebook_path // ""' 2>/dev/null)")
+            DETAIL=$(jq -n -c --arg p "${notebook_path}" '{path: $p}')
+            TOOL_DISPLAY=$(echo "${notebook_path}" | head -c 200)
             ;;
         Task|Agent)
             DOMAIN="agent"

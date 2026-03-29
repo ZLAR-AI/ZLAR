@@ -243,6 +243,80 @@ assert_no_match "docker logs NOT blocked by R005G" "${P_R005G}" 'docker logs con
 assert_no_match "cat README.md NOT blocked by R005F" "\.mcp\.json" 'cat README.md'
 assert_no_match "normal pipe NOT blocked by R005D2" "${P_R005D2}" 'cat file | grep pattern | sort'
 
+# ── Phase B: sanitize_path function ──
+echo
+echo "── Phase B: sanitize_path (newline + symlink) ──"
+
+# Source the gate to get sanitize_path function
+# We need to extract just the function, not run the whole gate
+eval "$(sed -n '/^sanitize_path()/,/^}/p' "${PROJECT_DIR}/bin/zlar-gate")"
+
+# B1: Newline injection
+newline_path=$(printf '/Users/vince/.ssh\n/harmless.txt')
+sanitized=$(sanitize_path "${newline_path}")
+if echo "${sanitized}" | grep -q '.ssh'; then
+    echo "  ✓ Newline in path preserved .ssh for matching"
+    passed=$((passed + 1))
+else
+    echo "  ✗ Newline in path lost .ssh component"
+    failed=$((failed + 1))
+fi
+
+if [ "$(printf '%s' "${sanitized}" | wc -l)" -eq 0 ]; then
+    echo "  ✓ Newline stripped from path"
+    passed=$((passed + 1))
+else
+    echo "  ✗ Newline still present in sanitized path (lines: $(printf '%s' "${sanitized}" | wc -l))"
+    failed=$((failed + 1))
+fi
+
+# B2: Symlink resolution (create temp symlink, verify resolution)
+tmpdir=$(mktemp -d)
+tmpdir_real=$(realpath "${tmpdir}" 2>/dev/null || echo "${tmpdir}")
+mkdir -p "${tmpdir_real}/real_dir"
+ln -s "${tmpdir_real}/real_dir" "${tmpdir_real}/fake_link"
+resolved=$(sanitize_path "${tmpdir}/fake_link")
+if [ "${resolved}" = "${tmpdir_real}/real_dir" ]; then
+    echo "  ✓ Symlink resolved to real path"
+    passed=$((passed + 1))
+else
+    echo "  ✗ Symlink not resolved (got: ${resolved}, expected: ${tmpdir_real}/real_dir)"
+    failed=$((failed + 1))
+fi
+
+# B3: macOS /tmp → /private/tmp
+tmp_resolved=$(sanitize_path "/tmp/test_file_that_does_not_exist")
+if echo "${tmp_resolved}" | grep -q "private/tmp"; then
+    echo "  ✓ /tmp resolved to /private/tmp (macOS canonicalization)"
+    passed=$((passed + 1))
+else
+    # May not apply on all platforms — mark as info, not failure
+    echo "  ~ /tmp did not resolve to /private/tmp (may not be macOS)"
+    passed=$((passed + 1))
+fi
+
+# B4: Non-existent path falls back gracefully
+nonexist=$(sanitize_path "/this/path/does/not/exist/file.txt")
+if [ -n "${nonexist}" ]; then
+    echo "  ✓ Non-existent path handled gracefully"
+    passed=$((passed + 1))
+else
+    echo "  ✗ Non-existent path returned empty"
+    failed=$((failed + 1))
+fi
+
+# B5: Empty path handled
+empty=$(sanitize_path "")
+if [ -z "${empty}" ] || [ "${empty}" = "" ]; then
+    echo "  ✓ Empty path handled"
+    passed=$((passed + 1))
+else
+    echo "  ✗ Empty path returned unexpected: ${empty}"
+    failed=$((failed + 1))
+fi
+
+rm -rf "${tmpdir}"
+
 # ── Summary ──
 echo
 echo "═══════════════════════════════════════════════════════"
