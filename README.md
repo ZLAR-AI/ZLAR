@@ -193,7 +193,7 @@ bin/           Gate, witness, digest, standing, registry, policy CLI
 lib/           Shared libraries (audit reader, session state)
 adapters/      Framework hooks (claude-code, cursor, windsurf)
 mcp-gate/      MCP TCP proxy gate (Node.js)
-etc/           Configuration, policy templates, sequence definitions, signing keys
+etc/           Configuration, policy templates, sequence definitions, signing keys, sandbox profiles
 scripts/       Setup, installation, Telegram bootstrap
 tests/         Test suites
 docs/          Architecture and design
@@ -205,17 +205,23 @@ oc/            OS-level containment (OpenClaw integration)
 ## Running tests
 
 ```bash
-bash scripts/smoke-test.sh        # Full suite: syntax, dependencies, Cedar, MCP gate
-bash tests/test-witness.sh        # Observation layer: 23 assertions
-bash tests/test-session-state.sh  # Session counters: 16 assertions
-bash tests/test-crypto.sh         # Cryptographic abstraction: 46 assertions
-bash tests/test-inbox-hmac.sh     # Inbox HMAC verification
-node cedar-poc/test.mjs           # Cedar base rules: 14 assertions
-node cedar-poc/test-e23.mjs       # Cedar E-23 risk-tiered: 25 assertions
-node mcp-gate/test.mjs            # MCP proxy gate: 7 assertions
+# Gate and governance tests (231 assertions across 8 suites)
+bash tests/test-perimeter-closure.sh  # Perimeter closure: 85 assertions (policy rules + sandbox + path sanitization)
+bash tests/test-crypto.sh             # Cryptographic abstraction: 46 assertions
+bash tests/test-canary.sh             # Governance health probes: 25 assertions
+bash tests/test-witness.sh            # Observation layer: 23 assertions
+bash tests/test-session-state.sh      # Session counters: 16 assertions
+bash tests/test-standing-approvals.sh # Standing approvals: 15 assertions
+bash tests/test-approval-binding.sh   # Approval binding (action fingerprint): 11 assertions
+bash tests/test-inbox-hmac.sh         # Inbox HMAC verification: 10 assertions
+
+# Cedar and MCP gate
+node cedar-poc/test.mjs               # Cedar base rules: 14 assertions
+node cedar-poc/test-e23.mjs           # Cedar E-23 risk-tiered: 25 assertions
+node mcp-gate/test.mjs                # MCP proxy gate: 7 assertions
 ```
 
-All tests pass on macOS (arm64) and Linux (Alpine aarch64 via Docker).
+All tests pass on macOS (arm64).
 
 ## Requirements
 
