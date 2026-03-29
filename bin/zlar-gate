@@ -254,17 +254,18 @@ emit_event() {
     ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     SEQ=$((SEQ + 1))
 
-    # Rotate audit file if needed
-    rotate_audit_if_needed
-
     # Hash chain — compute prev_hash from last audit line
     # Locked to prevent chain forks under concurrent invocations (Linux flock)
+    # Rotation happens INSIDE the lock to prevent concurrent rotate+append races.
     local _audit_lock_fd=""
     if command -v flock &>/dev/null; then
         exec 8>"${AUDIT_FILE}.lock"
         flock -w 2 8 || log "WARN: Could not acquire audit lock — proceeding unlocked"
         _audit_lock_fd="8"
     fi
+
+    # Rotate audit file if needed (inside lock)
+    rotate_audit_if_needed
 
     local prev_hash="genesis"
     if [ -f "${AUDIT_FILE}" ] && [ -s "${AUDIT_FILE}" ]; then
@@ -994,10 +995,11 @@ handle_subagent_start() {
     DETAIL=$(jq -n -c --arg t "${agent_type}" --arg p "${prompt}" '{agent_type:$t,prompt:$p}')
 
     # Step 1: Check for pending approval from a previous ask
-    # Compute action hash from rule ID — binds approval to the matched rule,
-    # not the exact subagent display string.
+    # Compute action hash from rule + agent_type — binds approval to the
+    # specific subagent type requested. Without this, approving one subagent
+    # type would authorize any other non-readonly type in the same session.
     local action_hash
-    action_hash=$(printf '%s|%s' "subagent-launch" "SubagentStart" | shasum -a 256 | awk '{print $1}')
+    action_hash=$(printf '%s|%s|%s' "subagent-launch" "SubagentStart" "${agent_type}" | shasum -a 256 | awk '{print $1}')
 
     local pending_result
     check_pending_approval "subagent-launch" "${action_hash}" && pending_result=0 || pending_result=$?

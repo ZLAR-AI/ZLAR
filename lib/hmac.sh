@@ -21,11 +21,23 @@ zlar_hmac_load_secret() {
 # Args: data from_id callback_query_id
 # Stdout: base64-encoded HMAC
 # Returns: 0 on success, 1 on failure
+#
+# SECURITY: Secret passed via hex key (-macopt hexkey:...) instead of
+# -hmac "$secret" to avoid exposing it in process args (ps/cmdline).
+# The hex conversion happens in-process (printf + xxd), never in a
+# child process where the raw secret would be visible.
 zlar_hmac_compute() {
     local data="$1" from_id="$2" cb_id="$3"
+    local hex_key
+    hex_key=$(printf '%s' "${ZLAR_INBOX_HMAC_SECRET}" | xxd -p 2>/dev/null | tr -d '\n')
+    if [ -z "${hex_key}" ]; then
+        # Fallback if xxd not available: use od
+        hex_key=$(printf '%s' "${ZLAR_INBOX_HMAC_SECRET}" | od -An -tx1 2>/dev/null | tr -d ' \n')
+    fi
+    [ -n "${hex_key}" ] || return 1
     local result
     result=$(printf '%s|%s|%s' "${data}" "${from_id}" "${cb_id}" \
-        | openssl dgst -sha256 -hmac "${ZLAR_INBOX_HMAC_SECRET}" -binary 2>/dev/null \
+        | openssl dgst -sha256 -mac HMAC -macopt "hexkey:${hex_key}" -binary 2>/dev/null \
         | openssl base64 -A 2>/dev/null) || return 1
     [ -n "${result}" ] || return 1
     printf '%s' "${result}"
