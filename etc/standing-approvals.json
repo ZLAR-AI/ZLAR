@@ -1,0 +1,88 @@
+{
+  "version": "1.0.0",
+  "description": "Standing approvals — pre-authorized patterns that skip Telegram ask. Signed with the same key as the policy. Agent cannot create or modify these.",
+  "approvals": [
+    {
+      "id": "SA001",
+      "rule_id": "R016",
+      "description": "Local development — curl to localhost/127.0.0.1",
+      "match": {
+        "command": {
+          "regex": "curl.*(localhost|127\\.0\\.0\\.1|\\[::1\\])"
+        }
+      },
+      "expires": "2026-12-31",
+      "created_by": "vincentnijjar",
+      "created_at": "2026-03-29"
+    },
+    {
+      "id": "SA002",
+      "rule_id": "R016",
+      "description": "GitHub API operations via gh CLI or curl",
+      "match": {
+        "command": {
+          "contains": "api.github.com"
+        }
+      },
+      "expires": "2026-12-31",
+      "created_by": "vincentnijjar",
+      "created_at": "2026-03-29"
+    },
+    {
+      "id": "SA003",
+      "rule_id": "R016",
+      "description": "Twitter/X API operations",
+      "match": {
+        "command": {
+          "contains": "api.twitter.com"
+        }
+      },
+      "expires": "2026-12-31",
+      "created_by": "vincentnijjar",
+      "created_at": "2026-03-29"
+    },
+    {
+      "id": "SA004",
+      "rule_id": "R014",
+      "description": "Git push to ZLAR-AI org repos",
+      "match": {
+        "command": {
+          "regex": "git +push.*(ZLAR-AI|origin)"
+        }
+      },
+      "expires": "2026-12-31",
+      "created_by": "vincentnijjar",
+      "created_at": "2026-03-29"
+    },
+    {
+      "id": "SA005",
+      "rule_id": "R013",
+      "description": "Kill dev processes — python, node, npm, ruby",
+      "match": {
+        "command": {
+          "regex": "(kill|killall|pkill).*(python|node|npm|ruby|bun|java)"
+        }
+      },
+      "expires": "2026-12-31",
+      "created_by": "vincentnijjar",
+      "created_at": "2026-03-29"
+    },
+    {
+      "id": "SA006",
+      "rule_id": "R016",
+      "description": "GitHub CLI operations (gh command)",
+      "match": {
+        "command": {
+          "regex": "gh (pr|issue|repo|api|release|run)"
+        }
+      },
+      "expires": "2026-12-31",
+      "created_by": "vincentnijjar",
+      "created_at": "2026-03-29"
+    }
+  ],
+  "signature": {
+    "algorithm": "ed25519",
+    "value": "jTSU13MA40FqNUhexrPAl/uoWnh2GFcXr6BhvJJSA0soaIEpDcd1IgWtVRF+ej2PHUEwV0XoPmd9WEJgzf6lAg=="
+  }
+}
