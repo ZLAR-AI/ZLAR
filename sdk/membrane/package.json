@@ -1,0 +1,19 @@
+{
+  "name": "@zlar/sdk",
+  "version": "0.1.0",
+  "description": "ZLAR SDK Membrane — governance present at instantiation, not bolted on after",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["zlar", "governance", "ai-agents", "membrane", "policy-enforcement"],
+  "author": "ZLAR Inc.",
+  "license": "Apache-2.0"
+}
