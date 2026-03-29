@@ -152,7 +152,6 @@ if [ -f "${STANDING_APPROVALS_FILE}" ] && command -v jq &>/dev/null; then
     if [ -f "${POLICY_PUBKEY}" ]; then
         _sa_sig_value=$(jq -r '.signature.value // ""' "${STANDING_APPROVALS_FILE}" 2>/dev/null)
         if [ -z "${_sa_sig_value}" ] || [ "${_sa_sig_value}" = "" ]; then
-            log "WARN: Standing approvals file is unsigned — skipping"
             _sa_sig_ok="false"
         else
             _sa_canon=$(mktemp "${GATE_TMP}/sa-canon.XXXXXX")
@@ -162,7 +161,6 @@ if [ -f "${STANDING_APPROVALS_FILE}" ] && command -v jq &>/dev/null; then
             zlar_crypto_hash "${_sa_canon}" "${_sa_hash}"
             echo "${_sa_sig_value}" | base64 -d > "${_sa_sig_bin}" 2>/dev/null
             if ! zlar_crypto_verify "${POLICY_PUBKEY}" "${_sa_hash}" "${_sa_sig_bin}" "ed25519"; then
-                log "WARN: Standing approvals signature INVALID — skipping"
                 _sa_sig_ok="false"
             fi
             rm -f "${_sa_canon}" "${_sa_hash}" "${_sa_sig_bin}"
@@ -171,8 +169,6 @@ if [ -f "${STANDING_APPROVALS_FILE}" ] && command -v jq &>/dev/null; then
     if [ "${_sa_sig_ok}" = "true" ]; then
         STANDING_APPROVALS_JSON=$(jq -c '.approvals // []' "${STANDING_APPROVALS_FILE}" 2>/dev/null)
         STANDING_APPROVALS_LOADED="true"
-        _sa_count=$(echo "${STANDING_APPROVALS_JSON}" | jq 'length' 2>/dev/null)
-        log "Standing approvals loaded: ${_sa_count} entries"
     fi
 fi
 
