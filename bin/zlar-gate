@@ -90,7 +90,10 @@ if [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
 fi
 # Network-requiring rules: matched rule determines which sandbox tier to use.
 # Rules whose commands legitimately need outbound network get Tier 2b (net).
-SANDBOX_NET_RULES="R001|R014|R014a|R016|R018"
+# Only rules where the human has explicitly approved network access get Tier 2b.
+# R001 (safe reads) and R018 (open) do NOT need network — if gh needs network,
+# it should match R016 and go through Telegram approval.
+SANDBOX_NET_RULES="R014|R014a|R016"
 SESSION_DIR="${PROJECT_DIR}/var/log/sessions"
 LOG_FILE="${PROJECT_DIR}/var/log/gate.log"
 
@@ -1395,12 +1398,14 @@ main() {
                     #   2. If not, send Telegram ask, deny immediately, await retry
 
                     # Step 1: Check for pending approval from a previous ask
-                    # Compute action hash from rule ID — binds approval to the matched
-                    # rule, not the exact command string. This prevents hash mismatches
-                    # when Claude Code varies the command between invocations (e.g.
-                    # "git push" vs "cd /path && git push") while the same rule matches.
+                    # Compute action hash from rule + tool + canonicalized detail.
+                    # This binds the approval to the specific action parameters, not
+                    # just the rule. Different commands under the same rule require
+                    # separate approval. DETAIL is already sanitized (newlines stripped,
+                    # symlinks resolved) and constructed deterministically by
+                    # translate_tool(), so it serves as the canonical form.
                     local action_hash
-                    action_hash=$(printf '%s|%s' "${MATCHED_RULE}" "${tool_name}" | shasum -a 256 | awk '{print $1}')
+                    action_hash=$(printf '%s|%s|%s' "${MATCHED_RULE}" "${tool_name}" "$(echo "${DETAIL}" | jq -S -c '.')" | shasum -a 256 | awk '{print $1}')
 
                     local pending_result
                     check_pending_approval "${MATCHED_RULE}" "${action_hash}" && pending_result=0 || pending_result=$?
