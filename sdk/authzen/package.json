@@ -1,0 +1,23 @@
+{
+  "name": "@zlar/authzen",
+  "version": "0.1.0",
+  "description": "ZLAR AuthZEN server — standards-compliant PDP interface (AuthZEN 1.0 Final)",
+  "type": "module",
+  "main": "server.mjs",
+  "exports": {
+    ".": "./server.mjs"
+  },
+  "bin": {
+    "zlar-authzen": "./server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test":  "node test.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["zlar", "authzen", "pdp", "policy-decision-point", "authorization", "ai-agents"],
+  "author": "ZLAR Inc.",
+  "license": "Apache-2.0"
+}

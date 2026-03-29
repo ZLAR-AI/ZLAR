@@ -329,15 +329,19 @@ export class ZlarAgent {
    * @param {object} toolInput  - Tool parameters
    * @returns {Promise<{decision: string, reason: string, rule: string, risk_score: number}>}
    */
-  async evaluate(toolName, toolInput) {
+  async evaluate(toolName, toolInput, options = {}) {
     const params = {
       tool_name:  toolName,
       tool_input: toolInput,
-      session_id: this.#sessionId,
-      agent_id:   this.#cfg.agentId,
+      session_id: options.sessionId ?? this.#sessionId,
+      agent_id:   options.agentId   ?? this.#cfg.agentId,
     };
-    if (this.#chain) {
-      params.delegation_chain = this.#chain.toJSON();
+    // Chain priority: options.chain (DelegationChain) > attached chain > options.chainTokens (raw array)
+    const chain = options.chain ?? this.#chain;
+    if (chain) {
+      params.delegation_chain = chain.toJSON();
+    } else if (Array.isArray(options.chainTokens)) {
+      params.delegation_chain = options.chainTokens;
     }
     return this.#rpc('evaluate', params);
   }
@@ -404,8 +408,8 @@ export class ZlarAgent {
    * @throws {ZlarDeniedError}   - If policy denies the call
    * @throws {ZlarDaemonUnreachableError} - If connection is lost
    */
-  async gate(toolName, toolInput, fn) {
-    const result = await this.evaluate(toolName, toolInput);
+  async gate(toolName, toolInput, fn, options = {}) {
+    const result = await this.evaluate(toolName, toolInput, options);
 
     if (result.decision === 'allow') {
       return fn();

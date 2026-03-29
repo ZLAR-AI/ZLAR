@@ -1,0 +1,12 @@
+#!/usr/bin/env node
+// zlar-authzen — ZLAR AuthZEN PDP server entry point
+// Standards-compliant AuthZEN 1.0 HTTP interface over the gate daemon.
+// Requires zlar-daemon to be running first.
+
+import { dirname, join }  from 'path';
+import { fileURLToPath }  from 'url';
+
+const __dirname    = dirname(fileURLToPath(import.meta.url));
+const serverPath   = join(__dirname, '..', 'sdk', 'authzen', 'server.mjs');
+
+await import(serverPath);
