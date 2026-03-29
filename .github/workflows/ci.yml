@@ -16,7 +16,8 @@ jobs:
         run: sudo apt-get install -y shellcheck
 
       - name: ShellCheck bin/
-        run: shellcheck --severity=error bin/*
+        run: |
+          file bin/* | grep 'shell script' | cut -d: -f1 | xargs shellcheck --severity=error
 
       - name: ShellCheck adapters/
         run: shellcheck --severity=error adapters/*/hook.sh
@@ -81,3 +82,17 @@ jobs:
 
       - name: Run MCP gate tests
         run: node mcp-gate/test.mjs
+
+      - name: Create CI signing key (Phase 2 SDK chain signing)
+        run: |
+          openssl genpkey -algorithm ed25519 -out ~/.zlar-signing.key
+          chmod 600 ~/.zlar-signing.key
+
+      - name: Run SDK daemon tests
+        run: node sdk/daemon/test.mjs
+
+      - name: Run SDK membrane tests
+        run: node sdk/membrane/test.mjs
+
+      - name: Run SDK authzen tests
+        run: node sdk/authzen/test.mjs
