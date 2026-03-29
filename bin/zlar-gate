@@ -141,6 +141,41 @@ if [ -f "${PROJECT_DIR}/lib/canary.sh" ]; then
     CANARY_LOADED="true"
 fi
 
+# Load standing approvals (pre-authorized patterns that skip Telegram ask)
+STANDING_APPROVALS_LOADED="false"
+STANDING_APPROVALS_JSON=""
+STANDING_APPROVAL_ID=""
+STANDING_APPROVALS_FILE="${PROJECT_DIR}/etc/standing-approvals.json"
+if [ -f "${STANDING_APPROVALS_FILE}" ] && command -v jq &>/dev/null; then
+    # Verify signature if policy pubkey exists (same trust model as policy)
+    _sa_sig_ok="true"
+    if [ -f "${POLICY_PUBKEY}" ]; then
+        _sa_sig_value=$(jq -r '.signature.value // ""' "${STANDING_APPROVALS_FILE}" 2>/dev/null)
+        if [ -z "${_sa_sig_value}" ] || [ "${_sa_sig_value}" = "" ]; then
+            log "WARN: Standing approvals file is unsigned — skipping"
+            _sa_sig_ok="false"
+        else
+            _sa_canon=$(mktemp "${GATE_TMP}/sa-canon.XXXXXX")
+            _sa_hash=$(mktemp "${GATE_TMP}/sa-hash.XXXXXX")
+            _sa_sig_bin=$(mktemp "${GATE_TMP}/sa-sig.XXXXXX")
+            jq '.signature.value = ""' "${STANDING_APPROVALS_FILE}" > "${_sa_canon}" 2>/dev/null
+            zlar_crypto_hash "${_sa_canon}" "${_sa_hash}"
+            echo "${_sa_sig_value}" | base64 -d > "${_sa_sig_bin}" 2>/dev/null
+            if ! zlar_crypto_verify "${POLICY_PUBKEY}" "${_sa_hash}" "${_sa_sig_bin}" "ed25519"; then
+                log "WARN: Standing approvals signature INVALID — skipping"
+                _sa_sig_ok="false"
+            fi
+            rm -f "${_sa_canon}" "${_sa_hash}" "${_sa_sig_bin}"
+        fi
+    fi
+    if [ "${_sa_sig_ok}" = "true" ]; then
+        STANDING_APPROVALS_JSON=$(jq -c '.approvals // []' "${STANDING_APPROVALS_FILE}" 2>/dev/null)
+        STANDING_APPROVALS_LOADED="true"
+        _sa_count=$(echo "${STANDING_APPROVALS_JSON}" | jq 'length' 2>/dev/null)
+        log "Standing approvals loaded: ${_sa_count} entries"
+    fi
+fi
+
 # Env var overrides
 TELEGRAM_TOKEN="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-7662799203}"
@@ -767,6 +802,61 @@ EOF
 # ─── Deny-then-retry approval pattern ──────────────────────────────────────
 # Claude Code hooks must return fast — blocking for Telegram polling doesn't
 # work (CC proceeds without waiting for stdout). Pattern:
+# ─── Standing Approvals ───────────────────────────────────────────────────────
+# Pre-authorized patterns that skip Telegram ask. Checked before the deny-then-
+# retry flow. If a standing approval matches, the action is allowed immediately
+# with authorizer "standing:<approval_id>".
+#
+# Returns: 0 = standing approval matched, 1 = no match
+check_standing_approval() {
+    local rule_id="$1"
+    local command_text="$2"
+
+    if [ "${STANDING_APPROVALS_LOADED}" != "true" ]; then
+        return 1
+    fi
+
+    local count i sa_rule_id sa_expires sa_match_contains sa_match_regex sa_id
+    count=$(echo "${STANDING_APPROVALS_JSON}" | jq 'length' 2>/dev/null)
+    [ -z "${count}" ] || [ "${count}" = "0" ] && return 1
+
+    local today
+    today=$(date +%Y-%m-%d)
+
+    for (( i=0; i<count; i++ )); do
+        sa_rule_id=$(echo "${STANDING_APPROVALS_JSON}" | jq -r ".[$i].rule_id // \"\"" 2>/dev/null)
+        [ "${sa_rule_id}" != "${rule_id}" ] && continue
+
+        sa_expires=$(echo "${STANDING_APPROVALS_JSON}" | jq -r ".[$i].expires // \"\"" 2>/dev/null)
+        if [ -n "${sa_expires}" ] && [[ "${today}" > "${sa_expires}" ]]; then
+            continue  # Expired
+        fi
+
+        sa_id=$(echo "${STANDING_APPROVALS_JSON}" | jq -r ".[$i].id // \"SA?\"" 2>/dev/null)
+
+        sa_match_contains=$(echo "${STANDING_APPROVALS_JSON}" | jq -r ".[$i].match.command.contains // \"\"" 2>/dev/null)
+        if [ -n "${sa_match_contains}" ]; then
+            if [[ "${command_text}" == *"${sa_match_contains}"* ]]; then
+                STANDING_APPROVAL_ID="${sa_id}"
+                log "Standing approval MATCHED: ${sa_id} (contains '${sa_match_contains}')"
+                return 0
+            fi
+        fi
+
+        sa_match_regex=$(echo "${STANDING_APPROVALS_JSON}" | jq -r ".[$i].match.command.regex // \"\"" 2>/dev/null)
+        if [ -n "${sa_match_regex}" ]; then
+            if [[ "${command_text}" =~ ${sa_match_regex} ]]; then
+                STANDING_APPROVAL_ID="${sa_id}"
+                log "Standing approval MATCHED: ${sa_id} (regex)"
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
+# ─── Deny-Then-Retry Approval Pattern ────────────────────────────────────────
 #   1. First invocation: send Telegram ask, write pending file, return deny
 #   2. Human taps approve/deny on phone → dispatcher writes to inbox
 #   3. Retry invocation: gate checks inbox for pending action's callback
@@ -1205,6 +1295,17 @@ main() {
                     ;;
 
                 active|review|*)
+                    # ── Standing approval fast path ──
+                    # Check pre-authorized patterns before the deny-then-retry flow.
+                    # If a standing approval matches, allow immediately — no Telegram.
+                    # ── Standing approval fast path ──
+                    # Check pre-authorized patterns before the deny-then-retry flow.
+                    # If a standing approval matches, allow immediately — no Telegram.
+                    if check_standing_approval "${MATCHED_RULE}" "${TOOL_DISPLAY}"; then
+                        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "authorized" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "standing:${STANDING_APPROVAL_ID}"
+                        respond_allow
+                    else
+
                     # ── Deny-then-retry pattern ──
                     # Claude Code hooks must respond fast. We cannot poll for
                     # Telegram responses in-process. Instead:
@@ -1269,6 +1370,7 @@ main() {
                             esac
                             ;;
                     esac
+                    fi
                     ;;
             esac
             ;;
