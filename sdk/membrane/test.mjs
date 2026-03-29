@@ -726,6 +726,42 @@ if (!daemonStarted) {
       await gc.close();
     });
 
+    await test('tampered chain: daemon rejects forged chain → deny', async () => {
+      // Build a structurally valid chain, then corrupt the root token's sig.
+      // The daemon must reject it at the chain:verify boundary.
+      const forgedTokens = integrationAgent.chain.toJSON().map((t, i) =>
+        i === 0 ? { ...t, sig: Buffer.alloc(64).toString('base64') } : t
+      );
+      const spy = await ZlarAgent.connect({
+        agentId:    'tamper-spy',
+        socketPath: SOCK_PATH,
+      });
+      // Send the forged chain directly via evaluate() using chainTokens option
+      const result = await spy.evaluate('Bash', { command: 'ls', cwd: '/tmp' }, {
+        chainTokens: forgedTokens,
+      });
+      assertEqual(result.decision, 'deny', 'Forged chain must be denied');
+      assert(result.rule === 'chain:verify', `Expected chain:verify rule, got ${result.rule}`);
+      await spy.close();
+    });
+
+    await test('attacker-supplied bare array: daemon rejects unverifiable chain → deny', async () => {
+      // Array of plain objects with no valid signatures — previously accepted, now rejected.
+      const fakeChain = [
+        { v: 1, jti: 'fake-jti', sub: 'orchestrator', pub: 'AAAA', depth: 0,
+          iat: Math.floor(Date.now() / 1000), parent_jti: null, sig_alg: 'ed25519', sig: 'AAAA' },
+      ];
+      const spy = await ZlarAgent.connect({
+        agentId:    'attacker',
+        socketPath: SOCK_PATH,
+      });
+      const result = await spy.evaluate('Bash', { command: 'ls', cwd: '/tmp' }, {
+        chainTokens: fakeChain,
+      });
+      assertEqual(result.decision, 'deny', 'Fabricated chain must be denied');
+      await spy.close();
+    });
+
   } catch (startErr) {
     console.log(`  ⊘ Could not connect to daemon: ${startErr.message} — skipping integration tests`);
   }
