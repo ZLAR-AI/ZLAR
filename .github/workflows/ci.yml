@@ -99,3 +99,6 @@ jobs:
 
       - name: Run SDK authzen tests
         run: node sdk/authzen/test.mjs
+
+      - name: Run SDK hook adapter tests
+        run: node sdk/hook-adapter/test.mjs
