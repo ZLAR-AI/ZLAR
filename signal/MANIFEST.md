@@ -12,6 +12,7 @@ format: structured-index
 | File | Purpose | Classification |
 |------|---------|----------------|
 | SIGNAL.md | Front door — declaration, orientation, product table | public |
+| ORIGIN.md | Why ZLAR exists — the personal failure that produced the architecture | public |
 | MANIFEST.md | Machine-readable project map (this file) | public |
 | THESIS.md | Core ideas in extractable form | public |
 

@@ -235,6 +235,7 @@ Clean removal. Hooks removed from all frameworks. Signing key preserved.
 
 ## Further reading
 
+- [signal/ORIGIN.md](signal/ORIGIN.md) — Why ZLAR exists. The personal failure that produced the architecture.
 - [signal/THESIS.md](signal/THESIS.md) — Why intelligence in the monitor fails. Why the governed path is the fast path.
 - [signal/SIGNAL.md](signal/SIGNAL.md) — Project declaration and structured overview.
 - [AGENTS.md](AGENTS.md) — Agent discovery layer.
