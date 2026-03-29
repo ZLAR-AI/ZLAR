@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.6.0 — 2026-03-29
+
+Perimeter closure complete. Three phases closing the gap between the gate's material (sound) and the gate's coverage (not yet complete when this work began).
+
+### Added
+
+- **macOS Seatbelt sandboxing (Phase C).** Two per-command sandbox profiles via sandbox-exec. Tier 2a (nonet): deny all network + deny dangerous binaries (curl, wget, ssh, osascript, security) + deny secret reads + deny governance writes. Tier 2b (net): same restrictions, allows outbound network for approved commands. Gate integration via updatedInput hook protocol -- commands wrapped transparently.
+- **15 new policy rules (Phase A).** R005B-H (bash): claude -p spawning, interpreter one-liners, base64 pipe, pipe-to-shell, eval/exec, .mcp.json, Docker socket, library injection. R032F/F2, R032G (write): CLAUDE.md + .mcp.json protection. R041F/F2, R041G (edit): matching edit rules. R051: .env reads upgraded from log to ask.
+- **Path sanitization (Phase B).** `sanitize_path()` strips newlines and resolves symlinks via realpath before pattern matching. Prevents newline injection and symlink laundering across Write, Edit, Read, NotebookEdit domains.
+- **Audit signing canonicalization.** `jq -S` key-sorting before SHA-256 hashing ensures Ed25519 signatures are reproducible by any JSON implementation.
+- **85 new tests.** `test-perimeter-closure.sh` covers all new rules, path sanitization, symlink resolution, and 10 sandbox-specific tests. 231 total across 8 suites.
+
+### Changed
+
+- Policy v2.6.0 (72 rules, was 57). Signed with Ed25519.
+- Origin story revised to honest version: "the gate is absolute where it stands, the perimeter is not yet complete."
+- Glossary: 16 new terms (Composition Attack, Governance Perimeter, Escape Hatch, Binding Width, TOCTOU Window, Approval Receipt, Tiered Sandboxing, Taint Label, Taint Explosion, Forward-Secure Signing, External Anchoring, JCS Canonicalization, Policy Transparency Log, Fencing Token, Multi-Gate Deployment, Canary System) + 5 existing terms updated.
+
+### Honest Boundaries
+
+17 escape hatches blocked. 2 partially (DNS exfiltration, persistence edges). 4 require upstream Anthropic fixes (#25000, #23983, #37210, MCP sampling). 2 fundamental (model deliberate evasion, kernel-level bypass).
+
+## 1.5.0 — 2026-03-29
+
+Perimeter closure Phase A. Policy rules only.
+
+### Added
+
+- 15 new policy rules mitigating 8 escape hatches (see v1.6.0 for full list)
+- `test-perimeter-closure.sh` with 69 assertions
+
 ## 1.4.1 — 2026-03-26
 
 Security fixes from cross-model audit (Codex + Claude verification). Five issues found, five fixed. The most critical: approval for one command could authorize a different command matching the same policy rule.
