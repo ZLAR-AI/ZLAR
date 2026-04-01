@@ -16,6 +16,7 @@ format: structured-index
 | MANIFEST.md | Machine-readable project map (this file) | public |
 | THESIS.md | Core ideas in extractable form | public |
 | FAIL-OPEN.md | On the Anthropic leak, fail-open hooks, and deterministic enforcement | public |
+| PROOF.md | Proof: on the governed path, no unauthorized action can execute | public |
 
 ## Repository
 
