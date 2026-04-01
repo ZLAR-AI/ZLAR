@@ -241,6 +241,7 @@ Clean removal. Hooks removed from all frameworks. Signing key preserved.
 
 ## Further reading
 
+- [signal/FAIL-OPEN.md](signal/FAIL-OPEN.md) — On the Anthropic source code leak, the fail-open hook architecture, and why deterministic enforcement exists.
 - [signal/ORIGIN.md](signal/ORIGIN.md) — Why ZLAR exists. The personal failure that produced the architecture.
 - [signal/THESIS.md](signal/THESIS.md) — Why intelligence in the monitor fails. Why the governed path is the fast path.
 - [signal/SIGNAL.md](signal/SIGNAL.md) — Project declaration and structured overview.
