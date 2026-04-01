@@ -15,6 +15,7 @@ format: structured-index
 | ORIGIN.md | Why ZLAR exists — the personal failure that produced the architecture | public |
 | MANIFEST.md | Machine-readable project map (this file) | public |
 | THESIS.md | Core ideas in extractable form | public |
+| FAIL-OPEN.md | On the Anthropic leak, fail-open hooks, and deterministic enforcement | public |
 
 ## Repository
 
