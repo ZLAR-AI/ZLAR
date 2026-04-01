@@ -507,3 +507,6 @@ fi
 echo ""
 echo -e "${WHITE}═══════════════════════════════════════════════════════════════${RESET}"
 echo ""
+
+# Exit non-zero if any test failed (for CI)
+[ "${FAILED}" -eq 0 ]
