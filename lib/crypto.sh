@@ -24,6 +24,17 @@
 [ -n "${_ZLAR_CRYPTO_LOADED:-}" ] && return 0
 _ZLAR_CRYPTO_LOADED=1
 
+# ─── OpenSSL Resolution ─────────────────────────────────────────────────────
+# macOS ships LibreSSL which lacks Ed25519 pkeyutl -rawin support.
+# Prefer Homebrew OpenSSL 3.x when available. All crypto operations use
+# $_OPENSSL instead of bare "openssl".
+_OPENSSL="openssl"
+if [ -x "/opt/homebrew/opt/openssl@3/bin/openssl" ]; then
+    _OPENSSL="/opt/homebrew/opt/openssl@3/bin/openssl"
+elif [ -x "/usr/local/opt/openssl@3/bin/openssl" ]; then
+    _OPENSSL="/usr/local/opt/openssl@3/bin/openssl"
+fi
+
 # ─── Algorithm Resolution ─────────────────────────────────────────────────────
 # Priority: env var > config file > default
 # Config file location: $PROJECT_DIR/etc/crypto.json (optional)
@@ -102,28 +113,28 @@ zlar_crypto_keygen() {
 
 _keygen_ed25519() {
     local privkey="$1" pubkey="$2"
-    openssl genpkey -algorithm Ed25519 -out "${privkey}" 2>/dev/null || return 1
+    ${_OPENSSL} genpkey -algorithm Ed25519 -out "${privkey}" 2>/dev/null || return 1
     chmod 600 "${privkey}"
     local pubdir
     pubdir=$(dirname "${pubkey}")
     mkdir -p "${pubdir}" 2>/dev/null
-    openssl pkey -in "${privkey}" -pubout -out "${pubkey}" 2>/dev/null || return 1
+    ${_OPENSSL} pkey -in "${privkey}" -pubout -out "${pubkey}" 2>/dev/null || return 1
     chmod 644 "${pubkey}"
 }
 
 _keygen_ml_dsa_44() {
     local privkey="$1" pubkey="$2"
     # ML-DSA-44 (FIPS 204): native in OpenSSL 3.6+, or via liboqs/oqs-provider
-    if ! openssl list -signature-algorithms 2>/dev/null | grep -qi "mldsa44\|ml-dsa-44\|dilithium2"; then
+    if ! ${_OPENSSL} list -signature-algorithms 2>/dev/null | grep -qi "mldsa44\|ml-dsa-44\|dilithium2"; then
         echo "ERROR: ML-DSA-44 not available. Requires OpenSSL 3.6+ or liboqs." >&2
         return 1
     fi
-    openssl genpkey -algorithm MLDSA44 -out "${privkey}" 2>/dev/null || return 1
+    ${_OPENSSL} genpkey -algorithm MLDSA44 -out "${privkey}" 2>/dev/null || return 1
     chmod 600 "${privkey}"
     local pubdir
     pubdir=$(dirname "${pubkey}")
     mkdir -p "${pubdir}" 2>/dev/null
-    openssl pkey -in "${privkey}" -pubout -out "${pubkey}" 2>/dev/null || return 1
+    ${_OPENSSL} pkey -in "${privkey}" -pubout -out "${pubkey}" 2>/dev/null || return 1
     chmod 644 "${pubkey}"
 }
 
@@ -180,12 +191,12 @@ zlar_crypto_sign() {
 
 _sign_ed25519() {
     local key="$1" input="$2" output="$3"
-    openssl pkeyutl -sign -inkey "${key}" -rawin -in "${input}" -out "${output}" 2>/dev/null
+    ${_OPENSSL} pkeyutl -sign -inkey "${key}" -rawin -in "${input}" -out "${output}" 2>/dev/null
 }
 
 _sign_ml_dsa_44() {
     local key="$1" input="$2" output="$3"
-    openssl pkeyutl -sign -inkey "${key}" -rawin -in "${input}" -out "${output}" 2>/dev/null
+    ${_OPENSSL} pkeyutl -sign -inkey "${key}" -rawin -in "${input}" -out "${output}" 2>/dev/null
 }
 
 _sign_hybrid() {
@@ -238,12 +249,12 @@ zlar_crypto_verify() {
 
 _verify_ed25519() {
     local pubkey="$1" input="$2" sigfile="$3"
-    openssl pkeyutl -verify -pubin -inkey "${pubkey}" -rawin -sigfile "${sigfile}" -in "${input}" &>/dev/null
+    ${_OPENSSL} pkeyutl -verify -pubin -inkey "${pubkey}" -rawin -sigfile "${sigfile}" -in "${input}" &>/dev/null
 }
 
 _verify_ml_dsa_44() {
     local pubkey="$1" input="$2" sigfile="$3"
-    openssl pkeyutl -verify -pubin -inkey "${pubkey}" -rawin -sigfile "${sigfile}" -in "${input}" &>/dev/null
+    ${_OPENSSL} pkeyutl -verify -pubin -inkey "${pubkey}" -rawin -sigfile "${sigfile}" -in "${input}" &>/dev/null
 }
 
 _verify_hybrid() {
@@ -295,16 +306,16 @@ zlar_crypto_pubkey_b64() {
 
     case "${algo}" in
         ed25519)
-            openssl pkey -in "${key}" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n'
+            ${_OPENSSL} pkey -in "${key}" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n'
             ;;
         ml-dsa-44)
-            openssl pkey -in "${key}" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n'
+            ${_OPENSSL} pkey -in "${key}" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n'
             ;;
         hybrid)
             # For hybrid, concatenate both public keys base64-encoded
             local ed_b64 ml_b64
-            ed_b64=$(openssl pkey -in "${key}/ed25519.key" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n')
-            ml_b64=$(openssl pkey -in "${key}/ml-dsa-44.key" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n')
+            ed_b64=$(${_OPENSSL} pkey -in "${key}/ed25519.key" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n')
+            ml_b64=$(${_OPENSSL} pkey -in "${key}/ml-dsa-44.key" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n')
             echo "${ed_b64}:${ml_b64}"
             ;;
     esac
