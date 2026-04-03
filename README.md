@@ -1,8 +1,38 @@
 # ZLAR
 
-Autonomous agents can now execute shell commands, write files, make API calls, and deploy code. Nothing sits between the decision to act and the act itself. ZLAR is that missing layer — a governance primitive that intercepts every agent action at the execution boundary, enforces signed policy, and produces cryptographic evidence of what happened, who authorized it, and when.
+## Automation, Abundance and Authority: The Governed Path Is the Fast Path
 
-This is not a smarter monitor. The gate has no intelligence. That is the security property. ZLAR is acceleration infrastructure — the governed path is the fast path.
+### The problem
+
+AI agents are starting to do real things. They can read files, write files, send things over the internet, run commands, change systems, and spawn other agents.
+
+Most people try to solve this in one of three ways: let the machine act then check what it did, use another AI to judge whether it seems safe, or lock it down and hope that is enough.
+
+That is too late, and not strong enough. Once the act has happened, the harm may already be done. And if you ask one intelligence to judge another intelligence, both can be fooled.
+
+The real question is: how do we stop it before it crosses the line? How do we let it work, while keeping it inside what a human actually allowed?
+
+### The solution
+
+**Give the agent a permission card.** Every agent gets a simple manifest that says who it belongs to, what it may do, what it may never do, what happens when it reaches something unclear, and when its permission runs out. Not a brain. Not a personality. Just the boundary.
+
+**Put a gate in front of every real act.** The agent can think all it wants. It cannot act without crossing the gate. The gate checks: is this allowed? Is this forbidden? Does a human need to be asked? If the answer is no, it does not happen.
+
+**Keep a record that cannot be quietly changed.** Every important attempt is written down in a tamper-evident, cryptographically signed record. So later you can prove what the agent tried, what was allowed, what was blocked, and who approved it.
+
+**Keep human judgment where it belongs.** Inside its boundary, the machine moves fast. At the edge, it must ask a human. The human is called only when judgment is truly needed. The machine handles the routine. The human handles the point of consequence.
+
+### My view
+
+Do not ask if the machine seems good. Ask if this act was allowed.
+
+Most people focus on behavior: does this look safe? Does this seem risky? Do we trust this model?
+
+ZLAR focuses on authority: was this allowed? By whom? Within what boundary? What happens if it goes past that boundary?
+
+That is not the language of vibes. That is the language of law, finance, access, and rule.
+
+---
 
 For platform teams and security engineers deploying AI agents with real-world tool access.
 
