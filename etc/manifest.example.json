@@ -1,0 +1,40 @@
+{
+  "manifest_version": "0.1.0",
+
+  "identity": {
+    "agent_id": "zlar:agent:claude-code",
+    "principal": "zlar:human:vince-nijjar",
+    "issued_at": "2026-04-03T09:00:00Z"
+  },
+
+  "authority": {
+    "allow": [
+      "bash.read",
+      "file.read",
+      "file.write",
+      "file.edit",
+      "file.glob",
+      "file.grep",
+      "git.status"
+    ],
+    "deny": [
+      "bash.dangerous",
+      "system.modify"
+    ],
+    "unmatched_action": "escalate"
+  },
+
+  "escalation": {
+    "channel": "telegram:7662799203",
+    "timeout_seconds": 300,
+    "timeout_action": "deny"
+  },
+
+  "expires": "2026-04-10T09:00:00Z",
+
+  "signature": {
+    "algorithm": "Ed25519",
+    "value": "",
+    "key_id": ""
+  }
+}

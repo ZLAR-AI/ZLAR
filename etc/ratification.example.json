@@ -1,0 +1,20 @@
+{
+  "ratification_version": "0.1.0",
+  "manifest_hash": "sha256:...",
+  "manifest_agent_id": "zlar:agent:claude-code",
+  "ratified_by": "zlar:human:vince-nijjar",
+  "ratified_at": "2026-04-10T09:00:00Z",
+  "evidence_reviewed": [
+    "audit_trail: 487 actions, 3 denials, 0 incidents",
+    "canary: passed (2 of 2 probes correctly denied)",
+    "standing_approvals: SA001 used 34 times, SA004 used 12 times"
+  ],
+  "disposition": "re-affirm",
+  "next_review": "2026-07-10T09:00:00Z",
+  "notes": "",
+  "signature": {
+    "algorithm": "Ed25519",
+    "value": "",
+    "key_id": ""
+  }
+}

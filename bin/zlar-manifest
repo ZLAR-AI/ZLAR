@@ -1,0 +1,423 @@
+#!/bin/bash
+# zlar-manifest — sign, verify, render, and inspect capability manifests
+#
+# The manifest is an interface to governance, not governance itself.
+# The gate is the governance. The manifest makes governance portable,
+# transparent, and composable.
+#
+# See docs/MANIFEST-INVARIANTS.md for the design invariants.
+#
+# Usage:
+#   zlar-manifest sign   --input manifest.json                Sign a manifest
+#   zlar-manifest verify --input manifest.json                Verify signature
+#   zlar-manifest render --input manifest.json                Human-readable view
+#   zlar-manifest render --input manifest.json --simple       Nontechnical view
+#   zlar-manifest check  --input manifest.json                Check expiry + signature
+#   zlar-manifest new    --agent-id ID --principal PRINCIPAL   Generate a new manifest
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+source "${PROJECT_DIR}/lib/crypto.sh"
+
+KEYS_DIR="${PROJECT_DIR}/etc/keys"
+DEFAULT_KEY="${HOME}/.zlar-signing.key"
+DEFAULT_PUBKEY="${KEYS_DIR}/policy-signing.pub"
+
+# ── Colors ──
+if [[ -t 1 ]]; then
+    BOLD='\033[1m' GREEN='\033[0;32m' RED='\033[0;31m'
+    YELLOW='\033[0;33m' BLUE='\033[1;36m' DIM='\033[2m' NC='\033[0m'
+else
+    BOLD='' GREEN='' RED='' YELLOW='' BLUE='' DIM='' NC=''
+fi
+
+ok()   { echo -e "${GREEN}✓${NC} $1"; }
+fail() { echo -e "${RED}✗${NC} $1" >&2; exit 1; }
+info() { echo -e "${DIM}  $1${NC}"; }
+
+# ── Sign ──
+
+cmd_sign() {
+    local input="" key=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --input) input="$2"; shift 2 ;;
+            --key)   key="$2"; shift 2 ;;
+            *) fail "Unknown: $1" ;;
+        esac
+    done
+
+    [[ -z "${input}" ]] && fail "Usage: zlar-manifest sign --input <manifest.json>"
+    [[ ! -f "${input}" ]] && fail "File not found: ${input}"
+    [[ -z "${key}" ]] && key="${DEFAULT_KEY}"
+    [[ ! -f "${key}" ]] && fail "Signing key not found: ${key}"
+
+    # Validate manifest structure
+    local version
+    version=$(jq -r '.manifest_version // ""' "${input}" 2>/dev/null)
+    [[ "${version}" != "0.1.0" ]] && fail "Unsupported manifest version: ${version}"
+
+    # Required sections
+    for section in identity authority escalation expires; do
+        jq -e ".${section}" "${input}" >/dev/null 2>&1 || fail "Missing required section: ${section}"
+    done
+
+    echo -e "${BOLD}Signing manifest${NC}"
+    info "Input: ${input}"
+    info "Key: ${key}"
+
+    # Get algorithm label and public key
+    local algo_label
+    algo_label=$(zlar_crypto_label)
+
+    local pubkey_b64=""
+    if [[ -f "${DEFAULT_PUBKEY}" ]]; then
+        pubkey_b64=$(base64 < "${DEFAULT_PUBKEY}" | tr -d '\n')
+    fi
+
+    local key_id=""
+    if [[ -f "${DEFAULT_PUBKEY}" ]]; then
+        key_id=$(zlar_crypto_pubkey_fingerprint "${DEFAULT_PUBKEY}")
+    fi
+
+    # Create canonical form (signature fields zeroed)
+    local canon_file hash_file sig_file
+    canon_file=$(mktemp /tmp/zlar-manifest-canon.XXXXXX)
+    hash_file=$(mktemp /tmp/zlar-manifest-hash.XXXXXX)
+    sig_file=$(mktemp /tmp/zlar-manifest-sig.XXXXXX)
+
+    jq -S -c '.signature = {algorithm:"",value:"",key_id:""}' "${input}" > "${canon_file}"
+
+    # Hash
+    zlar_crypto_hash "${canon_file}" "${hash_file}"
+
+    # Sign
+    if ! zlar_crypto_sign "${key}" "${hash_file}" "${sig_file}"; then
+        rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+        fail "Signing failed"
+    fi
+
+    local sig_b64
+    sig_b64=$(base64 < "${sig_file}" | tr -d '\n')
+
+    # Write signed manifest
+    local signed_tmp
+    signed_tmp=$(mktemp /tmp/zlar-manifest-signed.XXXXXX)
+
+    jq --arg algo "${algo_label}" \
+       --arg sig "${sig_b64}" \
+       --arg kid "${key_id}" \
+       '.signature.algorithm = $algo | .signature.value = $sig | .signature.key_id = $kid' \
+       "${input}" > "${signed_tmp}"
+
+    mv "${signed_tmp}" "${input}"
+    rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+
+    ok "Manifest signed: ${input}"
+    info "Algorithm: ${algo_label}"
+    info "Key ID: ${key_id}"
+}
+
+# ── Verify ──
+
+cmd_verify() {
+    local input=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --input) input="$2"; shift 2 ;;
+            *) fail "Unknown: $1" ;;
+        esac
+    done
+
+    [[ -z "${input}" ]] && fail "Usage: zlar-manifest verify --input <manifest.json>"
+    [[ ! -f "${input}" ]] && fail "File not found: ${input}"
+
+    local sig_value
+    sig_value=$(jq -r '.signature.value // ""' "${input}" 2>/dev/null)
+    [[ -z "${sig_value}" ]] && fail "Manifest is unsigned (empty signature)"
+
+    local pubkey="${DEFAULT_PUBKEY}"
+    [[ ! -f "${pubkey}" ]] && fail "Public key not found: ${pubkey}"
+
+    echo -e "${BOLD}Verifying manifest signature${NC}"
+
+    local canon_file hash_file sig_bin
+    canon_file=$(mktemp /tmp/zlar-manifest-canon.XXXXXX)
+    hash_file=$(mktemp /tmp/zlar-manifest-hash.XXXXXX)
+    sig_bin=$(mktemp /tmp/zlar-manifest-sig.XXXXXX)
+
+    jq -S -c '.signature = {algorithm:"",value:"",key_id:""}' "${input}" > "${canon_file}"
+    zlar_crypto_hash "${canon_file}" "${hash_file}"
+    echo "${sig_value}" | base64 -d > "${sig_bin}" 2>/dev/null
+
+    if zlar_crypto_verify "${pubkey}" "${hash_file}" "${sig_bin}" "ed25519"; then
+        ok "Signature is VALID"
+        rm -f "${canon_file}" "${hash_file}" "${sig_bin}"
+        return 0
+    else
+        rm -f "${canon_file}" "${hash_file}" "${sig_bin}"
+        fail "Signature is INVALID"
+    fi
+}
+
+# ── Check (expiry + signature) ──
+
+cmd_check() {
+    local input=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --input) input="$2"; shift 2 ;;
+            *) fail "Unknown: $1" ;;
+        esac
+    done
+
+    [[ -z "${input}" ]] && fail "Usage: zlar-manifest check --input <manifest.json>"
+    [[ ! -f "${input}" ]] && fail "File not found: ${input}"
+
+    echo -e "${BOLD}Checking manifest${NC}"
+
+    # Check signature
+    local sig_value
+    sig_value=$(jq -r '.signature.value // ""' "${input}" 2>/dev/null)
+    if [[ -z "${sig_value}" ]]; then
+        echo -e "  Signature:  ${YELLOW}unsigned${NC}"
+    elif [[ -f "${DEFAULT_PUBKEY}" ]]; then
+        local canon_file hash_file sig_bin
+        canon_file=$(mktemp /tmp/zlar-mc.XXXXXX)
+        hash_file=$(mktemp /tmp/zlar-mh.XXXXXX)
+        sig_bin=$(mktemp /tmp/zlar-ms.XXXXXX)
+        jq -S -c '.signature = {algorithm:"",value:"",key_id:""}' "${input}" > "${canon_file}"
+        zlar_crypto_hash "${canon_file}" "${hash_file}"
+        echo "${sig_value}" | base64 -d > "${sig_bin}" 2>/dev/null
+        if zlar_crypto_verify "${DEFAULT_PUBKEY}" "${hash_file}" "${sig_bin}" "ed25519"; then
+            echo -e "  Signature:  ${GREEN}valid${NC}"
+        else
+            echo -e "  Signature:  ${RED}INVALID${NC}"
+        fi
+        rm -f "${canon_file}" "${hash_file}" "${sig_bin}"
+    fi
+
+    # Check expiry
+    local expires
+    expires=$(jq -r '.expires // ""' "${input}" 2>/dev/null)
+    if [[ -n "${expires}" ]]; then
+        local now
+        now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        if [[ "${now}" > "${expires}" ]]; then
+            echo -e "  Expiry:     ${RED}EXPIRED${NC} (${expires})"
+        else
+            echo -e "  Expiry:     ${GREEN}valid${NC} (${expires})"
+        fi
+    fi
+
+    # Summary
+    local agent_id principal
+    agent_id=$(jq -r '.identity.agent_id // "?"' "${input}" 2>/dev/null)
+    principal=$(jq -r '.identity.principal // "?"' "${input}" 2>/dev/null)
+    local allow_count deny_count
+    allow_count=$(jq '.authority.allow | length' "${input}" 2>/dev/null)
+    deny_count=$(jq '.authority.deny | length' "${input}" 2>/dev/null)
+
+    echo -e "  Agent:      ${BLUE}${agent_id}${NC}"
+    echo -e "  Principal:  ${principal}"
+    echo -e "  Allowed:    ${allow_count} categories"
+    echo -e "  Denied:     ${deny_count} categories"
+    echo -e "  Unmatched:  $(jq -r '.authority.unmatched_action // "escalate"' "${input}" 2>/dev/null)"
+}
+
+# ── Render ──
+
+cmd_render() {
+    local input="" simple="false"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --input)  input="$2"; shift 2 ;;
+            --simple) simple="true"; shift ;;
+            *) fail "Unknown: $1" ;;
+        esac
+    done
+
+    [[ -z "${input}" ]] && fail "Usage: zlar-manifest render --input <manifest.json> [--simple]"
+    [[ ! -f "${input}" ]] && fail "File not found: ${input}"
+
+    if [[ "${simple}" == "true" ]]; then
+        # Nontechnical rendering
+        local agent_id expires
+        agent_id=$(jq -r '.identity.agent_id // "your AI assistant"' "${input}" | sed 's/zlar:agent://')
+        expires=$(jq -r '.expires // "no expiry set"' "${input}" | cut -d'T' -f1)
+
+        echo ""
+        echo "Your AI assistant (${agent_id}) can:"
+
+        jq -r '.authority.allow[]' "${input}" 2>/dev/null | while read -r cap; do
+            case "${cap}" in
+                bash.read)     echo "  ✓ Read your files and check project status" ;;
+                file.read)     echo "  ✓ Read files" ;;
+                file.write)    echo "  ✓ Create new files" ;;
+                file.edit)     echo "  ✓ Edit existing files" ;;
+                file.glob)     echo "  ✓ Search for files by name" ;;
+                file.grep)     echo "  ✓ Search inside files" ;;
+                git.status)    echo "  ✓ Check your project version history" ;;
+                git.push)      echo "  ✓ Publish code changes" ;;
+                network.egress) echo "  ✓ Send data to the internet" ;;
+                *)             echo "  ✓ ${cap}" ;;
+            esac
+        done
+
+        echo ""
+        echo "It cannot:"
+
+        jq -r '.authority.deny[]' "${input}" 2>/dev/null | while read -r cap; do
+            case "${cap}" in
+                bash.dangerous) echo "  ✗ Delete files, change permissions, or run dangerous commands" ;;
+                system.modify)  echo "  ✗ Change system settings or security configuration" ;;
+                network.egress) echo "  ✗ Send data to the internet without asking" ;;
+                *)              echo "  ✗ ${cap}" ;;
+            esac
+        done
+
+        local unmatched
+        unmatched=$(jq -r '.authority.unmatched_action // "escalate"' "${input}" 2>/dev/null)
+        echo ""
+        if [[ "${unmatched}" == "escalate" ]]; then
+            echo "Anything else: it will ask you first."
+        elif [[ "${unmatched}" == "deny" ]]; then
+            echo "Anything not listed above is blocked."
+        fi
+
+        local timeout
+        timeout=$(jq -r '.escalation.timeout_seconds // 300' "${input}" 2>/dev/null)
+        echo "If you don't respond in $(( timeout / 60 )) minutes, it stops."
+        echo "This permission expires ${expires}."
+        echo ""
+    else
+        # Technical rendering
+        echo ""
+        echo -e "${BOLD}Manifest: $(jq -r '.identity.agent_id' "${input}")${NC}"
+        echo "─────────────────────────────────────────"
+        echo -e "  Principal:  $(jq -r '.identity.principal' "${input}")"
+        echo -e "  Issued:     $(jq -r '.identity.issued_at' "${input}")"
+        echo -e "  Expires:    $(jq -r '.expires' "${input}")"
+        echo ""
+        echo -e "${BOLD}Authority${NC}"
+        echo -e "  Allowed:"
+        jq -r '.authority.allow[]' "${input}" 2>/dev/null | while read -r cap; do
+            echo "    ✓ ${cap}"
+        done
+        echo -e "  Denied:"
+        jq -r '.authority.deny[]' "${input}" 2>/dev/null | while read -r cap; do
+            echo "    ✗ ${cap}"
+        done
+        echo -e "  Unmatched:  $(jq -r '.authority.unmatched_action // "escalate"' "${input}")"
+        echo ""
+        echo -e "${BOLD}Escalation${NC}"
+        echo -e "  Channel:    $(jq -r '.escalation.channel' "${input}")"
+        echo -e "  Timeout:    $(jq -r '.escalation.timeout_seconds' "${input}")s → $(jq -r '.escalation.timeout_action' "${input}")"
+        echo ""
+        echo -e "${BOLD}Signature${NC}"
+        local sig_val
+        sig_val=$(jq -r '.signature.value // ""' "${input}")
+        if [[ -n "${sig_val}" ]]; then
+            echo -e "  Algorithm:  $(jq -r '.signature.algorithm' "${input}")"
+            echo -e "  Key ID:     $(jq -r '.signature.key_id' "${input}")"
+            echo -e "  Status:     ${GREEN}signed${NC}"
+        else
+            echo -e "  Status:     ${YELLOW}unsigned${NC}"
+        fi
+        echo ""
+    fi
+}
+
+# ── New (generate blank manifest) ──
+
+cmd_new() {
+    local agent_id="" principal=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --agent-id)   agent_id="$2"; shift 2 ;;
+            --principal)  principal="$2"; shift 2 ;;
+            *) fail "Unknown: $1" ;;
+        esac
+    done
+
+    [[ -z "${agent_id}" ]] && fail "Usage: zlar-manifest new --agent-id <id> --principal <principal>"
+    [[ -z "${principal}" ]] && principal="zlar:human:$(whoami)"
+
+    local now expires_default
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # Default expiry: 7 days from now
+    expires_default=$(date -u -v+7d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+                      date -u -d "+7 days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+                      echo "2026-04-10T09:00:00Z")
+
+    jq -n \
+        --arg agent_id "zlar:agent:${agent_id}" \
+        --arg principal "${principal}" \
+        --arg now "${now}" \
+        --arg expires "${expires_default}" \
+    '{
+        manifest_version: "0.1.0",
+        identity: {
+            agent_id: $agent_id,
+            principal: $principal,
+            issued_at: $now
+        },
+        authority: {
+            allow: ["bash.read", "file.read", "file.glob", "file.grep"],
+            deny: ["bash.dangerous", "system.modify"],
+            unmatched_action: "escalate"
+        },
+        escalation: {
+            channel: "telegram:CHAT_ID_HERE",
+            timeout_seconds: 300,
+            timeout_action: "deny"
+        },
+        expires: $expires,
+        signature: {
+            algorithm: "",
+            value: "",
+            key_id: ""
+        }
+    }'
+}
+
+# ── Usage ──
+
+usage() {
+    cat <<'EOF'
+Usage: zlar-manifest <command> [options]
+
+Commands:
+  sign   --input <file>                  Sign a manifest with the policy key
+  verify --input <file>                  Verify manifest signature
+  check  --input <file>                  Check expiry + signature status
+  render --input <file> [--simple]       Human-readable view (--simple for nontechnical)
+  new    --agent-id <id> --principal <p> Generate a new blank manifest
+
+The manifest is an interface to governance. The gate is the governance.
+EOF
+    exit 0
+}
+
+# ── Main ──
+
+COMMAND="${1:-}"
+shift 2>/dev/null || true
+
+case "${COMMAND}" in
+    sign)   cmd_sign "$@" ;;
+    verify) cmd_verify "$@" ;;
+    check)  cmd_check "$@" ;;
+    render) cmd_render "$@" ;;
+    new)    cmd_new "$@" ;;
+    -h|--help|"") usage ;;
+    *) fail "Unknown command: ${COMMAND}" ;;
+esac
