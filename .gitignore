@@ -7,6 +7,10 @@ etc/gate.json
 etc/jq.sha256
 etc/policies/active.policy.json
 
+# Generated runtime data (contains hostname, username, activity patterns)
+etc/agents.registry.json
+etc/agent-policy-bindings.json
+
 # Keys (generated at install)
 etc/keys/
 

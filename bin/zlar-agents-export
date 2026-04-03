@@ -1,0 +1,194 @@
+#!/bin/bash
+# zlar-agents-export — generate agent inventory from the audit trail
+#
+# Produces etc/agents.registry.json — a signable, git-trackable snapshot
+# of every agent the gate has ever seen.
+#
+# Two views:
+#   Raw       — every agent, including test/simulation agents (default)
+#   Production — excludes known test agents (--production flag)
+#
+# The raw export is the canonical record. The production view is a
+# derivative. Both are deterministic: same audit trail → same output.
+#
+# The registry IS the audit trail, viewed from the agent dimension.
+# Same data, different lens. Derivable on demand. No separate registration.
+#
+# Usage:
+#   zlar-agents-export                      # raw, to stdout
+#   zlar-agents-export --production         # filtered, to stdout
+#   zlar-agents-export --output FILE        # write to file
+#   zlar-agents-export --sign               # sign output with policy key
+#   zlar-agents-export --production --sign --output etc/agents.registry.json
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# shellcheck source=../lib/audit-reader.sh
+source "${PROJECT_DIR}/lib/audit-reader.sh"
+
+# shellcheck source=../lib/agent-identity.sh
+source "${PROJECT_DIR}/lib/agent-identity.sh"
+
+# ── Options ──
+
+PRODUCTION_VIEW="false"
+OUTPUT_FILE=""
+SIGN_OUTPUT="false"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --production) PRODUCTION_VIEW="true"; shift ;;
+        --output)     OUTPUT_FILE="$2"; shift 2 ;;
+        --sign)       SIGN_OUTPUT="true"; shift ;;
+        -h|--help)
+            echo "Usage: zlar-agents-export [--production] [--output FILE] [--sign]"
+            echo ""
+            echo "Options:"
+            echo "  --production   Exclude test/simulation agents"
+            echo "  --output FILE  Write to file instead of stdout"
+            echo "  --sign         Sign output with policy-signing key"
+            exit 0
+            ;;
+        *) echo "Unknown: $1" >&2; exit 1 ;;
+    esac
+done
+
+# ── Generate inventory ──
+
+generate_inventory() {
+    local all_events
+    all_events=$(_audit_cat)
+
+    if [[ -z "${all_events}" ]]; then
+        echo '{"version":"1.0.0","generated_at":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","view":"raw","agents":[]}' | jq .
+        return
+    fi
+
+    local view_label="raw"
+    [[ "${PRODUCTION_VIEW}" == "true" ]] && view_label="production"
+
+    # Build the agent inventory using jq
+    # This single pipeline groups by agent_id, computes stats, and classifies
+    local test_pattern="${_TEST_AGENT_PATTERNS}"
+
+    echo "${all_events}" | jq -s --arg view "${view_label}" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg test_pat "attacker|tamper-spy|hook-test-server|membrane-test|test-agent|test-orchestrator|agent-a|agent-b|grandchild-1|my-custom-orchestrator" '
+        # Group all events by agent_id
+        group_by(.agent_id) |
+
+        # Build agent records
+        map({
+            agent_id: .[0].agent_id,
+            is_test: (.[0].agent_id | test("^(" + $test_pat + ")$")),
+            discovered_at: (map(.ts) | sort | first),
+            last_seen: (map(.ts) | sort | last),
+            total_events: length,
+            sessions: ([.[].session_id] | unique | length),
+            denial_rate: (
+                (([.[] | select(.outcome == "deny")] | length) * 100) /
+                (if length == 0 then 1 else length end) |
+                . * 10 | round / 10
+            ),
+            human_auth_rate: (
+                (([.[] | select(.outcome == "authorized")] | length) * 100) /
+                (if length == 0 then 1 else length end) |
+                . * 10 | round / 10
+            ),
+            avg_risk: (
+                ([.[].risk_score] | add) /
+                (if length == 0 then 1 else length end) |
+                . * 10 | round / 10
+            ),
+            has_critical: ([.[] | select(.severity == "critical")] | length > 0),
+            domains_used: ([.[].domain] | unique | sort),
+            outcomes: (group_by(.outcome) | map({(.[0].outcome): length}) | add),
+            top_rules: (
+                group_by(.rule) |
+                map({rule: .[0].rule, count: length}) |
+                sort_by(-.count) | .[0:5] |
+                map(.rule)
+            ),
+            metadata: {
+                host: .[0].host,
+                user: .[0].user
+            }
+        }) |
+
+        # Compute risk tier and authorization level
+        map(. + {
+            risk_tier: (
+                if .has_critical or .denial_rate > 50 then "critical"
+                elif .denial_rate > 20 or .avg_risk > 70 then "high"
+                elif .denial_rate > 5 or .avg_risk > 30 then "medium"
+                else "low"
+                end
+            ),
+            authorization_level: (
+                if .denial_rate > 90 then "blocked"
+                else "human-review-required"
+                end
+            )
+        }) |
+
+        # Detect notable patterns per agent
+        map(. + {
+            notable_patterns: (
+                [
+                    (if .denial_rate > 50 then "high_denial_rate" else null end),
+                    (if .human_auth_rate > 25 then "human_approval_heavy" else null end),
+                    (if .denial_rate > 90 then "effectively_blocked" else null end)
+                ] | map(select(. != null))
+            )
+        }) |
+
+        # Remove working fields
+        map(del(.has_critical)) |
+
+        # Apply production filter if requested
+        (if $view == "production" then
+            map(select(.is_test == false))
+        else . end) |
+
+        # Sort by total_events descending
+        sort_by(-.total_events) |
+
+        # Wrap in envelope
+        {
+            version: "1.0.0",
+            generated_at: $now,
+            view: $view,
+            total_agents: length,
+            agents: .
+        }
+    '
+}
+
+# ── Output ──
+
+inventory=$(generate_inventory)
+
+if [[ -n "${OUTPUT_FILE}" ]]; then
+    echo "${inventory}" > "${OUTPUT_FILE}"
+    echo "Registry exported to ${OUTPUT_FILE} ($(echo "${inventory}" | jq '.total_agents') agents, $(echo "${inventory}" | jq -r '.view') view)" >&2
+
+    # Sign if requested
+    if [[ "${SIGN_OUTPUT}" == "true" ]]; then
+        local_key="${PROJECT_DIR}/etc/keys/policy-signing.key"
+        if [[ -f "${local_key}" ]]; then
+            # Source crypto lib for signing
+            source "${PROJECT_DIR}/lib/crypto.sh"
+            local sig_file="${OUTPUT_FILE}.sig"
+            if zlar_crypto_sign "${local_key}" "${OUTPUT_FILE}" "${sig_file}"; then
+                echo "Signed: ${sig_file}" >&2
+            else
+                echo "WARNING: Signing failed" >&2
+            fi
+        else
+            echo "WARNING: No policy-signing key found at ${local_key}" >&2
+        fi
+    fi
+else
+    echo "${inventory}"
+fi

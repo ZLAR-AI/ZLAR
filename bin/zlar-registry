@@ -27,14 +27,17 @@ Usage: zlar-registry [command] [options]
 
 Commands:
   list              List all known agents (default)
+  agents            Alias for list (Forrester capability #1)
   show <agent_id>   Show detail for a specific agent
   sessions          Show all sessions grouped by agent
   activity          Show agent activity timeline (last 7 days)
   stats             Show aggregate statistics per agent
+  export            Export signable agent inventory (calls zlar-agents-export)
 
 Options:
   --since <seconds>   Only consider events from the last N seconds
   --json              Output as JSON (default is human-readable)
+  --production        With 'list' or 'agents': exclude test agents
 
 The audit trail is the registry. If the gate saw it, it's here.
 EOF
@@ -348,10 +351,11 @@ registry_stats() {
 OUTPUT_JSON="false"
 SINCE_SECONDS=""
 COMMAND="list"
+PRODUCTION_FLAG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        list|show|sessions|activity|stats)
+        list|agents|show|sessions|activity|stats|export)
             COMMAND="$1"
             shift
             ;;
@@ -362,6 +366,10 @@ while [[ $# -gt 0 ]]; do
         --since)
             SINCE_SECONDS="$2"
             shift 2
+            ;;
+        --production)
+            PRODUCTION_FLAG="--production"
+            shift
             ;;
         -h|--help)
             usage
@@ -380,9 +388,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${COMMAND}" in
-    list)     registry_list ;;
-    show)     registry_show "${SHOW_AGENT:-}" ;;
-    sessions) registry_sessions ;;
-    activity) registry_activity ;;
-    stats)    registry_stats ;;
+    list|agents) registry_list ;;
+    show)        registry_show "${SHOW_AGENT:-}" ;;
+    sessions)    registry_sessions ;;
+    activity)    registry_activity ;;
+    stats)       registry_stats ;;
+    export)      exec "${SCRIPT_DIR}/zlar-agents-export" ${PRODUCTION_FLAG} ;;
 esac

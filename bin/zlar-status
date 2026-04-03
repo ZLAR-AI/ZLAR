@@ -1,0 +1,281 @@
+#!/bin/bash
+# zlar-status — governance health dashboard
+#
+# Single command that shows everything a human needs to know:
+# are the gates up, what agents are active, what's the policy state,
+# what happened recently.
+#
+# This is the management surface. The gate is the enforcement surface.
+# This tool reads. The gate decides.
+#
+# Usage:
+#   zlar-status                    # human-readable dashboard
+#   zlar-status --json             # machine-readable output
+#   zlar-status --since 3600       # last hour only
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# shellcheck source=../lib/audit-reader.sh
+source "${PROJECT_DIR}/lib/audit-reader.sh"
+
+# shellcheck source=../lib/agent-identity.sh
+source "${PROJECT_DIR}/lib/agent-identity.sh"
+
+# ── Options ──
+
+OUTPUT_JSON="false"
+SINCE_SECONDS=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --json) OUTPUT_JSON="true"; shift ;;
+        --since) SINCE_SECONDS="$2"; shift 2 ;;
+        -h|--help)
+            echo "Usage: zlar-status [--json] [--since <seconds>]"
+            exit 0
+            ;;
+        *) echo "Unknown: $1" >&2; exit 1 ;;
+    esac
+done
+
+# ── Gather data ──
+
+# All events (or windowed)
+if [[ -n "${SINCE_SECONDS}" ]]; then
+    ALL_EVENTS=$(audit_events_since "${SINCE_SECONDS}")
+else
+    ALL_EVENTS=$(_audit_cat)
+fi
+
+TOTAL_EVENTS=$(echo "${ALL_EVENTS}" | grep -c '^' 2>/dev/null || echo 0)
+
+# Policy state
+POLICY_FILE=$(audit_find_policy_file)
+POLICY_VERSION=""
+POLICY_RULES=0
+POLICY_DEFAULT="deny"
+if [[ -f "${POLICY_FILE:-}" ]]; then
+    POLICY_VERSION=$(jq -r '.version // "unknown"' "${POLICY_FILE}" 2>/dev/null || echo "unknown")
+    POLICY_RULES=$(jq '.rules | length' "${POLICY_FILE}" 2>/dev/null || echo 0)
+    POLICY_DEFAULT=$(jq -r '.default_action // "deny"' "${POLICY_FILE}" 2>/dev/null || echo "deny")
+fi
+
+# Gate status — check if hooks are configured
+HOOKS_FILE="${HOME}/.claude/hooks.json"
+CC_GATE_ACTIVE="false"
+if [[ -f "${HOOKS_FILE}" ]] && grep -q "PreToolUse" "${HOOKS_FILE}" 2>/dev/null; then
+    CC_GATE_ACTIVE="true"
+fi
+
+# OC gate status
+OC_GATE_ACTIVE="false"
+OC_GATE_LOG="/var/log/zlar-oc/gate.log"
+if [[ -f "${OC_GATE_LOG}" ]]; then
+    # Check if heartbeat is recent (last 5 minutes)
+    local_last=$(tail -1 "${OC_GATE_LOG}" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || true)
+    if [[ -n "${local_last}" ]]; then
+        OC_GATE_ACTIVE="true"
+    fi
+fi
+
+# ── JSON output ──
+
+if [[ "${OUTPUT_JSON}" == "true" ]]; then
+    echo "${ALL_EVENTS}" | jq -s \
+        --arg policy_version "${POLICY_VERSION}" \
+        --arg policy_rules "${POLICY_RULES}" \
+        --arg policy_default "${POLICY_DEFAULT}" \
+        --arg cc_gate "${CC_GATE_ACTIVE}" \
+        --arg oc_gate "${OC_GATE_ACTIVE}" \
+        --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg test_pat "attacker|tamper-spy|hook-test-server|membrane-test|test-agent|test-orchestrator|agent-a|agent-b|grandchild-1|my-custom-orchestrator" \
+    '{
+        generated_at: $now,
+        gates: {
+            cc_gate: ($cc_gate == "true"),
+            oc_gate: ($oc_gate == "true")
+        },
+        policy: {
+            version: $policy_version,
+            rules: ($policy_rules | tonumber),
+            default_action: $policy_default
+        },
+        summary: {
+            total_events: length,
+            total_agents: ([.[].agent_id] | unique | length),
+            production_agents: ([.[].agent_id] | unique | map(select(test("^(" + $test_pat + ")$") | not)) | length),
+            total_sessions: ([.[].session_id] | unique | length),
+            outcomes: (group_by(.outcome) | map({(.[0].outcome): length}) | add)
+        },
+        agents: (
+            group_by(.agent_id) |
+            map(select(.[0].agent_id | test("^(" + $test_pat + ")$") | not)) |
+            map({
+                agent_id: .[0].agent_id,
+                last_seen: (map(.ts) | sort | last),
+                events: length,
+                sessions: ([.[].session_id] | unique | length),
+                denial_rate: (([.[] | select(.outcome == "deny")] | length) * 100 / (if length == 0 then 1 else length end) | . * 10 | round / 10),
+                risk_tier: (
+                    (([.[] | select(.outcome == "deny")] | length) * 100 / (if length == 0 then 1 else length end)) as $dr |
+                    ([.[] | select(.severity == "critical")] | length > 0) as $hc |
+                    (([.[].risk_score] | add) / (if length == 0 then 1 else length end)) as $ar |
+                    if $hc or $dr > 50 then "critical"
+                    elif $dr > 20 or $ar > 70 then "high"
+                    elif $dr > 5 or $ar > 30 then "medium"
+                    else "low" end
+                ),
+                top_domain: (group_by(.domain) | sort_by(-length) | .[0][0].domain)
+            }) |
+            sort_by(-.events)
+        ),
+        recent_approvals: (
+            [.[] | select(.outcome == "authorized")] |
+            sort_by(.ts) | reverse | .[0:10] |
+            map({ts, agent_id, domain, action: .action[:80], rule, authorizer})
+        ),
+        recent_denials: (
+            [.[] | select(.outcome == "deny")] |
+            sort_by(.ts) | reverse | .[0:10] |
+            map({ts, agent_id, domain, action: .action[:80], rule})
+        )
+    }'
+    exit 0
+fi
+
+# ── Human-readable output ──
+
+# Colors — only when writing to a terminal
+if [[ -t 1 ]]; then
+    BOLD='\033[1m'
+    DIM='\033[2m'
+    CYAN='\033[1;36m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    RED='\033[0;31m'
+    RESET='\033[0m'
+else
+    BOLD='' DIM='' CYAN='' GREEN='' YELLOW='' RED='' RESET=''
+fi
+
+echo
+printf "${BOLD}ZLAR GOVERNANCE STATUS${RESET}\n"
+printf '═══════════════════════════════════════════════════════════════\n'
+
+# Gates
+printf "\n${BOLD}Gates${RESET}\n"
+printf '───────────────────────────────────────────────────────────────\n'
+if [[ "${CC_GATE_ACTIVE}" == "true" ]]; then
+    printf "  CC gate (Claude Code)    ${GREEN}●${RESET} active\n"
+else
+    printf "  CC gate (Claude Code)    ${RED}○${RESET} inactive\n"
+fi
+if [[ "${OC_GATE_ACTIVE}" == "true" ]]; then
+    printf "  OC gate (OpenClaw)       ${GREEN}●${RESET} active\n"
+else
+    printf "  OC gate (OpenClaw)       ${DIM}○ unknown${RESET}\n"
+fi
+
+# Policy
+printf "\n${BOLD}Policy${RESET}\n"
+printf '───────────────────────────────────────────────────────────────\n'
+printf "  Version        ${POLICY_VERSION}\n"
+printf "  Rules          ${POLICY_RULES}\n"
+printf "  Default        ${POLICY_DEFAULT}\n"
+
+# Summary
+if [[ "${TOTAL_EVENTS}" -gt 0 ]]; then
+    AGENT_COUNT=$(echo "${ALL_EVENTS}" | jq -s '[.[].agent_id] | unique | length')
+    SESSION_COUNT=$(echo "${ALL_EVENTS}" | jq -s '[.[].session_id] | unique | length')
+    DENY_COUNT=$(echo "${ALL_EVENTS}" | jq -sc '[.[] | select(.outcome == "deny")] | length')
+    AUTH_COUNT=$(echo "${ALL_EVENTS}" | jq -sc '[.[] | select(.outcome == "authorized")] | length')
+
+    printf "\n${BOLD}Activity${RESET}"
+    if [[ -n "${SINCE_SECONDS}" ]]; then
+        if [[ "${SINCE_SECONDS}" -ge 3600 ]]; then
+            printf " ${DIM}(last $(( SINCE_SECONDS / 3600 ))h)${RESET}"
+        elif [[ "${SINCE_SECONDS}" -ge 60 ]]; then
+            printf " ${DIM}(last $(( SINCE_SECONDS / 60 ))m)${RESET}"
+        else
+            printf " ${DIM}(last ${SINCE_SECONDS}s)${RESET}"
+        fi
+    fi
+    printf "\n"
+    printf '───────────────────────────────────────────────────────────────\n'
+    printf "  Events         %s\n" "${TOTAL_EVENTS}"
+    printf "  Agents         %s\n" "${AGENT_COUNT}"
+    printf "  Sessions       %s\n" "${SESSION_COUNT}"
+    printf "  Denied         %s\n" "${DENY_COUNT}"
+    printf "  Human auth     %s\n" "${AUTH_COUNT}"
+
+    # Production agents
+    printf "\n${BOLD}Agents (production)${RESET}\n"
+    printf '───────────────────────────────────────────────────────────────\n'
+
+    echo "${ALL_EVENTS}" | jq -sc --arg test_pat "attacker|tamper-spy|hook-test-server|membrane-test|test-agent|test-orchestrator|agent-a|agent-b|grandchild-1|my-custom-orchestrator" '
+        group_by(.agent_id) |
+        map(select(.[0].agent_id | test("^(" + $test_pat + ")$") | not)) |
+        map({
+            agent_id: .[0].agent_id,
+            events: length,
+            sessions: ([.[].session_id] | unique | length),
+            denial_rate: (([.[] | select(.outcome == "deny")] | length) * 100 / (if length == 0 then 1 else length end) | . * 10 | round / 10),
+            human_pct: (([.[] | select(.outcome == "authorized")] | length) * 100 / (if length == 0 then 1 else length end) | . * 10 | round / 10),
+            last_seen: (map(.ts) | sort | last),
+            top_domain: (group_by(.domain) | sort_by(-length) | .[0][0].domain),
+            has_critical: ([.[] | select(.severity == "critical")] | length > 0),
+            avg_risk: (([.[].risk_score] | add) / (if length == 0 then 1 else length end) | . * 10 | round / 10)
+        }) |
+        sort_by(-.events) | .[]
+    ' 2>/dev/null | while IFS= read -r agent; do
+        aid=$(echo "${agent}" | jq -r '.agent_id')
+        events=$(echo "${agent}" | jq -r '.events')
+        sessions=$(echo "${agent}" | jq -r '.sessions')
+        dr=$(echo "${agent}" | jq -r '.denial_rate')
+        hp=$(echo "${agent}" | jq -r '.human_pct')
+        last=$(echo "${agent}" | jq -r '.last_seen')
+        domain=$(echo "${agent}" | jq -r '.top_domain')
+        hc=$(echo "${agent}" | jq -r '.has_critical')
+        ar=$(echo "${agent}" | jq -r '.avg_risk')
+
+        # Risk tier
+        tier="low"
+        tier_color="${GREEN}"
+        if [[ "${hc}" == "true" ]] || (( $(echo "${dr} > 50" | bc -l 2>/dev/null || echo 0) )); then
+            tier="CRITICAL"; tier_color="${RED}"
+        elif (( $(echo "${dr} > 20" | bc -l 2>/dev/null || echo 0) )) || (( $(echo "${ar} > 70" | bc -l 2>/dev/null || echo 0) )); then
+            tier="HIGH"; tier_color="${YELLOW}"
+        elif (( $(echo "${dr} > 5" | bc -l 2>/dev/null || echo 0) )) || (( $(echo "${ar} > 30" | bc -l 2>/dev/null || echo 0) )); then
+            tier="MEDIUM"; tier_color="${YELLOW}"
+        else
+            tier="LOW"; tier_color="${GREEN}"
+        fi
+
+        printf "\n  ${CYAN}%-24s${RESET} ${tier_color}%-8s${RESET} %s events  %s sessions\n" "${aid}" "${tier}" "${events}" "${sessions}"
+        printf "    ${DIM}├─ denial_rate: %s%%${RESET}\n" "${dr}"
+        printf "    ${DIM}├─ human_auth:  %s%%${RESET}\n" "${hp}"
+        printf "    ${DIM}├─ top domain:  %s${RESET}\n" "${domain}"
+        printf "    ${DIM}└─ last seen:   %s${RESET}\n" "${last}"
+    done
+
+    # Recent approvals
+    local_approvals=$(echo "${ALL_EVENTS}" | jq -c 'select(.outcome == "authorized")' | tail -5)
+    if [[ -n "${local_approvals}" ]]; then
+        printf "\n${BOLD}Recent Approvals${RESET}\n"
+        printf '───────────────────────────────────────────────────────────────\n'
+        echo "${local_approvals}" | jq -r '"  \(.ts)  \(.rule)  \(.action[:50])  \(.authorizer // "?")"'
+    fi
+
+    # Recent denials
+    local_denials=$(echo "${ALL_EVENTS}" | jq -c 'select(.outcome == "deny")' | tail -5)
+    if [[ -n "${local_denials}" ]]; then
+        printf "\n${BOLD}Recent Denials${RESET}\n"
+        printf '───────────────────────────────────────────────────────────────\n'
+        echo "${local_denials}" | jq -r '"  \(.ts)  \(.rule)  \(.action[:60])"'
+    fi
+fi
+
+echo

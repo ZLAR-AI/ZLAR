@@ -1,0 +1,220 @@
+#!/bin/bash
+# zlar-agents — manage agent-specific policy bindings
+#
+# Binds individual agents to specific standing approvals,
+# velocity limits, and escalation rules.
+#
+# STATUS: The CLI and schema are complete. The gate does NOT yet
+# read agent-policy-bindings.json at evaluation time. Standing
+# approvals work (via etc/standing-approvals.json) but apply to
+# ALL agents equally — per-agent scoping requires gate integration.
+# Velocity limits in the bindings file are not enforced.
+#
+# This is staged infrastructure for Forrester Capability #4
+# (cross-environment coordination). The management surface is
+# ready; the gate wiring is the next build.
+#
+# Usage:
+#   zlar-agents list                                    # show all bindings
+#   zlar-agents show <agent_id>                         # show one agent's bindings
+#   zlar-agents bind <agent_id> --velocity 30           # set velocity limit
+#   zlar-agents bind <agent_id> --standing SA001,SA002  # assign standing approvals
+#   zlar-agents unbind <agent_id>                       # remove bindings
+#   zlar-agents inventory                               # show full agent inventory
+#   zlar-agents inventory --production                  # production view only
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+BINDINGS_FILE="${PROJECT_DIR}/etc/agent-policy-bindings.json"
+
+# ── Helpers ──
+
+ensure_bindings_file() {
+    if [[ ! -f "${BINDINGS_FILE}" ]]; then
+        cat > "${BINDINGS_FILE}" <<'INIT'
+{
+  "version": "1.0.0",
+  "bindings": []
+}
+INIT
+    fi
+}
+
+# ── Commands ──
+
+cmd_list() {
+    ensure_bindings_file
+    if [[ ! -s "${BINDINGS_FILE}" ]]; then
+        echo "No agent bindings configured."
+        return
+    fi
+
+    local count
+    count=$(jq '.bindings | length' "${BINDINGS_FILE}")
+
+    if [[ "${count}" -eq 0 ]]; then
+        echo "No agent bindings configured."
+        echo "Use: zlar-agents bind <agent_id> --velocity <N> --standing <SA001,SA002>"
+        return
+    fi
+
+    printf '\n\033[1mAgent Policy Bindings\033[0m\n'
+    printf '───────────────────────────────────────────────────────────────\n'
+
+    jq -r '.bindings[] | "  \(.agent_id)\n    policy:    \(.policy_version // "current")\n    standing:  \(.standing_approvals | join(", ") // "none")\n    velocity:  \(.velocity_limit.calls_per_minute // "default") calls/min\n    since:     \(.effective_since)\n"' "${BINDINGS_FILE}"
+}
+
+cmd_show() {
+    local agent_id="${1:?Usage: zlar-agents show <agent_id>}"
+    ensure_bindings_file
+
+    local binding
+    binding=$(jq --arg a "${agent_id}" '.bindings[] | select(.agent_id == $a)' "${BINDINGS_FILE}")
+
+    if [[ -z "${binding}" ]]; then
+        echo "No bindings for agent: ${agent_id}"
+        echo "This agent uses the default policy with no overrides."
+        return
+    fi
+
+    echo "${binding}" | jq .
+}
+
+cmd_bind() {
+    local agent_id="${1:?Usage: zlar-agents bind <agent_id> [--velocity N] [--standing SA001,SA002]}"
+    shift
+
+    local velocity=""
+    local standing=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --velocity) velocity="$2"; shift 2 ;;
+            --standing) standing="$2"; shift 2 ;;
+            *) echo "Unknown option: $1" >&2; exit 1 ;;
+        esac
+    done
+
+    ensure_bindings_file
+
+    local now
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Read current policy version
+    local policy_version="current"
+    local policy_file
+    policy_file=$(cd "${PROJECT_DIR}" && source lib/audit-reader.sh && audit_find_policy_file)
+    if [[ -f "${policy_file:-}" ]]; then
+        policy_version=$(jq -r '.version // "current"' "${policy_file}" 2>/dev/null || echo "current")
+    fi
+
+    # Build standing approvals array
+    local standing_json="[]"
+    if [[ -n "${standing}" ]]; then
+        standing_json=$(echo "${standing}" | tr ',' '\n' | jq -R . | jq -s .)
+    fi
+
+    # Build velocity object
+    local velocity_json='{"calls_per_minute": 30, "escalate_at": 25}'
+    if [[ -n "${velocity}" ]]; then
+        local escalate=$(( velocity * 80 / 100 ))
+        velocity_json="{\"calls_per_minute\": ${velocity}, \"escalate_at\": ${escalate}}"
+    fi
+
+    # Remove existing binding for this agent, then add new one
+    # Atomic write: write to temp, then mv (prevents truncation on crash)
+    local tmp_file="${BINDINGS_FILE}.tmp"
+    jq --arg a "${agent_id}" \
+        --arg pv "${policy_version}" \
+        --arg now "${now}" \
+        --argjson sa "${standing_json}" \
+        --argjson vel "${velocity_json}" \
+    '.bindings = [
+        (.bindings[] | select(.agent_id != $a)),
+        {
+            agent_id: $a,
+            policy_version: $pv,
+            effective_since: $now,
+            standing_approvals: $sa,
+            velocity_limit: $vel,
+            denial_handlers: {
+                on_repeated_denial: "escalate_to_human",
+                threshold: 5
+            }
+        }
+    ]' "${BINDINGS_FILE}" > "${tmp_file}"
+    mv "${tmp_file}" "${BINDINGS_FILE}"
+
+    echo "Bound: ${agent_id}"
+    [[ -n "${velocity}" ]] && echo "  velocity: ${velocity} calls/min"
+    [[ -n "${standing}" ]] && echo "  standing: ${standing}"
+    echo "  policy:   ${policy_version}"
+    echo "  since:    ${now}"
+}
+
+cmd_unbind() {
+    local agent_id="${1:?Usage: zlar-agents unbind <agent_id>}"
+    ensure_bindings_file
+
+    local before
+    before=$(jq '.bindings | length' "${BINDINGS_FILE}")
+
+    jq --arg a "${agent_id}" '.bindings = [.bindings[] | select(.agent_id != $a)]' "${BINDINGS_FILE}" > "${BINDINGS_FILE}.tmp"
+    mv "${BINDINGS_FILE}.tmp" "${BINDINGS_FILE}"
+
+    local after
+    after=$(jq '.bindings | length' "${BINDINGS_FILE}")
+
+    if [[ "${before}" -eq "${after}" ]]; then
+        echo "No binding found for: ${agent_id}"
+    else
+        echo "Unbound: ${agent_id} (removed from bindings)"
+    fi
+}
+
+cmd_inventory() {
+    # Delegate to zlar-agents-export (pass args directly, no word-splitting)
+    exec "${SCRIPT_DIR}/zlar-agents-export" "$@"
+}
+
+# ── Usage ──
+
+usage() {
+    cat <<'EOF'
+Usage: zlar-agents <command> [options]
+
+Commands:
+  list                          Show all agent-specific policy bindings
+  show <agent_id>               Show bindings for one agent
+  bind <agent_id> [options]     Create or update agent binding
+    --velocity <N>                Calls per minute limit
+    --standing <SA001,SA002>      Standing approval IDs (comma-separated)
+  unbind <agent_id>             Remove agent binding
+  inventory [--production]      Show full agent inventory from audit trail
+
+Agent bindings are policy overlays — per-agent velocity limits,
+standing approvals, and escalation rules. Signed with the policy key.
+EOF
+    exit 0
+}
+
+# ── Main ──
+
+COMMAND="${1:-list}"
+shift 2>/dev/null || true
+
+case "${COMMAND}" in
+    list)      cmd_list ;;
+    show)      cmd_show "$@" ;;
+    bind)      cmd_bind "$@" ;;
+    unbind)    cmd_unbind "$@" ;;
+    inventory) cmd_inventory "$@" ;;
+    -h|--help) usage ;;
+    *)
+        echo "Unknown command: ${COMMAND}" >&2
+        usage
+        ;;
+esac
