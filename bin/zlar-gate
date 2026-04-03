@@ -201,11 +201,12 @@ if [ -f "${AGENT_BINDINGS_FILE}" ] && command -v jq &>/dev/null; then
     AGENT_BINDINGS_JSON=$(jq -c '.bindings // []' "${AGENT_BINDINGS_FILE}" 2>/dev/null)
     if [ -n "${AGENT_BINDINGS_JSON}" ] && [ "${AGENT_BINDINGS_JSON}" != "[]" ]; then
         AGENT_BINDINGS_LOADED="true"
-        log "Agent bindings loaded ($(echo "${AGENT_BINDINGS_JSON}" | jq 'length') agents)"
+        # NOTE: log() is not yet defined at module-load time. Use echo to gate log.
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] Agent bindings loaded ($(echo "${AGENT_BINDINGS_JSON}" | jq 'length') agents)" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
 
         # Build A invariant: delegated authority must monotonically narrow, never widen.
         # Validate depth_rules — depth N+1 SAs must be a subset of depth N SAs.
-        local _narrowing_ok
+        # NOTE: no 'local' here — this runs at top level, not inside a function.
         _narrowing_ok=$(echo "${AGENT_BINDINGS_JSON}" | jq '
             [.[] | select(.delegation.depth_rules != null) |
                 .agent_id as $aid |
@@ -221,7 +222,7 @@ if [ -f "${AGENT_BINDINGS_FILE}" ] && command -v jq &>/dev/null; then
             ] | flatten | length
         ' 2>/dev/null || echo "0")
         if [ "${_narrowing_ok}" != "0" ]; then
-            log "WARNING: Delegation depth_rules violate monotonic narrowing — deeper depths have more SAs than parents"
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARNING: Delegation depth_rules violate monotonic narrowing" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
         fi
     fi
 fi
