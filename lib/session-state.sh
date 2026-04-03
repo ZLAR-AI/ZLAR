@@ -194,6 +194,86 @@ session_check_escalation() {
     esac
 }
 
+# ── Budget Check (Build B: Position Limits) ──
+# Aggregate action budgets — individual actions pass policy, but the aggregate
+# can trigger escalation. Same pattern as trading position limits.
+#
+# Reads budgets from agent-policy-bindings.json for the current agent.
+# Budget counters persist in the session state file under .budgets_used.
+#
+# Returns: "allow" if within budget, "ask" if budget exceeded
+#
+# Usage: budget_check <rule_id> <agent_id> <bindings_json>
+
+budget_check() {
+    local rule_id="${1:?}"
+    local agent_id="${2:?}"
+    local bindings_json="${3:-}"
+
+    # No bindings → no budgets → allow
+    [ -z "${bindings_json}" ] && echo "allow" && return
+    [ "${bindings_json}" = "[]" ] && echo "allow" && return
+
+    # Look up this agent's budgets
+    local budget_json
+    budget_json=$(echo "${bindings_json}" | jq -c --arg a "${agent_id}" --arg r "${rule_id}" \
+        '[.[] | select(.agent_id == $a) | .budgets // [] | .[] | select(.rule == $r)] | .[0] // null' 2>/dev/null)
+
+    # No budget for this rule → allow
+    [ -z "${budget_json}" ] || [ "${budget_json}" = "null" ] && echo "allow" && return
+
+    local max_count window_field
+    # Check max_per_day first, then max_per_hour
+    max_count=$(echo "${budget_json}" | jq -r '.max_per_day // null' 2>/dev/null)
+    if [ -n "${max_count}" ] && [ "${max_count}" != "null" ]; then
+        window_field="day"
+    else
+        max_count=$(echo "${budget_json}" | jq -r '.max_per_hour // null' 2>/dev/null)
+        if [ -n "${max_count}" ] && [ "${max_count}" != "null" ]; then
+            window_field="hour"
+        else
+            echo "allow" && return
+        fi
+    fi
+
+    local on_exceed
+    on_exceed=$(echo "${budget_json}" | jq -r '.on_exceed // "ask"' 2>/dev/null)
+
+    # Count how many times this rule has fired in the window
+    # Budget counters are per-AGENT, not per-session — stored in a shared
+    # budget file so they survive session restarts. This is the trading
+    # position limit pattern: the position is on the desk, not the trader.
+    local budget_dir="${SESSION_STATE_DIR}/budgets"
+    mkdir -p "${budget_dir}" 2>/dev/null || true
+    local budget_file="${budget_dir}/${agent_id}.budget.json"
+    if [ ! -f "${budget_file}" ]; then
+        echo '{"agent_id":"'"${agent_id}"'","budgets_used":{}}' > "${budget_file}" 2>/dev/null || true
+    fi
+
+    local current_window current_count
+    if [ "${window_field}" = "day" ]; then
+        current_window=$(date -u +%Y-%m-%d)
+    else
+        current_window=$(date -u +%Y-%m-%dT%H)
+    fi
+
+    current_count=$(jq -r --arg r "${rule_id}" --arg w "${current_window}" \
+        '.budgets_used[$r + ":" + $w] // 0' "${budget_file}" 2>/dev/null || echo 0)
+
+    if [ "${current_count}" -ge "${max_count}" ]; then
+        echo "${on_exceed}"
+        return
+    fi
+
+    # Increment counter (only when action will be allowed — don't burn budget on denials)
+    jq --arg r "${rule_id}" --arg w "${current_window}" \
+        '.budgets_used = (.budgets_used // {}) | .budgets_used[$r + ":" + $w] = ((.budgets_used[$r + ":" + $w] // 0) + 1)' \
+        "${budget_file}" > "${budget_file}.tmp" 2>/dev/null && \
+        mv "${budget_file}.tmp" "${budget_file}" 2>/dev/null || true
+
+    echo "allow"
+}
+
 # ── Session Summary ──
 # Returns a human-readable summary of session state
 

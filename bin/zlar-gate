@@ -193,6 +193,39 @@ if [ -f "${STANDING_APPROVALS_FILE}" ] && command -v jq &>/dev/null; then
     fi
 fi
 
+# Load agent-policy-bindings (per-agent standing approval scoping + velocity limits)
+AGENT_BINDINGS_LOADED="false"
+AGENT_BINDINGS_JSON=""
+AGENT_BINDINGS_FILE="${PROJECT_DIR}/etc/agent-policy-bindings.json"
+if [ -f "${AGENT_BINDINGS_FILE}" ] && command -v jq &>/dev/null; then
+    AGENT_BINDINGS_JSON=$(jq -c '.bindings // []' "${AGENT_BINDINGS_FILE}" 2>/dev/null)
+    if [ -n "${AGENT_BINDINGS_JSON}" ] && [ "${AGENT_BINDINGS_JSON}" != "[]" ]; then
+        AGENT_BINDINGS_LOADED="true"
+        log "Agent bindings loaded ($(echo "${AGENT_BINDINGS_JSON}" | jq 'length') agents)"
+
+        # Build A invariant: delegated authority must monotonically narrow, never widen.
+        # Validate depth_rules — depth N+1 SAs must be a subset of depth N SAs.
+        local _narrowing_ok
+        _narrowing_ok=$(echo "${AGENT_BINDINGS_JSON}" | jq '
+            [.[] | select(.delegation.depth_rules != null) |
+                .agent_id as $aid |
+                .delegation.depth_rules | sort_by(.depth) |
+                . as $rules |
+                [range(0; length - 1) |
+                    ($rules[.].standing_approvals) as $parent_sas |
+                    ($rules[. + 1].standing_approvals) as $child_sas |
+                    ($child_sas - $parent_sas) as $widened |
+                    select(($widened | length) > 0) |
+                    {agent: $aid, depth: $rules[. + 1].depth, widened: $widened}
+                ]
+            ] | flatten | length
+        ' 2>/dev/null || echo "0")
+        if [ "${_narrowing_ok}" != "0" ]; then
+            log "WARNING: Delegation depth_rules violate monotonic narrowing — deeper depths have more SAs than parents"
+        fi
+    fi
+fi
+
 # Env var overrides
 TELEGRAM_TOKEN="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-7662799203}"
@@ -373,7 +406,7 @@ emit_event() {
         --arg source "gate" \
         --arg host "$(hostname -s)" \
         --arg user "$(whoami)" \
-        --arg agent_id "claude-code" \
+        --arg agent_id "${AGENT_ID:-claude-code}" \
         --arg session_id "${SESSION_ID:-unknown}" \
         --arg domain "${domain}" \
         --arg action "${action}" \
@@ -962,6 +995,90 @@ check_standing_approval() {
     return 1
 }
 
+# Check if a standing approval is allowed for the current agent
+# If agent-policy-bindings has a binding for this agent with a standing_approvals
+# list, only the SAs in that list are permitted. If no binding exists, all SAs apply.
+#
+# Build A: Depth-aware SA scoping. If the agent is a subagent (depth > 0),
+# check delegation.depth_rules in the ROOT agent's binding. Deeper agents
+# may have fewer SAs. Same pattern as fork/setuid: child inherits, scoped down.
+#
+# Returns: 0 = SA is allowed for this agent, 1 = SA is not in agent's allowlist
+agent_sa_allowed() {
+    local sa_id="$1"
+    local agent_id="${AGENT_ID:-claude-code}"
+
+    # No bindings loaded → all SAs apply (backward compatible)
+    if [ "${AGENT_BINDINGS_LOADED}" != "true" ]; then
+        return 0
+    fi
+
+    # Check if this agent has ancestry (is a subagent)
+    local ancestry_file="${SESSION_STATE_DIR:-${PROJECT_DIR}/var/sessions}/ancestry.json"
+    local agent_depth=0
+    local root_agent="${agent_id}"
+    if [ -f "${ancestry_file}" ] && command -v jq &>/dev/null; then
+        agent_depth=$(jq --arg a "${agent_id}" \
+            '[.chains[] | select(.agent_id == $a) | .depth] | max // 0' \
+            "${ancestry_file}" 2>/dev/null || echo 0)
+        if [ "${agent_depth}" -gt 0 ]; then
+            # Find the root agent (depth 0 ancestor)
+            # Uses iteration limit (max 10 hops) to prevent infinite loops on cycles
+            root_agent=$(jq -r --arg a "${agent_id}" '
+                .chains as $c |
+                {id: $a, steps: 0} |
+                until(
+                    (.steps >= 10) or (. as $s | [$c[] | select(.agent_id == $s.id)] | length == 0);
+                    . as $s | [$c[] | select(.agent_id == $s.id) | .parent] | .[0] as $p |
+                    {id: ($p // $s.id), steps: ($s.steps + 1)}
+                ) | .id
+            ' "${ancestry_file}" 2>/dev/null || echo "${agent_id}")
+        fi
+    fi
+
+    # If depth > 0 and root has delegation.depth_rules, use depth-specific SAs
+    if [ "${agent_depth}" -gt 0 ]; then
+        local depth_sas
+        depth_sas=$(echo "${AGENT_BINDINGS_JSON}" | jq -r --arg a "${root_agent}" --argjson d "${agent_depth}" \
+            '[.[] | select(.agent_id == $a) | .delegation.depth_rules // [] | .[] | select(.depth == $d) | .standing_approvals[]] | .[]' 2>/dev/null)
+        if [ -n "${depth_sas}" ]; then
+            # Depth-specific rules exist — check against them
+            if echo "${depth_sas}" | grep -qx "${sa_id}"; then
+                return 0
+            fi
+            log "Standing approval ${sa_id} not allowed at depth ${agent_depth} for root ${root_agent}"
+            return 1
+        fi
+        # No depth-specific rules for this depth → check if depth_rules exists at all
+        local has_depth_rules
+        has_depth_rules=$(echo "${AGENT_BINDINGS_JSON}" | jq --arg a "${root_agent}" \
+            '[.[] | select(.agent_id == $a) | .delegation.depth_rules // [] | length] | .[0] // 0' 2>/dev/null)
+        if [ "${has_depth_rules}" -gt 0 ]; then
+            # Depth rules exist but none match this depth → no SAs at this depth
+            log "No depth rules for depth ${agent_depth} — no SAs allowed"
+            return 1
+        fi
+    fi
+
+    # Look up this agent's binding (direct, not depth-based)
+    local agent_sas
+    agent_sas=$(echo "${AGENT_BINDINGS_JSON}" | jq -r --arg a "${agent_id}" \
+        '[.[] | select(.agent_id == $a) | .standing_approvals[]] // [] | .[]' 2>/dev/null)
+
+    # No binding for this agent → all SAs apply (unbound = default policy)
+    if [ -z "${agent_sas}" ]; then
+        return 0
+    fi
+
+    # Check if this SA is in the agent's allowlist
+    if echo "${agent_sas}" | grep -qx "${sa_id}"; then
+        return 0
+    fi
+
+    log "Standing approval ${sa_id} not in agent ${agent_id}'s binding — skipped"
+    return 1
+}
+
 # ─── Deny-Then-Retry Approval Pattern ────────────────────────────────────────
 #   1. First invocation: send Telegram ask, write pending file, return deny
 #   2. Human taps approve/deny on phone → dispatcher writes to inbox
@@ -1165,13 +1282,74 @@ check_session_write_limit() {
 handle_subagent_start() {
     local input="$1"
 
-    local agent_type prompt
+    local agent_type prompt subagent_id
     agent_type=$(echo "${input}" | jq -r '.agent_type // "unknown"' 2>/dev/null)
     prompt=$(echo "${input}" | jq -r '.prompt // ""' 2>/dev/null | head -c 500)
+    subagent_id=$(echo "${input}" | jq -r '.agent_id // ""' 2>/dev/null)
     SESSION_ID=$(echo "${input}" | jq -r '.session_id // "unknown"' 2>/dev/null)
     SESSION_ID=$(echo "${SESSION_ID}" | tr -cd 'a-zA-Z0-9_-' | head -c 64)
 
-    log "SubagentStart: type=${agent_type}"
+    # Extract parent agent_id from the hook payload (fixes: AGENT_ID was unset here)
+    local parent_id
+    parent_id=$(echo "${input}" | jq -r '.agent_id // ""' 2>/dev/null)
+    # In SubagentStart, agent_id in the payload is the CHILD being spawned.
+    # The parent is the caller. For now, use session-based lookup or default.
+    # If we're inside a subagent context, the parent was recorded when WE were spawned.
+    local ancestry_file="${SESSION_STATE_DIR:-${PROJECT_DIR}/var/sessions}/ancestry.json"
+    if [ -f "${ancestry_file}" ] && [ -n "${SESSION_ID}" ] && command -v jq &>/dev/null; then
+        # Look up who was last recorded in this session
+        local _session_parent
+        _session_parent=$(jq -r --arg sid "${SESSION_ID}" \
+            '[.chains[] | select(.session_id == $sid)] | sort_by(.ts) | last | .agent_id // ""' \
+            "${ancestry_file}" 2>/dev/null || true)
+        if [ -n "${_session_parent}" ]; then
+            parent_id="${_session_parent}"
+        else
+            parent_id="claude-code"
+        fi
+    else
+        parent_id="claude-code"
+    fi
+    local ancestry_file="${SESSION_STATE_DIR:-${PROJECT_DIR}/var/sessions}/ancestry.json"
+    mkdir -p "$(dirname "${ancestry_file}")" 2>/dev/null || true
+    if [ ! -f "${ancestry_file}" ]; then
+        echo '{"chains":[]}' > "${ancestry_file}" 2>/dev/null || true
+    fi
+    if [ -n "${subagent_id}" ] && command -v jq &>/dev/null; then
+        # Calculate depth from existing chains
+        local parent_depth
+        parent_depth=$(jq --arg p "${parent_id}" \
+            '[.chains[] | select(.agent_id == $p) | .depth] | max // 0' \
+            "${ancestry_file}" 2>/dev/null || echo 0)
+        local child_depth=$(( parent_depth + 1 ))
+
+        # Record the link
+        jq --arg child "${subagent_id}" --arg parent "${parent_id}" \
+            --arg agent_type "${agent_type}" --argjson depth "${child_depth}" \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sid "${SESSION_ID}" \
+            '.chains += [{agent_id:$child, parent:$parent, agent_type:$agent_type, depth:$depth, ts:$ts, session_id:$sid}]' \
+            "${ancestry_file}" > "${ancestry_file}.tmp" 2>/dev/null && \
+            mv "${ancestry_file}.tmp" "${ancestry_file}" 2>/dev/null || true
+
+        log "SubagentStart: ${parent_id}→${subagent_id} (depth ${child_depth}, type ${agent_type})"
+
+        # Check max_depth from agent bindings
+        if [ "${AGENT_BINDINGS_LOADED}" = "true" ]; then
+            local max_depth
+            max_depth=$(echo "${AGENT_BINDINGS_JSON}" | jq -r --arg a "${parent_id}" \
+                '[.[] | select(.agent_id == $a) | .delegation.max_depth] | .[0] // null' 2>/dev/null)
+            if [ -n "${max_depth}" ] && [ "${max_depth}" != "null" ] && [ "${child_depth}" -gt "${max_depth}" ]; then
+                log "DELEGATION: Depth ${child_depth} exceeds max_depth ${max_depth} for ${parent_id} — denying"
+                emit_event "subagent" "${agent_type}" "deny" \
+                    "$(jq -n -c --arg t "${agent_type}" --arg p "${prompt}" --argjson d "${child_depth}" '{agent_type:$t,prompt:$p,depth:$d}')" \
+                    "delegation-depth" "warn" 80 "gate"
+                respond_deny "Delegation depth ${child_depth} exceeds maximum ${max_depth}" "gate"
+                return
+            fi
+        fi
+    else
+        log "SubagentStart: type=${agent_type} (no agent_id in payload)"
+    fi
 
     # Read-only subagent types auto-allow (no tool writes possible)
     case "${agent_type}" in
@@ -1278,6 +1456,11 @@ main() {
     # Sanitize SESSION_ID — prevent path traversal
     SESSION_ID=$(echo "${SESSION_ID}" | tr -cd 'a-zA-Z0-9_-' | head -c 64)
 
+    # Extract agent identity from hook payload (populated in subagent contexts)
+    AGENT_ID=$(echo "${input}" | jq -r '.agent_id // ""' 2>/dev/null)
+    [ -z "${AGENT_ID}" ] && AGENT_ID="claude-code"
+    AGENT_ID=$(echo "${AGENT_ID}" | tr -cd 'a-zA-Z0-9_-' | head -c 64)
+
     # Initialize session state (velocity/loop/burst tracking)
     if [ "${SESSION_STATE_ENABLED}" = "true" ]; then
         session_state_init "${SESSION_ID}"
@@ -1330,6 +1513,21 @@ main() {
         emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "policy-error" "critical" 0 "gate"
         respond_deny "ZLAR policy error. All actions blocked." "gate_error"
         return
+    fi
+
+    # 6b. Build C: Policy version sync — check AFTER policy is loaded
+    if [ "${AGENT_BINDINGS_LOADED}" = "true" ]; then
+        local _drift_versions
+        _drift_versions=$(jq -r '[.bindings[].policy_version // ""] | unique | map(select(. != "" and . != "current")) | .[]' "${AGENT_BINDINGS_FILE}" 2>/dev/null)
+        local _dv
+        for _dv in ${_drift_versions}; do
+            if [ "${_dv}" != "${POLICY_VERSION}" ]; then
+                log "WARNING: Policy drift — binding expects ${_dv}, gate loaded ${POLICY_VERSION}"
+                emit_event "system" "policy-drift" "warn" \
+                    "$(jq -n -c --arg expected "${_dv}" --arg loaded "${POLICY_VERSION}" '{expected:$expected,loaded:$loaded}')" \
+                    "policy-version-sync" "warn" 0 "gate"
+            fi
+        done
     fi
 
     # 7. Evaluate against policy rules
@@ -1407,9 +1605,21 @@ main() {
                     # ── Standing approval fast path ──
                     # Check pre-authorized patterns before the deny-then-retry flow.
                     # If a standing approval matches, allow immediately — no Telegram.
-                    if check_standing_approval "${MATCHED_RULE}" "${TOOL_DISPLAY}"; then
-                        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "authorized" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "standing:${STANDING_APPROVAL_ID}"
-                        respond_allow_or_sandbox
+                    if check_standing_approval "${MATCHED_RULE}" "${TOOL_DISPLAY}" && agent_sa_allowed "${STANDING_APPROVAL_ID}"; then
+                        # Build B: Budget check — position limits
+                        # Standing approval matches, but has the agent exceeded its budget?
+                        local _budget_result="allow"
+                        if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ "${AGENT_BINDINGS_LOADED}" = "true" ]; then
+                            _budget_result=$(budget_check "${MATCHED_RULE}" "${AGENT_ID:-claude-code}" "${AGENT_BINDINGS_JSON}")
+                        fi
+                        if [ "${_budget_result}" != "allow" ]; then
+                            log "BUDGET: Agent ${AGENT_ID:-claude-code} exceeded budget for ${MATCHED_RULE} — escalating to ${_budget_result}"
+                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:budget_exceeded"
+                            respond_deny "Budget exceeded for rule ${MATCHED_RULE}. Human approval required." "gate:budget"
+                        else
+                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "authorized" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "standing:${STANDING_APPROVAL_ID}"
+                            respond_allow_or_sandbox
+                        fi
                     else
 
                     # ── Deny-then-retry pattern ──
