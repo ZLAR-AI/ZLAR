@@ -227,6 +227,47 @@ if [ -f "${AGENT_BINDINGS_FILE}" ] && command -v jq &>/dev/null; then
     fi
 fi
 
+# Load capability manifest (v0 — the interface to governance)
+# See docs/MANIFEST-INVARIANTS.md for design invariants.
+# Missing manifest = backward compatible (policy-only). Tampered = hard deny.
+MANIFEST_LOADED="false"
+MANIFEST_JSON=""
+MANIFEST_FILE="${PROJECT_DIR}/etc/manifest.json"
+if [ -f "${MANIFEST_FILE}" ] && command -v jq &>/dev/null; then
+    # Check signature if pubkey exists
+    _manifest_sig=$(jq -r '.signature.value // ""' "${MANIFEST_FILE}" 2>/dev/null)
+    _manifest_ok="true"
+    if [ -n "${_manifest_sig}" ] && [ -f "${POLICY_PUBKEY}" ]; then
+        _m_canon=$(mktemp "${GATE_TMP}/m-canon.XXXXXX")
+        _m_hash=$(mktemp "${GATE_TMP}/m-hash.XXXXXX")
+        _m_sig_bin=$(mktemp "${GATE_TMP}/m-sig.XXXXXX")
+        jq -S -c '.signature = {algorithm:"",value:"",key_id:""}' "${MANIFEST_FILE}" > "${_m_canon}" 2>/dev/null
+        zlar_crypto_hash "${_m_canon}" "${_m_hash}"
+        echo "${_manifest_sig}" | base64 -d > "${_m_sig_bin}" 2>/dev/null
+        if ! zlar_crypto_verify "${POLICY_PUBKEY}" "${_m_hash}" "${_m_sig_bin}" "ed25519"; then
+            _manifest_ok="false"
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest signature INVALID — manifest rejected" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+        fi
+        rm -f "${_m_canon}" "${_m_hash}" "${_m_sig_bin}"
+    elif [ -z "${_manifest_sig}" ]; then
+        # Unsigned manifest — fall back to policy-only (invariant #7)
+        _manifest_ok="false"
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARNING: Manifest is unsigned — ignoring" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+    fi
+    if [ "${_manifest_ok}" = "true" ]; then
+        # Check expiry (invariant #6: expired = hard deny)
+        _m_expires=$(jq -r '.expires // ""' "${MANIFEST_FILE}" 2>/dev/null)
+        _m_now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        if [ -n "${_m_expires}" ] && [[ "${_m_now}" > "${_m_expires}" ]]; then
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARNING: Manifest expired (${_m_expires}) — manifest rejected" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+        else
+            MANIFEST_JSON=$(jq -c '.' "${MANIFEST_FILE}" 2>/dev/null)
+            MANIFEST_LOADED="true"
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] Manifest loaded: $(jq -r '.identity.agent_id // "?"' "${MANIFEST_FILE}" 2>/dev/null)" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+        fi
+    fi
+fi
+
 # Env var overrides
 TELEGRAM_TOKEN="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-7662799203}"
@@ -1531,9 +1572,76 @@ main() {
         done
     fi
 
+    # 6c. Manifest enforcement (v0 — the manifest narrows the policy, never widens)
+    # See docs/MANIFEST-INVARIANTS.md for precedence rules.
+    if [ "${MANIFEST_LOADED}" = "true" ]; then
+        # Map domain to manifest capability category
+        local _cap_category="${DOMAIN}"
+        case "${DOMAIN}" in
+            bash)
+                # Classify bash commands as read, write, execute, or dangerous
+                local _cmd_lower
+                _cmd_lower=$(echo "${TOOL_DISPLAY}" | tr '[:upper:]' '[:lower:]')
+                if echo "${_cmd_lower}" | grep -qE '^(ls|cat|head|tail|wc|file|stat|git (status|log|diff|branch|tag|show)|gh (pr|issue|run)|pwd|echo|which|type|env|printenv)'; then
+                    _cap_category="bash.read"
+                elif echo "${_cmd_lower}" | grep -qE '(rm |rm$|sudo|kill|chmod|chown|eval |exec |source )'; then
+                    _cap_category="bash.dangerous"
+                else
+                    _cap_category="bash.execute"
+                fi
+                ;;
+            read)  _cap_category="file.read" ;;
+            write) _cap_category="file.write" ;;
+            edit)  _cap_category="file.edit" ;;
+            glob)  _cap_category="file.glob" ;;
+            grep)  _cap_category="file.grep" ;;
+            webfetch|websearch) _cap_category="network.egress" ;;
+            agent|subagent) _cap_category="agent.spawn" ;;
+            mcp) _cap_category="mcp.call" ;;
+        esac
+
+        # Check manifest deny list (deny always wins — invariant #1)
+        local _m_denied
+        _m_denied=$(echo "${MANIFEST_JSON}" | jq -r --arg cap "${_cap_category}" \
+            '[.authority.deny[] | select(. == $cap or ($cap | startswith(. + ".")))] | length' 2>/dev/null || echo 0)
+        if [ "${_m_denied}" -gt 0 ]; then
+            log "MANIFEST: Category ${_cap_category} denied by manifest"
+            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "manifest:deny" "warn" 80 "manifest"
+            respond_deny "Action denied by capability manifest (category: ${_cap_category})" "manifest"
+            return
+        fi
+
+        # Check manifest allow list
+        local _m_allowed
+        _m_allowed=$(echo "${MANIFEST_JSON}" | jq -r --arg cap "${_cap_category}" \
+            '[.authority.allow[] | select(. == $cap or ($cap | startswith(. + ".")))] | length' 2>/dev/null || echo 0)
+        if [ "${_m_allowed}" -eq 0 ]; then
+            # Not in allow list — check unmatched_action
+            local _m_unmatched
+            _m_unmatched=$(echo "${MANIFEST_JSON}" | jq -r '.authority.unmatched_action // "escalate"' 2>/dev/null)
+            if [ "${_m_unmatched}" = "deny" ]; then
+                log "MANIFEST: Category ${_cap_category} not in allow list, unmatched_action=deny"
+                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "manifest:unmatched" "warn" 60 "manifest"
+                respond_deny "Action not authorized by capability manifest (category: ${_cap_category})" "manifest"
+                return
+            elif [ "${_m_unmatched}" = "escalate" ]; then
+                # Escalate — override policy to "ask" if policy would have allowed
+                log "MANIFEST: Category ${_cap_category} not in allow list — escalating"
+                # We'll let policy evaluation run, but force the action to "ask" later
+                MANIFEST_FORCES_ASK="true"
+            fi
+        fi
+    fi
+
     # 7. Evaluate against policy rules
     evaluate_policy "${DOMAIN}" "${DETAIL}"
     log "Rule: ${MATCHED_RULE}, action=${MATCHED_ACTION}, risk=${MATCHED_RISK_SCORE}, severity=${MATCHED_SEVERITY}"
+
+    # 7b. Manifest escalation override (manifest narrows, never widens)
+    if [ "${MANIFEST_FORCES_ASK:-false}" = "true" ] && [ "${MATCHED_ACTION}" = "allow" ]; then
+        log "MANIFEST: Overriding policy allow → ask (category not in manifest allow list)"
+        MATCHED_ACTION="ask"
+    fi
 
     # 8. Session write counter
     if [ "${DOMAIN}" = "write" ] || [ "${DOMAIN}" = "edit" ]; then
