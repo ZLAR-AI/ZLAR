@@ -154,8 +154,12 @@ The deny rules (rm -rf, sudo, persistence mechanisms) always block regardless of
 | **Observation** | `zlar-digest` | Governance summary. Decisions, latency, sequences, novelty. |
 | **Observation** | `zlar-standing` | Standing authority view. What the agent can do right now without asking. |
 | **Observation** | `zlar-registry` | Agent inventory. Every agent the gate has seen, derived from the audit trail. No registration required. |
+| **Identity** | `zlar-agents` | Per-agent policy bindings. Standing approval scoping, aggregate budgets, delegation depth limits per agent. |
+| **Identity** | `zlar-agents-export` | Generate signable agent inventory from audit trail. Raw + production views (filters test agents). |
+| **Identity** | `lib/agent-identity.sh` | Risk tier classification, authorization levels, test agent filtering, pattern detection. |
+| **Dashboard** | `zlar-status` | Governance health dashboard. Gate status, policy state, agent inventory, recent approvals/denials. |
 | **Policy** | `zlar-policy` | CLI for Ed25519-signed policy rules. Keygen, sign, verify. |
-| **Session** | `lib/session-state.sh` | Velocity, loop detection, denial bursts. Thin counters, not reasoning. |
+| **Session** | `lib/session-state.sh` | Velocity, loop detection, denial bursts, aggregate action budgets. Thin counters, not reasoning. |
 | **Adapters** | `adapters/` | Framework hooks for Claude Code, Cursor, Windsurf. Thin wrappers — the gate is the gate. |
 
 ## The witness layer
@@ -189,13 +193,14 @@ If a proposed feature fails any of these, it does not belong:
 ## Repository structure
 
 ```
-bin/           Gate, witness, digest, standing, registry, policy CLI
-lib/           Shared libraries (audit reader, session state)
+bin/           Gate, witness, digest, standing, registry, agents, status, policy CLI
+lib/           Shared libraries (audit reader, session state, agent identity, crypto)
 adapters/      Framework hooks (claude-code, cursor, windsurf)
 mcp-gate/      MCP TCP proxy gate (Node.js)
-etc/           Configuration, policy templates, sequence definitions, signing keys, sandbox profiles
+sdk/           Phase 2 SDK: daemon, membrane (delegation chains), AuthZEN, hook adapter
+etc/           Configuration, policy templates, agent bindings, signing keys, sandbox profiles
 scripts/       Setup, installation, Telegram bootstrap
-tests/         Test suites
+tests/         Test suites (9 bash + 4 Node.js)
 docs/          Architecture and design
 signal/        Agent-facing signal layer (thesis, manifest)
 cedar-poc/     Cedar formal policy verification: base rules + E-23 risk-tiered governance
@@ -205,9 +210,10 @@ oc/            OS-level containment (OpenClaw integration)
 ## Running tests
 
 ```bash
-# Gate and governance tests (231 assertions across 8 suites)
+# Gate and governance tests (266 assertions across 9 suites)
 bash tests/test-perimeter-closure.sh  # Perimeter closure: 85 assertions (policy rules + sandbox + path sanitization)
 bash tests/test-crypto.sh             # Cryptographic abstraction: 46 assertions
+bash tests/test-agent-identity.sh     # Agent identity, registry, bindings: 35 assertions
 bash tests/test-canary.sh             # Governance health probes: 25 assertions
 bash tests/test-witness.sh            # Observation layer: 23 assertions
 bash tests/test-session-state.sh      # Session counters: 16 assertions
@@ -215,7 +221,7 @@ bash tests/test-standing-approvals.sh # Standing approvals: 15 assertions
 bash tests/test-approval-binding.sh   # Approval binding (action fingerprint): 11 assertions
 bash tests/test-inbox-hmac.sh         # Inbox HMAC verification: 10 assertions
 
-# Cedar and MCP gate
+# Cedar, MCP gate, and SDK
 node cedar-poc/test.mjs               # Cedar base rules: 14 assertions
 node cedar-poc/test-e23.mjs           # Cedar E-23 risk-tiered: 25 assertions
 node mcp-gate/test.mjs                # MCP proxy gate: 7 assertions
