@@ -458,36 +458,78 @@ fi
 # PHASE 7: Self-test
 # ═══════════════════════════════════════════════════════════════════════════════
 
-step "Phase 7: Self-test"
+step "Phase 7: Verification"
 
-# Test: a Read should be allowed
+SELF_TEST_PASS=0
+SELF_TEST_FAIL=0
+
+# Verify: gate executable exists
+if [ -x "${INSTALL_DIR}/bin/zlar-gate" ]; then
+    ok "Gate active"
+    SELF_TEST_PASS=$((SELF_TEST_PASS + 1))
+else
+    fail "Gate not found or not executable"
+    SELF_TEST_FAIL=$((SELF_TEST_FAIL + 1))
+fi
+
+# Verify: policy signed
+POLICY_SIG=$(jq -r '.signature.value // ""' "${INSTALL_DIR}/etc/policies/active.policy.json" 2>/dev/null)
+if [ -n "${POLICY_SIG}" ] && [ "${POLICY_SIG}" != "SIGNED_AT_INSTALL" ] && [ "${POLICY_SIG}" != "unsigned" ]; then
+    ok "Policy signed"
+    SELF_TEST_PASS=$((SELF_TEST_PASS + 1))
+else
+    warn "Policy signature not verified"
+    SELF_TEST_FAIL=$((SELF_TEST_FAIL + 1))
+fi
+
+# Verify: hook configured
+if [ "${FRAMEWORKS_CONFIGURED}" -gt 0 ] || [ "${EXISTING_ZLAR}" -gt 0 ]; then
+    ok "Hook configured (${FRAMEWORKS_CONFIGURED} framework(s))"
+    SELF_TEST_PASS=$((SELF_TEST_PASS + 1))
+else
+    warn "No framework hooks configured — gate has nothing to govern yet"
+fi
+
+# Live gate test: Read should be allowed
 TEST_INPUT='{"tool_name":"Read","tool_input":{"file_path":"/tmp/test"},"session_id":"lt-install-test"}'
 TEST_RESULT=$(printf '%s' "${TEST_INPUT}" | "${INSTALL_DIR}/bin/zlar-gate" 2>/dev/null || echo "")
 
 if [ -n "${TEST_RESULT}" ]; then
     TEST_DECISION=$(printf '%s' "${TEST_RESULT}" | jq -r '.hookSpecificOutput.permissionDecision // "unknown"' 2>/dev/null)
     if [ "${TEST_DECISION}" = "allow" ]; then
-        ok "Gate self-test: Read → allow ✓"
+        ok "Live test: Read -> allow"
+        SELF_TEST_PASS=$((SELF_TEST_PASS + 1))
     else
-        warn "Gate self-test: Read returned '${TEST_DECISION}' (expected 'allow')"
+        warn "Live test: Read returned '${TEST_DECISION}' (expected 'allow')"
+        SELF_TEST_FAIL=$((SELF_TEST_FAIL + 1))
     fi
 else
-    warn "Gate self-test: no output — gate may need bash 4+"
+    warn "Live test: gate produced no output — may need bash 4+"
+    SELF_TEST_FAIL=$((SELF_TEST_FAIL + 1))
 fi
 
-# Test: rm -rf should be denied
+# Live gate test: rm -rf should be denied
 TEST_INPUT2='{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/test"},"session_id":"lt-install-test"}'
 TEST_RESULT2=$(printf '%s' "${TEST_INPUT2}" | "${INSTALL_DIR}/bin/zlar-gate" 2>/dev/null || echo "")
 
 if [ -n "${TEST_RESULT2}" ]; then
     TEST_DECISION2=$(printf '%s' "${TEST_RESULT2}" | jq -r '.hookSpecificOutput.permissionDecision // "unknown"' 2>/dev/null)
     if [ "${TEST_DECISION2}" = "deny" ]; then
-        ok "Gate self-test: rm -rf → deny ✓"
+        ok "Live test: rm -rf -> deny"
+        SELF_TEST_PASS=$((SELF_TEST_PASS + 1))
     else
-        warn "Gate self-test: rm -rf returned '${TEST_DECISION2}' (expected 'deny')"
+        fail "Live test: rm -rf returned '${TEST_DECISION2}' (expected 'deny')"
+        SELF_TEST_FAIL=$((SELF_TEST_FAIL + 1))
     fi
 else
-    warn "Gate self-test: no output for deny test"
+    warn "Live test: gate produced no output for deny test"
+    SELF_TEST_FAIL=$((SELF_TEST_FAIL + 1))
+fi
+
+if [ "${SELF_TEST_FAIL}" -eq 0 ]; then
+    ok "All ${SELF_TEST_PASS} verification checks passed"
+else
+    warn "${SELF_TEST_PASS} passed, ${SELF_TEST_FAIL} failed — run 'zlar doctor' for details"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -527,10 +569,13 @@ printf "    Run: ${BOLD}~/.zlar/bin/zlar telegram${NC}\n"
 printf "    This enables Telegram approval for denied actions.\n"
 printf "\n"
 printf "  ${BOLD}Commands:${NC}\n"
+printf "    ${DIM}~/.zlar/bin/zlar doctor${NC}     — check installation health\n"
 printf "    ${DIM}~/.zlar/bin/zlar status${NC}     — what's governed\n"
 printf "    ${DIM}~/.zlar/bin/zlar audit${NC}      — recent decisions\n"
 printf "    ${DIM}~/.zlar/bin/zlar policy${NC}     — current rules\n"
 printf "    ${DIM}~/.zlar/bin/zlar uninstall${NC}  — clean removal\n"
+printf "\n"
+printf "  Something not working? Run: ${BOLD}~/.zlar/bin/zlar doctor${NC}\n"
 printf "\n"
 printf "  Open your editor. ZLAR is governing every tool call.\n"
 printf "\n"
