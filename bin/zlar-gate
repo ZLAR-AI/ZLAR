@@ -1878,7 +1878,7 @@ main() {
                                 rm -f "${APPROVAL_DIR}/${MATCHED_RULE}-${SESSION_ID}.pending" 2>/dev/null
                                 emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:human_${_hi_post_result}"
                                 respond_deny "Approval not accepted (${_hi_post_result}). Please review again with more time." "gate:human_integrity"
-                                break
+                                return  # exit main() after responding
                             fi
 
                             # Human approved on a previous ask — allow this retry
@@ -1913,7 +1913,7 @@ main() {
                                 log "HUMAN INVARIANT: ${_hi_pre_result} — not routing to human"
                                 emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:human_${_hi_pre_result}"
                                 respond_deny "Human decision-maker unavailable (${_hi_pre_result}). System is protecting human judgment." "gate:human_capacity"
-                                break
+                                return  # exit main() after responding
                             fi
 
                             # H15: Record ask time for deliberation floor check on response

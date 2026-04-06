@@ -179,7 +179,7 @@ if [[ -n "${OUTPUT_FILE}" ]]; then
         if [[ -f "${local_key}" ]]; then
             # Source crypto lib for signing
             source "${PROJECT_DIR}/lib/crypto.sh"
-            local sig_file="${OUTPUT_FILE}.sig"
+            sig_file="${OUTPUT_FILE}.sig"
             if zlar_crypto_sign "${local_key}" "${OUTPUT_FILE}" "${sig_file}"; then
                 echo "Signed: ${sig_file}" >&2
             else
