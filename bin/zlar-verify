@@ -3,7 +3,7 @@
 // zlar-verify — Standalone Governed Action Receipt Verifier
 //
 // Verifies a ZLAR receipt with nothing but this script and a public key.
-// The stop is the product. This tool proves the stop mattered.
+// Verifies receipt signatures and structural integrity for both v0 and v1 formats.
 //
 // Usage:
 //   zlar-verify <receipt.json> --pubkey <key.pub>

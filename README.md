@@ -73,7 +73,7 @@ The agent does not volunteer to be governed. It is governed by architecture.
 
 ## The Governed Action Receipt
 
-The receipt is the portable proof. The stop is the product. The record proves the stop mattered.
+The receipt is the portable proof that a governed action was evaluated by deterministic policy and decided by the stated authority.
 
 ```bash
 # Generate a receipt from an audit event
@@ -127,7 +127,7 @@ This is not the agent's account of what it did. This is the infrastructure's rec
 
 If the enforcement layer uses intelligence, the enforcement layer can be attacked with intelligence. If the enforcement layer is deterministic, the only attack is against the policy itself — which is a human artifact, signed with Ed25519, stored outside agent context. The absence of intelligence in the gate is the security property.
 
-An immune system that reasons becomes an autoimmune disorder.
+An enforcement layer that uses reasoning to evaluate actions can be subverted by reasoning-based attacks. The enforcement layer's capability becomes its vulnerability.
 
 ## What the Gate Does Not Protect Against
 
