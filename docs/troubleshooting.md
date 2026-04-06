@@ -174,6 +174,50 @@ The default policy (`lt-default.policy.json`) uses only `allow` and `deny` rules
 
 ---
 
+## Telegram buttons don't respond after reboot
+
+**Symptom:** The gate sends Telegram messages, but tapping Approve or Deny does nothing. Buttons stay static with no animation.
+
+**Cause:** The callback listener daemon (`zlar-tg-poll`) is not running. It dies on reboot if the boot script can't find the token file. The gate sends messages (outbound API call), but nobody is polling for button callbacks (inbound).
+
+**Fix:**
+
+```bash
+sudo /usr/local/bin/zlar-tg-boot.sh &
+```
+
+**Permanent fix:** The updated `zlar-tg-boot.sh` stores the admin user in `/etc/zlar/admin-user` so it survives reboots. If the problem recurs after a fresh OS install, run:
+
+```bash
+sudo mkdir -p /etc/zlar
+echo "$(whoami)" | sudo tee /etc/zlar/admin-user
+sudo /usr/local/bin/zlar-tg-boot.sh &
+```
+
+**After every reboot, run `zlar doctor`** — it checks whether the callback listener is alive and the HMAC secret is readable.
+
+---
+
+## Gate silently dies (all tool calls allowed, no audit entries)
+
+**Symptom:** No audit entries being written. Agent runs commands freely. `zlar doctor` gate tests show "skipped (gate busy)."
+
+**Cause:** The gate is crashing during initialization. The most common cause: the HMAC secret file at `/var/run/zlar-tg/inbox-hmac-secret` exists but is not readable by your user. With `set -euo pipefail`, this kills the gate before it reaches decision-making. Claude Code treats broken hook output as "continue."
+
+**Fix:**
+
+```bash
+sudo chmod 640 /var/run/zlar-tg/inbox-hmac-secret
+```
+
+Or restart the boot script which regenerates it with correct permissions:
+
+```bash
+sudo /usr/local/bin/zlar-tg-boot.sh &
+```
+
+---
+
 ## Audit trail not writing
 
 **Symptom:** `zlar audit` shows no entries even though the gate is running.

@@ -629,6 +629,44 @@ cmd_doctor() {
             printf "         Fix: run ${BOLD}zlar telegram${NC} or set ZLAR_TELEGRAM_TOKEN in ${PROJECT_DIR}/.env\n"
             errors=$((errors + 1))
         fi
+
+        # Check callback polling daemon (tg-poll)
+        local tg_poll_pid=""
+        if [ -f /var/run/zlar-tg/poll.pid ]; then
+            tg_poll_pid=$(cat /var/run/zlar-tg/poll.pid 2>/dev/null | tr -d '[:space:]')
+        fi
+
+        if [ -n "${tg_poll_pid}" ] && kill -0 "${tg_poll_pid}" 2>/dev/null; then
+            printf "    ${GREEN}OK${NC}  Callback listener running (PID ${tg_poll_pid})\n"
+        else
+            # No PID file or stale PID — check if process exists by name
+            local tg_poll_running=""
+            tg_poll_running=$(pgrep -f zlar-tg-poll 2>/dev/null | head -1 || true)
+            if [ -n "${tg_poll_running}" ]; then
+                printf "    ${GREEN}OK${NC}  Callback listener running (PID ${tg_poll_running}, stale pidfile)\n"
+            else
+                printf "    ${RED}!!${NC}  Callback listener NOT running — Telegram buttons won't respond\n"
+                printf "         Fix: ${BOLD}sudo /usr/local/bin/zlar-tg-boot.sh &${NC}\n"
+                printf "         This is the #1 cause of 'I approved but nothing happened'\n"
+                errors=$((errors + 1))
+            fi
+        fi
+
+        # Check HMAC secret readability (the April 3 bug)
+        local hmac_file="/var/run/zlar-tg/inbox-hmac-secret"
+        if [ -f "${hmac_file}" ]; then
+            if [ -r "${hmac_file}" ]; then
+                printf "    ${GREEN}OK${NC}  HMAC secret readable\n"
+            else
+                printf "    ${RED}!!${NC}  HMAC secret exists but not readable (will crash gate)\n"
+                printf "         Fix: ${BOLD}sudo chmod 640 ${hmac_file}${NC}\n"
+                errors=$((errors + 1))
+            fi
+        else
+            printf "    ${YELLOW}!!${NC}  HMAC secret missing (callback listener may not have started since last reboot)\n"
+            printf "         Fix: ${BOLD}sudo /usr/local/bin/zlar-tg-boot.sh &${NC}\n"
+            warnings=$((warnings + 1))
+        fi
     else
         printf "    ${DIM}--${NC}  Telegram disabled (deny-only mode — all blocked actions are instant-denied)\n"
         printf "         Upgrade: ${BOLD}zlar telegram${NC} to enable human approval from your phone\n"
