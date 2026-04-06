@@ -34,7 +34,14 @@ cd ZLAR && bash install.sh
 
 Installs with deny-heavy defaults. Your agent is governed in under 60 seconds.
 
+```bash
+~/.zlar/bin/zlar doctor    # verify everything works
+~/.zlar/bin/zlar status    # see what's governed
+```
+
 Add human approval via Telegram: `~/.zlar/bin/zlar telegram`
+
+Something not working? See [Troubleshooting](docs/troubleshooting.md) or run `zlar doctor`.
 
 ## How It Works
 
@@ -210,6 +217,7 @@ Architectural choices are documented as ADRs:
 
 ## Further Reading
 
+- [docs/troubleshooting.md](docs/troubleshooting.md) — Common issues and fixes
 - [GOVERNANCE.md](GOVERNANCE.md) — How decisions are made, how invariants are amended
 - [SECURITY.md](SECURITY.md) — Vulnerability disclosure, security principles
 - [CONTRIBUTING.md](CONTRIBUTING.md) — How to contribute

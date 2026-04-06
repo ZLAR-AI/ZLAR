@@ -12,8 +12,8 @@ ZLAR_HMAC_SECRET_FILE="${ZLAR_HMAC_SECRET_FILE:-/var/run/zlar-tg/inbox-hmac-secr
 # Sets ZLAR_INBOX_HMAC_SECRET global.
 zlar_hmac_load_secret() {
     ZLAR_INBOX_HMAC_SECRET=""
-    if [ -f "${ZLAR_HMAC_SECRET_FILE}" ]; then
-        ZLAR_INBOX_HMAC_SECRET=$(cat "${ZLAR_HMAC_SECRET_FILE}" 2>/dev/null | tr -d '[:space:]')
+    if [ -f "${ZLAR_HMAC_SECRET_FILE}" ] && [ -r "${ZLAR_HMAC_SECRET_FILE}" ]; then
+        ZLAR_INBOX_HMAC_SECRET=$(cat "${ZLAR_HMAC_SECRET_FILE}" 2>/dev/null | tr -d '[:space:]' || true)
     fi
 }
 

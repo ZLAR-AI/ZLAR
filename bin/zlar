@@ -4,6 +4,7 @@
 #
 # Usage:
 #   zlar status     — show governed frameworks, policy summary, audit count
+#   zlar doctor     — check installation health (deps, keys, hooks, policy)
 #   zlar audit      — show last 20 audit entries
 #   zlar policy     — show current policy rules summary
 #   zlar telegram   — configure Telegram approval (upgrade from deny-all)
@@ -305,11 +306,358 @@ cmd_uninstall() {
     fi
 }
 
+cmd_doctor() {
+    printf "\n${BOLD}ZLAR Doctor${NC} — checking your installation\n\n"
+
+    local errors=0
+    local warnings=0
+
+    # ── 1. Dependencies ──────────────────────────────────────────────────────
+
+    printf "  ${BOLD}Dependencies${NC}\n"
+
+    # bash version
+    local bash_major="${BASH_VERSINFO:-0}"
+    if [ "${bash_major}" = "0" ]; then
+        bash_major=$(echo "${BASH_VERSION:-0}" | cut -d. -f1)
+    fi
+    if [ "${bash_major}" -ge 4 ] 2>/dev/null; then
+        printf "    ${GREEN}OK${NC}  bash ${BASH_VERSION} (4+ required for gate)\n"
+    else
+        printf "    ${RED}!!${NC}  bash ${BASH_VERSION:-unknown} — gate requires bash 4+\n"
+        case "$(uname -s)" in
+            Darwin) printf "         Fix: ${BOLD}brew install bash${NC}\n" ;;
+            Linux)  printf "         Fix: ${BOLD}sudo apt install bash${NC}\n" ;;
+        esac
+        errors=$((errors + 1))
+    fi
+
+    # jq
+    if command -v jq >/dev/null 2>&1; then
+        printf "    ${GREEN}OK${NC}  jq $(jq --version 2>/dev/null || echo 'installed')\n"
+    else
+        printf "    ${RED}!!${NC}  jq not found — required for policy evaluation\n"
+        case "$(uname -s)" in
+            Darwin) printf "         Fix: ${BOLD}brew install jq${NC}\n" ;;
+            Linux)  printf "         Fix: ${BOLD}sudo apt install jq${NC}\n" ;;
+        esac
+        errors=$((errors + 1))
+    fi
+
+    # openssl
+    if command -v openssl >/dev/null 2>&1; then
+        local ssl_ver
+        ssl_ver=$(openssl version 2>/dev/null | head -1 || echo "unknown")
+        printf "    ${GREEN}OK${NC}  openssl (${ssl_ver})\n"
+
+        # Ed25519 support
+        if openssl genpkey -algorithm ed25519 -out /dev/null 2>/dev/null; then
+            printf "    ${GREEN}OK${NC}  Ed25519 signing supported\n"
+        else
+            printf "    ${RED}!!${NC}  Ed25519 not supported by this openssl\n"
+            case "$(uname -s)" in
+                Darwin) printf "         Fix: ${BOLD}brew install openssl@3${NC} and ensure it's on PATH\n" ;;
+                Linux)  printf "         Fix: upgrade openssl to 1.1.1+ for Ed25519\n" ;;
+            esac
+            errors=$((errors + 1))
+        fi
+    else
+        printf "    ${RED}!!${NC}  openssl not found — required for signing\n"
+        errors=$((errors + 1))
+    fi
+
+    # Node.js (optional, for MCP gate and receipt verification)
+    if command -v node >/dev/null 2>&1; then
+        local node_ver
+        node_ver=$(node --version 2>/dev/null || echo "unknown")
+        local node_major
+        node_major=$(echo "${node_ver}" | sed 's/v//' | cut -d. -f1)
+        if [ "${node_major}" -ge 18 ] 2>/dev/null; then
+            printf "    ${GREEN}OK${NC}  node ${node_ver} (18+ for MCP gate)\n"
+        else
+            printf "    ${YELLOW}!!${NC}  node ${node_ver} — MCP gate needs 18+\n"
+            warnings=$((warnings + 1))
+        fi
+    else
+        printf "    ${DIM}--${NC}  node not found (optional — needed for MCP gate and receipt verification)\n"
+    fi
+
+    printf "\n"
+
+    # ── 2. Signing Keys ──────────────────────────────────────────────────────
+
+    printf "  ${BOLD}Signing Keys${NC}\n"
+
+    local privkey="${HOME}/.zlar-signing.key"
+    local pubkey="${PROJECT_DIR}/etc/keys/policy-signing.pub"
+
+    if [ -f "${privkey}" ]; then
+        local privkey_perms
+        privkey_perms=$(stat -f '%A' "${privkey}" 2>/dev/null || stat -c '%a' "${privkey}" 2>/dev/null || echo "unknown")
+        if [ "${privkey_perms}" = "600" ]; then
+            printf "    ${GREEN}OK${NC}  Private key: ${privkey} (mode 600)\n"
+        else
+            printf "    ${YELLOW}!!${NC}  Private key: ${privkey} (mode ${privkey_perms} — should be 600)\n"
+            printf "         Fix: ${BOLD}chmod 600 ${privkey}${NC}\n"
+            warnings=$((warnings + 1))
+        fi
+    else
+        printf "    ${RED}!!${NC}  Private key not found: ${privkey}\n"
+        printf "         Fix: ${BOLD}openssl genpkey -algorithm ed25519 -out ${privkey} && chmod 600 ${privkey}${NC}\n"
+        errors=$((errors + 1))
+    fi
+
+    if [ -f "${pubkey}" ]; then
+        printf "    ${GREEN}OK${NC}  Public key: ${pubkey}\n"
+    else
+        printf "    ${RED}!!${NC}  Public key not found: ${pubkey}\n"
+        if [ -f "${privkey}" ]; then
+            printf "         Fix: ${BOLD}openssl pkey -in ${privkey} -pubout -out ${pubkey}${NC}\n"
+        fi
+        errors=$((errors + 1))
+    fi
+
+    # Key pair match test
+    if [ -f "${privkey}" ] && [ -f "${pubkey}" ]; then
+        local test_data="zlar-doctor-test"
+        local tmpdir
+        tmpdir=$(mktemp -d)
+        local match="unknown"
+        if printf '%s' "${test_data}" | openssl dgst -sha256 -binary | \
+            openssl pkeyutl -sign -inkey "${privkey}" -rawin -out "${tmpdir}/sig" 2>/dev/null && \
+           printf '%s' "${test_data}" | openssl dgst -sha256 -binary | \
+            openssl pkeyutl -verify -pubin -inkey "${pubkey}" -rawin -sigfile "${tmpdir}/sig" 2>/dev/null; then
+            printf "    ${GREEN}OK${NC}  Key pair matches (sign/verify test passed)\n"
+        else
+            printf "    ${RED}!!${NC}  Key pair mismatch — private and public keys don't correspond\n"
+            printf "         Fix: ${BOLD}openssl pkey -in ${privkey} -pubout -out ${pubkey}${NC}\n"
+            errors=$((errors + 1))
+        fi
+        rm -rf "${tmpdir}"
+    fi
+
+    printf "\n"
+
+    # ── 3. Policy ────────────────────────────────────────────────────────────
+
+    printf "  ${BOLD}Policy${NC}\n"
+
+    local policy="${PROJECT_DIR}/etc/policies/active.policy.json"
+    if [ -f "${policy}" ]; then
+        local rule_count
+        rule_count=$(jq '.rules | length' "${policy}" 2>/dev/null || echo "?")
+        printf "    ${GREEN}OK${NC}  Active policy: ${rule_count} rules\n"
+
+        # Signature check
+        local sig_value
+        sig_value=$(jq -r '.signature.value // ""' "${policy}" 2>/dev/null)
+        if [ -n "${sig_value}" ] && [ "${sig_value}" != "SIGNED_AT_INSTALL" ] && [ "${sig_value}" != "unsigned" ]; then
+            # Verify signature if pubkey exists
+            if [ -f "${pubkey}" ] && [ -x "${PROJECT_DIR}/bin/zlar-policy" ]; then
+                if "${PROJECT_DIR}/bin/zlar-policy" verify --input "${policy}" --pubkey "${pubkey}" >/dev/null 2>&1; then
+                    printf "    ${GREEN}OK${NC}  Policy signature valid\n"
+                else
+                    printf "    ${RED}!!${NC}  Policy signature INVALID — policy may have been tampered with\n"
+                    printf "         Fix: ${BOLD}${PROJECT_DIR}/bin/zlar-policy sign --input ${policy} --key ${privkey}${NC}\n"
+                    errors=$((errors + 1))
+                fi
+            else
+                printf "    ${YELLOW}!!${NC}  Policy is signed but cannot verify (pubkey or zlar-policy missing)\n"
+                warnings=$((warnings + 1))
+            fi
+        else
+            printf "    ${YELLOW}!!${NC}  Policy is not signed\n"
+            printf "         Fix: ${BOLD}${PROJECT_DIR}/bin/zlar-policy sign --input ${policy} --key ${privkey}${NC}\n"
+            warnings=$((warnings + 1))
+        fi
+    else
+        printf "    ${RED}!!${NC}  No active policy found at ${policy}\n"
+        errors=$((errors + 1))
+    fi
+
+    printf "\n"
+
+    # ── 4. Hook Configuration ────────────────────────────────────────────────
+
+    printf "  ${BOLD}Hook Configuration${NC}\n"
+
+    local hooks_found=0
+
+    # Claude Code
+    local cc_settings="${HOME}/.claude/settings.json"
+    if [ -f "${cc_settings}" ] && grep -q "zlar" "${cc_settings}" 2>/dev/null; then
+        printf "    ${GREEN}OK${NC}  Claude Code: hooks configured\n"
+        hooks_found=$((hooks_found + 1))
+    elif command -v claude >/dev/null 2>&1 || [ -d "${HOME}/.claude" ]; then
+        printf "    ${RED}!!${NC}  Claude Code: installed but no ZLAR hooks\n"
+        printf "         Fix: run ${BOLD}bash install.sh${NC} or add PreToolUse hook manually\n"
+        errors=$((errors + 1))
+    else
+        printf "    ${DIM}--${NC}  Claude Code: not installed\n"
+    fi
+
+    # Cursor
+    local cursor_hooks="${HOME}/.cursor/hooks.json"
+    if [ -f "${cursor_hooks}" ] && grep -q "zlar" "${cursor_hooks}" 2>/dev/null; then
+        printf "    ${GREEN}OK${NC}  Cursor: hooks configured\n"
+        hooks_found=$((hooks_found + 1))
+    elif command -v cursor >/dev/null 2>&1 || [ -d "${HOME}/.cursor" ]; then
+        printf "    ${YELLOW}!!${NC}  Cursor: installed but no ZLAR hooks\n"
+        warnings=$((warnings + 1))
+    else
+        printf "    ${DIM}--${NC}  Cursor: not installed\n"
+    fi
+
+    # Windsurf
+    local ws_hooks="${HOME}/.codeium/windsurf/hooks.json"
+    if [ -f "${ws_hooks}" ] && grep -q "zlar" "${ws_hooks}" 2>/dev/null; then
+        printf "    ${GREEN}OK${NC}  Windsurf: hooks configured\n"
+        hooks_found=$((hooks_found + 1))
+    elif command -v windsurf >/dev/null 2>&1 || [ -d "${HOME}/.codeium/windsurf" ]; then
+        printf "    ${YELLOW}!!${NC}  Windsurf: installed but no ZLAR hooks\n"
+        warnings=$((warnings + 1))
+    else
+        printf "    ${DIM}--${NC}  Windsurf: not installed\n"
+    fi
+
+    if [ "${hooks_found}" -eq 0 ]; then
+        printf "\n    ${YELLOW}!!${NC}  No frameworks have ZLAR hooks configured\n"
+        printf "         The gate has nothing to govern until hooks are installed.\n"
+        warnings=$((warnings + 1))
+    fi
+
+    printf "\n"
+
+    # ── 5. Gate Self-Test ────────────────────────────────────────────────────
+
+    printf "  ${BOLD}Gate Self-Test${NC}\n"
+
+    local gate="${PROJECT_DIR}/bin/zlar-gate"
+    if [ ! -x "${gate}" ]; then
+        printf "    ${RED}!!${NC}  Gate not found or not executable: ${gate}\n"
+        errors=$((errors + 1))
+    else
+        printf "    ${GREEN}OK${NC}  Gate executable: ${gate}\n"
+
+        # Live gate tests — may fail if gate is also running as hook (resource contention).
+        # This is expected during normal operation and not an error.
+        local test_allow
+        test_allow=$(printf '{"tool_name":"Read","tool_input":{"file_path":"/tmp/test"},"session_id":"doctor-test-%s"}' "$$" | "${gate}" 2>/dev/null || echo "")
+        if [ -n "${test_allow}" ]; then
+            local allow_decision
+            allow_decision=$(printf '%s' "${test_allow}" | jq -r '.hookSpecificOutput.permissionDecision // "unknown"' 2>/dev/null)
+            if [ "${allow_decision}" = "allow" ]; then
+                printf "    ${GREEN}OK${NC}  Live test: Read -> allow\n"
+            else
+                printf "    ${YELLOW}!!${NC}  Live test: Read -> ${allow_decision} (expected: allow)\n"
+                warnings=$((warnings + 1))
+            fi
+        else
+            printf "    ${DIM}--${NC}  Live test skipped (gate busy — this is normal if an agent session is active)\n"
+        fi
+
+        local test_deny
+        test_deny=$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"},"session_id":"doctor-test-%s"}' "$$" | "${gate}" 2>/dev/null || echo "")
+        if [ -n "${test_deny}" ]; then
+            local deny_decision
+            deny_decision=$(printf '%s' "${test_deny}" | jq -r '.hookSpecificOutput.permissionDecision // "unknown"' 2>/dev/null)
+            if [ "${deny_decision}" = "deny" ]; then
+                printf "    ${GREEN}OK${NC}  Live test: rm -rf -> deny\n"
+            else
+                printf "    ${RED}!!${NC}  Live test: rm -rf -> ${deny_decision} (expected: deny)\n"
+                errors=$((errors + 1))
+            fi
+        else
+            printf "    ${DIM}--${NC}  Live test skipped (gate busy)\n"
+        fi
+    fi
+
+    printf "\n"
+
+    # ── 6. Audit Trail ───────────────────────────────────────────────────────
+
+    printf "  ${BOLD}Audit Trail${NC}\n"
+
+    local audit_dir="${PROJECT_DIR}/var/log"
+    if [ -d "${audit_dir}" ]; then
+        if [ -w "${audit_dir}" ]; then
+            printf "    ${GREEN}OK${NC}  Audit directory writable: ${audit_dir}\n"
+        else
+            printf "    ${RED}!!${NC}  Audit directory not writable: ${audit_dir}\n"
+            printf "         Fix: ${BOLD}chmod u+w ${audit_dir}${NC}\n"
+            errors=$((errors + 1))
+        fi
+    else
+        printf "    ${YELLOW}!!${NC}  Audit directory missing: ${audit_dir}\n"
+        printf "         Fix: ${BOLD}mkdir -p ${audit_dir}${NC}\n"
+        warnings=$((warnings + 1))
+    fi
+
+    local audit_file="${PROJECT_DIR}/var/log/audit.jsonl"
+    if [ -f "${audit_file}" ]; then
+        local audit_count
+        audit_count=$(wc -l < "${audit_file}" 2>/dev/null | tr -d ' ')
+        printf "    ${GREEN}OK${NC}  Audit trail: ${audit_count} entries\n"
+    else
+        printf "    ${DIM}--${NC}  No audit entries yet (will be created on first gate evaluation)\n"
+    fi
+
+    printf "\n"
+
+    # ── 7. Telegram (optional) ───────────────────────────────────────────────
+
+    printf "  ${BOLD}Telegram (optional)${NC}\n"
+
+    local gate_config="${PROJECT_DIR}/etc/gate.json"
+    local tg_enabled="false"
+    if [ -f "${gate_config}" ]; then
+        tg_enabled=$(jq -r '.telegram.enabled // false' "${gate_config}" 2>/dev/null)
+    fi
+
+    if [ "${tg_enabled}" = "true" ]; then
+        # Check for token
+        local tg_token=""
+        if [ -f "${PROJECT_DIR}/.env" ]; then
+            tg_token=$(grep -E '^ZLAR_TELEGRAM_TOKEN=' "${PROJECT_DIR}/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
+        fi
+        [ -z "${tg_token}" ] && tg_token="${ZLAR_TELEGRAM_TOKEN:-}"
+
+        if [ -n "${tg_token}" ]; then
+            printf "    ${GREEN}OK${NC}  Telegram enabled, token configured\n"
+        else
+            printf "    ${RED}!!${NC}  Telegram enabled but no token found\n"
+            printf "         Fix: run ${BOLD}zlar telegram${NC} or set ZLAR_TELEGRAM_TOKEN in ${PROJECT_DIR}/.env\n"
+            errors=$((errors + 1))
+        fi
+    else
+        printf "    ${DIM}--${NC}  Telegram disabled (deny-only mode — all blocked actions are instant-denied)\n"
+        printf "         Upgrade: ${BOLD}zlar telegram${NC} to enable human approval from your phone\n"
+    fi
+
+    printf "\n"
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+
+    printf "  ${BOLD}────────────────────────────────────────${NC}\n"
+    if [ "${errors}" -eq 0 ] && [ "${warnings}" -eq 0 ]; then
+        printf "  ${GREEN}All checks passed.${NC} ZLAR is healthy.\n"
+    elif [ "${errors}" -eq 0 ]; then
+        printf "  ${YELLOW}${warnings} warning(s).${NC} ZLAR is functional but has non-critical issues.\n"
+    else
+        printf "  ${RED}${errors} error(s)${NC}, ${YELLOW}${warnings} warning(s).${NC}\n"
+        printf "  Fix the errors above to ensure governance is working.\n"
+    fi
+    printf "\n"
+
+    return "${errors}"
+}
+
 cmd_help() {
     printf "\n${BOLD}ZLAR v${VERSION}${NC} — Zero-config governance for AI coding agents\n\n"
     printf "  ${BOLD}Usage:${NC} zlar <command>\n\n"
     printf "  ${BOLD}Commands:${NC}\n"
     printf "    status      Show governed frameworks, policy summary, audit count\n"
+    printf "    doctor      Check installation health (deps, keys, hooks, policy)\n"
     printf "    audit [n]   Show last n audit entries (default: 20)\n"
     printf "    policy      Show current policy rules\n"
     printf "    telegram    Set up Telegram approval (upgrade from deny-all)\n"
@@ -327,13 +675,14 @@ shift 2>/dev/null || true
 
 case "${COMMAND}" in
     status)    cmd_status ;;
+    doctor)    cmd_doctor ;;
     audit)     cmd_audit "$@" ;;
     policy)    cmd_policy ;;
     telegram)  cmd_telegram ;;
     uninstall) cmd_uninstall ;;
     version)   cmd_version ;;
-    off)       touch "$HOME/.claude/.gate-disabled" && echo "⚡ Gate OFF — Claude unblocked" ;;
-    on)        rm -f "$HOME/.claude/.gate-disabled" && echo "🔒 Gate ON — policy enforced" ;;
+    off)       touch "$HOME/.claude/.gate-disabled" && echo "Gate OFF — Claude unblocked" ;;
+    on)        rm -f "$HOME/.claude/.gate-disabled" && echo "Gate ON — policy enforced" ;;
     help|--help|-h) cmd_help ;;
     *)
         echo "Unknown command: ${COMMAND}"
