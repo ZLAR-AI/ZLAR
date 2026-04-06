@@ -3,6 +3,8 @@
 [![CI](https://github.com/ZLAR-AI/ZLAR/actions/workflows/ci.yml/badge.svg)](https://github.com/ZLAR-AI/ZLAR/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CodeQL](https://github.com/ZLAR-AI/ZLAR/actions/workflows/codeql.yml/badge.svg)](https://github.com/ZLAR-AI/ZLAR/actions/workflows/codeql.yml)
+[![GitHub release](https://img.shields.io/github/v/tag/ZLAR-AI/ZLAR?label=release&sort=semver)](https://github.com/ZLAR-AI/ZLAR/releases/tag/v2.0.0)
+[![Tests](https://img.shields.io/badge/tests-550%2B_assertions-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
 
 **ZLAR is a deterministic execution governance layer for AI agents.**
 
