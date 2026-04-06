@@ -33,6 +33,14 @@ import {
   sha256hex
 } from '../lib/receipt.mjs';
 
+// Human invariant enforcement (H6, H13, H14, H15, H17)
+import {
+  preAskCheck,
+  postResponseCheck,
+  recordAskTime,
+  recordDecision,
+} from '../lib/human-invariants.mjs';
+
 // Cedar policy evaluation (Phase C — Cedar Integration)
 import {
   cedarAvailable,
@@ -723,16 +731,52 @@ async function handleRequest(msg) {
         return { action: 'passthrough', msg };
       }
 
+      // Human invariant pre-ask checks (H6, H13, H14)
+      const humanId = CONFIG.telegramChatId || 'unknown';
+      const hiPre = preAskCheck(humanId);
+      if (!hiPre.ok) {
+        console.log(`[gate] Human invariant: ${hiPre.reason} — not routing to human`);
+        emitEvent('mcp', toolName, 'deny', { tool: toolName, reason: `human_${hiPre.reason}`, detail: hiPre.detail },
+          evaluation.rule, evaluation.severity, evaluation.riskScore, `gate:human_${hiPre.reason}`);
+        return {
+          action: 'deny',
+          response: {
+            jsonrpc: '2.0', id: msg.id,
+            error: { code: -32600, message: `[gate] Human decision-maker unavailable (${hiPre.reason}). System is protecting human judgment.` },
+          },
+        };
+      }
+
+      // H15: Record ask time for deliberation floor check
+      recordAskTime(humanId);
+
       const actionId = genId();
       const decision = await telegramAsk(actionId, toolName, args, evaluation.rule, evaluation.riskScore, evaluation.severity);
 
       switch (decision) {
-        case 'allow':
+        case 'allow': {
+          // Human invariant post-response checks (H15, H17)
+          const hiPost = postResponseCheck(humanId, evaluation.severity, 'approve');
+          if (!hiPost.ok) {
+            console.log(`[gate] Human invariant: approval rejected (${hiPost.reason})`);
+            emitEvent('mcp', toolName, 'denied', { tool: toolName, reason: `human_${hiPost.reason}`, detail: hiPost.detail },
+              evaluation.rule, evaluation.severity, evaluation.riskScore, `gate:human_${hiPost.reason}`);
+            return {
+              action: 'deny',
+              response: {
+                jsonrpc: '2.0', id: msg.id,
+                error: { code: -32600, message: `[gate] Approval not accepted (${hiPost.reason}). Please review again with more time.` },
+              },
+            };
+          }
           emitEvent('mcp', toolName, 'authorized', { tool: toolName, args_preview: JSON.stringify(args).substring(0, 200) },
             evaluation.rule, evaluation.severity, evaluation.riskScore, `human:${CONFIG.telegramChatId}`);
           return { action: 'passthrough', msg };
+        }
 
-        case 'deny':
+        case 'deny': {
+          // Record denial for H14 rate tracking
+          try { recordDecision(humanId, 'deny'); } catch {}
           emitEvent('mcp', toolName, 'denied', { tool: toolName, args_preview: JSON.stringify(args).substring(0, 200) },
             evaluation.rule, evaluation.severity, evaluation.riskScore, `human:${CONFIG.telegramChatId}`);
           return {
@@ -743,6 +787,7 @@ async function handleRequest(msg) {
               error: { code: -32600, message: `[human] Denied by human (rule ${evaluation.rule})` },
             },
           };
+        }
 
         default: // timeout or error
           emitEvent('mcp', toolName, 'denied', { tool: toolName, args_preview: JSON.stringify(args).substring(0, 200) },

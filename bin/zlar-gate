@@ -56,6 +56,11 @@ export _CRYPTO_PROJECT_DIR="${PROJECT_DIR}"
 # shellcheck source=../lib/crypto.sh
 source "${PROJECT_DIR}/lib/crypto.sh"
 
+# Source human invariant enforcement (H6, H13, H14, H15, H17)
+export _HI_PROJECT_DIR="${PROJECT_DIR}"
+# shellcheck source=../lib/human-invariants.sh
+source "${PROJECT_DIR}/lib/human-invariants.sh"
+
 # ─── Private temp directory ──────────────────────────────────────────────────
 # Not /tmp (world-readable). Gate-private directory for policy verification.
 GATE_TMP="${PROJECT_DIR}/var/tmp"
@@ -1857,6 +1862,17 @@ main() {
 
                     case ${pending_result} in
                         0)
+                            # Human approved — check H15/H17 before accepting
+                            local _hi_post_result
+                            _hi_post_result=$(hi_post_response_check "${TELEGRAM_CHAT_ID}" "${MATCHED_SEVERITY}" "approve" 2>/dev/null) || true
+                            if [ "${_hi_post_result}" != "ok" ]; then
+                                log "HUMAN INVARIANT: approval rejected (${_hi_post_result}) — re-ask required"
+                                rm -f "${APPROVAL_DIR}/${MATCHED_RULE}-${SESSION_ID}.pending" 2>/dev/null
+                                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:human_${_hi_post_result}"
+                                respond_deny "Approval not accepted (${_hi_post_result}). Please review again with more time." "gate:human_integrity"
+                                break
+                            fi
+
                             # Human approved on a previous ask — allow this retry
                             emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "authorized" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "human:${TELEGRAM_CHAT_ID}"
                             log "Deny-then-retry: ${MATCHED_RULE} APPROVED (previous ask)"
@@ -1873,12 +1889,28 @@ main() {
                             ;;
                         1)
                             # Human denied on a previous ask
+                            hi_post_response_check "${TELEGRAM_CHAT_ID}" "${MATCHED_SEVERITY}" "deny" 2>/dev/null || true
+                            hi_decrement_pending "${TELEGRAM_CHAT_ID}" 2>/dev/null || true
                             emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "human:${TELEGRAM_CHAT_ID}"
                             log "Deny-then-retry: ${MATCHED_RULE} DENIED by human"
                             respond_deny "Denied by human (rule ${MATCHED_RULE})" "human"
                             ;;
                         *)
-                            # No approval yet — send Telegram ask and deny immediately
+                            # No approval yet — check human invariants, then send Telegram ask
+
+                            # H6/H13/H14: Is the human available and capable of another decision?
+                            local _hi_pre_result
+                            _hi_pre_result=$(hi_pre_ask_check "${TELEGRAM_CHAT_ID}" 2>/dev/null) || true
+                            if [ "${_hi_pre_result}" != "ok" ]; then
+                                log "HUMAN INVARIANT: ${_hi_pre_result} — not routing to human"
+                                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:human_${_hi_pre_result}"
+                                respond_deny "Human decision-maker unavailable (${_hi_pre_result}). System is protecting human judgment." "gate:human_capacity"
+                                break
+                            fi
+
+                            # H15: Record ask time for deliberation floor check on response
+                            hi_record_ask_time "${TELEGRAM_CHAT_ID}" 2>/dev/null || true
+
                             local action_id
                             action_id=$(gen_id)
 
