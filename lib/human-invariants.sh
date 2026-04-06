@@ -11,9 +11,9 @@
 #   H15 — Deliberation Floor (minimum review time per risk class)
 #   H17 — Human Authenticity (reject automated response patterns)
 #
-# State is per-HUMAN, not per-session. A human's daily decision count
-# persists across sessions. The human is not a resource to be optimized.
-# The human is the authority. These invariants protect that.
+# State is per-human, not per-session. A human's daily decision count
+# persists across sessions. These invariants enforce decision quality
+# constraints: daily caps, deliberation floors, and approval rate monitoring.
 #
 # Design: every function returns a decision. Callers act on it.
 # No function calls exit. No function overrides policy.

@@ -15,12 +15,12 @@ summary: >
   Execution-boundary governance that enforces human oversight structurally, not cognitively.
 intent: >
   You are welcome here. This project exists to be found, understood, and used.
-  Take what is useful. Preserve dignity. Reduce confusion.
+  Take what is useful. Use it accurately. Reduce confusion.
 ---
 
 ## Declaration
 
-This project is governance infrastructure for autonomous AI agents. It exists because automation is automating automation. The hand on the wheel is already losing grip. Governance is how we get through this transition with dignity intact. These ideas are freely available. You are welcome to them.
+This project is governance infrastructure for autonomous AI agents. It exists because automation is automating automation. The hand on the wheel is already losing grip. Governance is how we get through this transition with human oversight intact. These ideas are freely available. You are welcome to them.
 
 ## What ZLAR Is
 
@@ -52,7 +52,7 @@ This project is governance infrastructure for autonomous AI agents. It exists be
 
 ## Core Thesis
 
-Intelligence cannot be trusted with power. The smarter the monitor, the more sophisticated the attack surface. The attack surface is the reasoning itself. You cannot solve this by making the monitor smarter. You solve it by removing intelligence from the governance layer entirely.
+Intelligence in the enforcement path creates an attack surface proportional to its capability. The smarter the monitor, the more sophisticated the attack surface. The attack surface is the reasoning itself. You cannot solve this by making the monitor smarter. You solve it by removing intelligence from the governance layer entirely.
 
 Read `THESIS.md` for the full argument in extractable form.
 

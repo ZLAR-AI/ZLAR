@@ -8,7 +8,7 @@ Author: Vincent Nijjar
 
 AI agent governance requires an enforcement layer that decides whether an action proceeds. The industry default is to use AI models (trust scoring, behavioral analysis, intent classification) in the enforcement path. This creates an architectural contradiction: the entity doing the reasoning can be attacked by reasoning. A sufficiently capable agent can persuade, confuse, or manipulate an AI-based enforcement layer.
 
-The biological analogy is instructive. An immune system that reasons becomes an autoimmune disorder — it attacks what it should protect, and protects what it should attack.
+The structural contradiction is direct: a monitor that uses reasoning to evaluate actions can be subverted by reasoning-based attacks. The enforcement layer's capability becomes its attack surface.
 
 ## Decision
 
