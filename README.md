@@ -174,6 +174,9 @@ bash tests/test-doctor.sh              # Installation health checks
 node tests/test-canonicalization.mjs   # 28 test vectors + validation + edge cases
 python3 tests/verify-canonicalization.py  # Python cross-language verification
 
+# Receipt v1 envelope format
+node tests/test-receipt-v1.mjs         # v1 create, sign, verify, tamper detection, universal verifier
+
 # MCP gate, receipts, and Cedar (200+ assertions)
 node mcp-gate/test-hardened.mjs        # Policy verification, signing, fail-closed, standing approvals
 node mcp-gate/test-receipt.mjs         # Receipt generation, verification, delegation chains
