@@ -189,11 +189,17 @@ node cedar-poc/test-e23.mjs            # Cedar E-23 risk-tiered governance
 
 ## Requirements
 
-- bash 3.2+ (macOS default)
-- jq (JSON processing)
-- openssl 3.x (Ed25519 signing — Homebrew on macOS)
-- Optional: Telegram bot token (human approval)
-- Optional: Node.js 18+ (MCP gate, receipt verification)
+| Dependency | Minimum | Required for | Install |
+|---|---|---|---|
+| bash | 4.0+ | Gate engine | `brew install bash` (macOS) / default on Linux |
+| jq | 1.6+ | Policy evaluation | `brew install jq` / `apt install jq` |
+| openssl | 3.x | Ed25519 signing | `brew install openssl@3` / `apt install openssl` |
+| Node.js | 18+ | MCP gate, receipt verification | Optional — bash gate works without it |
+| Telegram | — | Human approval channel | Optional — without it, blocked actions are instant-denied |
+
+**Verified platforms:** macOS 14+ (ARM/Intel), Ubuntu 22.04+, Debian 12+
+
+Run `zlar doctor` after installation to verify all dependencies.
 
 ## Repository Structure
 
