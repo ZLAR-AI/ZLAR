@@ -34,7 +34,8 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Source crypto library
 source "${PROJECT_DIR}/lib/crypto.sh"
 
-RECEIPT_VERSION="0.1.0"
+RECEIPT_VERSION="1"
+RECEIPT_FORMAT="${ZLAR_RECEIPT_FORMAT:-v1}"  # v0 or v1. Default: v1 (envelope)
 
 # ─── OpenSSL ──────────────────────────────────────────────────────────────────
 _OPENSSL="openssl"
@@ -163,52 +164,7 @@ fi
 
 RECEIPT_ID=$(printf '%012x' "$(date +%s)")$(openssl rand -hex 16)
 
-# ─── Build Unsigned Receipt ───────────────────────────────────────────────────
-
-UNSIGNED_RECEIPT=$(jq -n \
-    --arg rv "${RECEIPT_VERSION}" \
-    --arg id "${RECEIPT_ID}" \
-    --arg tool "${TOOL}" \
-    --arg domain "${DOMAIN}" \
-    --arg detail_hash "${DETAIL_HASH}" \
-    --arg outcome "${OUTCOME}" \
-    --arg rule "${RULE}" \
-    --arg authorizer "${AUTHORIZER}" \
-    --arg timestamp "${TIMESTAMP}" \
-    --arg policy_version "${POLICY_VERSION}" \
-    --argjson manifest_version "${MANIFEST_VERSION}" \
-    --argjson manifest_agent_id "${MANIFEST_AGENT_ID}" \
-    --argjson manifest_principal "${MANIFEST_PRINCIPAL}" \
-    --arg audit_event_id "${AUDIT_EVENT_ID}" \
-    --arg audit_prev_hash "${AUDIT_PREV_HASH}" \
-    --argjson prev_receipt_hash "${PREV_RECEIPT_HASH}" \
-    '{
-        receipt_version: $rv,
-        id: $id,
-        governed_action: {
-            tool: $tool,
-            domain: $domain,
-            detail_hash: $detail_hash
-        },
-        decision: {
-            outcome: $outcome,
-            rule: $rule,
-            authorizer: $authorizer,
-            timestamp: $timestamp
-        },
-        evidence: {
-            policy_version: $policy_version,
-            manifest_version: $manifest_version,
-            manifest_agent_id: $manifest_agent_id,
-            manifest_principal: $manifest_principal,
-            delegation_chain: [],
-            audit_event_id: $audit_event_id,
-            audit_prev_hash: $audit_prev_hash
-        },
-        prev_receipt_hash: $prev_receipt_hash
-    }')
-
-# ─── Sign the Receipt ────────────────────────────────────────────────────────
+# ─── Key Validation ──────────────────────────────────────────────────────────
 
 if [ ! -f "${SIGNING_KEY}" ]; then
     echo "ERROR: Signing key not found: ${SIGNING_KEY}" >&2
@@ -223,29 +179,132 @@ fi
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "${TEMP_DIR}"' EXIT
 
-# Canonical form → SHA-256 hex → sign hex bytes
-CANONICAL=$(printf '%s' "${UNSIGNED_RECEIPT}" | jq -S -c '.')
-HASH_HEX=$(printf '%s' "${CANONICAL}" | shasum -a 256 | awk '{print $1}')
-printf '%s' "${HASH_HEX}" > "${TEMP_DIR}/hash"
-
-SIG_FILE="${TEMP_DIR}/sig"
-if ! zlar_crypto_sign "${SIGNING_KEY}" "${TEMP_DIR}/hash" "${SIG_FILE}" 2>/dev/null; then
-    echo "ERROR: Signing failed." >&2
-    exit 1
-fi
-
-SIG_B64=$(base64 < "${SIG_FILE}" | tr -d '\n')
 KEY_ID=$(zlar_crypto_pubkey_fingerprint "${PUBLIC_KEY}")
-SIG_ALGO=$(zlar_crypto_label)
 
-# ─── Assemble Signed Receipt ─────────────────────────────────────────────────
+# ─── Base64url helpers ───────────────────────────────────────────────────────
 
-SIGNED_RECEIPT=$(echo "${UNSIGNED_RECEIPT}" | jq -c \
-    --arg algo "${SIG_ALGO}" \
-    --arg hash_algo "SHA-256" \
-    --arg sig "${SIG_B64}" \
-    --arg key_id "${KEY_ID}" \
-    '. + {signature: {algorithm: $algo, hash_algorithm: $hash_algo, value: $sig, key_id: $key_id}}')
+base64url_encode() {
+    base64 | tr -d '\n' | tr '+/' '-_' | sed 's/=*$//'
+}
+
+# ─── Build and Sign Receipt ──────────────────────────────────────────────────
+
+if [ "${RECEIPT_FORMAT}" = "v1" ]; then
+    # v1 envelope format
+    # 1. Build payload object
+    PAYLOAD=$(jq -n \
+        --arg tool "${TOOL}" \
+        --arg domain "${DOMAIN}" \
+        --arg detail_hash "${DETAIL_HASH}" \
+        --arg outcome "${OUTCOME}" \
+        --arg rule "${RULE}" \
+        --arg authorizer "${AUTHORIZER}" \
+        --arg ts "${TIMESTAMP}" \
+        --arg policy_version "${POLICY_VERSION}" \
+        --argjson manifest_agent_id "${MANIFEST_AGENT_ID}" \
+        --argjson manifest_principal "${MANIFEST_PRINCIPAL}" \
+        --arg audit_event_id "${AUDIT_EVENT_ID}" \
+        --arg audit_prev_hash "${AUDIT_PREV_HASH}" \
+        '{
+            tool: $tool,
+            domain: $domain,
+            detail_hash: $detail_hash,
+            outcome: $outcome,
+            rule: $rule,
+            authorizer: $authorizer,
+            ts: $ts,
+            policy_version: $policy_version,
+            manifest_agent_id: $manifest_agent_id,
+            manifest_principal: $manifest_principal,
+            delegation_chain: [],
+            audit_event_id: $audit_event_id,
+            audit_prev_hash: $audit_prev_hash
+        }')
+
+    # 2. Canonicalize payload
+    CANONICAL_PAYLOAD=$(printf '%s' "${PAYLOAD}" | jq -S -c '.')
+
+    # 3. Base64url-encode the canonical bytes
+    PAYLOAD_B64=$(printf '%s' "${CANONICAL_PAYLOAD}" | base64url_encode)
+
+    # 4. SHA-256 hash the canonical bytes → hex
+    HASH_HEX=$(printf '%s' "${CANONICAL_PAYLOAD}" | shasum -a 256 | awk '{print $1}')
+    printf '%s' "${HASH_HEX}" > "${TEMP_DIR}/hash"
+
+    # 5. Ed25519 sign the hex string bytes
+    SIG_FILE="${TEMP_DIR}/sig"
+    if ! zlar_crypto_sign "${SIGNING_KEY}" "${TEMP_DIR}/hash" "${SIG_FILE}" 2>/dev/null; then
+        echo "ERROR: Signing failed." >&2
+        exit 1
+    fi
+    SIG_B64=$(cat "${SIG_FILE}" | base64url_encode)
+
+    # 6. Compute iat (Unix epoch seconds)
+    IAT=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${TIMESTAMP}" "+%s" 2>/dev/null || date -d "${TIMESTAMP}" "+%s" 2>/dev/null || date "+%s")
+
+    # 7. Assemble envelope
+    SIGNED_RECEIPT=$(jq -n -c \
+        --argjson v 1 \
+        --arg id "${RECEIPT_ID}" \
+        --arg kid "${KEY_ID}" \
+        --argjson iat "${IAT}" \
+        --arg type "governed-action" \
+        --arg payload "${PAYLOAD_B64}" \
+        --arg sig "${SIG_B64}" \
+        --argjson prev "${PREV_RECEIPT_HASH}" \
+        '{v: $v, id: $id, kid: $kid, iat: $iat, type: $type, payload: $payload, sig: $sig, prev: $prev}')
+
+else
+    # v0 legacy format
+    UNSIGNED_RECEIPT=$(jq -n \
+        --arg rv "0.1.0" \
+        --arg id "${RECEIPT_ID}" \
+        --arg tool "${TOOL}" \
+        --arg domain "${DOMAIN}" \
+        --arg detail_hash "${DETAIL_HASH}" \
+        --arg outcome "${OUTCOME}" \
+        --arg rule "${RULE}" \
+        --arg authorizer "${AUTHORIZER}" \
+        --arg timestamp "${TIMESTAMP}" \
+        --arg policy_version "${POLICY_VERSION}" \
+        --argjson manifest_version "${MANIFEST_VERSION}" \
+        --argjson manifest_agent_id "${MANIFEST_AGENT_ID}" \
+        --argjson manifest_principal "${MANIFEST_PRINCIPAL}" \
+        --arg audit_event_id "${AUDIT_EVENT_ID}" \
+        --arg audit_prev_hash "${AUDIT_PREV_HASH}" \
+        --argjson prev_receipt_hash "${PREV_RECEIPT_HASH}" \
+        '{
+            receipt_version: $rv,
+            id: $id,
+            governed_action: { tool: $tool, domain: $domain, detail_hash: $detail_hash },
+            decision: { outcome: $outcome, rule: $rule, authorizer: $authorizer, timestamp: $timestamp },
+            evidence: {
+                policy_version: $policy_version, manifest_version: $manifest_version,
+                manifest_agent_id: $manifest_agent_id, manifest_principal: $manifest_principal,
+                delegation_chain: [], audit_event_id: $audit_event_id, audit_prev_hash: $audit_prev_hash
+            },
+            prev_receipt_hash: $prev_receipt_hash
+        }')
+
+    CANONICAL=$(printf '%s' "${UNSIGNED_RECEIPT}" | jq -S -c '.')
+    HASH_HEX=$(printf '%s' "${CANONICAL}" | shasum -a 256 | awk '{print $1}')
+    printf '%s' "${HASH_HEX}" > "${TEMP_DIR}/hash"
+
+    SIG_FILE="${TEMP_DIR}/sig"
+    if ! zlar_crypto_sign "${SIGNING_KEY}" "${TEMP_DIR}/hash" "${SIG_FILE}" 2>/dev/null; then
+        echo "ERROR: Signing failed." >&2
+        exit 1
+    fi
+    SIG_B64=$(base64 < "${SIG_FILE}" | tr -d '\n')
+    SIG_ALGO=$(zlar_crypto_label)
+
+    SIGNED_RECEIPT=$(echo "${UNSIGNED_RECEIPT}" | jq -c \
+        --arg algo "${SIG_ALGO}" \
+        --arg hash_algo "SHA-256" \
+        --arg sig "${SIG_B64}" \
+        --arg key_id "${KEY_ID}" \
+        '. + {signature: {algorithm: $algo, hash_algorithm: $hash_algo, value: $sig, key_id: $key_id}}')
+fi
 
 # ─── Output ───────────────────────────────────────────────────────────────────
 

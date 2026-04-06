@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zlar.dev/schemas/receipt/1.0.0",
+  "title": "ZLAR Governed Action Receipt v1 (Envelope)",
+  "description": "Portable cryptographic proof of a governed action. Envelope format: payload is base64url-encoded canonical JSON, signature covers those exact bytes. Verifiers never re-canonicalize — they hash the decoded payload and verify the signature. Anyone with the public key can verify.",
+  "type": "object",
+  "required": ["v", "id", "kid", "iat", "type", "payload", "sig"],
+  "additionalProperties": false,
+  "properties": {
+    "v": {
+      "type": "integer",
+      "const": 1,
+      "description": "Receipt format version. Determines the entire cryptographic construction: v1 = Ed25519 + SHA-256 + ZLAR canonical JSON payload. No algorithm negotiation — the version IS the algorithm. Verifiers MUST reject unknown versions."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique receipt identifier. Hex timestamp (12 chars) + random bytes (32 chars)."
+    },
+    "kid": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{16}$",
+      "description": "Key identifier. First 16 characters of SHA-256 hash of the signing public key file. Enables efficient key selection when multiple keys exist."
+    },
+    "iat": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Issued-at timestamp as Unix epoch seconds (integer, not string). When the receipt was created."
+    },
+    "type": {
+      "type": "string",
+      "enum": ["governed-action"],
+      "description": "Receipt type. v1 supports only 'governed-action'. Future versions may add types."
+    },
+    "payload": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Base64url-encoded (no padding) UTF-8 bytes of the canonical JSON payload. The payload contains all governance fields. Canonicalization follows the ZLAR Canonicalization Specification v1.0 (docs/canonicalization-spec.md). The verifier decodes this to get the raw bytes for hash verification, then parses the JSON to read the governance fields."
+    },
+    "sig": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Base64url-encoded (no padding) Ed25519 signature. Signing: SHA-256 hash the decoded payload bytes → hex string → Ed25519 sign the hex string bytes. Verification: reverse the process."
+    },
+    "prev": {
+      "type": ["string", "null"],
+      "description": "SHA-256 hash of the previous receipt (canonical envelope JSON), or null for the first receipt. Links receipts into a chain."
+    }
+  }
+}
