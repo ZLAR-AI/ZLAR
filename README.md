@@ -144,15 +144,17 @@ A security tool should state its own boundaries, not just its competitors' failu
 | **Identity** | Agent manifest | Capability boundary per agent. Narrows policy, never widens. ([Invariants](docs/MANIFEST-INVARIANTS.md)) |
 | **Policy** | `zlar-policy` | CLI for Ed25519-signed policy rules. Keygen, sign, verify. |
 | **Session** | `lib/session-state.sh` | Velocity, loop detection, denial bursts. Thin counters, not reasoning. |
+| **Human** | `lib/human-invariants.sh` | Protects the human: decision cap (H6), deliberation floor (H15), approval rate monitoring (H14), capacity tracking (H13), authenticity checks (H17). |
 | **Adapters** | `adapters/` | Framework hooks for Claude Code, Cursor, Windsurf. |
 
 ## Running Tests
 
 ```bash
-# Core governance (252+ assertions)
+# Core governance
 bash tests/test-receipt.sh             # Receipt generation and cross-gate verification
 bash tests/test-manifest.sh            # Manifest CLI and schema invariants
 bash tests/test-agent-identity.sh      # Agent identity, risk tiers, authorization levels
+bash tests/test-human-invariants.sh    # Human invariant enforcement (H6, H13, H14, H15, H17)
 bash tests/test-perimeter-closure.sh   # Policy rules, sandbox, path sanitization
 bash tests/test-crypto.sh              # Cryptographic abstraction layer
 bash tests/test-session-state.sh       # Session counters
@@ -160,9 +162,10 @@ bash tests/test-standing-approvals.sh  # Standing approval matching
 bash tests/test-approval-binding.sh    # Approval binding (action fingerprint)
 bash tests/test-inbox-hmac.sh          # Inbox HMAC verification
 
-# MCP gate and receipts (140+ assertions)
+# MCP gate, receipts, and Cedar (200+ assertions)
 node mcp-gate/test-hardened.mjs        # Policy verification, signing, fail-closed, standing approvals
 node mcp-gate/test-receipt.mjs         # Receipt generation, verification, delegation chains
+node mcp-gate/test-cedar.mjs           # Cedar P1/P2 rules, gate action mapping, cross-engine regression
 
 # Cedar policy verification
 node cedar-poc/test.mjs                # Cedar base rules
@@ -181,11 +184,11 @@ node cedar-poc/test-e23.mjs            # Cedar E-23 risk-tiered governance
 
 ```
 bin/           Gate, receipt tools, witness, digest, registry, policy CLI
-lib/           Shared libraries (crypto, session state, agent identity, receipt)
+lib/           Shared libraries (crypto, session state, agent identity, receipt, human invariants)
 adapters/      Framework hooks (claude-code, cursor, windsurf)
 mcp-gate/      MCP TCP proxy gate (Node.js)
 etc/           Policy, manifests, signing keys, standing approvals, receipt schema
-tests/         Test suites (9 bash + 4 Node.js, 390+ assertions)
+tests/         Test suites (10 bash + 5 Node.js, 470+ assertions)
 docs/          Architecture decisions, manifest invariants, operations
 docs/adr/      Architecture Decision Records
 signal/        Agent-facing signal layer (thesis, origin, proof)
