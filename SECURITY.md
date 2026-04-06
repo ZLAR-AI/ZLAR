@@ -39,6 +39,14 @@ ZLAR protects against:
 - **Prompt injection against enforcement** — the gate has no language model. There is no reasoning to attack.
 - **Agent self-governance** — R012 blocks agents from modifying gate infrastructure, policy, or signing keys.
 
+ZLAR protects the human decision-maker:
+
+- **Decision fatigue** — H6 enforces a daily decision cap (default: 80). When the cap is reached, the gate stops routing to the human. The system is under-resourced, not the human.
+- **Rubber-stamping** — H14 monitors approval rate in a rolling window. If approval rate exceeds threshold (default: 90%), a governance health warning fires.
+- **Rushed approval** — H15 enforces a deliberation floor per risk class (critical: 30s, warn: 10s, info: 3s). Approvals faster than the floor are rejected. The human must review again.
+- **Automated impersonation** — H17 rejects sub-second responses as possible automation. A human cannot read, comprehend, and decide in under 2 seconds.
+- **Queue overload** — H13 tracks pending decisions. When the queue exceeds capacity, the system is under-resourced and logs a warning.
+
 ZLAR does not protect against:
 
 - **Compromised signing key** — whoever holds the key can sign permissive policy. Key management is the operator's responsibility. See [token rotation](docs/token-rotation.md).
