@@ -3,6 +3,7 @@
 [![CI](https://github.com/ZLAR-AI/ZLAR/actions/workflows/ci.yml/badge.svg)](https://github.com/ZLAR-AI/ZLAR/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CodeQL](https://github.com/ZLAR-AI/ZLAR/actions/workflows/codeql.yml/badge.svg)](https://github.com/ZLAR-AI/ZLAR/actions/workflows/codeql.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12381/badge)](https://www.bestpractices.dev/projects/12381)
 [![GitHub release](https://img.shields.io/github/v/tag/ZLAR-AI/ZLAR?label=release&sort=semver)](https://github.com/ZLAR-AI/ZLAR/releases/tag/v2.0.0)
 [![Tests](https://img.shields.io/badge/tests-550%2B_assertions-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
 
