@@ -1,0 +1,187 @@
+#!/usr/bin/env node
+// ═══════════════════════════════════════════════════════════════════════════════
+// zlar-verify — Standalone Governed Action Receipt Verifier
+//
+// Verifies a ZLAR receipt with nothing but this script and a public key.
+// The stop is the product. This tool proves the stop mattered.
+//
+// Usage:
+//   zlar-verify <receipt.json> --pubkey <key.pub>
+//   zlar-verify <receipt.json> --pubkey <key.pub> --json
+//   zlar-verify <receipt.json> --pubkey <key.pub> --verbose
+//   cat receipt.json | zlar-verify --pubkey <key.pub>
+//
+// Exit codes:
+//   0 = VALID   — signature checks out, receipt is intact
+//   1 = INVALID — signature failed, tampered, or structurally broken
+//   2 = ERROR   — bad arguments, missing files, etc.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Import the receipt library
+const libPath = join(__dirname, '..', 'lib', 'receipt.mjs');
+const { verifyReceipt, canonicalize, sha256hex } = await import(libPath);
+
+// ─── Argument Parsing ────────────────────────────────────────────────────────
+
+const args = process.argv.slice(2);
+let receiptPath = null;
+let pubkeyPath = null;
+let jsonOutput = false;
+let verbose = false;
+
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--pubkey' && i + 1 < args.length) {
+    pubkeyPath = args[++i];
+  } else if (args[i] === '--json') {
+    jsonOutput = true;
+  } else if (args[i] === '--verbose' || args[i] === '-v') {
+    verbose = true;
+  } else if (args[i] === '--help' || args[i] === '-h') {
+    printUsage();
+    process.exit(0);
+  } else if (!args[i].startsWith('-') && !receiptPath) {
+    receiptPath = args[i];
+  }
+}
+
+function printUsage() {
+  console.log(`
+zlar-verify — Standalone Governed Action Receipt Verifier
+
+USAGE
+  zlar-verify <receipt.json> --pubkey <key.pub>
+  cat receipt.json | zlar-verify --pubkey <key.pub>
+
+OPTIONS
+  --pubkey <path>   Path to Ed25519 public key (PEM format)
+  --json            Output result as JSON
+  --verbose, -v     Show receipt details alongside verdict
+  --help, -h        Show this help
+
+EXIT CODES
+  0   VALID    Signature verified, receipt is intact
+  1   INVALID  Signature failed or receipt is structurally broken
+  2   ERROR    Bad arguments or missing files
+
+WHAT THIS PROVES
+  A valid receipt proves that:
+  1. A specific action was attempted by an AI agent
+  2. Deterministic policy was evaluated against that action
+  3. The decision was made by the stated authority (policy or human)
+  4. The record has not been tampered with since creation
+  5. The receipt is anchored to the ZLAR audit chain
+`.trim());
+}
+
+// ─── Input Validation ────────────────────────────────────────────────────────
+
+if (!pubkeyPath) {
+  console.error('ERROR: --pubkey is required');
+  console.error('Usage: zlar-verify <receipt.json> --pubkey <key.pub>');
+  process.exit(2);
+}
+
+let receiptJson;
+
+if (receiptPath) {
+  try {
+    receiptJson = readFileSync(resolve(receiptPath), 'utf8');
+  } catch (err) {
+    console.error(`ERROR: Cannot read receipt file: ${receiptPath}`);
+    console.error(`  ${err.message}`);
+    process.exit(2);
+  }
+} else if (!process.stdin.isTTY) {
+  // Read from stdin
+  const chunks = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk);
+  }
+  receiptJson = Buffer.concat(chunks).toString('utf8');
+} else {
+  console.error('ERROR: No receipt provided. Pass a file path or pipe to stdin.');
+  console.error('Usage: zlar-verify <receipt.json> --pubkey <key.pub>');
+  process.exit(2);
+}
+
+let publicKeyPem;
+try {
+  publicKeyPem = readFileSync(resolve(pubkeyPath), 'utf8');
+} catch (err) {
+  console.error(`ERROR: Cannot read public key: ${pubkeyPath}`);
+  console.error(`  ${err.message}`);
+  process.exit(2);
+}
+
+let receipt;
+try {
+  receipt = JSON.parse(receiptJson);
+} catch (err) {
+  console.error('ERROR: Receipt is not valid JSON.');
+  console.error(`  ${err.message}`);
+  process.exit(2);
+}
+
+// ─── Verification ────────────────────────────────────────────────────────────
+
+const result = verifyReceipt(receipt, publicKeyPem);
+
+if (jsonOutput) {
+  const output = {
+    verdict: result.valid ? 'VALID' : 'INVALID',
+    reason: result.reason,
+    receipt_id: receipt.id,
+    receipt_version: receipt.receipt_version
+  };
+  if (verbose && receipt.governed_action) {
+    output.action = receipt.governed_action;
+    output.decision = receipt.decision;
+    output.evidence = receipt.evidence;
+  }
+  console.log(JSON.stringify(output, null, 2));
+} else {
+  if (result.valid) {
+    console.log(`VALID`);
+    console.log('');
+    console.log(result.reason);
+  } else {
+    console.log(`INVALID`);
+    console.log('');
+    console.log(result.reason);
+  }
+
+  if (verbose && receipt.governed_action) {
+    console.log('');
+    console.log('--- Receipt Details ---');
+    console.log(`  ID:         ${receipt.id}`);
+    console.log(`  Version:    ${receipt.receipt_version}`);
+    console.log(`  Tool:       ${receipt.governed_action.tool}`);
+    console.log(`  Domain:     ${receipt.governed_action.domain}`);
+    console.log(`  Outcome:    ${receipt.decision.outcome}`);
+    console.log(`  Rule:       ${receipt.decision.rule}`);
+    console.log(`  Authorizer: ${receipt.decision.authorizer}`);
+    console.log(`  Timestamp:  ${receipt.decision.timestamp}`);
+    console.log(`  Policy:     ${receipt.evidence.policy_version}`);
+    if (receipt.evidence.manifest_agent_id) {
+      console.log(`  Agent:      ${receipt.evidence.manifest_agent_id}`);
+      console.log(`  Principal:  ${receipt.evidence.manifest_principal}`);
+    }
+    if (receipt.evidence.delegation_chain?.length > 0) {
+      console.log(`  Delegation: ${receipt.evidence.delegation_chain.map(d => d.agent_id).join(' -> ')}`);
+    }
+    console.log(`  Audit ID:   ${receipt.evidence.audit_event_id}`);
+    if (receipt.signature) {
+      console.log(`  Signed by:  ${receipt.signature.key_id} (${receipt.signature.algorithm})`);
+    }
+  }
+}
+
+process.exit(result.valid ? 0 : 1);

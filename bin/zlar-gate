@@ -70,6 +70,9 @@ POLICY_PUBKEY="${PROJECT_DIR}/etc/keys/policy-signing.pub"
 AUDIT_SIGNING_KEY="${HOME}/.zlar-signing.key"
 ZLAR_REQUIRE_SIGNED_AUDIT="${ZLAR_REQUIRE_SIGNED_AUDIT:-false}"
 AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+ZLAR_EMIT_RECEIPTS="${ZLAR_EMIT_RECEIPTS:-false}"
+RECEIPT_FILE="${PROJECT_DIR}/var/log/receipts.jsonl"
+_PREV_RECEIPT_HASH=""
 AVAILABILITY_STATE="${PROJECT_DIR}/var/log/availability.state"
 AWAY_QUEUE="${PROJECT_DIR}/var/log/away-queue.jsonl"
 LOCKDOWN_FILE="${PROJECT_DIR}/var/log/watchdog.lock"
@@ -117,6 +120,8 @@ if [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
     SESSION_WRITE_LIMIT=$(_cfg '.session_write_limit')
     _req_signed=$(_cfg '.require_signed_audit')
     [ -n "${_req_signed}" ] && ZLAR_REQUIRE_SIGNED_AUDIT="${_req_signed}"
+    _emit_receipts=$(_cfg '.emit_receipts')
+    [ -n "${_emit_receipts}" ] && ZLAR_EMIT_RECEIPTS="${_emit_receipts}"
 fi
 
 # ─── Load Telegram token from .env (parse, don't source) ────────────────────
@@ -413,6 +418,100 @@ rotate_audit_if_needed() {
     fi
 }
 
+# ─── Governed Action Receipt (Phase A) ─────────────────────────────────────
+# Generates a portable proof alongside each audit event. The receipt is the
+# product. Anyone with the public key can verify. Cross-gate compatible with
+# the Node.js receipt library (lib/receipt.mjs).
+
+_emit_receipt() {
+    local event_id="$1" ts="$2" action="$3" domain="$4" detail="$5" \
+          outcome="$6" rule="$7" authorizer="$8" policy_version="$9" prev_hash="${10}"
+
+    # Compute detail hash: SHA-256 of canonical detail JSON
+    local detail_hash
+    detail_hash=$(printf '%s' "${detail}" | jq -S -c '.' | shasum -a 256 | awk '{print $1}')
+
+    # Extract manifest fields if manifest is loaded
+    local m_version="null" m_agent_id="null" m_principal="null"
+    if [ "${MANIFEST_LOADED}" = "true" ] && [ -n "${MANIFEST_JSON}" ]; then
+        local _mv _ma _mp
+        _mv=$(echo "${MANIFEST_JSON}" | jq -r '.identity.manifest_version // empty' 2>/dev/null || true)
+        [ -n "${_mv}" ] && m_version="\"${_mv}\""
+        _ma=$(echo "${MANIFEST_JSON}" | jq -r '.identity.agent_id // empty' 2>/dev/null || true)
+        [ -n "${_ma}" ] && m_agent_id="\"${_ma}\""
+        _mp=$(echo "${MANIFEST_JSON}" | jq -r '.identity.principal // empty' 2>/dev/null || true)
+        [ -n "${_mp}" ] && m_principal="\"${_mp}\""
+    fi
+
+    # Prev receipt hash for chain linking
+    local prev_receipt_hash="null"
+    if [ -n "${_PREV_RECEIPT_HASH}" ]; then
+        prev_receipt_hash="\"${_PREV_RECEIPT_HASH}\""
+    fi
+
+    # Generate receipt ID
+    local receipt_id
+    receipt_id=$(printf '%012x' "$(date +%s)")$(openssl rand -hex 16)
+
+    # Build unsigned receipt
+    local unsigned_receipt
+    unsigned_receipt=$(jq -n -c \
+        --arg rv "0.1.0" \
+        --arg id "${receipt_id}" \
+        --arg tool "${action}" \
+        --arg domain "${domain}" \
+        --arg detail_hash "${detail_hash}" \
+        --arg outcome "${outcome}" \
+        --arg rule "${rule}" \
+        --arg authorizer "${authorizer}" \
+        --arg timestamp "${ts}" \
+        --arg policy_version "${policy_version}" \
+        --argjson manifest_version "${m_version}" \
+        --argjson manifest_agent_id "${m_agent_id}" \
+        --argjson manifest_principal "${m_principal}" \
+        --arg audit_event_id "${event_id}" \
+        --arg audit_prev_hash "${prev_hash}" \
+        --argjson prev_receipt_hash "${prev_receipt_hash}" \
+        '{receipt_version:$rv,id:$id,
+          governed_action:{tool:$tool,domain:$domain,detail_hash:$detail_hash},
+          decision:{outcome:$outcome,rule:$rule,authorizer:$authorizer,timestamp:$timestamp},
+          evidence:{policy_version:$policy_version,manifest_version:$manifest_version,
+            manifest_agent_id:$manifest_agent_id,manifest_principal:$manifest_principal,
+            delegation_chain:[],audit_event_id:$audit_event_id,audit_prev_hash:$audit_prev_hash},
+          prev_receipt_hash:$prev_receipt_hash}')
+
+    # Sign the receipt (same approach as audit entry signing)
+    local receipt_sig="unsigned"
+    if [ -f "${AUDIT_SIGNING_KEY}" ]; then
+        local _r_hash_file _r_sig_file
+        _r_hash_file="${GATE_TMP}/receipt-hash.$$"
+        _r_sig_file="${GATE_TMP}/receipt-sig.$$"
+
+        printf '%s' "${unsigned_receipt}" | jq -S -c '.' | shasum -a 256 | awk '{print $1}' | tr -d '\n' > "${_r_hash_file}" 2>/dev/null
+
+        if zlar_crypto_sign "${AUDIT_SIGNING_KEY}" "${_r_hash_file}" "${_r_sig_file}" 2>/dev/null; then
+            receipt_sig=$(base64 < "${_r_sig_file}" | tr -d '\n')
+        fi
+
+        rm -f "${_r_hash_file}" "${_r_sig_file}" 2>/dev/null
+    fi
+
+    # Assemble signed receipt
+    local signed_receipt
+    signed_receipt=$(echo "${unsigned_receipt}" | jq -c \
+        --arg algo "${SIGNATURE_ALGORITHM}" \
+        --arg hash_algo "SHA-256" \
+        --arg sig "${receipt_sig}" \
+        --arg key_id "${PUBLIC_KEY_ID}" \
+        '. + {signature:{algorithm:$algo,hash_algorithm:$hash_algo,value:$sig,key_id:$key_id}}')
+
+    # Write receipt to chain
+    echo "${signed_receipt}" >> "${RECEIPT_FILE}" 2>/dev/null || true
+
+    # Update prev receipt hash for next receipt in chain
+    _PREV_RECEIPT_HASH=$(printf '%s' "${signed_receipt}" | jq -S -c '.' | shasum -a 256 | awk '{print $1}')
+}
+
 # ─── Audit Event Emission ──────────────────────────────────────────────────
 
 emit_event() {
@@ -514,6 +613,12 @@ emit_event() {
 
     # Release audit lock (Linux flock; macOS has no flock — single-invocation safety via synchronous hooks)
     [ -n "${_audit_lock_fd}" ] && exec 8>&- 2>/dev/null || true
+
+    # Generate receipt if enabled (outside audit lock — receipts are additive)
+    if [ "${ZLAR_EMIT_RECEIPTS}" = "true" ]; then
+        _emit_receipt "${id}" "${ts}" "${action}" "${domain}" "${detail}" \
+            "${outcome}" "${rule}" "${authorizer}" "${POLICY_VERSION:-unknown}" "${prev_hash}"
+    fi
 }
 
 # ─── Tool Translation ──────────────────────────────────────────────────────
