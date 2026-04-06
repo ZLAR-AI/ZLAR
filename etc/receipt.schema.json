@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zlar.dev/schemas/receipt/0.1.0",
+  "title": "ZLAR Governed Action Receipt",
+  "description": "Portable cryptographic proof that a governed action was evaluated by deterministic policy and decided by the appropriate authority. Verifiable by anyone with the public key.",
+  "type": "object",
+  "required": [
+    "receipt_version",
+    "id",
+    "governed_action",
+    "decision",
+    "evidence",
+    "signature"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "receipt_version": {
+      "type": "string",
+      "const": "0.1.0",
+      "description": "Schema version. Verifiers must reject unknown versions."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique receipt identifier. Hex timestamp + random bytes."
+    },
+    "governed_action": {
+      "type": "object",
+      "required": ["tool", "domain", "detail_hash"],
+      "additionalProperties": false,
+      "description": "What was attempted. The detail_hash protects the full action detail without exposing it in the receipt.",
+      "properties": {
+        "tool": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Tool name as received by the gate (e.g., Bash, Edit, Write)."
+        },
+        "domain": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Policy domain classification (e.g., file, network, process, system)."
+        },
+        "detail_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 hash of the canonical detail object. Proves what action was governed without leaking specifics."
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["outcome", "rule", "authorizer", "timestamp"],
+      "additionalProperties": false,
+      "description": "What happened. The governance decision and who made it.",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "enum": ["allow", "deny", "authorized", "denied", "timeout"],
+          "description": "allow/deny = policy decided. authorized/denied = human decided. timeout = no human response within window."
+        },
+        "rule": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Policy rule that matched (e.g., R002, R014, default)."
+        },
+        "authorizer": {
+          "type": "string",
+          "enum": ["policy", "human", "gate", "timeout", "manifest"],
+          "description": "Who made the final decision. policy = deterministic rule. human = person via Telegram. gate = fail-closed default. timeout = escalation window expired. manifest = agent manifest constraint."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 UTC timestamp of the decision."
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["policy_version", "audit_event_id", "audit_prev_hash"],
+      "additionalProperties": false,
+      "description": "Provenance. What policy was active, what manifest was in effect, and where this receipt anchors in the audit chain.",
+      "properties": {
+        "policy_version": {
+          "type": "string",
+          "description": "Version of the policy that was evaluated."
+        },
+        "manifest_version": {
+          "type": ["string", "null"],
+          "description": "Version of the agent manifest in effect, or null if no manifest."
+        },
+        "manifest_agent_id": {
+          "type": ["string", "null"],
+          "description": "Agent identity from the manifest, or null if no manifest."
+        },
+        "manifest_principal": {
+          "type": ["string", "null"],
+          "description": "Human principal accountable for the agent, or null if no manifest."
+        },
+        "delegation_chain": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["agent_id", "depth"],
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string",
+                "description": "Agent identifier at this delegation level."
+              },
+              "depth": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Delegation depth. 0 = root agent."
+              },
+              "manifest_id": {
+                "type": ["string", "null"],
+                "description": "Manifest governing this agent at this level, if any."
+              }
+            }
+          },
+          "description": "Parent-to-child authority chain. Empty array if no delegation."
+        },
+        "audit_event_id": {
+          "type": "string",
+          "description": "ID of the audit trail entry this receipt was generated from."
+        },
+        "audit_prev_hash": {
+          "type": "string",
+          "description": "prev_hash from the audit trail entry. Anchors the receipt to the hash chain."
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "required": ["algorithm", "hash_algorithm", "value", "key_id"],
+      "additionalProperties": false,
+      "description": "Cryptographic signature over the canonical receipt content (all fields except signature).",
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "enum": ["Ed25519", "ML-DSA-44", "Ed25519+ML-DSA-44"],
+          "description": "Signing algorithm."
+        },
+        "hash_algorithm": {
+          "type": "string",
+          "const": "SHA-256",
+          "description": "Hash algorithm applied before signing."
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Base64-encoded signature bytes."
+        },
+        "key_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Public key fingerprint (first 16 chars of SHA-256 of public key file)."
+        }
+      }
+    },
+    "prev_receipt_hash": {
+      "type": ["string", "null"],
+      "description": "SHA-256 of the previous receipt in the receipt chain, or null for the first receipt. Links receipts into a secondary chain independent of the audit trail."
+    }
+  }
+}

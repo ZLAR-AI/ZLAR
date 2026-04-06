@@ -1,0 +1,257 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# zlar-receipt — Generate a Governed Action Receipt from an audit event
+#
+# Reads an audit event (from stdin, file, or the audit trail), produces a
+# signed receipt JSON. Uses the same Ed25519 signing as the bash gate for
+# cross-gate compatibility.
+#
+# Usage:
+#   zlar-receipt --event <audit-event.json> --key <signing.key> --pubkey <key.pub>
+#   zlar-receipt --audit-line <line-number> --key <signing.key> --pubkey <key.pub>
+#   zlar-receipt --last --key <signing.key> --pubkey <key.pub>
+#   echo '{"id":"..."}' | zlar-receipt --key <signing.key> --pubkey <key.pub>
+#
+# Options:
+#   --event <path>     Read audit event from file
+#   --audit-line <n>   Read line N from the audit trail
+#   --last             Use the last audit trail entry
+#   --key <path>       Ed25519 private key (default: ~/.zlar-signing.key)
+#   --pubkey <path>    Ed25519 public key (default: ~/.zlar-signing.pub)
+#   --prev-hash <hex>  Previous receipt hash for chain linking
+#   --manifest <path>  Manifest file (extracts version, agent_id, principal)
+#   --output <path>    Write receipt to file (default: stdout)
+#
+# Exit codes:
+#   0 = receipt generated successfully
+#   1 = error (missing input, signing failure, etc.)
+# ═══════════════════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# Source crypto library
+source "${PROJECT_DIR}/lib/crypto.sh"
+
+RECEIPT_VERSION="0.1.0"
+
+# ─── OpenSSL ──────────────────────────────────────────────────────────────────
+_OPENSSL="openssl"
+if [ -x "/opt/homebrew/opt/openssl@3/bin/openssl" ]; then
+    _OPENSSL="/opt/homebrew/opt/openssl@3/bin/openssl"
+elif [ -x "/usr/local/opt/openssl@3/bin/openssl" ]; then
+    _OPENSSL="/usr/local/opt/openssl@3/bin/openssl"
+fi
+
+# ─── Defaults ─────────────────────────────────────────────────────────────────
+EVENT_PATH=""
+AUDIT_LINE=""
+USE_LAST=false
+SIGNING_KEY="${HOME}/.zlar-signing.key"
+PUBLIC_KEY="${HOME}/.zlar-signing.pub"
+PREV_RECEIPT_HASH="null"
+MANIFEST_PATH=""
+OUTPUT_PATH=""
+AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+
+# ─── Argument Parsing ─────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --event)     EVENT_PATH="$2"; shift 2 ;;
+        --audit-line) AUDIT_LINE="$2"; shift 2 ;;
+        --last)      USE_LAST=true; shift ;;
+        --key)       SIGNING_KEY="$2"; shift 2 ;;
+        --pubkey)    PUBLIC_KEY="$2"; shift 2 ;;
+        --prev-hash) PREV_RECEIPT_HASH="\"$2\""; shift 2 ;;
+        --manifest)  MANIFEST_PATH="$2"; shift 2 ;;
+        --output)    OUTPUT_PATH="$2"; shift 2 ;;
+        --help|-h)
+            head -30 "$0" | grep '^#' | sed 's/^# \?//'
+            exit 0
+            ;;
+        *)
+            echo "ERROR: Unknown option: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# ─── Input Resolution ─────────────────────────────────────────────────────────
+
+EVENT=""
+
+if [ -n "${EVENT_PATH}" ]; then
+    EVENT=$(cat "${EVENT_PATH}")
+elif [ -n "${AUDIT_LINE}" ]; then
+    if [ ! -f "${AUDIT_FILE}" ]; then
+        echo "ERROR: Audit trail not found: ${AUDIT_FILE}" >&2
+        exit 1
+    fi
+    EVENT=$(sed -n "${AUDIT_LINE}p" "${AUDIT_FILE}")
+elif [ "${USE_LAST}" = true ]; then
+    if [ ! -f "${AUDIT_FILE}" ]; then
+        echo "ERROR: Audit trail not found: ${AUDIT_FILE}" >&2
+        exit 1
+    fi
+    EVENT=$(tail -1 "${AUDIT_FILE}")
+elif [ ! -t 0 ]; then
+    EVENT=$(cat)
+else
+    echo "ERROR: No audit event provided." >&2
+    echo "Usage: zlar-receipt --event <file> --key <key> --pubkey <pub>" >&2
+    exit 1
+fi
+
+if [ -z "${EVENT}" ]; then
+    echo "ERROR: Empty audit event." >&2
+    exit 1
+fi
+
+# Validate it's JSON
+if ! echo "${EVENT}" | jq -e '.' >/dev/null 2>&1; then
+    echo "ERROR: Audit event is not valid JSON." >&2
+    exit 1
+fi
+
+# ─── Extract Fields from Audit Event ──────────────────────────────────────────
+
+TOOL=$(echo "${EVENT}" | jq -r '.action // "unknown"')
+DOMAIN=$(echo "${EVENT}" | jq -r '.domain // "unknown"')
+DETAIL=$(echo "${EVENT}" | jq -c '.detail // {}')
+OUTCOME=$(echo "${EVENT}" | jq -r '.outcome // "unknown"')
+RULE=$(echo "${EVENT}" | jq -r '.rule // "unknown"')
+AUTHORIZER=$(echo "${EVENT}" | jq -r '.authorizer // "gate"')
+TIMESTAMP=$(echo "${EVENT}" | jq -r '.ts // "unknown"')
+POLICY_VERSION=$(echo "${EVENT}" | jq -r '.policy_version // "unknown"')
+AUDIT_EVENT_ID=$(echo "${EVENT}" | jq -r '.id // "unknown"')
+AUDIT_PREV_HASH=$(echo "${EVENT}" | jq -r '.prev_hash // "genesis"')
+
+# Compute detail hash: SHA-256 of canonical detail JSON
+DETAIL_HASH=$(printf '%s' "${DETAIL}" | jq -S -c '.' | shasum -a 256 | awk '{print $1}')
+
+# ─── Manifest Fields (if provided) ───────────────────────────────────────────
+
+MANIFEST_VERSION="null"
+MANIFEST_AGENT_ID="null"
+MANIFEST_PRINCIPAL="null"
+
+if [ -n "${MANIFEST_PATH}" ] && [ -f "${MANIFEST_PATH}" ]; then
+    MANIFEST_VERSION=$(jq -r '.identity.manifest_version // .signature.manifest_version // empty' "${MANIFEST_PATH}" 2>/dev/null || true)
+    if [ -n "${MANIFEST_VERSION}" ]; then
+        MANIFEST_VERSION="\"${MANIFEST_VERSION}\""
+    else
+        MANIFEST_VERSION="null"
+    fi
+
+    MANIFEST_AGENT_ID=$(jq -r '.identity.agent_id // empty' "${MANIFEST_PATH}" 2>/dev/null || true)
+    if [ -n "${MANIFEST_AGENT_ID}" ]; then
+        MANIFEST_AGENT_ID="\"${MANIFEST_AGENT_ID}\""
+    else
+        MANIFEST_AGENT_ID="null"
+    fi
+
+    MANIFEST_PRINCIPAL=$(jq -r '.identity.principal // empty' "${MANIFEST_PATH}" 2>/dev/null || true)
+    if [ -n "${MANIFEST_PRINCIPAL}" ]; then
+        MANIFEST_PRINCIPAL="\"${MANIFEST_PRINCIPAL}\""
+    else
+        MANIFEST_PRINCIPAL="null"
+    fi
+fi
+
+# ─── Generate Receipt ID ─────────────────────────────────────────────────────
+
+RECEIPT_ID=$(printf '%012x' "$(date +%s)")$(openssl rand -hex 16)
+
+# ─── Build Unsigned Receipt ───────────────────────────────────────────────────
+
+UNSIGNED_RECEIPT=$(jq -n \
+    --arg rv "${RECEIPT_VERSION}" \
+    --arg id "${RECEIPT_ID}" \
+    --arg tool "${TOOL}" \
+    --arg domain "${DOMAIN}" \
+    --arg detail_hash "${DETAIL_HASH}" \
+    --arg outcome "${OUTCOME}" \
+    --arg rule "${RULE}" \
+    --arg authorizer "${AUTHORIZER}" \
+    --arg timestamp "${TIMESTAMP}" \
+    --arg policy_version "${POLICY_VERSION}" \
+    --argjson manifest_version "${MANIFEST_VERSION}" \
+    --argjson manifest_agent_id "${MANIFEST_AGENT_ID}" \
+    --argjson manifest_principal "${MANIFEST_PRINCIPAL}" \
+    --arg audit_event_id "${AUDIT_EVENT_ID}" \
+    --arg audit_prev_hash "${AUDIT_PREV_HASH}" \
+    --argjson prev_receipt_hash "${PREV_RECEIPT_HASH}" \
+    '{
+        receipt_version: $rv,
+        id: $id,
+        governed_action: {
+            tool: $tool,
+            domain: $domain,
+            detail_hash: $detail_hash
+        },
+        decision: {
+            outcome: $outcome,
+            rule: $rule,
+            authorizer: $authorizer,
+            timestamp: $timestamp
+        },
+        evidence: {
+            policy_version: $policy_version,
+            manifest_version: $manifest_version,
+            manifest_agent_id: $manifest_agent_id,
+            manifest_principal: $manifest_principal,
+            delegation_chain: [],
+            audit_event_id: $audit_event_id,
+            audit_prev_hash: $audit_prev_hash
+        },
+        prev_receipt_hash: $prev_receipt_hash
+    }')
+
+# ─── Sign the Receipt ────────────────────────────────────────────────────────
+
+if [ ! -f "${SIGNING_KEY}" ]; then
+    echo "ERROR: Signing key not found: ${SIGNING_KEY}" >&2
+    exit 1
+fi
+
+if [ ! -f "${PUBLIC_KEY}" ]; then
+    echo "ERROR: Public key not found: ${PUBLIC_KEY}" >&2
+    exit 1
+fi
+
+TEMP_DIR=$(mktemp -d)
+trap 'rm -rf "${TEMP_DIR}"' EXIT
+
+# Canonical form → SHA-256 hex → sign hex bytes
+CANONICAL=$(printf '%s' "${UNSIGNED_RECEIPT}" | jq -S -c '.')
+HASH_HEX=$(printf '%s' "${CANONICAL}" | shasum -a 256 | awk '{print $1}')
+printf '%s' "${HASH_HEX}" > "${TEMP_DIR}/hash"
+
+SIG_FILE="${TEMP_DIR}/sig"
+if ! zlar_crypto_sign "${SIGNING_KEY}" "${TEMP_DIR}/hash" "${SIG_FILE}" 2>/dev/null; then
+    echo "ERROR: Signing failed." >&2
+    exit 1
+fi
+
+SIG_B64=$(base64 < "${SIG_FILE}" | tr -d '\n')
+KEY_ID=$(zlar_crypto_pubkey_fingerprint "${PUBLIC_KEY}")
+SIG_ALGO=$(zlar_crypto_label)
+
+# ─── Assemble Signed Receipt ─────────────────────────────────────────────────
+
+SIGNED_RECEIPT=$(echo "${UNSIGNED_RECEIPT}" | jq -c \
+    --arg algo "${SIG_ALGO}" \
+    --arg hash_algo "SHA-256" \
+    --arg sig "${SIG_B64}" \
+    --arg key_id "${KEY_ID}" \
+    '. + {signature: {algorithm: $algo, hash_algorithm: $hash_algo, value: $sig, key_id: $key_id}}')
+
+# ─── Output ───────────────────────────────────────────────────────────────────
+
+if [ -n "${OUTPUT_PATH}" ]; then
+    echo "${SIGNED_RECEIPT}" | jq '.' > "${OUTPUT_PATH}"
+    echo "Receipt written to: ${OUTPUT_PATH}" >&2
+else
+    echo "${SIGNED_RECEIPT}" | jq '.'
+fi

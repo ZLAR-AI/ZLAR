@@ -14,7 +14,7 @@
 
 import { createServer, createConnection } from 'net';
 import { readFileSync, appendFileSync, existsSync, statSync } from 'fs';
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual, sign as cryptoSign, verify as cryptoVerify, createPublicKey } from 'crypto';
 import { execSync, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -22,6 +22,26 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PROJECT_DIR = join(__dirname, '..');
+
+// Receipt generation (Phase A — Governed Action Receipt)
+import {
+  createReceiptFromEvent,
+  signReceipt,
+  pubkeyFingerprint,
+  receiptHash,
+  canonicalize,
+  sha256hex
+} from '../lib/receipt.mjs';
+
+// Cedar policy evaluation (Phase C — Cedar Integration)
+import {
+  cedarAvailable,
+  cedarVersion,
+  evaluate as cedarEvaluate,
+  validatePolicies as cedarValidate,
+  loadPoliciesFromFiles as cedarLoadFiles,
+  mapToGateAction as cedarMapAction,
+} from '../lib/cedar-evaluator.mjs';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -38,6 +58,13 @@ const CONFIG = {
   telegramTimeoutS: 300,
   sessionId: randomBytes(16).toString('hex'),
   agentId: 'mcp-client',
+  // Receipt generation (Phase A)
+  signingKey: join(process.env.HOME || '', '.zlar-signing.key'),
+  signingPubkey: join(process.env.HOME || '', '.zlar-signing.pub'),
+  receiptFile: join(PROJECT_DIR, 'var/log/receipts.jsonl'),
+  emitReceipts: process.env.ZLAR_EMIT_RECEIPTS === 'true',
+  // Cedar policy engine (Phase C) — when enabled, Cedar evaluates alongside or instead of JSON
+  policyEngine: process.env.ZLAR_POLICY_ENGINE || 'json', // 'json', 'cedar', or 'both'
 };
 
 // Parse CLI args
@@ -56,6 +83,7 @@ for (let i = 0; i < args.length; i++) {
     case '--policy-file': CONFIG.policyFile = args[++i]; break;
     case '--agent-id': CONFIG.agentId = args[++i]; break;
     case '--telegram-chat-id': CONFIG.telegramChatId = args[++i]; break;
+    case '--policy-engine': CONFIG.policyEngine = args[++i]; break;
     case '--help':
       console.log(`ZLAR MCP Gate — vendor-agnostic governance proxy
 
@@ -97,6 +125,7 @@ if (!CONFIG.telegramChatId) {
       const gateConfig = JSON.parse(readFileSync(gateConfigPath, 'utf8'));
       CONFIG.telegramChatId = gateConfig?.telegram?.chat_id;
       if (gateConfig?.telegram?.timeout_s) CONFIG.telegramTimeoutS = gateConfig.telegram.timeout_s;
+      if (gateConfig?.emit_receipts === true) CONFIG.emitReceipts = true;
     } catch {}
   }
 }
@@ -116,6 +145,33 @@ if (existsSync(CONFIG.policyPubkey)) {
 let POLICY = null;
 let POLICY_VERSION = 'unknown';
 
+// ─── Signature Verification ──────────────────────────────────────────────────
+// Shared by policy and standing approval verification. Matches bash gate approach:
+// canonical (with signature zeroed) → SHA-256 hex → Ed25519 verify hex bytes.
+
+function verifyJsonSignature(obj, publicKeyPath) {
+  if (!existsSync(publicKeyPath)) return { ok: false, reason: 'public key not found' };
+
+  const sig = obj?.signature;
+  if (!sig?.value) return { ok: false, reason: 'no signature in file' };
+
+  try {
+    const pubKeyPem = readFileSync(publicKeyPath, 'utf8');
+
+    // Zero ONLY .signature.value — must match bash gate: jq '.signature.value = ""'
+    // The bash gate preserves .algorithm and .key_id in the canonical form.
+    const canonical = JSON.parse(JSON.stringify(obj));
+    canonical.signature = { ...canonical.signature, value: '' };
+    const hashHex = sha256hex(canonicalize(canonical));
+    const sigBytes = Buffer.from(sig.value, 'base64');
+    const ok = cryptoVerify(null, Buffer.from(hashHex, 'utf8'), pubKeyPem, sigBytes);
+
+    return ok ? { ok: true } : { ok: false, reason: 'signature verification failed' };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+}
+
 function loadPolicy() {
   if (!existsSync(CONFIG.policyFile)) {
     console.error(`[gate] CRITICAL: Policy file not found: ${CONFIG.policyFile} — fail-closed`);
@@ -124,10 +180,23 @@ function loadPolicy() {
     return;
   }
   try {
-    POLICY = JSON.parse(readFileSync(CONFIG.policyFile, 'utf8'));
+    const raw = JSON.parse(readFileSync(CONFIG.policyFile, 'utf8'));
+
+    // Ed25519 policy signature verification (Phase B).
+    // Fail-closed: unsigned or tampered policy → deny-all.
+    if (raw.signature?.value && existsSync(CONFIG.policyPubkey)) {
+      const result = verifyJsonSignature(raw, CONFIG.policyPubkey);
+      if (!result.ok) {
+        console.error(`[gate] CRITICAL: Policy signature INVALID (${result.reason}) — fail-closed`);
+        POLICY = { rules: [], default_action: 'deny', version: 'fail-closed-sig' };
+        POLICY_VERSION = 'fail-closed-sig';
+        return;
+      }
+      console.log('[gate] Policy signature verified');
+    }
+
+    POLICY = raw;
     POLICY_VERSION = POLICY.version || 'unknown';
-    // NOTE: Ed25519 policy signature verification not yet implemented (Phase B).
-    // The bash gate verifies signatures; the MCP gate trusts the file.
   } catch (e) {
     console.error(`[gate] CRITICAL: Failed to parse policy: ${e.message} — fail-closed`);
     POLICY = { rules: [], default_action: 'deny', version: 'fail-closed' };
@@ -187,9 +256,199 @@ function evaluatePolicy(toolName, args) {
   };
 }
 
+// ─── Cedar Policy Engine (Phase C) ───────────────────────────────────────────
+// Cedar evaluates alongside or instead of JSON regex. Both engines produce
+// the same receipt format. The gate doesn't know which engine ran.
+
+let CEDAR_SCHEMA = null;
+let CEDAR_POLICIES = null;
+let CEDAR_POLICY_ID_MAP = {};
+let CEDAR_LOADED = false;
+
+function loadCedar() {
+  if (CONFIG.policyEngine === 'json') return; // Cedar not requested
+
+  if (!cedarAvailable()) {
+    console.error('[gate] WARN: Cedar requested but WASM not available — falling back to JSON');
+    if (CONFIG.policyEngine === 'cedar') {
+      console.error('[gate] CRITICAL: Cedar-only mode with no Cedar — fail-closed');
+      POLICY = { rules: [], default_action: 'deny', version: 'fail-closed-cedar' };
+      POLICY_VERSION = 'fail-closed-cedar';
+    }
+    return;
+  }
+
+  const loaded = cedarLoadFiles();
+  if (!loaded) {
+    console.error('[gate] WARN: No Cedar policy files found');
+    if (CONFIG.policyEngine === 'cedar') {
+      console.error('[gate] CRITICAL: Cedar-only mode with no policies — fail-closed');
+      POLICY = { rules: [], default_action: 'deny', version: 'fail-closed-cedar' };
+      POLICY_VERSION = 'fail-closed-cedar';
+    }
+    return;
+  }
+
+  const validation = cedarValidate({ schema: loaded.schema, policies: loaded.policies });
+  if (!validation.ok) {
+    console.error(`[gate] CRITICAL: Cedar policy validation failed: ${validation.error}`);
+    if (CONFIG.policyEngine === 'cedar') {
+      POLICY = { rules: [], default_action: 'deny', version: 'fail-closed-cedar' };
+      POLICY_VERSION = 'fail-closed-cedar';
+    }
+    return;
+  }
+
+  CEDAR_SCHEMA = loaded.schema;
+  CEDAR_POLICIES = loaded.policies;
+  CEDAR_POLICY_ID_MAP = loaded.policyIdMap || {};
+  CEDAR_LOADED = true;
+  console.log(`[gate] Cedar policies loaded: ${loaded.files.length} files (Cedar ${cedarVersion()})`);
+}
+
+// Wrap evaluatePolicy to support both engines
+function evaluatePolicyDual(toolName, args) {
+  const engine = CONFIG.policyEngine;
+
+  if (engine === 'json' || (engine === 'both' && !CEDAR_LOADED)) {
+    return evaluatePolicy(toolName, args);
+  }
+
+  if (engine === 'cedar' || engine === 'both') {
+    if (!CEDAR_LOADED) {
+      // Fail-closed: Cedar requested but not loaded
+      return { action: 'deny', rule: 'cedar-unavailable', riskScore: 100, severity: 'critical' };
+    }
+
+    // Cedar evaluation
+    const command = typeof args === 'object' ? JSON.stringify(args) : String(args);
+    const result = cedarEvaluate({
+      schema: CEDAR_SCHEMA,
+      policies: CEDAR_POLICIES,
+      agentId: CONFIG.agentId,
+      toolName,
+      command: `${toolName} ${command}`,
+      domain: 'mcp',
+      policyVersion: POLICY_VERSION,
+    });
+
+    if (result.error) {
+      console.error(`[gate] Cedar evaluation error: ${result.error} — fail-closed`);
+      return { action: 'deny', rule: 'cedar-error', riskScore: 100, severity: 'critical' };
+    }
+
+    const mapped = cedarMapAction(result, CEDAR_POLICY_ID_MAP);
+
+    if (engine === 'both') {
+      // Both engines: JSON result is primary, Cedar is advisory (logged)
+      const jsonResult = evaluatePolicy(toolName, args);
+      if (jsonResult.action !== mapped.action) {
+        console.log(`[gate] Engine divergence: JSON=${jsonResult.action} Cedar=${mapped.action} — using JSON`);
+      }
+      return jsonResult;
+    }
+
+    return mapped;
+  }
+
+  // Unknown engine — fail-closed
+  return { action: 'deny', rule: 'unknown-engine', riskScore: 100, severity: 'critical' };
+}
+
+// ─── Standing Approvals ──────────────────────────────────────────────────────
+// Pre-authorized patterns that skip Telegram escalation. Same format as bash gate.
+// Signed with policy key. Fail-soft: invalid/missing → no standing approvals (ask Telegram).
+
+let STANDING_APPROVALS = [];
+let STANDING_APPROVALS_LOADED = false;
+
+function loadStandingApprovals() {
+  const saFile = join(PROJECT_DIR, 'etc/standing-approvals.json');
+  if (!existsSync(saFile)) return;
+
+  try {
+    const raw = JSON.parse(readFileSync(saFile, 'utf8'));
+
+    // Verify signature if pubkey available
+    if (raw.signature?.value && existsSync(CONFIG.policyPubkey)) {
+      const result = verifyJsonSignature(raw, CONFIG.policyPubkey);
+      if (!result.ok) {
+        console.error(`[gate] WARN: Standing approvals signature invalid (${result.reason}) — approvals disabled`);
+        return;
+      }
+    }
+
+    STANDING_APPROVALS = raw.approvals || [];
+    STANDING_APPROVALS_LOADED = true;
+    console.log(`[gate] Standing approvals loaded: ${STANDING_APPROVALS.length} entries`);
+  } catch (e) {
+    console.error(`[gate] WARN: Failed to load standing approvals: ${e.message}`);
+  }
+}
+
+/**
+ * Check if an action matches a standing approval.
+ * @param {string} ruleId - The policy rule that triggered the ask
+ * @param {string} toolName - The MCP tool name
+ * @param {object} args - The tool arguments
+ * @returns {{ match: boolean, approvalId: string|null }}
+ */
+function checkStandingApproval(ruleId, toolName, args) {
+  if (!STANDING_APPROVALS_LOADED) return { match: false, approvalId: null };
+
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const commandText = `${toolName} ${JSON.stringify(args)}`;
+
+  for (const sa of STANDING_APPROVALS) {
+    // Must match rule_id
+    if (sa.rule_id !== ruleId) continue;
+
+    // Check expiry
+    if (sa.expires && today > sa.expires) continue;
+
+    // Check match patterns
+    const matcher = sa.match?.command;
+    if (!matcher) continue;
+
+    if (matcher.contains && commandText.includes(matcher.contains)) {
+      return { match: true, approvalId: sa.id };
+    }
+    if (matcher.regex) {
+      try {
+        if (new RegExp(matcher.regex).test(commandText)) {
+          return { match: true, approvalId: sa.id };
+        }
+      } catch {} // Invalid regex → skip
+    }
+  }
+
+  return { match: false, approvalId: null };
+}
+
 // ─── Audit Trail ─────────────────────────────────────────────────────────────
 
+// Cache hostname/username at startup (not per-event — execSync is expensive)
+const HOSTNAME = (() => { try { return execSync('hostname -s', { encoding: 'utf8' }).trim(); } catch { return 'unknown'; } })();
+const USERNAME = (() => { try { return execSync('whoami', { encoding: 'utf8' }).trim(); } catch { return 'unknown'; } })();
+
 let SEQ = 0;
+let PREV_RECEIPT_HASH = null;
+let SIGNING_KEY_PEM = null;
+let SIGNING_KEY_ID = null;
+
+// Load signing key — used for both per-entry audit signing and receipt generation.
+// Audit signing is unconditional when a key exists. Receipts are opt-in.
+if (existsSync(CONFIG.signingKey)) {
+  try {
+    SIGNING_KEY_PEM = readFileSync(CONFIG.signingKey, 'utf8');
+    if (existsSync(CONFIG.signingPubkey)) {
+      SIGNING_KEY_ID = pubkeyFingerprint(CONFIG.signingPubkey);
+    }
+    console.log(`[gate] Signing key loaded (key_id: ${SIGNING_KEY_ID || 'unknown'})`);
+  } catch (e) {
+    console.error(`[gate] WARN: Cannot load signing key: ${e.message}`);
+  }
+}
 
 function genId() {
   const hexTs = Math.floor(Date.now() / 1000).toString(16);
@@ -219,8 +478,8 @@ function emitEvent(domain, action, outcome, detail, rule, severity, riskScore, a
     ts,
     seq: SEQ,
     source: 'mcp-gate',
-    host: execSync('hostname -s', { encoding: 'utf8' }).trim(),
-    user: execSync('whoami', { encoding: 'utf8' }).trim(),
+    host: HOSTNAME,
+    user: USERNAME,
     agent_id: CONFIG.agentId,
     session_id: CONFIG.sessionId,
     domain,
@@ -235,13 +494,41 @@ function emitEvent(domain, action, outcome, detail, rule, severity, riskScore, a
     authorizer: authorizer || 'policy',
     signature_algorithm: SIGNATURE_ALGORITHM,
     hash_algorithm: HASH_ALGORITHM,
-    public_key_id: PUBLIC_KEY_ID,
+    public_key_id: SIGNING_KEY_ID || PUBLIC_KEY_ID,
   };
+
+  // Per-entry Ed25519 signing (SP 800-53 AU-10 non-repudiation).
+  // Matches bash gate: canonical → SHA-256 hex → sign hex bytes → base64.
+  let signature = 'unsigned';
+  if (SIGNING_KEY_PEM) {
+    try {
+      const hashHex = sha256hex(canonicalize(event));
+      const sig = cryptoSign(null, Buffer.from(hashHex, 'utf8'), SIGNING_KEY_PEM);
+      signature = sig.toString('base64');
+    } catch (e) {
+      console.error(`[gate] WARN: Audit entry signing failed: ${e.message}`);
+    }
+  }
+  event.signature = signature;
 
   try {
     appendFileSync(CONFIG.auditFile, JSON.stringify(event) + '\n');
   } catch (e) {
     console.error(`[gate] CRITICAL: Failed to write audit event: ${e.message}`);
+  }
+
+  // Generate receipt if enabled and signing key available
+  if (CONFIG.emitReceipts && SIGNING_KEY_PEM && SIGNING_KEY_ID) {
+    try {
+      const receipt = createReceiptFromEvent(event, {
+        prev_receipt_hash: PREV_RECEIPT_HASH,
+      });
+      const signed = signReceipt(receipt, SIGNING_KEY_PEM, SIGNING_KEY_ID);
+      appendFileSync(CONFIG.receiptFile, JSON.stringify(signed) + '\n');
+      PREV_RECEIPT_HASH = receiptHash(signed);
+    } catch (e) {
+      console.error(`[gate] WARN: Receipt generation failed: ${e.message}`);
+    }
   }
 
   return event;
@@ -401,8 +688,8 @@ async function handleRequest(msg) {
 
   console.log(`[gate] Intercepted tools/call: ${toolName}`);
 
-  // Evaluate policy
-  const evaluation = evaluatePolicy(toolName, args);
+  // Evaluate policy (JSON, Cedar, or both — depending on CONFIG.policyEngine)
+  const evaluation = evaluatePolicyDual(toolName, args);
   console.log(`[gate] Policy: ${evaluation.rule} → ${evaluation.action} (risk ${evaluation.riskScore})`);
 
 
@@ -427,9 +714,16 @@ async function handleRequest(msg) {
     }
 
     case 'ask': {
+      // Check standing approvals before escalating to human
+      const sa = checkStandingApproval(evaluation.rule, toolName, args);
+      if (sa.match) {
+        console.log(`[gate] Standing approval ${sa.approvalId} matched — auto-allow`);
+        emitEvent('mcp', toolName, 'allow', { tool: toolName, args_preview: JSON.stringify(args).substring(0, 200), standing_approval: sa.approvalId },
+          evaluation.rule, evaluation.severity, evaluation.riskScore, `standing:${sa.approvalId}`);
+        return { action: 'passthrough', msg };
+      }
+
       const actionId = genId();
-      // CRITICAL: telegramAsk returns a string, not an exit code.
-      // No set -e concern in Node — but the pattern is documented for consistency.
       const decision = await telegramAsk(actionId, toolName, args, evaluation.rule, evaluation.riskScore, evaluation.severity);
 
       switch (decision) {
@@ -471,7 +765,17 @@ async function handleRequest(msg) {
     }
 
     default:
-      return { action: 'passthrough', msg };
+      // Fail-closed: unknown policy action → deny (never passthrough on unknown)
+      emitEvent('mcp', toolName, 'deny', { tool: toolName, reason: `unknown policy action: ${evaluation.action}` },
+        evaluation.rule, 'critical', 100, 'gate');
+      return {
+        action: 'deny',
+        response: {
+          jsonrpc: '2.0',
+          id: msg.id,
+          error: { code: -32600, message: `[gate] Unknown policy action "${evaluation.action}" — denied (fail-closed)` },
+        },
+      };
   }
 }
 
@@ -484,6 +788,8 @@ function startTcpProxy() {
   }
 
   loadPolicy();
+  loadStandingApprovals();
+  loadCedar();
 
   const server = createServer(async (clientSocket) => {
     console.log(`[gate] Client connected`);
@@ -521,7 +827,16 @@ function startTcpProxy() {
     });
 
     upstream.on('error', (e) => {
-      console.error(`[gate] Upstream error: ${e.message}`);
+      console.error(`[gate] Upstream error: ${e.message} — fail-closed`);
+      emitEvent('mcp', 'upstream.error', 'deny', { error: e.message },
+        '', 'critical', 100, 'gate');
+      // Send JSON-RPC error for any pending requests, then close
+      try {
+        clientSocket.write(JSON.stringify({
+          jsonrpc: '2.0', id: null,
+          error: { code: -32603, message: '[gate] Upstream unavailable — denied (fail-closed)' }
+        }) + '\n');
+      } catch {}
       clientSocket.end();
     });
 
@@ -541,6 +856,7 @@ function startTcpProxy() {
     console.log(`[gate] Audit: ${CONFIG.auditFile}`);
     console.log(`[gate] Session: ${CONFIG.sessionId}`);
     console.log(`[gate] PQC: ${SIGNATURE_ALGORITHM} / ${HASH_ALGORITHM} / ${PUBLIC_KEY_ID}`);
+    console.log(`[gate] Policy engine: ${CONFIG.policyEngine}${CEDAR_LOADED ? ` (Cedar ${cedarVersion()})` : ''}`);
 
     emitEvent('mcp', 'gate.start', 'allow', { port: CONFIG.port, upstream: `${CONFIG.upstreamHost}:${CONFIG.upstreamPort}` },
       '', 'info', 0, 'gate');
@@ -552,13 +868,32 @@ function startTcpProxy() {
   });
 }
 
+// ─── Fail-Closed: Uncaught Exception Handler ────────────────────────────────
+// Any unhandled error → log and deny. The gate must never silently pass through.
+
+process.on('uncaughtException', (err) => {
+  console.error(`[gate] CRITICAL: Uncaught exception — gate will deny all: ${err.message}`);
+  try {
+    emitEvent('mcp', 'gate.crash', 'deny', { error: err.message, stack: (err.stack || '').substring(0, 500) },
+      '', 'critical', 100, 'gate');
+  } catch {}
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error(`[gate] CRITICAL: Unhandled rejection — gate will deny all: ${reason}`);
+  try {
+    emitEvent('mcp', 'gate.crash', 'deny', { error: String(reason) },
+      '', 'critical', 100, 'gate');
+  } catch {}
+  process.exit(1);
+});
+
 // ─── Entry Point ─────────────────────────────────────────────────────────────
 
 if (!CONFIG.upstreamHost && !CONFIG.upstreamCmd) {
   console.error('[gate] Specify --upstream host:port or --upstream-cmd "command"');
   process.exit(1);
 }
-
-console.warn('[gate] EXPERIMENTAL: MCP gate — Ed25519 policy signature verification and per-entry audit signing not yet implemented. See CHANGELOG v1.4.1.');
 
 startTcpProxy();
