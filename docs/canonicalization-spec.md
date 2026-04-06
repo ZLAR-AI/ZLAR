@@ -104,7 +104,9 @@ The canonical output MUST be UTF-8 encoded. No byte order mark (BOM). No trailin
 
 Given a ZLAR JSON structure to be signed:
 
-1. **Remove the signature field.** If the structure contains a `signature` key at the top level, remove it. All other fields are included.
+1. **Neutralize the signature field.** The approach depends on the structure type:
+   - **Receipts (v1 envelope):** Remove the `sig` field entirely before canonicalizing the envelope for chain hashing. For signing, the payload is canonicalized independently (the `sig` field is not part of the payload).
+   - **Policy and manifest files (v0 inline signing):** Zero the signature value fields (set `signature.algorithm`, `signature.value`, and `signature.key_id` to empty strings `""`) but retain the `signature` object structure. This matches the behavior of `jq '.signature = {algorithm:"",value:"",key_id:""}'` used by both gates.
 
 2. **Canonicalize.** Apply the canonicalization rules above to produce a UTF-8 byte sequence.
 

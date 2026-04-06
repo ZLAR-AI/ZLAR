@@ -65,6 +65,6 @@ ZLAR does not protect against:
 
 - **Signing:** Ed25519 (default). ML-DSA-44 and hybrid mode available via crypto abstraction layer.
 - **Hashing:** SHA-256.
-- **Canonicalization:** `jq -S -c` (sorted keys, compact). Documented limitation: not RFC 8785 (JCS). Cross-gate verifiers must use the same canonical form.
+- **Canonicalization:** ZLAR Canonicalization Specification v1.0 — a strict subset of RFC 8785 (JCS) with constrained schema (no floats, ASCII-only property names). Implementation: `jq -S -c` in bash, `JSON.stringify(sortKeysRecursive(obj))` in Node.js. Cross-language verified with 28 test vectors. See `docs/canonicalization-spec.md`.
 - **Key format:** Standard OpenSSL PEM.
 - **Migration path:** Every audit entry records `signature_algorithm` and `hash_algorithm`. When post-quantum migration is required, tooling reads these fields to identify entries needing re-signing.

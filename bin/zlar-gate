@@ -44,9 +44,15 @@ _gate_crash() {
     [ -z "${crash_log}" ] && crash_log="${PROJECT_DIR:+${PROJECT_DIR}/var/log/gate-crash.log}"
     [ -z "${crash_log}" ] && crash_log="/var/log/zlar-gate-crash.log"
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] CRASH at line ${line}" >> "${crash_log}" 2>/dev/null || true
-    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"ZLAR gate crash (line '"${line}"'). All actions blocked."}}'
+    # Emit correct event type — _GATE_HOOK_EVENT is set when we know the hook type.
+    # Default to PreToolUse if crash happens before hook type is determined.
+    local _event="${_GATE_HOOK_EVENT:-PreToolUse}"
+    echo '{"hookSpecificOutput":{"hookEventName":"'"${_event}"'","permissionDecision":"deny","permissionDecisionReason":"ZLAR gate crash (line '"${line}"'). All actions blocked."}}'
     exit 0
 }
+
+# Set when hook event type is determined (before main processing).
+_GATE_HOOK_EVENT="PreToolUse"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
@@ -1596,6 +1602,7 @@ main() {
     local hook_event_name
     hook_event_name=$(echo "${input}" | jq -r '.hook_event_name // ""' 2>/dev/null)
     if [ "${hook_event_name}" = "SubagentStart" ]; then
+        _GATE_HOOK_EVENT="SubagentStart"
         handle_subagent_start "${input}"
         return
     fi
@@ -1605,13 +1612,14 @@ main() {
     tool_name=$(echo "${input}" | jq -r '.tool_name // ""' 2>/dev/null)
     tool_input=$(echo "${input}" | jq -c '.tool_input // {}' 2>/dev/null)
     SESSION_ID=$(echo "${input}" | jq -r '.session_id // "unknown"' 2>/dev/null)
-    # Sanitize SESSION_ID — prevent path traversal
+    # Sanitize SESSION_ID — prevent path traversal and empty string collisions
     SESSION_ID=$(echo "${SESSION_ID}" | tr -cd 'a-zA-Z0-9_-' | head -c 64)
+    [ -z "${SESSION_ID}" ] && SESSION_ID="unknown-$(date +%s)"
 
     # Extract agent identity from hook payload (populated in subagent contexts)
     AGENT_ID=$(echo "${input}" | jq -r '.agent_id // ""' 2>/dev/null)
-    [ -z "${AGENT_ID}" ] && AGENT_ID="claude-code"
     AGENT_ID=$(echo "${AGENT_ID}" | tr -cd 'a-zA-Z0-9_-' | head -c 64)
+    [ -z "${AGENT_ID}" ] && AGENT_ID="claude-code"
 
     # Initialize session state (velocity/loop/burst tracking)
     if [ "${SESSION_STATE_ENABLED}" = "true" ]; then
