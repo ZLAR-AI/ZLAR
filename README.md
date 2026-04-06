@@ -168,6 +168,11 @@ bash tests/test-session-state.sh       # Session counters
 bash tests/test-standing-approvals.sh  # Standing approval matching
 bash tests/test-approval-binding.sh    # Approval binding (action fingerprint)
 bash tests/test-inbox-hmac.sh          # Inbox HMAC verification
+bash tests/test-doctor.sh              # Installation health checks
+
+# Canonicalization (cross-language verification)
+node tests/test-canonicalization.mjs   # 28 test vectors + validation + edge cases
+python3 tests/verify-canonicalization.py  # Python cross-language verification
 
 # MCP gate, receipts, and Cedar (200+ assertions)
 node mcp-gate/test-hardened.mjs        # Policy verification, signing, fail-closed, standing approvals
