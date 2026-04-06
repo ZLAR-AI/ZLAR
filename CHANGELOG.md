@@ -1,6 +1,24 @@
 # Changelog
 
-## 2.0.0 — 2026-04-06
+## ZLAR 2.0 — 2026-04-06
+
+The proof. Deterministic gate + human authority + cryptographic evidence. Format frozen. Specifications published.
+
+### 2.0.0+11 — 2026-04-06 (evening)
+
+- **Canonicalization Specification v1.0** (`docs/canonicalization-spec.md`). RFC 8785 subset with constrained schema. 28 test vectors verified across Node.js, Python, and bash. Published at zlar.ai/specs/canonicalization.
+- **Receipt v1 envelope format** (format frozen). Base64url payload, Ed25519 signature, integer version field, no algorithm negotiation. Published at zlar.ai/specs/receipt-v1. ADR-007.
+- **Semantic validation layer** (`lib/semantic-validator.mjs`). Layer 4 of five-layer pipeline: rule-outcome consistency, authorizer-outcome coherence, temporal checks, delegation chain integrity. 70+ assertions.
+- **zlar doctor** (`bin/zlar`). Seven-section diagnostic: dependencies, keys, policy, hooks, gate, audit, Telegram (daemon + HMAC). Post-reboot habit.
+- **Troubleshooting docs** (`docs/troubleshooting.md`). 12 failure modes with symptoms, causes, fix commands.
+- **Gate crash fix**. HMAC secret permissions (root:root 600 → root:staff 640). Gate was silently dead April 3-6.
+- **tg-poll daemon fix**. Boot script user resolution: persistent config + /Users/ search. Telegram callbacks restored.
+- **Codex audit fixes**. Crash handler event type, empty session ID fallback, schema regex constraints, spec/code alignment, README flow accuracy, tamper test.
+- **Institutional website restructure**. Forrester-first navigation. Essays archived to /writing. Architecture page updated to v2.0.0.
+- **CODE_OF_CONDUCT.md**. Contributor Covenant v2.1.
+- **All 17 research items complete**. 24 MD files in ZLAR-2.0/research/.
+
+### 2.0.0 — 2026-04-06
 
 Phase 2: Governed Action Receipt, MCP hardening, Cedar integration, institutional repo, human invariants.
 
