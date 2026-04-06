@@ -176,6 +176,7 @@ python3 tests/verify-canonicalization.py  # Python cross-language verification
 
 # Receipt v1 envelope format
 node tests/test-receipt-v1.mjs         # v1 create, sign, verify, tamper detection, universal verifier
+node tests/test-semantic-validation.mjs  # Layer 4: rule-outcome, authorizer, temporal, delegation checks
 
 # MCP gate, receipts, and Cedar (200+ assertions)
 node mcp-gate/test-hardened.mjs        # Policy verification, signing, fail-closed, standing approvals
