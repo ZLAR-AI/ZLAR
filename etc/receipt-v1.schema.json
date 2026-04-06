@@ -14,7 +14,8 @@
     },
     "id": {
       "type": "string",
-      "minLength": 1,
+      "minLength": 12,
+      "pattern": "^[a-f0-9]+$",
       "description": "Unique receipt identifier. Hex timestamp (12 chars) + random bytes (32 chars)."
     },
     "kid": {
@@ -35,15 +36,18 @@
     "payload": {
       "type": "string",
       "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
       "description": "Base64url-encoded (no padding) UTF-8 bytes of the canonical JSON payload. The payload contains all governance fields. Canonicalization follows the ZLAR Canonicalization Specification v1.0 (docs/canonicalization-spec.md). The verifier decodes this to get the raw bytes for hash verification, then parses the JSON to read the governance fields."
     },
     "sig": {
       "type": "string",
       "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
       "description": "Base64url-encoded (no padding) Ed25519 signature. Signing: SHA-256 hash the decoded payload bytes → hex string → Ed25519 sign the hex string bytes. Verification: reverse the process."
     },
     "prev": {
       "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$",
       "description": "SHA-256 hash of the previous receipt (canonical envelope JSON), or null for the first receipt. Links receipts into a chain."
     }
   }

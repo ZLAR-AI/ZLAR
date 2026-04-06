@@ -55,10 +55,11 @@ Agent issues tool call (shell command, file write, API request)
   +-- Evaluates: which rule matches?
   |   +-- allow  -> tool executes, audit entry + receipt written
   |   +-- deny   -> tool blocked, audit entry + receipt written
-  |   +-- ask    -> human notified via Telegram, agent waits
-  |               +-- human approves -> executes, receipt records "authorized by human"
-  |               +-- human denies   -> blocked, receipt records "denied by human"
-  |               +-- timeout        -> blocked (fail-closed, silence is not consent)
+  |   +-- ask    -> human notified via Telegram, action denied immediately
+  |               +-- agent retries  -> gate checks for human response
+  |               +-- human approved -> executes on retry, receipt records "authorized by human"
+  |               +-- human denied   -> blocked on retry, receipt records "denied by human"
+  |               +-- no response    -> blocked (fail-closed, silence is not consent)
   |
   +-- Hash-chained audit entry records the decision
   +-- Governed Action Receipt provides portable proof

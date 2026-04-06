@@ -152,8 +152,12 @@ assert('file-based sign+verify succeeds', true, resultFiles.valid);
 console.log('=== v1 Tamper Detection ===');
 console.log();
 
-// Tamper with payload
-const tampered1 = { ...signed, payload: signed.payload.replace('deny', 'allow') };
+// Tamper with payload — decode, mutate, re-encode without resigning
+const tamperedPayloadObj = decodePayloadV1(signed);
+tamperedPayloadObj.outcome = 'allow'; // flip deny to allow
+const tamperedPayloadJson = JSON.stringify(tamperedPayloadObj);
+const tamperedPayloadB64 = Buffer.from(tamperedPayloadJson, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const tampered1 = { ...signed, payload: tamperedPayloadB64 };
 const tampResult1 = verifyReceiptV1(tampered1, pubPem);
 assert('tampered payload detected', false, tampResult1.valid);
 
