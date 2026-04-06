@@ -309,15 +309,18 @@ cmd_deploy() {
 
     echo -e "${BOLD}Deploying policy${NC}"
 
-    # Verify signature first
+    # Verify signature cryptographically before deploy
     local pubkey="${KEYS_DIR}/policy-signing.pub"
     if [ -f "${pubkey}" ]; then
         info "Verifying signature before deploy..."
-        local sig_value
-        sig_value=$(grep -o '"value"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
-        if [ -z "${sig_value}" ] || [ "${sig_value}" = "" ]; then
-            fail "Cannot deploy unsigned policy"
+        if ! cmd_verify --input "${input}" --pubkey "${pubkey}" >/dev/null 2>&1; then
+            fail "Policy signature verification FAILED — cannot deploy"
+            return 1
         fi
+        ok "Signature verified"
+    else
+        fail "Public key not found at ${pubkey} — cannot verify policy signature"
+        return 1
     fi
 
     # Archive current policy if it exists

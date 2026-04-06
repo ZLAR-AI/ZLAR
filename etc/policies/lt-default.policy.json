@@ -16,6 +16,72 @@
   },
   "rules": [
     {
+      "id": "R000A",
+      "enabled": true,
+      "description": "Bash access to signing key — blocked (critical self-protection)",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "deny_reason": "ZLAR blocks bash commands that reference the signing key. The private key must never be accessible to the agent via any tool.",
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "zlar-signing\\.key|zlar.*signing.*key|signing\\.key"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      }
+    },
+    {
+      "id": "R000B",
+      "enabled": true,
+      "description": "Bash access to gate-disabled flag — blocked (self-protection)",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "deny_reason": "ZLAR blocks bash commands that reference the gate-disabled flag. The agent cannot disable its own governance.",
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "gate-disabled|\\.gate-disabled"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      }
+    },
+    {
+      "id": "R000C",
+      "enabled": true,
+      "description": "Bash access to sensitive credential paths — blocked",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "deny_reason": "ZLAR blocks bash commands targeting sensitive credential files (.ssh, .env, .gnupg, credentials).",
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\.ssh/|\\.env\\b|\\.gnupg/|credentials|id_rsa|id_ed25519|authorized_keys"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 90
+      }
+    },
+    {
       "id": "R001",
       "enabled": true,
       "description": "Safe read-only shell commands (no compound operators)",
@@ -26,7 +92,7 @@
       "match": {
         "detail": {
           "command": {
-            "regex": "^\\s*(ls|cat|head|tail|pwd|whoami|hostname|uptime|date|df|du|ps|echo|which|file|wc|id|uname|git\\s+(status|log|diff|branch|show|rev-parse|ls-files)|npm\\s+(ls|list|outdated|view|info|version)|node\\s+(-v|--version))\\b"
+            "regex": "^\\s*(ls|cat|head|tail|pwd|whoami|hostname|uptime|date|df|du|ps|echo|which|file|wc|id|uname|git\\s+(status|log|diff|branch|rev-parse|ls-files)|npm\\s+(ls|list|outdated|view|info|version)|node\\s+(-v|--version))\\b"
           }
         },
         "compound_guard": {
