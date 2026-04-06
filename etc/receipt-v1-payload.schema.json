@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zlar.dev/schemas/receipt-payload/1.0.0",
+  "title": "ZLAR Receipt v1 Payload",
+  "description": "The governance fields inside a v1 receipt envelope. This JSON is canonicalized per ZLAR Canonicalization Spec v1.0, then base64url-encoded into the envelope's 'payload' field.",
+  "type": "object",
+  "required": ["tool", "domain", "detail_hash", "outcome", "rule", "authorizer", "ts", "policy_version", "audit_event_id", "audit_prev_hash"],
+  "additionalProperties": false,
+  "properties": {
+    "tool": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Tool name as received by the gate (e.g., Bash, Edit, Write)."
+    },
+    "domain": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Policy domain classification (e.g., file, network, bash, mcp)."
+    },
+    "detail_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hash of the canonical detail object. Proves what action was governed without leaking specifics."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["allow", "deny", "authorized", "denied", "timeout"],
+      "description": "Governance decision."
+    },
+    "rule": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Policy rule that matched."
+    },
+    "authorizer": {
+      "type": "string",
+      "enum": ["policy", "human", "gate", "timeout", "manifest"],
+      "description": "Who made the final decision."
+    },
+    "ts": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "description": "Decision timestamp. ISO 8601 UTC, always 3 decimal places (e.g., 2026-04-06T14:00:00.000Z)."
+    },
+    "policy_version": {
+      "type": "string",
+      "description": "Version of the policy that was evaluated."
+    },
+    "manifest_agent_id": {
+      "type": ["string", "null"],
+      "description": "Agent identity from the manifest, or null."
+    },
+    "manifest_principal": {
+      "type": ["string", "null"],
+      "description": "Human principal accountable for the agent, or null."
+    },
+    "delegation_chain": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["agent_id", "depth"],
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": { "type": "string" },
+          "depth": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "description": "Delegation chain. Empty array if no delegation."
+    },
+    "audit_event_id": {
+      "type": "string",
+      "description": "ID of the source audit trail entry."
+    },
+    "audit_prev_hash": {
+      "type": "string",
+      "description": "prev_hash from the audit entry. Anchors receipt to the hash chain."
+    }
+  }
+}

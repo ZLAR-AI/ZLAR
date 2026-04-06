@@ -27,7 +27,7 @@ const __dirname = dirname(__filename);
 
 // Import the receipt library
 const libPath = join(__dirname, '..', 'lib', 'receipt.mjs');
-const { verifyReceipt, canonicalize, sha256hex } = await import(libPath);
+const { verifyReceiptAny, decodePayloadV1 } = await import(libPath);
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
@@ -132,19 +132,42 @@ try {
 
 // ─── Verification ────────────────────────────────────────────────────────────
 
-const result = verifyReceipt(receipt, publicKeyPem);
+const result = verifyReceiptAny(receipt, publicKeyPem);
+
+// Extract display fields (works for both v0 and v1)
+const isV1 = result.version === 'v1';
+const payload = isV1 ? result.payload : null;
+const displayId = receipt.id;
+const displayVersion = isV1 ? `v${receipt.v}` : receipt.receipt_version;
+const displayTool = isV1 ? payload?.tool : receipt.governed_action?.tool;
+const displayDomain = isV1 ? payload?.domain : receipt.governed_action?.domain;
+const displayOutcome = isV1 ? payload?.outcome : receipt.decision?.outcome;
+const displayRule = isV1 ? payload?.rule : receipt.decision?.rule;
+const displayAuthorizer = isV1 ? payload?.authorizer : receipt.decision?.authorizer;
+const displayTimestamp = isV1 ? payload?.ts : receipt.decision?.timestamp;
+const displayPolicy = isV1 ? payload?.policy_version : receipt.evidence?.policy_version;
+const displayAgentId = isV1 ? payload?.manifest_agent_id : receipt.evidence?.manifest_agent_id;
+const displayPrincipal = isV1 ? payload?.manifest_principal : receipt.evidence?.manifest_principal;
+const displayDelegation = isV1 ? payload?.delegation_chain : receipt.evidence?.delegation_chain;
+const displayAuditId = isV1 ? payload?.audit_event_id : receipt.evidence?.audit_event_id;
+const displayKeyId = isV1 ? receipt.kid : receipt.signature?.key_id;
+const displayAlgo = isV1 ? 'Ed25519' : receipt.signature?.algorithm;
 
 if (jsonOutput) {
   const output = {
     verdict: result.valid ? 'VALID' : 'INVALID',
     reason: result.reason,
-    receipt_id: receipt.id,
-    receipt_version: receipt.receipt_version
+    receipt_id: displayId,
+    receipt_version: displayVersion,
+    format: result.version
   };
-  if (verbose && receipt.governed_action) {
-    output.action = receipt.governed_action;
-    output.decision = receipt.decision;
-    output.evidence = receipt.evidence;
+  if (verbose && displayTool) {
+    output.tool = displayTool;
+    output.domain = displayDomain;
+    output.outcome = displayOutcome;
+    output.rule = displayRule;
+    output.authorizer = displayAuthorizer;
+    output.timestamp = displayTimestamp;
   }
   console.log(JSON.stringify(output, null, 2));
 } else {
@@ -158,29 +181,27 @@ if (jsonOutput) {
     console.log(result.reason);
   }
 
-  if (verbose && receipt.governed_action) {
+  if (verbose && displayTool) {
     console.log('');
     console.log('--- Receipt Details ---');
-    console.log(`  ID:         ${receipt.id}`);
-    console.log(`  Version:    ${receipt.receipt_version}`);
-    console.log(`  Tool:       ${receipt.governed_action.tool}`);
-    console.log(`  Domain:     ${receipt.governed_action.domain}`);
-    console.log(`  Outcome:    ${receipt.decision.outcome}`);
-    console.log(`  Rule:       ${receipt.decision.rule}`);
-    console.log(`  Authorizer: ${receipt.decision.authorizer}`);
-    console.log(`  Timestamp:  ${receipt.decision.timestamp}`);
-    console.log(`  Policy:     ${receipt.evidence.policy_version}`);
-    if (receipt.evidence.manifest_agent_id) {
-      console.log(`  Agent:      ${receipt.evidence.manifest_agent_id}`);
-      console.log(`  Principal:  ${receipt.evidence.manifest_principal}`);
+    console.log(`  ID:         ${displayId}`);
+    console.log(`  Version:    ${displayVersion} (${result.version})`);
+    console.log(`  Tool:       ${displayTool}`);
+    console.log(`  Domain:     ${displayDomain}`);
+    console.log(`  Outcome:    ${displayOutcome}`);
+    console.log(`  Rule:       ${displayRule}`);
+    console.log(`  Authorizer: ${displayAuthorizer}`);
+    console.log(`  Timestamp:  ${displayTimestamp}`);
+    console.log(`  Policy:     ${displayPolicy}`);
+    if (displayAgentId) {
+      console.log(`  Agent:      ${displayAgentId}`);
+      console.log(`  Principal:  ${displayPrincipal}`);
     }
-    if (receipt.evidence.delegation_chain?.length > 0) {
-      console.log(`  Delegation: ${receipt.evidence.delegation_chain.map(d => d.agent_id).join(' -> ')}`);
+    if (displayDelegation?.length > 0) {
+      console.log(`  Delegation: ${displayDelegation.map(d => d.agent_id).join(' -> ')}`);
     }
-    console.log(`  Audit ID:   ${receipt.evidence.audit_event_id}`);
-    if (receipt.signature) {
-      console.log(`  Signed by:  ${receipt.signature.key_id} (${receipt.signature.algorithm})`);
-    }
+    console.log(`  Audit ID:   ${displayAuditId}`);
+    console.log(`  Signed by:  ${displayKeyId} (${displayAlgo})`);
   }
 }
 

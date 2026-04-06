@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export ZLAR_PROJECT_DIR="${PROJECT_DIR}"
+export ZLAR_RECEIPT_FORMAT="${ZLAR_RECEIPT_FORMAT:-v0}"  # v0 tests by default; set to v1 for v1 tests
 
 source "${PROJECT_DIR}/lib/crypto.sh"
 
