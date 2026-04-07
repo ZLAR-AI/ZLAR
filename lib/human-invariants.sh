@@ -76,7 +76,9 @@ _hi_ensure_state() {
     local today
     today=$(date -u +%Y-%m-%d)
     if [ "${state_date}" != "${today}" ]; then
-        jq --arg today "${today}" '.date = $today | .decisions_today = 0' \
+        # v2.7.0: also resets pending_count alongside decisions_today.
+        # Belt fix for H13 pending-count leak (see commit message).
+        jq --arg today "${today}" '.date = $today | .decisions_today = 0 | .pending_count = 0' \
             "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
             mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
     fi
