@@ -807,8 +807,8 @@ cmd_doctor() {
                 printf "    ${GREEN}OK${NC}  Callback listener running (PID ${tg_poll_running}, stale pidfile)\n"
             else
                 printf "    ${RED}!!${NC}  Callback listener NOT running — Telegram buttons won't respond\n"
-                printf "         Fix: ${BOLD}sudo /usr/local/bin/zlar-tg-boot.sh &${NC}\n"
-                printf "         This is the #1 cause of 'I approved but nothing happened'\n"
+                printf "         Fix: see ${BOLD}docs/troubleshooting.md#telegram-callback-listener${NC}\n"
+                printf "         (This is the #1 cause of 'I approved but nothing happened')\n"
                 errors=$((errors + 1))
             fi
         fi
@@ -825,7 +825,7 @@ cmd_doctor() {
             fi
         else
             printf "    ${YELLOW}!!${NC}  HMAC secret missing (callback listener may not have started since last reboot)\n"
-            printf "         Fix: ${BOLD}sudo /usr/local/bin/zlar-tg-boot.sh &${NC}\n"
+            printf "         Fix: see ${BOLD}docs/troubleshooting.md#telegram-callback-listener${NC}\n"
             warnings=$((warnings + 1))
         fi
     else

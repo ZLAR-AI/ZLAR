@@ -1,12 +1,18 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# ZLAR Gate v2.5.1 — Claude Code Hook Script
+# ZLAR Gate v2.7.1 — Claude Code Hook Script
 #
 # THE gate. Runs synchronously on every Claude Code PreToolUse hook invocation.
 # Reads tool call from stdin, classifies, evaluates policy, asks Telegram if
 # needed, writes audit trail, returns allow/deny on stdout.
 #
 # No daemon. No server. No database. The process IS the pending state.
+#
+# v2.7.x changes:
+#   - First Authority Law published as signal/DOCTRINE.md
+#   - Structural off-switch at /etc/zlar/off-flag (root-owned, sudoers-toggled)
+#   - Architecture map at docs/architecture-map.md
+#   - H13 pending_count belt-reset on date rollover
 #
 # v2.5.1 changes:
 #   - Approval binding: approvals are now bound to SHA-256 hash of exact command

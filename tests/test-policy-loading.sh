@@ -16,6 +16,14 @@ set -uo pipefail   # -e intentionally omitted — tests assert on non-zero retur
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# ── Preflight: Ed25519 support (see test-crypto.sh for context) ──────────────
+if ! openssl genpkey -algorithm ed25519 -out /dev/null 2>/dev/null; then
+    echo "SKIP: tests/test-policy-loading.sh — openssl does not support Ed25519"
+    echo "      Your openssl: $(openssl version 2>&1)"
+    echo "      On macOS: brew install openssl@3 && export PATH=\"\$(brew --prefix openssl@3)/bin:\$PATH\""
+    exit 77
+fi
+
 # Source the crypto abstraction layer (required by load_policy)
 export _CRYPTO_PROJECT_DIR="${PROJECT_DIR}"
 # shellcheck source=../lib/crypto.sh
