@@ -12,6 +12,23 @@ set -eu
 
 INSTALL_DIR="${HOME}/.zlar"
 
+# If this script is running from inside INSTALL_DIR, relocate ourselves
+# to a temp path and re-exec. Otherwise the rm -rf below deletes the
+# currently-executing script, which works on most filesystems via
+# open-file-handle semantics but is brittle on edge cases.
+_SELF="${BASH_SOURCE:-$0}"
+if [ -n "${_SELF}" ] && [ "${_SELF#${INSTALL_DIR}}" != "${_SELF}" ] && [ -z "${ZLAR_UNINSTALL_RELOCATED:-}" ]; then
+    _RELOCATED="$(mktemp -t zlar-uninstall.XXXXXX)"
+    cp "${_SELF}" "${_RELOCATED}"
+    chmod +x "${_RELOCATED}"
+    export ZLAR_UNINSTALL_RELOCATED=1
+    exec bash "${_RELOCATED}" "$@"
+fi
+# Clean up the relocated copy on exit if we're the relocated instance.
+if [ -n "${ZLAR_UNINSTALL_RELOCATED:-}" ] && [ -n "${_SELF}" ] && [ "${_SELF#/tmp}" != "${_SELF}" -o "${_SELF#/var/folders}" != "${_SELF}" ]; then
+    trap 'rm -f "${_SELF}"' EXIT
+fi
+
 # Colors
 if [ -t 1 ]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
@@ -62,8 +79,6 @@ if [ -f "${CC_SETTINGS}" ] && grep -q "zlar" "${CC_SETTINGS}" 2>/dev/null; then
         rm -f "${TEMP}"
         warn "Claude Code: could not auto-remove hooks — edit ~/.claude/settings.json manually"
     fi
-elif [ -f "${CC_SETTINGS}" ] && grep -q "zlar" "${CC_SETTINGS}" 2>/dev/null; then
-    warn "Claude Code: has ZLAR hooks but not from LT — leaving in place"
 else
     ok "Claude Code: no ZLAR hooks to remove"
 fi

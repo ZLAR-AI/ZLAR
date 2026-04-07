@@ -6,10 +6,24 @@
 # the library produces identical results to direct openssl calls.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-set -euo pipefail
+set -uo pipefail   # -e intentionally omitted — assertions use return codes to
+                   # signal failures, and pipefail + set -e masks silent exits
+                   # in command substitutions (see history of this file).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# ── Preflight: Ed25519 support ────────────────────────────────────────────────
+# The gate requires an openssl that supports Ed25519. macOS ships LibreSSL
+# which does NOT, which caused this test to exit silently for months until
+# v2.7.1. If Ed25519 isn't available, fail loudly with a clear message.
+if ! openssl genpkey -algorithm ed25519 -out /dev/null 2>/dev/null; then
+    echo "SKIP: tests/test-crypto.sh — openssl does not support Ed25519"
+    echo "      Your openssl: $(openssl version 2>&1)"
+    echo "      On macOS: brew install openssl@3 && export PATH=\"\$(brew --prefix openssl@3)/bin:\$PATH\""
+    echo "      On Linux: ensure OpenSSL 1.1.1+ (not LibreSSL)"
+    exit 77   # POSIX convention for "skipped", CI can treat this as non-failure
+fi
 
 # Source the library under test
 export _CRYPTO_PROJECT_DIR="${PROJECT_DIR}"

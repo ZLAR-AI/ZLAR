@@ -47,27 +47,23 @@ jobs:
           done
 
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install dependencies
-        run: sudo apt-get install -y jq openssl
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y jq openssl
 
-      - name: Run witness tests
-        run: bash tests/test-witness.sh
-
-      - name: Run inbox HMAC tests
-        run: bash tests/test-inbox-hmac.sh
-
-      - name: Run crypto abstraction tests
-        run: bash tests/test-crypto.sh
-
-      - name: Run session state tests
-        run: bash tests/test-session-state.sh
-
-      - name: Run policy loading tests
-        run: bash tests/test-policy-loading.sh
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install jq openssl@3
+          echo "/opt/homebrew/opt/openssl@3/bin" >> $GITHUB_PATH
 
       - name: Setup Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
@@ -77,31 +73,22 @@ jobs:
       - name: Install Cedar dependencies
         run: cd cedar-poc && npm ci
 
-      - name: Run Cedar base tests
-        run: node cedar-poc/test.mjs
-
-      - name: Run Cedar E-23 tests
-        run: node cedar-poc/test-e23.mjs
-
-      - name: Run MCP gate tests
-        run: node mcp-gate/test.mjs
-
       - name: Create CI signing key (Phase 2 SDK chain signing)
         run: |
           openssl genpkey -algorithm ed25519 -out ~/.zlar-signing.key
           chmod 600 ~/.zlar-signing.key
 
-      - name: Run SDK daemon tests
-        run: node sdk/daemon/test.mjs
+      - name: Run full test suite (count-assertions.sh)
+        run: bash tests/count-assertions.sh --detail
 
-      - name: Run SDK membrane tests
-        run: node sdk/membrane/test.mjs
-
-      - name: Run SDK authzen tests
-        run: node sdk/authzen/test.mjs
-
-      - name: Run SDK hook adapter tests
-        run: node sdk/hook-adapter/test.mjs
+      - name: Verify assertion threshold
+        run: |
+          COUNT=$(bash tests/count-assertions.sh 2>&1 | grep -oE "Assertions: [0-9]+" | grep -oE "[0-9]+")
+          echo "Total assertions: $COUNT"
+          if [ "$COUNT" -lt 900 ]; then
+            echo "FAIL: assertion count dropped below 900 (got $COUNT)"
+            exit 1
+          fi
 
   proof:
     name: Proof of Enforcement

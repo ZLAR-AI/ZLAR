@@ -5,8 +5,8 @@
 [![CodeQL](https://github.com/ZLAR-AI/ZLAR/actions/workflows/codeql.yml/badge.svg)](https://github.com/ZLAR-AI/ZLAR/actions/workflows/codeql.yml)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12381/badge)](https://www.bestpractices.dev/projects/12381)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/ZLAR-AI/ZLAR/badge)](https://securityscorecards.dev/viewer/?uri=github.com/ZLAR-AI/ZLAR)
-[![GitHub release](https://img.shields.io/github/v/tag/ZLAR-AI/ZLAR?label=release&sort=semver)](https://github.com/ZLAR-AI/ZLAR/releases/tag/v2.0.0)
-[![Tests](https://img.shields.io/badge/tests-550%2B_assertions-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
+[![GitHub release](https://img.shields.io/github/v/tag/ZLAR-AI/ZLAR?label=release&sort=semver)](https://github.com/ZLAR-AI/ZLAR/releases)
+[![Tests](https://img.shields.io/badge/tests-1000%2B_assertions-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
 
 **ZLAR is a deterministic execution governance layer for AI agents.**
 
@@ -161,8 +161,30 @@ A security tool should state its own boundaries, not just its competitors' failu
 
 ## Running Tests
 
+The canonical entrypoint runs every test suite and prints the total assertion
+count. CI runs this on every push. It is the single source of truth for the
+"1000+ assertions" badge.
+
 ```bash
-# Core governance
+bash tests/count-assertions.sh            # run all 28 files, print summary
+bash tests/count-assertions.sh --detail   # also show per-file pass counts
+bash tests/count-assertions.sh --badge    # print shields.io badge URL
+```
+
+Current state (v2.7.1): **28 files, 1022 assertions, 0 failures.**
+
+### Dependencies
+
+The tests need `bash`, `jq`, and an **OpenSSL with Ed25519 support** (LibreSSL
+on macOS does not qualify — use `brew install openssl@3` and put it on PATH
+first). `node` is optional — `.mjs` test files will be skipped gracefully if
+node is not available. `python3` is optional — canonicalization cross-check
+will be skipped gracefully if python3 is not available.
+
+### Individual suites (for targeted debugging)
+
+```bash
+# Core governance (bash)
 bash tests/test-receipt.sh             # Receipt generation and cross-gate verification
 bash tests/test-manifest.sh            # Manifest CLI and schema invariants
 bash tests/test-agent-identity.sh      # Agent identity, risk tiers, authorization levels
@@ -174,23 +196,33 @@ bash tests/test-standing-approvals.sh  # Standing approval matching
 bash tests/test-approval-binding.sh    # Approval binding (action fingerprint)
 bash tests/test-inbox-hmac.sh          # Inbox HMAC verification
 bash tests/test-doctor.sh              # Installation health checks
+bash tests/test-policy-loading.sh      # Policy load fail-closed corpus
+bash tests/test-witness.sh             # Sequence detection from audit
+bash tests/test-canary.sh              # Canary pending-file lifecycle
 
 # Canonicalization (cross-language verification)
-node tests/test-canonicalization.mjs   # 28 test vectors + validation + edge cases
-python3 tests/verify-canonicalization.py  # Python cross-language verification
+node tests/test-canonicalization.mjs      # 62 vectors across Node and jq -S -c
+python3 tests/verify-canonicalization.py  # 28 vectors cross-checked in Python
 
-# Receipt v1 envelope format
-node tests/test-receipt-v1.mjs         # v1 create, sign, verify, tamper detection, universal verifier
-node tests/test-semantic-validation.mjs  # Layer 4: rule-outcome, authorizer, temporal, delegation checks
+# Receipt v1 envelope format and semantic validation
+node tests/test-receipt-v1.mjs            # v1 create/sign/verify/tamper/universal
+node tests/test-semantic-validation.mjs   # Layer 4: rule-outcome, authorizer, temporal, delegation
 
-# MCP gate, receipts, and Cedar (200+ assertions)
-node mcp-gate/test-hardened.mjs        # Policy verification, signing, fail-closed, standing approvals
-node mcp-gate/test-receipt.mjs         # Receipt generation, verification, delegation chains
-node mcp-gate/test-cedar.mjs           # Cedar P1/P2 rules, gate action mapping, cross-engine regression
+# MCP gate
+node mcp-gate/test.mjs                    # Base gate tests
+node mcp-gate/test-hardened.mjs           # Policy verification, signing, fail-closed, standing approvals
+node mcp-gate/test-receipt.mjs            # Receipt generation, verification, delegation chains
+node mcp-gate/test-cedar.mjs              # Cedar P1/P2 rules, gate action mapping
 
 # Cedar policy verification
-node cedar-poc/test.mjs                # Cedar base rules
-node cedar-poc/test-e23.mjs            # Cedar E-23 risk-tiered governance
+node cedar-poc/test.mjs                   # Cedar base rules
+node cedar-poc/test-e23.mjs               # Cedar E-23 risk-tiered governance
+
+# SDK layer
+node sdk/daemon/test.mjs                  # Daemon lifecycle
+node sdk/membrane/test.mjs                # Membrane boundary enforcement
+node sdk/authzen/test.mjs                 # AuthZen integration
+node sdk/hook-adapter/test.mjs            # Hook adapter HTTP surface
 ```
 
 ## Requirements
@@ -203,7 +235,8 @@ node cedar-poc/test-e23.mjs            # Cedar E-23 risk-tiered governance
 | Node.js | 18+ | MCP gate, receipt verification | Optional — bash gate works without it |
 | Telegram | — | Human approval channel | Optional — without it, blocked actions are instant-denied |
 
-**Verified platforms:** macOS 14+ (ARM/Intel), Ubuntu 22.04+, Debian 12+
+**CI-tested platforms:** Ubuntu 22.04+ and macOS 14+ (matrix on every push).
+Debian 12+ is supported but not gated by CI — maintainers verify manually.
 
 Run `zlar doctor` after installation to verify all dependencies.
 
@@ -215,7 +248,8 @@ lib/           Shared libraries (crypto, session state, agent identity, receipt,
 adapters/      Framework hooks (claude-code, cursor, windsurf)
 mcp-gate/      MCP TCP proxy gate (Node.js)
 etc/           Policy, manifests, signing keys, standing approvals, receipt schema
-tests/         Test suites (12 bash + 7 Node.js + 1 Python, 550+ assertions)
+tests/         Test suites (14 bash + 13 Node.js + 1 Python, 1000+ assertions)
+               Run all: bash tests/count-assertions.sh
 docs/          Architecture decisions, manifest invariants, operations
 docs/adr/      Architecture Decision Records
 signal/        Agent-facing signal layer (thesis, origin, proof)

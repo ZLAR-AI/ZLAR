@@ -11,6 +11,15 @@ etc/policies/active.policy.json
 etc/agents.registry.json
 etc/agent-policy-bindings.json
 
+# Per-install agent capability manifest (regeneratable via zlar-manifest new,
+# identity-bound, time-bounded — not distributable)
+etc/manifest.json
+
+# mcp-gate test-allow-policy fixture: created and deleted by mcp-gate/test.mjs
+# on every run — tracking it is meaningless since the test overwrites its
+# content in writeFileSync at setup and unlinks it at teardown.
+mcp-gate/test-allow-policy.json
+
 # Keys (generated at install)
 etc/keys/
 

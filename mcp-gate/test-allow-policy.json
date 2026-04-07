@@ -1,1 +1,0 @@
-{"version":"test-allow","default_action":"allow","rules":[{"id":"R095","enabled":true,"description":"MCP catch-all allow for testing","domain":"mcp","action":"allow","severity":"info","match":{"domain":"mcp"},"risk_score":{"irreversibility":0,"consequence":0,"blast_radius":0}}]}

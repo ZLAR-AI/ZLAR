@@ -14,7 +14,16 @@
 # Strict mode (bash-3 safe: no pipefail in POSIX sh)
 set -eu
 
-ZLAR_VERSION="1.4.0"
+# Read version from the VERSION file if running from a repo clone;
+# fall back to a fixed string only if VERSION cannot be located (curl | bash path
+# will overwrite this when the downloaded tarball is extracted).
+_INSTALL_SELF="${BASH_SOURCE:-$0}"
+_INSTALL_SELF_DIR="$(cd "$(dirname "${_INSTALL_SELF}")" 2>/dev/null && pwd)"
+if [ -f "${_INSTALL_SELF_DIR}/VERSION" ]; then
+    ZLAR_VERSION=$(cat "${_INSTALL_SELF_DIR}/VERSION" | tr -d '[:space:]')
+else
+    ZLAR_VERSION="2.7.1"
+fi
 INSTALL_DIR="${HOME}/.zlar"
 
 # ─── Colors (bash-3 safe) ────────────────────────────────────────────────────
@@ -305,7 +314,13 @@ elif [ -f "${HOME}/.zlar-signing.key" ]; then
     ok "Public key derived from existing signing key"
 else
     info "Generating Ed25519 signing keypair..."
-    "${INSTALL_DIR}/bin/zlar-policy" keygen 2>/dev/null
+    # Don't silence keygen stderr — a silent failure here cascades into a
+    # confusing "signing key not found" error in Phase 5 below. If keygen
+    # fails, the user needs to see why.
+    if ! "${INSTALL_DIR}/bin/zlar-policy" keygen; then
+        fail "Keypair generation failed (see error above)"
+        exit 1
+    fi
     ok "Keypair generated"
     info "Private key: ~/.zlar-signing.key (keep this safe)"
     info "Public key:  ${INSTALL_DIR}/etc/keys/policy-signing.pub"
@@ -345,10 +360,13 @@ if [ "${HAS_CC}" -eq 1 ]; then
     else
         mkdir -p "${HOME}/.claude"
         if [ -f "${CC_SETTINGS}" ]; then
-            # Merge into existing settings
+            # Merge into existing settings — append to any existing PreToolUse
+            # hooks rather than clobbering them. The earlier `grep -q "zlar"`
+            # guard (line 343) ensures we only reach this branch when no ZLAR
+            # hook already exists, so append is safe without dedup.
             TEMP=$(mktemp)
             jq --arg cmd "${CC_HOOK}" \
-                '.hooks.PreToolUse = [{"matcher":".*","hooks":[{"type":"command","command":$cmd,"timeout":310}]}]' \
+                '.hooks.PreToolUse = ((.hooks.PreToolUse // []) + [{"matcher":".*","hooks":[{"type":"command","command":$cmd,"timeout":310}]}])' \
                 "${CC_SETTINGS}" > "${TEMP}" 2>/dev/null
             if [ -s "${TEMP}" ]; then
                 mv "${TEMP}" "${CC_SETTINGS}"
