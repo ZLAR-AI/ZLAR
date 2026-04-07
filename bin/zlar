@@ -5,6 +5,7 @@
 # Usage:
 #   zlar status     — show governed frameworks, policy summary, audit count
 #   zlar doctor     — check installation health (deps, keys, hooks, policy)
+#   zlar reset      — reset human-invariant state (clear stuck pending counters)
 #   zlar audit      — show last 20 audit entries
 #   zlar policy     — show current policy rules summary
 #   zlar telegram   — configure Telegram approval (upgrade from deny-all)
@@ -40,12 +41,172 @@ cmd_version() {
     echo "Location: ${PROJECT_DIR}"
 }
 
+cmd_reset() {
+    # v2.7.0: reset human-invariant state (clear stuck pending counters).
+    # Back up existing files to /tmp before removing. _hi_ensure_state in
+    # lib/human-invariants.sh auto-recreates on next gate invocation.
+    local state_dir="${PROJECT_DIR}/var/human-state"
+    local backup_dir="/tmp/zlar-state-backup-$(date +%Y%m%d-%H%M%S)"
+    if [ ! -d "${state_dir}" ]; then
+        printf "${YELLOW}Human state directory not found:${NC} ${state_dir}\n"
+        exit 1
+    fi
+    if ls "${state_dir}"/*.json >/dev/null 2>&1; then
+        mkdir -p "${backup_dir}"
+        cp -p "${state_dir}"/*.json "${backup_dir}/"
+        rm -f "${state_dir}"/*.json
+        printf "${GREEN}Human state reset${NC} — backed up to ${backup_dir}\n"
+        printf "  ${DIM}state files will recreate on next gate invocation${NC}\n"
+    else
+        printf "${BLUE}Human state already clean${NC} (no .json files in ${state_dir})\n"
+    fi
+}
+
 cmd_status() {
     printf "\n${BOLD}ZLAR Status${NC}\n\n"
 
     # Version
     printf "  ${BOLD}Version:${NC}  ${VERSION}\n"
     printf "  ${BOLD}Install:${NC}  ${PROJECT_DIR}\n\n"
+
+    # ─── Gate State (v2.7.0) ──────────────────────────────────────────────
+    printf "  ${BOLD}Gate State:${NC}\n"
+
+    # Wrapper flag — legacy off-switch path (v2.6.0 and earlier, still active in v2.7.0 overlap)
+    WRAPPER_FLAG="${HOME}/.claude/.gate-disabled"
+    if [ -f "${WRAPPER_FLAG}" ]; then
+        WRAPPER_MTIME=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "${WRAPPER_FLAG}" 2>/dev/null || echo "?")
+        printf "    Wrapper flag (~/.claude/.gate-disabled):    ${YELLOW}present${NC} (${WRAPPER_MTIME})\n"
+        WRAPPER_OFF=yes
+    else
+        printf "    Wrapper flag (~/.claude/.gate-disabled):    ${DIM}absent${NC}\n"
+        WRAPPER_OFF=no
+    fi
+
+    # Structural flag — v2.7.0 First Authority off-switch (root-owned, agent-unreachable)
+    STRUCT_FLAG="/etc/zlar/off-flag"
+    if [ -f "${STRUCT_FLAG}" ]; then
+        STRUCT_MTIME=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "${STRUCT_FLAG}" 2>/dev/null || echo "?")
+        printf "    Structural flag (/etc/zlar/off-flag):       ${YELLOW}present${NC} (${STRUCT_MTIME})\n"
+        STRUCT_OFF=yes
+    else
+        printf "    Structural flag (/etc/zlar/off-flag):       ${DIM}absent${NC}\n"
+        STRUCT_OFF=no
+    fi
+
+    # Resolved gate state — either flag present means OFF
+    if [ "${WRAPPER_OFF}" = "yes" ] || [ "${STRUCT_OFF}" = "yes" ]; then
+        if [ "${WRAPPER_OFF}" = "yes" ] && [ "${STRUCT_OFF}" = "yes" ]; then
+            RESOLVED_REASON="both flags"
+        elif [ "${WRAPPER_OFF}" = "yes" ]; then
+            RESOLVED_REASON="wrapper flag"
+        else
+            RESOLVED_REASON="structural flag"
+        fi
+        printf "    Resolved gate state:                         ${YELLOW}OFF${NC} (${RESOLVED_REASON})\n"
+    else
+        printf "    Resolved gate state:                         ${GREEN}ON${NC}\n"
+    fi
+
+    # Hook target from settings.json — catches misrouted hooks immediately
+    SETTINGS_JSON="${HOME}/.claude/settings.json"
+    if [ -f "${SETTINGS_JSON}" ] && command -v jq >/dev/null 2>&1; then
+        HOOK_CMD=$(jq -r '.hooks.PreToolUse[0].hooks[0].command // "(none)"' "${SETTINGS_JSON}" 2>/dev/null || echo "(error)")
+        printf "    Hook target (PreToolUse):                    ${HOOK_CMD}\n"
+    fi
+
+    printf "\n"
+
+    # ─── Human Invariant State (v2.7.0) ───────────────────────────────────
+    printf "  ${BOLD}Human Invariant State:${NC}\n"
+
+    HUMAN_STATE_DIR="${PROJECT_DIR}/var/human-state"
+    PENDING_CAP="${ZLAR_PENDING_CAP:-5}"
+    DAILY_CAP="${ZLAR_DAILY_DECISION_CAP:-80}"
+
+    if [ -d "${HUMAN_STATE_DIR}" ] && ls "${HUMAN_STATE_DIR}"/*.json >/dev/null 2>&1; then
+        HUMAN_COUNT=0
+        for state_file in "${HUMAN_STATE_DIR}"/*.json; do
+            # Visual separator between multiple humans (status expansion fix #4)
+            if [ "${HUMAN_COUNT}" -gt 0 ]; then
+                printf "\n"
+            fi
+            HUMAN_COUNT=$((HUMAN_COUNT + 1))
+
+            HUMAN_ID=$(basename "${state_file}" .json)
+
+            # Mask the middle of the human ID for privacy when status output is shared
+            # (status expansion fix #6). Telegram chat IDs are typically 9-10 digits;
+            # show first char + *** + last 4. Short IDs stay unmasked.
+            HUMAN_ID_LEN=${#HUMAN_ID}
+            if [ "${HUMAN_ID_LEN}" -gt 7 ]; then
+                HUMAN_ID_DISPLAY="${HUMAN_ID:0:1}***${HUMAN_ID: -4}"
+            else
+                HUMAN_ID_DISPLAY="${HUMAN_ID}"
+            fi
+
+            if command -v jq >/dev/null 2>&1; then
+                DECISIONS_TODAY=$(jq -r '.decisions_today // 0' "${state_file}" 2>/dev/null || echo "0")
+                PENDING_COUNT=$(jq -r '.pending_count // 0' "${state_file}" 2>/dev/null || echo "0")
+                APPROVALS_LEN=$(jq -r '.approvals_recent // [] | length' "${state_file}" 2>/dev/null || echo "0")
+                LAST_ASK=$(jq -r '.last_ask_epoch // 0' "${state_file}" 2>/dev/null || echo "0")
+                STATE_DATE=$(jq -r '.date // "?"' "${state_file}" 2>/dev/null || echo "?")
+
+                # Numeric validation (defensive — handles corrupted state files)
+                case "${PENDING_COUNT}" in ''|*[!0-9]*) PENDING_COUNT=0 ;; esac
+                case "${DECISIONS_TODAY}" in ''|*[!0-9]*) DECISIONS_TODAY=0 ;; esac
+                case "${LAST_ASK}" in ''|*[!0-9]*) LAST_ASK=0 ;; esac
+                case "${APPROVALS_LEN}" in ''|*[!0-9]*) APPROVALS_LEN=0 ;; esac
+
+                # Color pending_count if over cap
+                if [ "${PENDING_COUNT}" -gt "${PENDING_CAP}" ]; then
+                    PENDING_DISPLAY="${RED}${PENDING_COUNT}${NC} / ${PENDING_CAP}  ${RED}⚠ OVER CAP${NC}"
+                else
+                    PENDING_DISPLAY="${PENDING_COUNT} / ${PENDING_CAP}"
+                fi
+
+                # Color decisions_today if over 80% of cap
+                DECISIONS_THRESHOLD=$((DAILY_CAP * 80 / 100))
+                if [ "${DECISIONS_TODAY}" -gt "${DECISIONS_THRESHOLD}" ]; then
+                    DECISIONS_DISPLAY="${YELLOW}${DECISIONS_TODAY}${NC} / ${DAILY_CAP}"
+                else
+                    DECISIONS_DISPLAY="${DECISIONS_TODAY} / ${DAILY_CAP}"
+                fi
+
+                # Format last_ask_epoch as relative time
+                if [ "${LAST_ASK}" -gt 0 ]; then
+                    NOW=$(date +%s)
+                    AGO=$((NOW - LAST_ASK))
+                    if [ "${AGO}" -lt 60 ]; then
+                        LAST_ASK_REL="${AGO}s ago"
+                    elif [ "${AGO}" -lt 3600 ]; then
+                        LAST_ASK_REL="$((AGO / 60))m ago"
+                    elif [ "${AGO}" -lt 86400 ]; then
+                        LAST_ASK_REL="$((AGO / 3600))h ago"
+                    else
+                        LAST_ASK_REL="$((AGO / 86400))d ago"
+                    fi
+                else
+                    LAST_ASK_REL="never"
+                fi
+
+                printf "    Human ID:                                    ${HUMAN_ID_DISPLAY}\n"
+                printf "    State date:                                  ${STATE_DATE}\n"
+                printf "    decisions_today:                             ${DECISIONS_DISPLAY}\n"
+                printf "    pending_count:                               ${PENDING_DISPLAY}\n"
+                printf "    approvals_recent:                            ${APPROVALS_LEN} entries\n"
+                printf "    last_ask_epoch:                              ${LAST_ASK_REL}\n"
+                printf "    State file:                                  ${HUMAN_STATE_DIR}/${HUMAN_ID_DISPLAY}.json\n"
+            else
+                printf "    ${YELLOW}jq not found — install jq to see human state${NC}\n"
+            fi
+        done
+    else
+        printf "    ${DIM}No human state files yet (created lazily on first ask)${NC}\n"
+        printf "    State dir: ${HUMAN_STATE_DIR}\n"
+    fi
+
+    printf "\n"
 
     # Frameworks
     printf "  ${BOLD}Frameworks:${NC}\n"
@@ -714,13 +875,22 @@ shift 2>/dev/null || true
 case "${COMMAND}" in
     status)    cmd_status ;;
     doctor)    cmd_doctor ;;
+    reset)     cmd_reset ;;
     audit)     cmd_audit "$@" ;;
     policy)    cmd_policy ;;
     telegram)  cmd_telegram ;;
     uninstall) cmd_uninstall ;;
     version)   cmd_version ;;
-    off)       touch "$HOME/.claude/.gate-disabled" && echo "Gate OFF — Claude unblocked" ;;
-    on)        rm -f "$HOME/.claude/.gate-disabled" && echo "Gate ON — policy enforced" ;;
+    off)
+        touch "$HOME/.claude/.gate-disabled"
+        sudo -n touch /etc/zlar/off-flag 2>/dev/null || echo "  (warn: /etc/zlar/off-flag not writable; wrapper path still active)"
+        echo "Gate OFF — Claude unblocked"
+        ;;
+    on)
+        rm -f "$HOME/.claude/.gate-disabled"
+        sudo -n rm -f /etc/zlar/off-flag 2>/dev/null || true
+        echo "Gate ON — policy enforced"
+        ;;
     help|--help|-h) cmd_help ;;
     *)
         echo "Unknown command: ${COMMAND}"

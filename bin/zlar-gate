@@ -51,6 +51,24 @@ _gate_crash() {
     exit 0
 }
 
+# ─── Human Override: First Authority ────────────────────────────────────────
+# Root-owned flag file at /etc/zlar/off-flag. Agent cannot write /etc without
+# sudo, and R003 denies any bash command containing sudo. This is the
+# structural human override path for the CC gate. v2.7.0.
+#
+# Presence of the flag returns allow for this invocation without any further
+# evaluation — no policy load, no invariants, no sourcing, no telemetry.
+# The wrapper at ~/.claude/zlar-gate.sh has an equivalent check on its own
+# flag path (~/.claude/.gate-disabled). During the v2.7.0 overlap period both
+# paths are live; either flag being present means off.
+if [ -f /etc/zlar/off-flag ]; then
+    INPUT=$(cat <&0 2>/dev/null || echo '{}')
+    EVENT_NAME=$(echo "${INPUT}" | jq -r '.hook_event_name // "PreToolUse"' 2>/dev/null)
+    [ -z "${EVENT_NAME}" ] && EVENT_NAME="PreToolUse"
+    printf '{"hookSpecificOutput":{"hookEventName":"%s","permissionDecision":"allow"}}\n' "${EVENT_NAME}"
+    exit 0
+fi
+
 # Set when hook event type is determined (before main processing).
 _GATE_HOOK_EVENT="PreToolUse"
 
