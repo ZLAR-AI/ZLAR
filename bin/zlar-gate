@@ -91,6 +91,13 @@ export _HI_PROJECT_DIR="${PROJECT_DIR}"
 # shellcheck source=../lib/human-invariants.sh
 source "${PROJECT_DIR}/lib/human-invariants.sh"
 
+# Source fail-closed alert library — out-of-band notification path that
+# fires when a human invariant blocks an ask. Independent of the gate's
+# normal ask flow, so it cannot be blocked by the same invariant it is
+# alerting about. Best-effort and silent on failure.
+# shellcheck source=../lib/fail-closed-alert.sh
+source "${PROJECT_DIR}/lib/fail-closed-alert.sh"
+
 # ─── Private temp directory ──────────────────────────────────────────────────
 # Not /tmp (world-readable). Gate-private directory for policy verification.
 GATE_TMP="${PROJECT_DIR}/var/tmp"
@@ -1935,6 +1942,13 @@ main() {
                             _hi_pre_result=$(hi_pre_ask_check "${TELEGRAM_CHAT_ID}" 2>/dev/null) || true
                             if [ "${_hi_pre_result}" != "ok" ]; then
                                 log "HUMAN INVARIANT: ${_hi_pre_result} — not routing to human"
+                                # Out-of-band alert: notify the human that the gate is fail-closed.
+                                # This is a direct curl to Telegram, dedupe-throttled, and never
+                                # subject to the invariant that fired. Best-effort: it logs but
+                                # never blocks the deny path. v2.7.3 — addresses the April 9 2026
+                                # incident where the gate could block the notification that would
+                                # have announced the gate was blocking.
+                                fail_closed_alert "${_hi_pre_result}" 2>/dev/null || true
                                 emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:human_${_hi_pre_result}"
                                 respond_deny "Human decision-maker unavailable (${_hi_pre_result}). System is protecting human judgment." "gate:human_capacity"
                                 return  # exit main() after responding
