@@ -75,6 +75,24 @@ extract_pass_count() {
 run_test() {
     local file="$1" runner="$2"
     TOTAL_FILES=$((TOTAL_FILES + 1))
+
+    # Allow CI (or any caller) to skip specific test files via the
+    # ZLAR_SKIP_TESTS env var. The value is a colon-separated list of
+    # test file basenames or paths. Skipped tests are counted as SKIP
+    # and do not affect the failure tally. Use sparingly — this is for
+    # tests that have known environment-specific issues, not for muting
+    # real regressions. Document each skip in the workflow comment.
+    if [ -n "${ZLAR_SKIP_TESTS:-}" ]; then
+        local base="${file##*/}"
+        case ":${ZLAR_SKIP_TESTS}:" in
+            *":${file}:"*|*":${base}:"*)
+                TOTAL_SKIP=$((TOTAL_SKIP + 1))
+                [ "$DETAIL" -eq 1 ] && printf "  SKIP  %-50s (ZLAR_SKIP_TESTS)\n" "$file"
+                return 0
+                ;;
+        esac
+    fi
+
     local output ec
     output=$($runner "$file" 2>&1)
     ec=$?
