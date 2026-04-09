@@ -1,5 +1,117 @@
 # Changelog
 
+## 2.8.0 — 2026-04-09
+
+H13 TTL rewrite. Fixes the April 9 2026 fail-closed incident where a single
+accounting bug in one invariant locked every Claude session simultaneously on
+a false positive. Architectural fix, not a belt-fix.
+
+### The incident
+
+A tool call arrived and was denied with `H13 WARNING: has 6 pending decisions
+(cap: 5) — system is under-resourced`. The production state file contained
+`pending_count: 6, decisions_today: 0, approvals_recent: []` — six pending,
+zero recorded. That combination is mathematically impossible unless the
+increment path is running but the matching decrement/record path is not.
+
+Root cause analysis surfaced two independent failure modes that the old
+scalar `pending_count` couldn't distinguish from each other, and couldn't
+recover from either:
+
+1. **Orphaned increments.** `hi_increment_pending` runs on every ask, but
+   `hi_decrement_pending` only runs if the gate's post-response path is
+   reached. Claude Code's deny-then-retry architecture means the post path
+   can be skipped entirely — Claude pivots, the session ends, or a standing
+   approval bypasses the whole flow. Each orphan is a permanent `+1` on the
+   scalar. The April 6 log shows the counter climbing `6 → 36` over eight
+   hours of normal work, never decrementing once.
+
+2. **Retry double-counting.** When Claude retried a denied tool call before
+   the human had approved on Telegram, the gate fell into the "no prior
+   approval" branch a second time and incremented `pending_count` again for
+   the same logical ask. Fast retries pumped the counter through the cap in
+   seconds.
+
+Both failure modes collapse into one fix.
+
+### Added
+
+- **`HI_PENDING_TTL` / `ZLAR_PENDING_TTL`**. New config (default 1800s =
+  30 min). Pending entries older than this are filtered out on every read,
+  so orphaned increments cannot drift the counter permanently. TTL is the
+  load-bearing invariant: the fix does not depend on the decrement path
+  being called reliably — it depends on the entry's wall-clock timestamp.
+- **`action_hash` parameter** on `hi_pre_ask_check`, `hi_increment_pending`,
+  `hi_post_response_check`, `hi_decrement_pending` (`.sh` and `.mjs` both).
+  When provided, H13 uses it to dedupe retry loops: a second call with the
+  same hash finds the existing entry and returns `ok` without appending.
+  The Claude Code gate passes `action_hash` (already computed for the
+  approval file key) through all three call sites. Callers that don't
+  have a stable identifier can omit it — TTL alone still bounds drift.
+- **Schema migration from v2.7.x** in `_hi_ensure_state` / `loadState`.
+  Any state file carrying the deprecated `pending_count` scalar has it
+  dropped and gains an empty `pending` array on first access, idempotent
+  after first run. This is the code path that auto-heals a stuck
+  `pending_count > cap` state file with no manual reset required.
+
+### Changed
+
+- **`lib/human-invariants.sh` / `.mjs`** (in lockstep per the v2.7.1
+  discipline). H13 state changed from `pending_count: int` to
+  `pending: [{action_hash, ts}]`. Both gate implementations now filter
+  stale entries by TTL on every increment and decrement, and dedupe by
+  `action_hash` when provided. Decrement by hash removes the specific
+  entry; decrement without hash removes the FIFO-oldest entry.
+- **`bin/zlar-gate`** now threads `action_hash` through
+  `hi_pre_ask_check` (line ~1945), `hi_post_response_check` on both the
+  approve path (line ~1909) and the deny path (line ~1934). Removed the
+  double-decrement bug on the deny path (`hi_post_response_check` already
+  calls `hi_decrement_pending` internally; the explicit second call was
+  subtracting twice for every denied ask).
+- **`bin/zlar` status display** reads the TTL-filtered length of
+  `.pending` instead of the deprecated `pending_count` scalar. Falls back
+  to the scalar on un-migrated files for display continuity. Field label
+  changed from `pending_count:` to `pending (ttl-filtered):` to reflect
+  the new semantics.
+
+### Fixed
+
+- **H13 gate fail-closed on single stuck invariant** blocking all sessions.
+  Production repro: `pending_count: 6, decisions_today: 0` — impossible
+  state, proving the decrement path was never running in the real flow.
+- **Double-decrement on deny-retry** in `bin/zlar-gate` line ~1935. Every
+  denied ask was subtracting from pending twice — once via the
+  `hi_post_response_check` internal call, once via an explicit
+  `hi_decrement_pending` call. This masked the scale of the drift
+  because some entries were being over-removed at the same time orphans
+  were being under-removed.
+
+### Tests
+
+- **22 new assertions** in `tests/test-human-invariants.sh` covering
+  action_hash dedup (retry idempotency), TTL expiration (orphan cleanup),
+  and schema migration from v2.7.x scalar. The migration test seeds the
+  exact shape of the April 9 production incident state file (`pending_count: 6`,
+  today's date, no `pending` array) and asserts that the first v2.8.0
+  `hi_increment_pending` call returns `ok` — which it would not have
+  under v2.7.x because `6 > 5`.
+
+### Not in this release
+
+- **H14 approval-rate semantic fix.** The April 9 log also showed eight
+  H14 "100% rubber-stamping" warnings during normal use. Raw approval
+  rate is the wrong signal: a well-calibrated gate that only escalates
+  legitimately risky calls will make a careful user hit 100% forever. The
+  right signal is approval rate correlated with deliberation time — fast
+  approvals are suspicious, slow approvals are not. Deferred because
+  it's a separate failure class from H13 and touches different code
+  paths. Belt-fix (date-rollover reset of `approvals_recent`) shipped
+  in v2.7.2 remains in place.
+- **Generalized error visibility in `|| true` masking.** The H13 rewrite
+  adds structured error logging in the new paths (`_hi_log "ERROR: ..."`),
+  but the existing `|| true` patterns elsewhere in `human-invariants.sh`
+  and the gate are untouched. Broader audit deferred.
+
 ## 2.7.1 — 2026-04-07
 
 Analyst-ready build hygiene. No architectural changes. Every claim in the

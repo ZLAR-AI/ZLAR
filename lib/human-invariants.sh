@@ -35,6 +35,11 @@ HI_DAILY_DECISION_CAP="${ZLAR_DAILY_DECISION_CAP:-80}"
 # H13: Maximum pending decisions before capacity warning. Default: 5.
 HI_PENDING_CAP="${ZLAR_PENDING_CAP:-5}"
 
+# H13: Pending TTL in seconds. Entries older than this are aged out on every
+# read, so orphaned increments (gate crashed, human pivoted, no response path)
+# cannot drift the counter permanently. Default: 1800 (30 min).
+HI_PENDING_TTL="${ZLAR_PENDING_TTL:-1800}"
+
 # H14: Approval rate threshold. Above this = rubber-stamping warning. Default: 90%.
 HI_APPROVAL_RATE_THRESHOLD="${ZLAR_APPROVAL_RATE_THRESHOLD:-90}"
 HI_APPROVAL_RATE_WINDOW="${ZLAR_APPROVAL_RATE_WINDOW:-20}"
@@ -66,7 +71,7 @@ _hi_ensure_state() {
         jq -n \
             --arg hid "${human_id}" \
             --arg today "${today}" \
-            '{human_id: $hid, date: $today, decisions_today: 0, approvals_recent: [], pending_count: 0, last_ask_epoch: 0}' \
+            '{human_id: $hid, date: $today, decisions_today: 0, approvals_recent: [], pending: [], last_ask_epoch: 0}' \
             > "${state_file}" 2>/dev/null
     fi
 
@@ -83,7 +88,23 @@ _hi_ensure_state() {
         # full day's reset. Origin: April 9 2026 incident where H14 fired
         # on a fresh morning session because the previous session's
         # 100% approval rate was still in the window.
-        jq --arg today "${today}" '.date = $today | .decisions_today = 0 | .pending_count = 0 | .approvals_recent = []' \
+        # v2.8.0: pending_count scalar replaced with pending: [{action_hash,ts}]
+        # TTL array. Rollover drops the dead pending_count field and resets
+        # the pending array to empty.
+        jq --arg today "${today}" \
+            '.date = $today | .decisions_today = 0 | .pending = [] | .approvals_recent = [] | del(.pending_count)' \
+            "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
+            mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
+    fi
+
+    # v2.8.0 schema migration: any state file still carrying the deprecated
+    # scalar pending_count (from v2.7.x written earlier today, before rollover)
+    # must drop that field and gain a pending array. Idempotent after first run.
+    # This is the code path that unblocks a human stuck at pending_count > cap:
+    # the scalar dies here, the array starts empty, and the next ask finds
+    # capacity again.
+    if jq -e 'has("pending_count") or (has("pending") | not)' "${state_file}" >/dev/null 2>&1; then
+        jq 'del(.pending_count) | .pending = (.pending // [])' \
             "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
             mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
     fi
@@ -115,22 +136,96 @@ hi_check_capacity() {
 
 # ─── H13: Judgment Must Be Over-Provisioned ───────────────────────────────────
 # Track pending decisions. If too many are pending, the system is under-resourced.
+#
+# v2.8.0 rewrite: the old scalar pending_count had two failure modes that
+# together locked the gate fail-closed in production (April 9 2026 incident):
+#
+#   1. Orphaned increments. hi_increment_pending runs on every ask, but
+#      hi_decrement_pending only runs if the gate's post-response path is
+#      reached. Claude Code's deny-then-retry architecture means the post
+#      path can be skipped (Claude pivots, session ends, standing approval
+#      bypasses the whole flow). Each orphan is a permanent +1 on the scalar.
+#
+#   2. Retry double-counting. When Claude retries a denied tool call before
+#      the human has approved on Telegram, the gate falls into the "no prior
+#      approval" branch again and increments pending_count a second time for
+#      the same logical ask. Fast retries pump the counter through the cap
+#      in seconds.
+#
+# Both failure modes collapse into one fix: a TTL-filtered array of
+# {action_hash, ts} entries.
+#
+#   - Each increment filters stale entries (ts older than HI_PENDING_TTL)
+#     before counting, so orphans age out automatically.
+#   - Each increment checks whether the same action_hash is already in the
+#     filtered array; if so, it's a retry and no new entry is added.
+#   - Callers that don't pass an action_hash fall back to append-always
+#     behavior (still bounded by TTL).
+#
 # Returns: "ok" or "overloaded"
 
 hi_increment_pending() {
     local human_id="${1:?}"
+    local action_hash="${2:-}"
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
-    jq '.pending_count = ((.pending_count // 0) + 1)' \
-        "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
-        mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
+    local now_epoch
+    now_epoch=$(date +%s)
 
-    local pending
-    pending=$(jq -r '.pending_count // 0' "${state_file}" 2>/dev/null)
+    # Single jq pass: filter stale entries, apply dedup/cap logic, emit
+    # a compact {state, action, length} object. The state field is the
+    # full new state to write back; action is "ok" or "overloaded"; length
+    # is the pending count after the decision (used in the warning log).
+    local jq_out
+    jq_out=$(jq -c \
+        --argjson now "${now_epoch}" \
+        --argjson ttl "${HI_PENDING_TTL}" \
+        --argjson cap "${HI_PENDING_CAP}" \
+        --arg hash "${action_hash}" '
+        . as $state |
+        ((.pending // []) | map(select($now - .ts < $ttl))) as $filtered |
+        ($filtered | map(.action_hash) | index($hash)) as $idx |
+        if ($hash != "" and $idx != null) then
+            # Retry of an already-pending ask — do not re-append, count stays.
+            {state: ($state | .pending = $filtered), action: "ok", length: ($filtered | length)}
+        elif (($filtered | length) >= $cap) then
+            # Would exceed cap — refuse to append, return overloaded.
+            # Writing back $filtered (without the new entry) still performs
+            # the stale cleanup, which is what we want.
+            {state: ($state | .pending = $filtered), action: "overloaded", length: ($filtered | length)}
+        else
+            # Append new entry and return ok.
+            ($filtered + [{action_hash: $hash, ts: $now}]) as $new |
+            {state: ($state | .pending = $new), action: "ok", length: ($new | length)}
+        end
+    ' "${state_file}" 2>/dev/null)
 
-    if [ "${pending}" -gt "${HI_PENDING_CAP}" ]; then
-        _hi_log "H13 WARNING: ${human_id} has ${pending} pending decisions (cap: ${HI_PENDING_CAP}) — system is under-resourced"
+    if [ -z "${jq_out}" ]; then
+        # jq read or logic failed — state file may be corrupt or jq missing.
+        # Fail open: the gate will still route the ask. H13 is there to
+        # protect the human from overload, not to be a kill switch on
+        # state corruption.
+        _hi_log "ERROR: hi_increment_pending jq failed for ${human_id} — failing open"
+        echo "ok"
+        return 0
+    fi
+
+    # Write the new state back atomically.
+    echo "${jq_out}" | jq -c '.state' > "${state_file}.tmp" 2>/dev/null && \
+        mv "${state_file}.tmp" "${state_file}" 2>/dev/null || {
+        _hi_log "ERROR: hi_increment_pending write failed for ${human_id} — failing open"
+        rm -f "${state_file}.tmp" 2>/dev/null
+        echo "ok"
+        return 0
+    }
+
+    local action length
+    action=$(echo "${jq_out}" | jq -r '.action')
+    length=$(echo "${jq_out}" | jq -r '.length')
+
+    if [ "${action}" = "overloaded" ]; then
+        _hi_log "H13 WARNING: ${human_id} has ${length} pending decisions (cap: ${HI_PENDING_CAP}, ttl: ${HI_PENDING_TTL}s) — system is under-resourced"
         echo "overloaded"
         return 1
     fi
@@ -141,12 +236,34 @@ hi_increment_pending() {
 
 hi_decrement_pending() {
     local human_id="${1:?}"
+    local action_hash="${2:-}"
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
-    jq '.pending_count = ([0, ((.pending_count // 0) - 1)] | max)' \
-        "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
-        mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
+    local now_epoch
+    now_epoch=$(date +%s)
+
+    # Filter stale, then either remove by action_hash (exact match) or drop
+    # the oldest entry (FIFO). Both paths also perform the stale cleanup.
+    jq \
+        --argjson now "${now_epoch}" \
+        --argjson ttl "${HI_PENDING_TTL}" \
+        --arg hash "${action_hash}" '
+        .pending = (
+            ((.pending // []) | map(select($now - .ts < $ttl))) as $filtered |
+            if $hash != "" then
+                ($filtered | map(select(.action_hash != $hash)))
+            else
+                ($filtered | sort_by(.ts) | .[1:])
+            end
+        )
+    ' "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
+        mv "${state_file}.tmp" "${state_file}" 2>/dev/null || {
+        _hi_log "ERROR: hi_decrement_pending failed for ${human_id}"
+        rm -f "${state_file}.tmp" 2>/dev/null
+        return 1
+    }
+    return 0
 }
 
 # ─── H15: Deliberation Floor ──────────────────────────────────────────────────
@@ -289,10 +406,17 @@ hi_check_approval_rate() {
 
 # ─── Combined Pre-Ask Check ──────────────────────────────────────────────────
 # Call before routing a decision to a human. Checks H6 + H13 + H14.
+#
+# action_hash is optional. When provided, it enables retry dedup in H13:
+# repeated calls with the same hash (e.g. Claude retrying a denied tool call)
+# do not double-count the pending queue. Callers that don't have a stable
+# action identifier can omit it — TTL alone still bounds the drift.
+#
 # Returns: "ok", "capacity_exceeded", "overloaded", or "rubber_stamping"
 
 hi_pre_ask_check() {
-    local human_id="${1:?Usage: hi_pre_ask_check <human_id>}"
+    local human_id="${1:?Usage: hi_pre_ask_check <human_id> [action_hash]}"
+    local action_hash="${2:-}"
 
     # H6: Daily cap
     local cap_result
@@ -310,9 +434,9 @@ hi_pre_ask_check() {
         return 1
     fi
 
-    # H13: Pending queue
+    # H13: Pending queue (with TTL + retry dedup via action_hash)
     local pending_result
-    pending_result=$(hi_increment_pending "${human_id}")
+    pending_result=$(hi_increment_pending "${human_id}" "${action_hash}")
     if [ "${pending_result}" = "overloaded" ]; then
         echo "overloaded"
         return 1
@@ -324,15 +448,21 @@ hi_pre_ask_check() {
 
 # ─── Combined Post-Response Check ─────────────────────────────────────────────
 # Call after receiving a human response. Checks H15 + H17.
+#
+# action_hash is optional; when provided, it removes the exact pending entry
+# that the matching hi_pre_ask_check added. When omitted, the oldest pending
+# entry is dropped (FIFO). TTL cleans up anything else that gets left behind.
+#
 # Returns: "ok", "too_fast", or "suspicious"
 
 hi_post_response_check() {
     local human_id="${1:?}"
     local severity="${2:-info}"
     local decision="${3:?}"  # "approve" or "deny"
+    local action_hash="${4:-}"
 
-    # Decrement pending
-    hi_decrement_pending "${human_id}"
+    # Decrement pending (by hash if provided, else oldest)
+    hi_decrement_pending "${human_id}" "${action_hash}"
 
     # H17: Authenticity (must come first — if automated, deliberation is meaningless)
     local auth_result

@@ -87,6 +87,171 @@ assert "after decrement → ok again" "ok" "${r4}"
 HI_PENDING_CAP=5
 
 echo
+echo "=== H13: Action Hash Dedup (v2.8.0 — retry idempotency) ==="
+echo
+
+# Regression test for the April 9 2026 incident. Claude Code's
+# deny-then-retry pattern meant every gate invocation for the same logical
+# ask called hi_increment_pending, pumping the counter through the cap
+# before the human had a chance to approve. The fix is to dedupe by
+# action_hash so repeated calls with the same hash never add a new entry.
+
+HI_PENDING_CAP=3
+HUMAN="test-human-h13-dedup"
+state_file_dedup="${TEMP_DIR}/var/human-state/${HUMAN}.json"
+
+# Same action_hash five times: should never exceed 1 pending.
+r_d1=$(hi_increment_pending "${HUMAN}" "hash-retry-abc" 2>/dev/null)
+assert "retry 1 with same hash at cap=3 → ok" "ok" "${r_d1}"
+
+r_d2=$(hi_increment_pending "${HUMAN}" "hash-retry-abc" 2>/dev/null)
+assert "retry 2 with same hash at cap=3 → ok" "ok" "${r_d2}"
+
+r_d3=$(hi_increment_pending "${HUMAN}" "hash-retry-abc" 2>/dev/null)
+assert "retry 3 with same hash at cap=3 → ok" "ok" "${r_d3}"
+
+r_d4=$(hi_increment_pending "${HUMAN}" "hash-retry-abc" 2>/dev/null)
+assert "retry 4 with same hash at cap=3 → ok" "ok" "${r_d4}"
+
+r_d5=$(hi_increment_pending "${HUMAN}" "hash-retry-abc" 2>/dev/null)
+assert "retry 5 with same hash at cap=3 → ok" "ok" "${r_d5}"
+
+len_after_retries=$(jq -r '.pending | length' "${state_file_dedup}")
+assert "5 retries with same hash → pending length is 1" "1" "${len_after_retries}"
+
+# Two more DISTINCT hashes: length becomes 3 (still at cap, not over).
+hi_increment_pending "${HUMAN}" "hash-distinct-B" 2>/dev/null >/dev/null
+hi_increment_pending "${HUMAN}" "hash-distinct-C" 2>/dev/null >/dev/null
+len_distinct=$(jq -r '.pending | length' "${state_file_dedup}")
+assert "retry + 2 distinct → pending length is 3" "3" "${len_distinct}"
+
+# Fourth DISTINCT hash exceeds cap=3.
+r_over=$(hi_increment_pending "${HUMAN}" "hash-distinct-D" 2>/dev/null)
+assert "4th distinct hash at cap=3 → overloaded" "overloaded" "${r_over}"
+
+# Length stays at 3 because the overloaded path does not append.
+len_after_over=$(jq -r '.pending | length' "${state_file_dedup}")
+assert "overloaded path does not append → length still 3" "3" "${len_after_over}"
+
+# A retry of an ALREADY-pending hash while AT cap is still ok (not overloaded).
+# This is the critical Claude Code retry-loop case.
+r_retry_at_cap=$(hi_increment_pending "${HUMAN}" "hash-retry-abc" 2>/dev/null)
+assert "retry of pending hash at cap → ok (not overloaded)" "ok" "${r_retry_at_cap}"
+
+# Decrement by specific hash removes that exact entry.
+hi_decrement_pending "${HUMAN}" "hash-distinct-B" 2>/dev/null
+len_after_dec=$(jq -r '.pending | length' "${state_file_dedup}")
+assert "decrement by hash → length 2" "2" "${len_after_dec}"
+
+has_B=$(jq -r '[.pending[] | select(.action_hash == "hash-distinct-B")] | length' "${state_file_dedup}")
+assert "decrement by hash → specific hash removed" "0" "${has_B}"
+
+has_retry=$(jq -r '[.pending[] | select(.action_hash == "hash-retry-abc")] | length' "${state_file_dedup}")
+assert "decrement by hash → untargeted hash still present" "1" "${has_retry}"
+
+# Decrement for a hash that does not exist is a no-op (not an error).
+hi_decrement_pending "${HUMAN}" "hash-nonexistent" 2>/dev/null
+len_after_noop=$(jq -r '.pending | length' "${state_file_dedup}")
+assert "decrement by unknown hash → length unchanged" "2" "${len_after_noop}"
+
+HI_PENDING_CAP=5
+
+echo
+echo "=== H13: TTL Expiration (v2.8.0 — orphan cleanup) ==="
+echo
+
+# Regression test for the orphaned-increment failure mode: if the
+# post-response path is skipped (gate crashed, standing approval bypassed
+# the flow, Claude pivoted before retrying), the pending entry must age out
+# automatically rather than drift the counter permanently. Orphans were the
+# second half of the April 9 incident — retry double-counting pumped the
+# counter up, and nothing ever brought it down.
+
+HUMAN_TTL="test-human-h13-ttl"
+state_file_ttl="${TEMP_DIR}/var/human-state/${HUMAN_TTL}.json"
+
+# Short TTL so the test runs in human time, not 30 min.
+HI_PENDING_TTL=5
+HI_PENDING_CAP=3
+
+# Seed the file with three entries aged well beyond the TTL.
+today_ttl=$(date -u +%Y-%m-%d)
+stale_ts=$(($(date +%s) - 100))
+jq -n --arg hid "${HUMAN_TTL}" --arg d "${today_ttl}" --argjson stale "${stale_ts}" '
+    {human_id: $hid, date: $d, decisions_today: 0, approvals_recent: [], last_ask_epoch: 0,
+     pending: [
+       {action_hash: "stale-A", ts: $stale},
+       {action_hash: "stale-B", ts: $stale},
+       {action_hash: "stale-C", ts: $stale}
+     ]}' > "${state_file_ttl}"
+
+# Stale entries present before filter.
+len_before_ttl=$(jq -r '.pending | length' "${state_file_ttl}")
+assert "ttl: 3 stale entries present before filter" "3" "${len_before_ttl}"
+
+# A fresh increment should filter all 3 stale entries and add 1 new entry.
+# The stale entries do NOT count toward the cap even though the file says
+# there are 3 pending and cap=3 — they've timed out.
+r_after_stale=$(hi_increment_pending "${HUMAN_TTL}" "fresh-D" 2>/dev/null)
+assert "ttl: increment after 3 stale → ok (stale filtered, not counted)" "ok" "${r_after_stale}"
+
+len_after_ttl=$(jq -r '.pending | length' "${state_file_ttl}")
+assert "ttl: length after filter + add is 1" "1" "${len_after_ttl}"
+
+# None of the stale entries should remain.
+has_stale=$(jq -r '[.pending[] | select(.action_hash | startswith("stale-"))] | length' "${state_file_ttl}")
+assert "ttl: all stale entries filtered out" "0" "${has_stale}"
+
+has_fresh=$(jq -r '[.pending[] | select(.action_hash == "fresh-D")] | length' "${state_file_ttl}")
+assert "ttl: fresh entry present" "1" "${has_fresh}"
+
+# Restore defaults.
+HI_PENDING_TTL=1800
+HI_PENDING_CAP=5
+
+echo
+echo "=== H13: Schema Migration from v2.7.x Scalar (v2.8.0) ==="
+echo
+
+# Regression test for the April 9 2026 rescue path. A state file written
+# by v2.7.x with pending_count above the cap must auto-heal on first
+# v2.8.0 access. The scalar is dropped, the array starts empty, and the
+# next ask finds capacity again. No manual reset required — this is what
+# unblocks a production human without human intervention.
+
+HUMAN_MIGRATE="test-human-h13-migrate"
+state_file_migrate="${TEMP_DIR}/var/human-state/${HUMAN_MIGRATE}.json"
+
+# Seed with the exact shape of the April 9 production incident:
+# pending_count scalar ABOVE the cap, no pending array, today's date
+# (so rollover does NOT kick in — only the mid-day migration path does).
+today_migrate=$(date -u +%Y-%m-%d)
+jq -n --arg hid "${HUMAN_MIGRATE}" --arg d "${today_migrate}" '
+    {human_id: $hid, date: $d, decisions_today: 0, approvals_recent: [], pending_count: 6, last_ask_epoch: 0}
+' > "${state_file_migrate}"
+
+# Verify the file is in the OLD shape before first v2.8.0 access.
+has_old_before=$(jq -r 'has("pending_count")' "${state_file_migrate}")
+assert "migration: pre-check has pending_count scalar" "true" "${has_old_before}"
+
+# First call triggers migration via _hi_ensure_state. Without the migration,
+# this would return "overloaded" (6 > 5) — the exact bug that locked the
+# gate on April 9.
+r_migrate=$(hi_increment_pending "${HUMAN_MIGRATE}" "post-migration-A" 2>/dev/null)
+assert "migration: increment after old schema → ok (was overloaded in v2.7.x)" "ok" "${r_migrate}"
+
+# pending_count must be gone.
+has_old_after=$(jq -r 'has("pending_count")' "${state_file_migrate}")
+assert "migration: pending_count dropped" "false" "${has_old_after}"
+
+# pending array must exist with just the new entry (not 6 phantoms).
+has_pending_after=$(jq -r 'has("pending")' "${state_file_migrate}")
+assert "migration: pending array exists" "true" "${has_pending_after}"
+
+len_migrate=$(jq -r '.pending | length' "${state_file_migrate}")
+assert "migration: pending has 1 entry (stale scalar not carried over)" "1" "${len_migrate}"
+
+echo
 echo "=== H15: Deliberation Floor ==="
 echo
 

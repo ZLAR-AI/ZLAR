@@ -147,7 +147,20 @@ cmd_status() {
 
             if command -v jq >/dev/null 2>&1; then
                 DECISIONS_TODAY=$(jq -r '.decisions_today // 0' "${state_file}" 2>/dev/null || echo "0")
-                PENDING_COUNT=$(jq -r '.pending_count // 0' "${state_file}" 2>/dev/null || echo "0")
+                # v2.8.0: pending is now an array of {action_hash, ts}. Count
+                # only entries whose ts is within HI_PENDING_TTL so stale
+                # orphans don't inflate the display. Fall back to legacy
+                # pending_count scalar if the file predates migration.
+                PENDING_TTL="${ZLAR_PENDING_TTL:-1800}"
+                PENDING_NOW=$(date +%s)
+                PENDING_COUNT=$(jq -r \
+                    --argjson now "${PENDING_NOW}" \
+                    --argjson ttl "${PENDING_TTL}" \
+                    'if (.pending | type) == "array"
+                     then ([.pending[] | select($now - .ts < $ttl)] | length)
+                     else (.pending_count // 0)
+                     end' \
+                    "${state_file}" 2>/dev/null || echo "0")
                 APPROVALS_LEN=$(jq -r '.approvals_recent // [] | length' "${state_file}" 2>/dev/null || echo "0")
                 LAST_ASK=$(jq -r '.last_ask_epoch // 0' "${state_file}" 2>/dev/null || echo "0")
                 STATE_DATE=$(jq -r '.date // "?"' "${state_file}" 2>/dev/null || echo "?")
@@ -158,7 +171,7 @@ cmd_status() {
                 case "${LAST_ASK}" in ''|*[!0-9]*) LAST_ASK=0 ;; esac
                 case "${APPROVALS_LEN}" in ''|*[!0-9]*) APPROVALS_LEN=0 ;; esac
 
-                # Color pending_count if over cap
+                # Color pending count if over cap
                 if [ "${PENDING_COUNT}" -gt "${PENDING_CAP}" ]; then
                     PENDING_DISPLAY="${RED}${PENDING_COUNT}${NC} / ${PENDING_CAP}  ${RED}⚠ OVER CAP${NC}"
                 else
@@ -193,7 +206,7 @@ cmd_status() {
                 printf "    Human ID:                                    ${HUMAN_ID_DISPLAY}\n"
                 printf "    State date:                                  ${STATE_DATE}\n"
                 printf "    decisions_today:                             ${DECISIONS_DISPLAY}\n"
-                printf "    pending_count:                               ${PENDING_DISPLAY}\n"
+                printf "    pending (ttl-filtered):                      ${PENDING_DISPLAY}\n"
                 printf "    approvals_recent:                            ${APPROVALS_LEN} entries\n"
                 printf "    last_ask_epoch:                              ${LAST_ASK_REL}\n"
                 printf "    State file:                                  ${HUMAN_STATE_DIR}/${HUMAN_ID_DISPLAY}.json\n"
