@@ -234,19 +234,22 @@ echo "17. Expired canary cleanup"
 # runs. Using python3 to set the mtime directly via os.utime() is
 # guaranteed to produce epoch 0 on every platform with python3 available
 # (which is a pre-existing test dependency via verify-canonicalization.py).
-echo "expired-canary-id" > "${CANARY_STATE_DIR}/sess-6.canary.pending"
+_pending_file="${CANARY_STATE_DIR}/sess-6.canary.pending"
+echo "expired-canary-id" > "${_pending_file}"
 canary_record_approval "sess-6"
-if command -v python3 >/dev/null 2>&1; then
-    python3 -c "import os; os.utime('${CANARY_STATE_DIR}/sess-6.canary.pending', (0, 0))"
-else
-    # Fallback: touch -t if python3 is unavailable. Year 2000 is chosen
-    # because it's unambiguously in the past on both macOS and Linux.
-    touch -t 200001010000 "${CANARY_STATE_DIR}/sess-6.canary.pending" 2>/dev/null || true
-fi
+# Force the file's mtime to epoch 0 (1970-01-01 UTC). Try python3 first
+# (portable, works on macOS and Linux regardless of bash/coreutils flavor).
+# Fall back to touch -t 200001010000 (BSD+GNU compatible). Final fallback
+# `|| true` keeps the test running even if both fail (the subsequent
+# assertion will catch any inconsistency).
+python3 -c "import os, sys; os.utime(sys.argv[1], (0, 0))" "${_pending_file}" 2>/dev/null \
+    || touch -t 200001010000 "${_pending_file}" 2>/dev/null \
+    || true
 TELEGRAM_TIMEOUT_S=1
 canary_check_result "sess-6" 2>/dev/null || true
 TELEGRAM_TIMEOUT_S=900
-assert "Pending file cleaned up" "false" "$([ -f "${CANARY_STATE_DIR}/sess-6.canary.pending" ] && echo true || echo false)"
+assert "Pending file cleaned up" "false" "$([ -f "${_pending_file}" ] && echo true || echo false)"
+unset _pending_file
 
 echo
 echo "═══════════════════"
