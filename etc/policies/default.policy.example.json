@@ -320,7 +320,7 @@
       "match": {
         "detail": {
           "command": {
-            "regex": "\\b(python[23]?(\\.\\d+)?|node|perl|ruby|lua|php)\\s+(-[cCeE]\\b|--eval)"
+            "regex": "\\b(python[23]?(\\.[0-9]+)?|node|perl|ruby|lua|php)\\s+(-[cCeE]\\b|--eval)"
           }
         }
       },

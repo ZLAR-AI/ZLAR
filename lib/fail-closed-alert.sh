@@ -62,24 +62,41 @@ fail_closed_alert() {
     fi
 
     local flag_file="${GATE_TMP}/fail-closed-alert.flag"
-    local now last delta
+    local now last_epoch last_reason delta
     now=$(date +%s)
 
-    # Dedupe: read last alert epoch from flag file (line 1).
-    last=0
+    # State-transition + time-based dedupe (v2.7.4):
+    #   Line 1: epoch of last alert
+    #   Line 2: reason of last alert
+    #
+    # Suppress the alert if:
+    #   - The previous alert was the SAME reason AND fired within the
+    #     ZLAR_ALERT_INTERVAL_S window.
+    #
+    # Alert (i.e., do NOT suppress) if:
+    #   - There is no prior state (first alert ever)
+    #   - The prior reason is DIFFERENT from the current reason (state
+    #     transition, e.g., H14 cleared but H13 fires)
+    #   - The prior reason is the same but the time window has expired
+    #     (periodic re-notify so a long-stuck gate reminds the human)
+    last_epoch=0
+    last_reason=""
     if [ -f "${flag_file}" ]; then
-        last=$(sed -n '1p' "${flag_file}" 2>/dev/null | tr -d '[:space:]')
-        last="${last:-0}"
-        # Numeric guard.
-        case "${last}" in
-            ''|*[!0-9]*) last=0 ;;
+        last_epoch=$(sed -n '1p' "${flag_file}" 2>/dev/null | tr -d '[:space:]')
+        last_reason=$(sed -n '2p' "${flag_file}" 2>/dev/null | tr -d '[:space:]')
+        last_epoch="${last_epoch:-0}"
+        case "${last_epoch}" in
+            ''|*[!0-9]*) last_epoch=0 ;;
         esac
     fi
 
-    delta=$(( now - last ))
-    if [ "${delta}" -lt "${ZLAR_ALERT_INTERVAL_S}" ]; then
-        _fca_log "suppressed: ${delta}s since last alert (window: ${ZLAR_ALERT_INTERVAL_S}s, reason: ${reason})"
+    delta=$(( now - last_epoch ))
+    if [ "${last_reason}" = "${reason}" ] && [ "${delta}" -lt "${ZLAR_ALERT_INTERVAL_S}" ]; then
+        _fca_log "suppressed: same reason (${reason}), ${delta}s since last alert (window: ${ZLAR_ALERT_INTERVAL_S}s)"
         return 0
+    fi
+    if [ -n "${last_reason}" ] && [ "${last_reason}" != "${reason}" ]; then
+        _fca_log "transition: ${last_reason} → ${reason}, firing new alert"
     fi
 
     # Build the message. Plain text — no MarkdownV2 escaping headaches.

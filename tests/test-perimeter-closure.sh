@@ -104,7 +104,7 @@ assert_no_match "claude (bare) NOT blocked" "${P_R005B}" 'claude'
 # ── R005C: Interpreter one-liners ──
 echo
 echo "── R005C: Interpreter one-liner escape ──"
-P_R005C='\b(python[23]?(\.\d+)?|node|perl|ruby|lua|php)\s+(-[cCeE]\b|--eval)'
+P_R005C='\b(python[23]?(\.[0-9]+)?|node|perl|ruby|lua|php)\s+(-[cCeE]\b|--eval)'
 
 assert_matches "python3 -c blocked" "${P_R005C}" 'python3 -c "import os; os.system(\"rm\")"'
 assert_matches "python -c blocked" "${P_R005C}" 'python -c "print(1)"'

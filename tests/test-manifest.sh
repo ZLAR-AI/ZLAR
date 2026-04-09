@@ -55,6 +55,16 @@ echo
 echo "Signing and verification:"
 
 if [[ -f "${HOME}/.zlar-signing.key" ]]; then
+    # Derive a matching public key into TEMP_DIR so zlar-manifest can
+    # compute key_id and verify signatures. We deliberately do NOT write
+    # the public key into etc/keys/policy-signing.pub — test-policy-loading.sh
+    # expects that path to either be absent or matched to a valid signed
+    # active.policy.json, and would fail if we installed an unsigned pubkey
+    # there. The ZLAR_MANIFEST_PUBKEY env var override in bin/zlar-manifest
+    # lets us point at a hermetic temp key instead.
+    openssl pkey -in "${HOME}/.zlar-signing.key" -pubout -out "${TEMP_DIR}/test-manifest-pubkey.pem" 2>/dev/null
+    export ZLAR_MANIFEST_PUBKEY="${TEMP_DIR}/test-manifest-pubkey.pem"
+
     "${PROJECT_DIR}/bin/zlar-manifest" sign --input "${TEMP_DIR}/test.json" 2>/dev/null
     assert "sign: signature populated" "true" "$([[ -n "$(jq -r '.signature.value' "${TEMP_DIR}/test.json")" ]] && echo true || echo false)"
     assert "sign: algorithm set" "Ed25519" "$(jq -r '.signature.algorithm' "${TEMP_DIR}/test.json")"
@@ -70,6 +80,8 @@ if [[ -f "${HOME}/.zlar-signing.key" ]]; then
     jq --argjson sig "$(jq '.signature' "${TEMP_DIR}/test.json")" '.signature = $sig' "${TEMP_DIR}/tampered.json" > "${TEMP_DIR}/tampered2.json"
     tamper_result=$("${PROJECT_DIR}/bin/zlar-manifest" verify --input "${TEMP_DIR}/tampered2.json" 2>&1 || true)
     assert "verify: tampered manifest fails" "true" "$(echo "${tamper_result}" | grep -q 'INVALID' && echo true || echo false)"
+
+    unset ZLAR_MANIFEST_PUBKEY
 else
     echo "  SKIP: No signing key found at ~/.zlar-signing.key"
 fi
