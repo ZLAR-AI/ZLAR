@@ -78,6 +78,26 @@ jobs:
           openssl genpkey -algorithm ed25519 -out ~/.zlar-signing.key
           chmod 600 ~/.zlar-signing.key
 
+      - name: Setup CI test fixtures
+        run: |
+          # Tests that read etc/policies/active.policy.json need it to exist
+          # in the fresh checkout. install.sh creates it locally; CI must do
+          # the equivalent. test-perimeter-closure.sh expects the full v2.x
+          # default (72 rules), so we use default.policy.example.json — not
+          # lt-default.policy.json which is the long-tail minimal variant
+          # (v1.0.0, 26 rules).
+          cp etc/policies/default.policy.example.json etc/policies/active.policy.json
+
+          # test-agent-identity.sh runs zlar-agents-export which reads the
+          # audit log and tests properties of the discovered agents. CI has
+          # no audit log; create a minimal fixture with one production agent
+          # and one test agent so the production-view filtering test works.
+          mkdir -p var/log
+          cat > var/log/audit.jsonl <<'EOF'
+          {"id":"ci-fixture-1","ts":"2026-04-01T00:00:00Z","seq":1,"source":"gate","host":"ci","user":"ci","agent_id":"claude-code","session_id":"ci-session-1","domain":"bash","action":"echo ci","outcome":"allow","risk_score":0,"detail":{"command":"echo ci","cwd":"/tmp"},"rule":"R001","policy_version":"2.7.2","severity":"info","prev_hash":"genesis","authorizer":"policy","signature_algorithm":"Ed25519","hash_algorithm":"SHA-256","public_key_id":"ci-fixture","signature":"unsigned"}
+          {"id":"ci-fixture-2","ts":"2026-04-01T00:00:01Z","seq":2,"source":"gate","host":"ci","user":"ci","agent_id":"test-agent","session_id":"ci-session-2","domain":"bash","action":"echo test","outcome":"allow","risk_score":0,"detail":{"command":"echo test","cwd":"/tmp"},"rule":"R001","policy_version":"2.7.2","severity":"info","prev_hash":"ci-fixture-1-hash","authorizer":"policy","signature_algorithm":"Ed25519","hash_algorithm":"SHA-256","public_key_id":"ci-fixture","signature":"unsigned"}
+          EOF
+
       - name: Run full test suite (count-assertions.sh)
         run: bash tests/count-assertions.sh --detail
 
