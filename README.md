@@ -15,19 +15,27 @@ It intercepts agent tool calls, evaluates them against signed policy, routes dec
 ## What ZLAR Is
 
 - A gate that sits between the agent and real-world actions
-- Deterministic policy enforcement — regex matching, not reasoning
+- Deterministic policy enforcement — regex rules or Cedar formal policy, never reasoning
 - Human-in-the-loop escalation via Telegram (approve/deny from your phone)
 - Hash-chained, Ed25519-signed audit trail on every decision
-- Governed Action Receipts — portable proof that an action was governed
-- Framework-agnostic: Claude Code, Cursor, Windsurf, any MCP client
+- Governed Action Receipts — portable proof that an action was governed, with semantic validation beyond the signature check
+- SDK membrane — a programming model where agents cannot be constructed without a live gate connection
+- Cryptographic delegation chains for multi-agent systems
+- Framework-agnostic: Claude Code, Cursor, Windsurf, any MCP client, AuthZEN 1.0 PDP interface
 
 ## What ZLAR Is Not
 
 - Not a monitoring dashboard that watches after the fact
 - Not an AI that judges whether an action "seems safe"
 - Not a trust scoring system that builds a reputation for agents
-- Not a sandbox — it governs the decision, not the execution environment
+- Not a sandbox at the architectural level — ZLAR governs the decision, not the execution environment. Optional macOS Seatbelt wrapping is available as a containment layer below the gate when `etc/sandbox/` profiles are present
 - Not tied to any model provider — the entity that sells agents cannot credibly govern them
+
+## For different readers
+
+- **The product in 90 seconds**: [`docs/the-moment.md`](docs/the-moment.md) — what it feels like to be in the loop.
+- **Implementers**: [`spec/governed-action-receipt-v1.md`](spec/governed-action-receipt-v1.md) — build a compatible receipt producer or verifier in an afternoon.
+- **If an agent took an action that affected you**: [`docs/if-an-agent-affected-you.md`](docs/if-an-agent-affected-you.md) — how to find, verify, and contest.
 
 ## Quick Start
 
@@ -72,7 +80,7 @@ Agent issues tool call (shell command, file write, API request)
 Two enforcement surfaces share the same policy and audit trail:
 
 - **Bash gate** (`bin/zlar-gate`) — hooks into Claude Code, Cursor, Windsurf. Pure bash. Zero dependencies beyond jq and openssl.
-- **MCP gate** (`mcp-gate/gate.mjs`) — TCP proxy between any MCP client and server. Intercepts `tools/call` JSON-RPC messages. Per-entry Ed25519 signing, policy signature verification, standing approvals.
+- **MCP gate** (`mcp-gate/gate.mjs`) — TCP proxy between any MCP client and server. Intercepts `tools/call` JSON-RPC messages. Per-entry Ed25519 signing, policy signature verification, standing approvals. Evaluates JSON regex policy by default; can evaluate Cedar formal policy when `ZLAR_POLICY_ENGINE=cedar` or `=both`.
 
 The agent does not volunteer to be governed. It is governed by architecture.
 
@@ -134,6 +142,14 @@ If the enforcement layer uses intelligence, the enforcement layer can be attacke
 
 An enforcement layer that uses reasoning to evaluate actions can be subverted by reasoning-based attacks. The enforcement layer's capability becomes its vulnerability.
 
+Signatures alone are not enough. Every signed-payload system that skipped semantic validation got burned: X.509 basicConstraints bypasses (24 years), JWT algorithm confusion (11 years), SAML wrapping attacks (14 years). ZLAR runs a semantic validator (`lib/semantic-validator.mjs`) after signature verification and before trust — cross-field invariants that signatures cannot check: rule-outcome consistency (deny-only rules cannot produce allow), authorizer-outcome coherence (a policy authorizer cannot produce an "authorized" outcome; that requires a human), delegation chain integrity, and temporal bounds. Signatures prove the bytes haven't changed. Semantic validation proves those bytes make sense.
+
+## First-Allow Invariant
+
+The first component in the call chain that can return "allow" must be outside the governed agent's writable or influenceable space. If the agent can modify, disable, or redirect that first-allow point, governance is cosmetic — the agent has not been governed, it has been presented with a governance-shaped surface it can route around.
+
+The full principle is documented in [`signal/DOCTRINE.md`](signal/DOCTRINE.md). [`signal/PROOF.md`](signal/PROOF.md) is a line-referenced proof by exhaustive case analysis that no unauthorized action can execute on a gate-governed path. [ADR-006](docs/adr/ADR-006-structural-independence.md) sets out why the entity that sells agents cannot credibly govern them.
+
 ## What the Gate Does Not Protect Against
 
 - **Compromised signing key** — an attacker with the key can sign a permissive policy. Mitigation: key never lives on the agent's machine. Rotation invalidates prior signatures.
@@ -142,22 +158,76 @@ An enforcement layer that uses reasoning to evaluate actions can be subverted by
 
 A security tool should state its own boundaries, not just its competitors' failures.
 
+## OSFI E-23 — Canadian Model Risk Management
+
+**Status**: `cedar-poc/e23.cedar` is a complete, schema-validated Cedar ruleset for OSFI Guideline E-23 (Model Risk Management, effective May 1, 2027). It is **not in the default MCP gate load path**. Using it as a runtime enforcement layer requires extending `lib/cedar-evaluator.mjs` to populate the extended ToolCall fields from application input, and loading `e23.cedar` alongside the base rules. This wiring is tracked for v2.8. Validation is exercised by `cedar-poc/test-e23.mjs` against its own schema.
+
+The ruleset implements ten rules. Each cites a specific E-23 principle.
+
+**What the ruleset covers**:
+
+- **Kill switches** (KS-001, KS-002) — burst-denial detection, and autonomous-action blocks in production below a configurable confidence threshold. E-23 Principle 2.3.
+- **Position limits** (PL-001, PL-002, PL-003) — tier-based caps, absolute caps, counterparty validation against hallucinated account numbers. E-23 Principle 2.3.
+- **Pre-execution checks** (PEC-001, PEC-002, PEC-003) — risk-tiered access; Tier 1 agents restricted to read-only actions. E-23 Principle 2.2.
+- **Environment gates** (EC-001) — broader thresholds in dev/staging, tighter in production. E-23 Principle 3.4.
+- **Third-party model controls** (TP-001) — unidentified models treated as Tier 1 regardless of declared tier. E-23 Principle 3.6.
+
+The schema extends the base Cedar model with bank-risk vocabulary (`risk_tier`, `amount`, `counterparty`, `is_irreversible`, `confidence`, `session_deny_count`).
+
+## SDK: Agents Built Inside Governance
+
+The bash and MCP gates intercept agents from outside. The SDK membrane (`@zlar/sdk`, `sdk/membrane/`) is a programming model in which agents are constructed inside governance — not wrapped by it.
+
+```javascript
+import { ZlarAgent, ZlarDeniedError } from '@zlar/sdk';
+
+// If the gate daemon is unreachable, construction throws.
+// There is no code path that produces an ungoverned agent instance.
+const agent = await ZlarAgent.connect({ agentId: 'my-agent' });
+
+// Every tool call evaluates policy before the function runs.
+const result = await agent.gate('Bash', { command: 'ls -la' }, async () => {
+  return execSync('ls -la').toString();
+});
+
+// Or wrap a whole executor map at once.
+const governed = agent.wrapTools({
+  bash:      (input) => execSync(input.command).toString(),
+  read_file: (input) => fs.readFileSync(input.path, 'utf8'),
+});
+```
+
+`ZlarAgent.connect()` opens a JSON-RPC 2.0 connection to the gate daemon (`sdk/daemon/`) over a Unix socket. If the daemon is unreachable, construction throws `ZlarDaemonUnreachableError` — there is no code path that produces an ungoverned agent instance. See [ADR-006](docs/adr/ADR-006-structural-independence.md) for the architectural reasoning.
+
+**Multi-agent delegation chains.** The SDK ships cryptographic delegation chain support for orchestrator/worker patterns. Each agent receives a per-session Ed25519 keypair; the daemon issues a signed root token via the `register` RPC; each parent signs its child's token with its own key. The daemon verifies the full chain cryptographically **before any policy evaluation** — an invalid chain fails closed with `rule: chain:verify` in the audit trail, and no policy rule is ever consulted.
+
+**AuthZEN 1.0 standards interface.** `sdk/authzen/server.mjs` implements the OpenID Foundation AuthZEN 1.0 Final Specification (January 2026) — a standards-compliant Policy Decision Point at `POST /access/v1/evaluation` (single) and `POST /access/v1/evaluations` (batch). Any AuthZEN-aware PEP can call it. Default port 8181.
+
+**HTTP hook adapter.** `sdk/hook-adapter/server.mjs` bridges Claude Code's HTTP hook protocol to the gate daemon. It always returns HTTP 200 with a valid JSON body — Claude Code treats non-2xx responses as fail-open, so the adapter handles every error condition internally and returns 200 + deny for any failure mode.
+
 ## Architecture
 
 | Layer | Component | What it does |
 |-------|-----------|-------------|
 | **Enforcement** | `zlar-gate` | Policy engine. Intercepts tool calls, classifies, evaluates signed rules, writes audit trail and receipts. |
-| **Enforcement** | `mcp-gate` | TCP proxy for MCP. Same policy, same audit format, per-entry signing, standing approvals. |
-| **Evidence** | `lib/receipt.mjs` | Governed Action Receipt generation and verification. Cross-gate compatible. |
-| **Evidence** | `bin/zlar-verify` | Standalone receipt verifier. Anyone can verify with just the public key. |
+| **Enforcement** | `mcp-gate` | TCP proxy for MCP. Same policy, same audit format, per-entry signing, standing approvals. Optional Cedar engine via `ZLAR_POLICY_ENGINE`. |
+| **Evidence** | `lib/receipt.mjs` | Governed Action Receipt generation and verification (v0 inline and v1 envelope formats). Cross-gate compatible. |
+| **Evidence** | `lib/semantic-validator.mjs` | Cross-field validation after signature verification. Rule-outcome consistency, authorizer coherence, delegation chain integrity, temporal bounds. Closes X.509/JWT/SAML-class attacks. |
+| **Evidence** | `bin/zlar-verify` | Standalone receipt verifier. Anyone can verify with just the public key. Runs semantic validation automatically on v1 receipts. |
 | **Observation** | `zlar-witness` | Sequence detection from audit trail. Detected, not enforced. |
 | **Observation** | `zlar-digest` | Governance summary. Decisions, latency, sequences, novelty. |
 | **Identity** | `zlar-agents` | Per-agent policy bindings, standing approvals, delegation depth limits. |
 | **Identity** | Agent manifest | Capability boundary per agent. Narrows policy, never widens. ([Invariants](docs/MANIFEST-INVARIANTS.md)) |
 | **Policy** | `zlar-policy` | CLI for Ed25519-signed policy rules. Keygen, sign, verify. |
+| **Compliance** | `cedar-poc/zlar.cedar` | Cedar formal policy for the base gate ruleset (R002, R003, R005, R006, R007, R012, R014, R016). Evaluated by the MCP gate when Cedar engine is enabled. |
+| **Compliance** | `cedar-poc/e23.cedar` | Cedar ruleset implementing 10 rules for OSFI Guideline E-23 (Model Risk Management). Not in default load path — see [OSFI E-23](#osfi-e-23--canadian-model-risk-management) section. |
 | **Session** | `lib/session-state.sh` | Velocity, loop detection, denial bursts. Thin counters, not reasoning. |
-| **Human** | `lib/human-invariants.sh` | Protects the human: decision cap (H6), deliberation floor (H15), approval rate monitoring (H14), capacity tracking (H13), authenticity checks (H17). |
+| **Human** | `lib/human-invariants.sh` | Protects the human: decision cap (H6), deliberation floor (H15), approval rate monitoring (H14), capacity tracking (H13), authenticity checks (H17). Per-human state, not per-session. |
 | **Adapters** | `adapters/` | Framework hooks for Claude Code, Cursor, Windsurf. |
+| **SDK** | `sdk/membrane` | Programming model for agents built inside governance. `ZlarAgent.connect()` requires a live daemon at construction. Wraps tool calls with policy evaluation before execution. |
+| **SDK** | `sdk/daemon` | Long-lived gate daemon. Unix socket, JSON-RPC 2.0, delegation chain issuer, agent registration. |
+| **SDK** | `sdk/authzen` | OpenID Foundation AuthZEN 1.0 Policy Decision Point. `POST /access/v1/evaluation` for standards-compliant authorization requests. |
+| **SDK** | `sdk/hook-adapter` | HTTP hook bridge for Claude Code. Always returns HTTP 200 (Claude Code treats non-2xx as fail-open). |
 
 ## Running Tests
 
@@ -268,6 +338,7 @@ Architectural choices are documented as ADRs:
 | [004](docs/adr/ADR-004-ed25519-signing.md) | Ed25519 for signing |
 | [005](docs/adr/ADR-005-manifest-narrows-policy.md) | Manifest narrows policy, never widens |
 | [006](docs/adr/ADR-006-structural-independence.md) | Structural independence from governed system |
+| [007](docs/adr/ADR-007-receipt-v1-envelope.md) | Receipt v1 envelope format (versioned, no alg negotiation) |
 
 ## Further Reading
 
