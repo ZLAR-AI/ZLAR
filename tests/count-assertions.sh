@@ -110,6 +110,16 @@ run_test() {
         TOTAL_FAIL=$((TOTAL_FAIL + 1))
         FAILED_FILES="${FAILED_FILES} ${file}"
         [ "$DETAIL" -eq 1 ] && printf "  %-4s  %-50s (exit=%d, parsed=%d)\n" "FAIL" "$file" "$ec" "$pass"
+        # Print the tail of the failing test's output to the log so CI
+        # runs (and anyone else using --detail) can see WHY the test
+        # failed without re-running it in isolation. 30 lines is usually
+        # enough to capture the failing assertion and the Results line
+        # if one was produced.
+        if [ "$DETAIL" -eq 1 ]; then
+            printf "  ───── last 30 lines of %s output ─────\n" "$file"
+            printf '%s\n' "$output" | tail -30 | sed 's/^/    /'
+            printf "  ───── end %s output ─────\n" "$file"
+        fi
     fi
 }
 
