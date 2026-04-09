@@ -1336,9 +1336,12 @@ check_pending_approval() {
         fi
     done
 
-    # Check if pending request is stale (older than TELEGRAM_TIMEOUT_S)
+    # Check if pending request is stale (older than TELEGRAM_TIMEOUT_S).
+    # stat ordering: GNU `stat -c %Y` first, then BSD `stat -f %m`. On GNU
+    # stat, `-f` means "filesystem status" not "format string", so
+    # BSD-style `stat -f %m` must be the fallback, not the primary.
     local pending_age
-    pending_age=$(( $(date +%s) - $(stat -f %m "${pending_file}" 2>/dev/null || stat -c %Y "${pending_file}" 2>/dev/null || echo 0) ))
+    pending_age=$(( $(date +%s) - $(stat -c %Y "${pending_file}" 2>/dev/null || stat -f %m "${pending_file}" 2>/dev/null || echo 0) ))
     if [ "${pending_age}" -gt "${TELEGRAM_TIMEOUT_S}" ]; then
         log "Pending approval EXPIRED: ${rule} (age=${pending_age}s > ${TELEGRAM_TIMEOUT_S}s)"
         rm -f "${pending_file}"
