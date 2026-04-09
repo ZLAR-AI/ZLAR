@@ -286,10 +286,18 @@ canary_check_result() {
         fi
     done
 
-    # Check if canary is stale
+    # Check if canary is stale.
+    #
+    # stat ordering matters: try GNU `stat -c %Y` first, fall back to BSD
+    # `stat -f %m`. The OPPOSITE order is a trap: on GNU stat, `-f` means
+    # "show filesystem status" (not "format string"), so `stat -f %m FILE`
+    # captures filesystem metadata as stdout instead of the mtime, and the
+    # subsequent arithmetic expansion fails silently. BSD stat has no `-c`
+    # flag, so `stat -c %Y FILE` errors out and the fallback runs. This
+    # ordering works correctly on both platforms.
     local pending_age now_epoch file_epoch
     now_epoch=$(date +%s)
-    file_epoch=$(stat -f %m "${pending_file}" 2>/dev/null || stat -c %Y "${pending_file}" 2>/dev/null || echo 0)
+    file_epoch=$(stat -c %Y "${pending_file}" 2>/dev/null || stat -f %m "${pending_file}" 2>/dev/null || echo 0)
     pending_age=$((now_epoch - file_epoch))
     if [ "${pending_age}" -gt "${TELEGRAM_TIMEOUT_S:-900}" ]; then
         rm -f "${pending_file}" 2>/dev/null
