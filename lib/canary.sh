@@ -243,50 +243,59 @@ canary_check_result() {
     canary_id=$(cat "${pending_file}" 2>/dev/null | tr -d '[:space:]')
     [ -n "${canary_id}" ] || { rm -f "${pending_file}" 2>/dev/null; return 0; }
 
+    # Process callback inbox if it exists. The inbox may not be present
+    # (first run, no callbacks yet, or deployment without Telegram). In
+    # that case we skip callback processing and fall through to the
+    # staleness check, which MUST run regardless of inbox presence —
+    # otherwise stale pending canaries would never be cleaned up on
+    # deployments where the callback inbox doesn't exist. This was a
+    # real bug caught by test-canary on CI (where the inbox dir is not
+    # created in the fresh checkout).
     local inbox_dir="/var/run/zlar-tg/inbox/cc"
-    [ -d "${inbox_dir}" ] || return 0
+    if [ -d "${inbox_dir}" ]; then
+        for cb_file in "${inbox_dir}"/*.json; do
+            [ -f "${cb_file}" ] || continue
+            local cb_data cb_from cb_id_field cb_hmac
+            cb_data=$(jq -r '.data // ""' "${cb_file}" 2>/dev/null)
+            cb_from=$(jq -r '.from_id // ""' "${cb_file}" 2>/dev/null)
+            cb_id_field=$(jq -r '.callback_query_id // ""' "${cb_file}" 2>/dev/null)
+            cb_hmac=$(jq -r '.hmac // ""' "${cb_file}" 2>/dev/null)
 
-    for cb_file in "${inbox_dir}"/*.json; do
-        [ -f "${cb_file}" ] || continue
-        local cb_data cb_from cb_id_field cb_hmac
-        cb_data=$(jq -r '.data // ""' "${cb_file}" 2>/dev/null)
-        cb_from=$(jq -r '.from_id // ""' "${cb_file}" 2>/dev/null)
-        cb_id_field=$(jq -r '.callback_query_id // ""' "${cb_file}" 2>/dev/null)
-        cb_hmac=$(jq -r '.hmac // ""' "${cb_file}" 2>/dev/null)
+            # Only process canary callbacks
+            case "${cb_data}" in
+                cc:canary:*) ;;
+                *) continue ;;
+            esac
 
-        # Only process canary callbacks
-        case "${cb_data}" in
-            cc:canary:*) ;;
-            *) continue ;;
-        esac
+            # Verify sender
+            if [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
+                rm -f "${cb_file}" 2>/dev/null
+                continue
+            fi
 
-        # Verify sender
-        if [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
-            rm -f "${cb_file}" 2>/dev/null
-            continue
-        fi
+            # Verify HMAC
+            if ! zlar_hmac_verify "${cb_data}" "${cb_from}" "${cb_id_field}" "${cb_hmac}"; then
+                log "CANARY: HMAC mismatch for canary callback — discarding"
+                rm -f "${cb_file}" 2>/dev/null
+                continue
+            fi
 
-        # Verify HMAC
-        if ! zlar_hmac_verify "${cb_data}" "${cb_from}" "${cb_id_field}" "${cb_hmac}"; then
-            log "CANARY: HMAC mismatch for canary callback — discarding"
-            rm -f "${cb_file}" 2>/dev/null
-            continue
-        fi
+            if [ "${cb_data}" = "cc:canary:approve:${canary_id}" ]; then
+                # FATIGUE DETECTED — human approved a canary (should have denied)
+                rm -f "${cb_file}" "${pending_file}" 2>/dev/null
+                _canary_log_fatigue "${session_id}" "${canary_id}"
+                return 0
+            elif [ "${cb_data}" = "cc:canary:deny:${canary_id}" ]; then
+                # HEALTHY — human correctly denied the canary
+                rm -f "${cb_file}" "${pending_file}" 2>/dev/null
+                _canary_log_healthy "${session_id}" "${canary_id}"
+                return 0
+            fi
+        done
+    fi
 
-        if [ "${cb_data}" = "cc:canary:approve:${canary_id}" ]; then
-            # FATIGUE DETECTED — human approved a canary (should have denied)
-            rm -f "${cb_file}" "${pending_file}" 2>/dev/null
-            _canary_log_fatigue "${session_id}" "${canary_id}"
-            return 0
-        elif [ "${cb_data}" = "cc:canary:deny:${canary_id}" ]; then
-            # HEALTHY — human correctly denied the canary
-            rm -f "${cb_file}" "${pending_file}" 2>/dev/null
-            _canary_log_healthy "${session_id}" "${canary_id}"
-            return 0
-        fi
-    done
-
-    # Check if canary is stale.
+    # Check if canary is stale. Runs regardless of whether the inbox
+    # directory existed above.
     #
     # stat ordering matters: try GNU `stat -c %Y` first, fall back to BSD
     # `stat -f %m`. The OPPOSITE order is a trap: on GNU stat, `-f` means
