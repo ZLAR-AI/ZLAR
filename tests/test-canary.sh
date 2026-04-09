@@ -237,19 +237,28 @@ echo "17. Expired canary cleanup"
 _pending_file="${CANARY_STATE_DIR}/sess-6.canary.pending"
 echo "expired-canary-id" > "${_pending_file}"
 canary_record_approval "sess-6"
-# Force the file's mtime to epoch 0 (1970-01-01 UTC). Try python3 first
-# (portable, works on macOS and Linux regardless of bash/coreutils flavor).
-# Fall back to touch -t 200001010000 (BSD+GNU compatible). Final fallback
-# `|| true` keeps the test running even if both fail (the subsequent
-# assertion will catch any inconsistency).
-python3 -c "import os, sys; os.utime(sys.argv[1], (0, 0))" "${_pending_file}" 2>/dev/null \
-    || touch -t 200001010000 "${_pending_file}" 2>/dev/null \
-    || true
+# Set the file's mtime to far past. Try python3 first (most portable),
+# touch -t 200001010000 fallback. Final fallback `|| true` keeps the
+# test running. Debug prints show what actually happened so CI logs
+# are diagnostic when the assertion fails.
+_mtime_before=$(stat -f %m "${_pending_file}" 2>/dev/null || stat -c %Y "${_pending_file}" 2>/dev/null || echo "UNKNOWN")
+echo "  (debug) mtime before reset: ${_mtime_before}"
+if python3 -c "import os, sys; os.utime(sys.argv[1], (0, 0))" "${_pending_file}" 2>/dev/null; then
+    _reset_method="python3"
+elif touch -t 200001010000 "${_pending_file}" 2>/dev/null; then
+    _reset_method="touch"
+else
+    _reset_method="FAILED"
+fi
+_mtime_after=$(stat -f %m "${_pending_file}" 2>/dev/null || stat -c %Y "${_pending_file}" 2>/dev/null || echo "UNKNOWN")
+echo "  (debug) mtime reset method: ${_reset_method}, mtime after: ${_mtime_after}"
 TELEGRAM_TIMEOUT_S=1
 canary_check_result "sess-6" 2>/dev/null || true
 TELEGRAM_TIMEOUT_S=900
-assert "Pending file cleaned up" "false" "$([ -f "${_pending_file}" ] && echo true || echo false)"
-unset _pending_file
+_file_still_exists=$([ -f "${_pending_file}" ] && echo true || echo false)
+echo "  (debug) file exists after canary_check_result: ${_file_still_exists}"
+assert "Pending file cleaned up" "false" "${_file_still_exists}"
+unset _pending_file _mtime_before _mtime_after _reset_method _file_still_exists
 
 echo
 echo "═══════════════════"
