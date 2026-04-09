@@ -24,7 +24,11 @@ source "${PROJECT_DIR}/lib/crypto.sh"
 
 KEYS_DIR="${PROJECT_DIR}/etc/keys"
 DEFAULT_KEY="${HOME}/.zlar-signing.key"
-DEFAULT_PUBKEY="${KEYS_DIR}/policy-signing.pub"
+# DEFAULT_PUBKEY can be overridden via ZLAR_MANIFEST_PUBKEY env var so tests
+# can use hermetic keys without polluting etc/keys/policy-signing.pub (which
+# other tests, notably test-policy-loading.sh, expect to be either absent or
+# matched to a valid signed active.policy.json).
+DEFAULT_PUBKEY="${ZLAR_MANIFEST_PUBKEY:-${KEYS_DIR}/policy-signing.pub}"
 
 # ── Colors ──
 if [[ -t 1 ]]; then

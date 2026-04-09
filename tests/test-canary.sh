@@ -227,11 +227,22 @@ CANARY_PROBABILITY=100
 
 # ── Test 17: Expired canary cleans up ──
 echo "17. Expired canary cleanup"
-# Create a fake pending file with old timestamp
+# Create a fake pending file and force its mtime to epoch 0 (1970).
+# Previous revisions used `touch -t 202501010000` which is syntactically
+# portable but had environment-specific failure modes in CI runners —
+# the test passed on local development but failed in fresh GitHub Actions
+# runs. Using python3 to set the mtime directly via os.utime() is
+# guaranteed to produce epoch 0 on every platform with python3 available
+# (which is a pre-existing test dependency via verify-canonicalization.py).
 echo "expired-canary-id" > "${CANARY_STATE_DIR}/sess-6.canary.pending"
 canary_record_approval "sess-6"
-# Touch the file to be old (force expiry)
-touch -t 202501010000 "${CANARY_STATE_DIR}/sess-6.canary.pending" 2>/dev/null || true
+if command -v python3 >/dev/null 2>&1; then
+    python3 -c "import os; os.utime('${CANARY_STATE_DIR}/sess-6.canary.pending', (0, 0))"
+else
+    # Fallback: touch -t if python3 is unavailable. Year 2000 is chosen
+    # because it's unambiguously in the past on both macOS and Linux.
+    touch -t 200001010000 "${CANARY_STATE_DIR}/sess-6.canary.pending" 2>/dev/null || true
+fi
 TELEGRAM_TIMEOUT_S=1
 canary_check_result "sess-6" 2>/dev/null || true
 TELEGRAM_TIMEOUT_S=900

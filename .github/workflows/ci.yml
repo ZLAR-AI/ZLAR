@@ -100,47 +100,14 @@ jobs:
           EOF
 
       - name: Run full test suite (count-assertions.sh)
-        # ZLAR_SKIP_TESTS marks specific tests as SKIP rather than FAIL.
-        # These tests have CI-environment-specific issues that pass on
-        # local development machines but fail in fresh GitHub Actions
-        # runners. Each one is a v2.8 work item:
-        #
-        #   test-canary.sh — assertion 25 ("pending file cleaned up")
-        #     uses `touch -t 202501010000` to create a stale file then
-        #     expects canary_check_result to clean it up. The cleanup
-        #     logic behaves differently across bash + filesystem combos.
-        #
-        #   test-manifest.sh — sign/verify assertions need a signed live
-        #     policy with a matching public key. Adding both to CI breaks
-        #     test-policy-loading.sh, which tries to load the live policy
-        #     and fails when the signing chain doesn't match its own
-        #     fixture key. Mutually exclusive without test refactoring.
-        #
-        #   test-perimeter-closure.sh on Linux — Phase C (Seatbelt sandbox)
-        #     tests need macOS sandbox-exec. The test has a skip for the
-        #     missing-binary case but other assertions still fail in the
-        #     Ubuntu environment. Passes cleanly on macOS CI.
-        run: |
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            export ZLAR_SKIP_TESTS="test-canary.sh:test-manifest.sh:test-perimeter-closure.sh"
-          else
-            export ZLAR_SKIP_TESTS="test-canary.sh:test-manifest.sh"
-          fi
-          bash tests/count-assertions.sh --detail
+        run: bash tests/count-assertions.sh --detail
 
       - name: Verify assertion threshold
         run: |
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            export ZLAR_SKIP_TESTS="test-canary.sh:test-manifest.sh:test-perimeter-closure.sh"
-            THRESHOLD=700
-          else
-            export ZLAR_SKIP_TESTS="test-canary.sh:test-manifest.sh"
-            THRESHOLD=800
-          fi
           COUNT=$(bash tests/count-assertions.sh 2>&1 | grep -oE "Assertions: [0-9]+" | grep -oE "[0-9]+")
-          echo "Total assertions: $COUNT (threshold: $THRESHOLD)"
-          if [ "$COUNT" -lt "$THRESHOLD" ]; then
-            echo "FAIL: assertion count $COUNT below threshold $THRESHOLD"
+          echo "Total assertions: $COUNT"
+          if [ "$COUNT" -lt 900 ]; then
+            echo "FAIL: assertion count dropped below 900 (got $COUNT)"
             exit 1
           fi
 
