@@ -28,10 +28,15 @@ authority. It can only constrain.
 ## Failure modes
 
 ```
-6. expired manifest          = hard deny (silence after expiry means authority withdrawn)
-7. unsigned manifest         = reject manifest, fall back to policy-only enforcement
+6. expired manifest            = hard deny (silence after expiry means authority withdrawn)
+7. unsigned manifest           = reject manifest, fall back to policy-only enforcement
 8. tampered manifest (bad sig) = hard deny on everything + log critical security event
-9. missing manifest          = fall back to policy-only (backward compatible)
+9. missing manifest (first run) = fall back to policy-only (no seq file present)
+9a. missing manifest (after load) = hard deny + alert (seq file present = manifest existed;
+                                    deletion is an attack, not an absence)
+10. sequence replay (seq ≤ last)  = hard deny (manifest was rolled back or re-used)
+11. sequence gap attack (Δ > 100) = log critical + alert + self-heal reset (seq file
+                                    poisoning would otherwise permanently DoS all loads)
 ```
 
 ## Exclusions (what must NEVER go in the manifest)
@@ -40,24 +45,25 @@ These exclusions have constitutional weight. A bad inclusion is permanent
 damage. A missing inclusion can grow later.
 
 ```
-10. No self-modify or override flags (agent cannot raise own ceiling)
-11. No capability wildcards (finance.* auto-grants the unknown)
-12. No behavioral instructions or prompts (constitution, not job description)
-13. No auto-approve or bypass-human flags (judgment cannot be pre-empted)
-14. No reputation scores or trust ratings (computed, not declared)
-15. No judgment criteria ("approve if < $1000" turns human into rubber stamp)
-16. No fail-open flags (crash = deny, always, not configurable)
-17. No logging configuration (agent cannot control its own audit trail)
+12. No self-modify or override flags (agent cannot raise own ceiling)
+13. No capability wildcards (finance.* auto-grants the unknown)
+14. No behavioral instructions or prompts (constitution, not job description)
+15. No auto-approve or bypass-human flags (judgment cannot be pre-empted)
+16. No reputation scores or trust ratings (computed, not declared)
+17. No judgment criteria ("approve if < $1000" turns human into rubber stamp)
+18. No fail-open flags (crash = deny, always, not configurable)
+19. No logging configuration (agent cannot control its own audit trail)
 ```
 
 ## v0 scope
 
-The v0 manifest has exactly five sections:
+The v0 manifest has exactly six sections:
 
 ```
 identity          — who is this agent, who is accountable
 authority         — what action categories are allowed, denied, or unmatched
 escalation        — what conditions route to a human, and how
+sequence          — monotonic counter; enforces replay protection (see failure modes 10–11)
 expires           — hard expiry timestamp
 signature         — Ed25519 signature over the manifest
 ```

@@ -40,9 +40,14 @@ HI_PENDING_CAP="${ZLAR_PENDING_CAP:-5}"
 # cannot drift the counter permanently. Default: 1800 (30 min).
 HI_PENDING_TTL="${ZLAR_PENDING_TTL:-1800}"
 
-# H14: Approval rate threshold. Above this = rubber-stamping warning. Default: 90%.
-HI_APPROVAL_RATE_THRESHOLD="${ZLAR_APPROVAL_RATE_THRESHOLD:-90}"
-HI_APPROVAL_RATE_WINDOW="${ZLAR_APPROVAL_RATE_WINDOW:-20}"
+# H14: Response time variance — low variance = rubber-stamping warning.
+# Replaces approval rate tracking (which penalizes a well-calibrated gate).
+# A genuine deliberator shows variable response times correlated with request
+# complexity. A rubber-stamper responds uniformly fast regardless of severity.
+# Threshold: std_dev < 4s over last 20 decisions = suspicious uniformity.
+HI_VARIANCE_STDDEV_FLOOR="${ZLAR_VARIANCE_STDDEV_FLOOR:-4}"
+HI_VARIANCE_WINDOW="${ZLAR_VARIANCE_WINDOW:-20}"
+HI_VARIANCE_MIN_SAMPLE="${ZLAR_VARIANCE_MIN_SAMPLE:-10}"
 
 # H15: Minimum deliberation time in seconds per risk class.
 # critical=30s, warn=10s, info=3s. Below this = approval rejected.
@@ -71,7 +76,7 @@ _hi_ensure_state() {
         jq -n \
             --arg hid "${human_id}" \
             --arg today "${today}" \
-            '{human_id: $hid, date: $today, decisions_today: 0, approvals_recent: [], pending: [], last_ask_epoch: 0}' \
+            '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0}' \
             > "${state_file}" 2>/dev/null
     fi
 
@@ -92,7 +97,7 @@ _hi_ensure_state() {
         # TTL array. Rollover drops the dead pending_count field and resets
         # the pending array to empty.
         jq --arg today "${today}" \
-            '.date = $today | .decisions_today = 0 | .pending = [] | .approvals_recent = [] | del(.pending_count)' \
+            '.date = $today | .decisions_today = 0 | .pending = [] | .response_times = [] | del(.approvals_recent) | del(.pending_count)' \
             "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
             mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
     fi
@@ -345,63 +350,84 @@ hi_check_authenticity() {
 }
 
 # ─── H14: Protected Human Judgment ───────────────────────────────────────────
-# Track approval/denial ratio. If approval rate exceeds threshold in the
-# recent window, the human may be rubber-stamping.
+# Track response time variance. Low variance = rubber-stamping warning.
 #
-# Call hi_record_decision after each human decision.
-# Call hi_check_approval_rate before routing a new decision.
+# Replaces approval rate tracking. A well-calibrated gate produces high
+# approval rates legitimately — penalizing that creates perverse incentives
+# (strategic denials to game the ratio). Response time variance is a better
+# proxy: a genuine deliberator's response times vary with request complexity.
+# A rubber-stamper responds uniformly regardless of severity.
+#
+# Call hi_record_decision after each human decision (pass elapsed seconds).
+# Call hi_check_response_variance before routing a new decision.
 #
 # Returns: "ok" or "rubber_stamping"
 
 hi_record_decision() {
     local human_id="${1:?}"
-    local decision="${2:?}"  # "approve" or "deny"
+    local decision="${2:?}"        # "approve" or "deny" (kept for audit trail)
+    local elapsed_s="${3:-0}"      # response time in seconds
+    local severity="${4:-info}"    # severity tier of the decision
 
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
-    # Increment daily counter
-    # Add decision to recent window
-    local is_approval="false"
-    [ "${decision}" = "approve" ] || [ "${decision}" = "allow" ] || [ "${decision}" = "authorized" ] && is_approval="true"
-
-    jq --argjson approved "${is_approval}" \
-       --argjson window "${HI_APPROVAL_RATE_WINDOW}" \
-       '.decisions_today += 1 | .approvals_recent = (.approvals_recent + [$approved] | .[-$window:])' \
+    # Store {elapsed, severity} pairs. Severity weighting applied at check time.
+    jq --argjson elapsed "${elapsed_s}" \
+       --arg sev "${severity}" \
+       --argjson window "${HI_VARIANCE_WINDOW}" \
+       '.decisions_today += 1 | .response_times = (.response_times + [{elapsed:$elapsed,severity:$sev}] | .[-$window:])' \
         "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
         mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
 }
 
-hi_check_approval_rate() {
+hi_check_response_variance() {
     local human_id="${1:?}"
 
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
-    local rate
-    rate=$(jq -r --argjson window "${HI_APPROVAL_RATE_WINDOW}" '
-        .approvals_recent as $arr |
-        if ($arr | length) < ($window / 2) then
-            -1  # Not enough data
+    # Variance check on non-critical decisions only.
+    # Critical decisions are governed by H15 (30s floor) which creates
+    # artificial uniformity — including critical in variance would fire H14
+    # against exactly the deliberate behavior H15 is designed to produce.
+    local stddev
+    stddev=$(jq -r --argjson min_sample "${HI_VARIANCE_MIN_SAMPLE}" '
+        .response_times as $arr |
+        # Use only warn+info tier decisions for variance
+        [$arr[] | select(type == "object" and .severity != "critical") | .elapsed] as $filtered |
+        if ($filtered | length) < $min_sample then
+            -1
         else
-            ([$arr[] | select(. == true)] | length) * 100 / ($arr | length)
+            (($filtered | add) / ($filtered | length)) as $mean |
+            ([$filtered[] | (. - $mean) * (. - $mean)] | add) / ($filtered | length) |
+            sqrt
         end
     ' "${state_file}" 2>/dev/null)
 
-    # Not enough data to judge
-    if [ "${rate}" = "-1" ] || [ -z "${rate}" ]; then
+    # Not enough non-critical data yet
+    if [ "${stddev}" = "-1" ] || [ -z "${stddev}" ]; then
         echo "ok"
         return 0
     fi
 
-    if [ "${rate}" -ge "${HI_APPROVAL_RATE_THRESHOLD}" ]; then
-        _hi_log "H14 WARNING: ${human_id} approval rate is ${rate}% in last ${HI_APPROVAL_RATE_WINDOW} decisions (threshold: ${HI_APPROVAL_RATE_THRESHOLD}%)"
+    local is_uniform
+    is_uniform=$(awk -v sd="${stddev}" -v floor="${HI_VARIANCE_STDDEV_FLOOR}" \
+        'BEGIN { print (sd < floor) ? "yes" : "no" }')
+
+    if [ "${is_uniform}" = "yes" ]; then
+        _hi_log "H14 WARNING: ${human_id} warn/info response time std_dev is ${stddev}s (floor: ${HI_VARIANCE_STDDEV_FLOOR}s) — suspiciously uniform on non-critical decisions"
         echo "rubber_stamping"
         return 1
     fi
 
     echo "ok"
     return 0
+}
+
+# Backward-compatible alias — callers that used hi_check_approval_rate get variance check instead
+hi_check_approval_rate() {
+    hi_check_response_variance "$@"
 }
 
 # ─── Combined Pre-Ask Check ──────────────────────────────────────────────────
@@ -426,9 +452,9 @@ hi_pre_ask_check() {
         return 1
     fi
 
-    # H14: Approval rate
+    # H14: Response time variance
     local rate_result
-    rate_result=$(hi_check_approval_rate "${human_id}")
+    rate_result=$(hi_check_response_variance "${human_id}")
     if [ "${rate_result}" = "rubber_stamping" ]; then
         echo "rubber_stamping"
         return 1
@@ -480,8 +506,13 @@ hi_post_response_check() {
         return 1
     fi
 
-    # Record the decision for H14 rate tracking
-    hi_record_decision "${human_id}" "${decision}"
+    # Record the decision for H14 variance tracking (elapsed = now - ask_time)
+    local _state_file _ask_epoch _now_epoch _elapsed
+    _state_file=$(_hi_ensure_state "${human_id}")
+    _ask_epoch=$(jq -r '.last_ask_epoch // 0' "${_state_file}" 2>/dev/null || echo 0)
+    _now_epoch=$(date +%s)
+    _elapsed=$(( _now_epoch - _ask_epoch ))
+    hi_record_decision "${human_id}" "${decision}" "${_elapsed}" "${severity}"
 
     echo "ok"
     return 0

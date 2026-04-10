@@ -1,5 +1,104 @@
 # Changelog
 
+## 2.9.0 — 2026-04-10
+
+Three security hardening items and one behavioral fix, all discovered during
+multi-agent design review (April 10, 2026). No incident — proactive.
+
+### Gate security hardening (`bin/zlar-gate`)
+
+Three attack surfaces the v2.8.0 sequence field opened or left unaddressed:
+
+**Deletion attack detection.** Previously, a missing manifest file silently
+fell back to policy-only enforcement. An attacker who can delete the manifest
+file could strip the capability ceiling from all gate decisions. Now: if the
+manifest file is absent but the seq file exists (proof the manifest was
+previously loaded), the gate hard-denies everything and sends a Telegram
+alert. Policy-only fallback is preserved only when the seq file is also
+absent (genuine first-run or never-configured state).
+
+**Replay protection.** The manifest's `sequence` field is now enforced
+monotonically. On each successful manifest load, the gate persists
+`_m_seq` to `${PROJECT_DIR}/var/.manifest-seq`. On the next load, any
+manifest with `sequence ≤ last_seq` is rejected with hard deny. An attacker
+who replaces a renewed manifest with an older copy gets hard-denied
+immediately.
+
+**Seq file poisoning.** Writing a large number (e.g., `99999`) to the seq
+file permanently DoS's all future manifest loads — worse than the replay
+attack it was designed to stop. Gap detection added: if `sequence − last_seq
+> 100`, the gate logs a critical event, sends a Telegram alert, resets
+`last_seq = 0` (self-healing), and continues. The threshold of 100 is
+intentionally large — it fires only on clearly pathological jumps, not on
+normal re-signs.
+
+**Presence file eliminated.** The former `.manifest-present` sentinel file
+was redundant with the seq file (both existed iff the manifest had ever been
+loaded). Dropped. The seq file now serves both purposes: presence detection
+and replay counter.
+
+### SubagentStart auto-allow tightened (`bin/zlar-gate`)
+
+`agent_type` values `general-purpose` and `claude-code-guide` removed from
+the auto-allow list. Both have full tool access; auto-allowing them created
+an `agent_type` spoofing path — a subagent could declare either type to
+bypass the gate with zero friction. The auto-allow list is now `Explore|Plan`
+only. Both are read-only by construction. Any other agent type routes through
+the standard risk-scoring path.
+
+### zlar-manifest: sequence auto-increment (`bin/zlar-manifest`)
+
+`zlar-manifest new` (and re-sign) now reads `.sequence` from the input
+manifest, increments it, writes it back, then signs. This means routine
+renewal never resets the replay counter. Operators do not need to manually
+maintain the sequence field. Output now displays `Sequence: N`.
+
+### H14 replacement: response time variance (`lib/human-invariants.sh`, `lib/human-invariants.mjs`)
+
+Both gates updated in lockstep. This completes the item deferred in v2.8.0.
+
+The root failure of approval rate monitoring: a well-calibrated gate that
+filters correctly produces high approval rates as a natural consequence. The
+old H14 penalized correct behavior. There is no threshold that distinguishes
+"high approval because the gate is too permissive" from "high approval
+because the gate is exactly right."
+
+Response time variance is a better signal. A rubber-stamper responds
+uniformly fast regardless of request complexity. A genuine deliberator shows
+variable response times correlated with what's being asked. Std dev below
+the floor means suspiciously uniform — that's what H14 now detects.
+
+**What changed:**
+- `hi_check_approval_rate` / `checkApprovalRate` → `hi_check_response_variance`
+  / `checkResponseVariance`. Backward-compat aliases kept at both call sites.
+- State field `response_times` now stores `{elapsed, severity}` pairs instead
+  of plain elapsed numbers. Backward compat: plain number entries in existing
+  state files are handled at read time.
+- Variance computed on **warn + info decisions only**. Critical decisions are
+  excluded because H15's 30-second deliberation floor creates artificial
+  uniformity on critical — including them would fire H14 against exactly the
+  careful behavior H15 is designed to produce.
+- New config keys: `HI_VARIANCE_STDDEV_FLOOR` (default 4s), `HI_VARIANCE_WINDOW`
+  (default 20), `HI_VARIANCE_MIN_SAMPLE` (default 10). Old keys
+  `HI_APPROVAL_RATE_THRESHOLD` / `HI_APPROVAL_RATE_WINDOW` removed.
+
+### Not in this release
+
+- **Score recalibration.** The current risk score conflates severity
+  (technical category) with actual risk (`P(harm) × magnitude ×
+  irreversibility`). The calibration problem causes desensitization — scores
+  cluster in the 30–70 range on routine operations, eroding the signal value
+  of a genuine 90 or 100. Score formula redesign deferred; architectural
+  decision in progress.
+- **Plain English consequence descriptions.** Telegram messages describe
+  what the agent is doing, not what happens to the human if it goes wrong.
+  Adding consequence-first language deferred alongside score recalibration
+  (the two interact).
+- **Maintenance window governance.** Three modes identified (surgical
+  suspension, shadow mode, sovereign lock) but not yet implemented.
+
+---
+
 ## 2.8.0 — 2026-04-09
 
 H13 TTL rewrite. Fixes the April 9 2026 fail-closed incident where a single

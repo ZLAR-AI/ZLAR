@@ -277,9 +277,32 @@ fi
 # Load capability manifest (v0 — the interface to governance)
 # See docs/MANIFEST-INVARIANTS.md for design invariants.
 # Missing manifest = backward compatible (policy-only). Tampered = hard deny.
+# FIX: Presence tracking — if a manifest was ever successfully loaded, absence
+# is treated as a tamper event, not a benign missing-manifest fallback.
 MANIFEST_LOADED="false"
 MANIFEST_JSON=""
 MANIFEST_FILE="${PROJECT_DIR}/etc/manifest.json"
+MANIFEST_SEQ_FILE="${PROJECT_DIR}/var/log/.manifest-last-seq"
+
+# FIX: Presence detection via seq file — if seq file exists, a manifest was
+# previously loaded. A missing manifest after that = deletion attack, not a
+# benign first-deployment scenario. One file serves both purposes (presence +
+# replay protection). No separate .manifest-present file needed.
+if [ ! -f "${MANIFEST_FILE}" ] && [ -f "${MANIFEST_SEQ_FILE}" ]; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest was present but is now missing — possible deletion attack. Hard deny." >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+    # Send Telegram alert best-effort
+    if [ -n "${TELEGRAM_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+        _alert_body=$(jq -n --arg chat "${TELEGRAM_CHAT_ID}" \
+            '{"chat_id":$chat,"text":"🚨 ZLAR CRITICAL: Manifest file was present but is now missing. Possible deletion attack. Gate is hard-denied until manifest is restored.","parse_mode":"Markdown"}')
+        curl -s -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" -d "${_alert_body}" >/dev/null 2>&1 || true
+    fi
+    # Hard deny everything — same posture as tampered manifest
+    respond_deny "Manifest was present but is now missing — possible deletion attack. Restore manifest to resume." "manifest:deletion_attack" 2>/dev/null || \
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[manifest:deletion_attack] Manifest missing after being present — hard deny"}}\n'
+    exit 0
+fi
+
 if [ -f "${MANIFEST_FILE}" ] && command -v jq &>/dev/null; then
     # Check signature if pubkey exists
     _manifest_sig=$(jq -r '.signature.value // ""' "${MANIFEST_FILE}" 2>/dev/null)
@@ -309,8 +332,40 @@ if [ -f "${MANIFEST_FILE}" ] && command -v jq &>/dev/null; then
             echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARNING: Manifest expired (${_m_expires}) — manifest rejected" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
         else
             MANIFEST_JSON=$(jq -c '.' "${MANIFEST_FILE}" 2>/dev/null)
-            MANIFEST_LOADED="true"
-            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] Manifest loaded: $(jq -r '.identity.agent_id // "?"' "${MANIFEST_FILE}" 2>/dev/null)" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+
+            # FIX: Replay protection — check sequence number is strictly increasing
+            # FIX: Poison detection — seq file value >> manifest.sequence = DoS attack
+            _m_seq=$(echo "${MANIFEST_JSON}" | jq -r '.sequence // 0' 2>/dev/null)
+            _m_last_seq=0
+            [ -f "${MANIFEST_SEQ_FILE}" ] && _m_last_seq=$(cat "${MANIFEST_SEQ_FILE}" 2>/dev/null | tr -cd '0-9' || echo 0)
+
+            # Poison check: seq file is implausibly ahead of this signed manifest.
+            # The seq file only advances when a valid manifest loads — if it's more
+            # than 100 ahead of a validly-signed manifest, it was externally modified.
+            # Trust the signed manifest; reset the seq file and proceed.
+            _POISON_THRESHOLD=100
+            _m_seq_gap=$(( _m_last_seq - _m_seq ))
+            if [ "${_m_seq}" != "0" ] && [ "${_m_seq_gap}" -gt "${_POISON_THRESHOLD}" ]; then
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Seq file value ${_m_last_seq} is ${_m_seq_gap} ahead of signed manifest seq ${_m_seq} — possible seq file poisoning. Resetting to manifest sequence." >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+                if [ -n "${TELEGRAM_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+                    _alert_body=$(jq -n --arg chat "${TELEGRAM_CHAT_ID}" --arg gap "${_m_seq_gap}" \
+                        '{"chat_id":$chat,"text":"🚨 ZLAR CRITICAL: Sequence file may have been poisoned (gap: \($gap)). Reset to manifest sequence. Check for unauthorized filesystem writes.","parse_mode":"Markdown"}')
+                    curl -s -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+                        -H "Content-Type: application/json" -d "${_alert_body}" >/dev/null 2>&1 || true
+                fi
+                _m_last_seq=0  # Reset — trust the signed manifest
+            fi
+
+            if [ -n "${_m_seq}" ] && [ "${_m_seq}" != "0" ] && [ "${_m_seq}" -le "${_m_last_seq}" ]; then
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest sequence ${_m_seq} <= last seen ${_m_last_seq} — possible replay attack. Hard deny." >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+                MANIFEST_LOADED="false"
+                MANIFEST_JSON=""
+            else
+                MANIFEST_LOADED="true"
+                # Persist sequence (seq file existence also serves as presence marker)
+                echo "${_m_seq}" > "${MANIFEST_SEQ_FILE}" 2>/dev/null || true
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] Manifest loaded: $(jq -r '.identity.agent_id // "?"' "${MANIFEST_FILE}" 2>/dev/null) (seq=${_m_seq})" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+            fi
         fi
     fi
 fi
@@ -1545,7 +1600,7 @@ handle_subagent_start() {
 
     # Read-only subagent types auto-allow (no tool writes possible)
     case "${agent_type}" in
-        Explore|Plan|claude-code-guide|general-purpose)
+        Explore|Plan)
             log "SubagentStart: read-only type '${agent_type}' — auto-allow"
             emit_event "subagent" "${agent_type}" "allow" \
                 "$(jq -n -c --arg t "${agent_type}" --arg p "${prompt}" '{agent_type:$t,prompt:$p}')" \

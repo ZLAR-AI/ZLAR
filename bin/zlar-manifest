@@ -70,9 +70,18 @@ cmd_sign() {
         jq -e ".${section}" "${input}" >/dev/null 2>&1 || fail "Missing required section: ${section}"
     done
 
+    # FIX: Auto-increment sequence number on every sign (replay protection)
+    local _cur_seq
+    _cur_seq=$(jq -r '.sequence // 0' "${input}" 2>/dev/null)
+    local _next_seq=$(( _cur_seq + 1 ))
+    local _seq_tmp
+    _seq_tmp=$(mktemp /tmp/zlar-manifest-seq.XXXXXX)
+    jq --argjson seq "${_next_seq}" '.sequence = $seq' "${input}" > "${_seq_tmp}" && mv "${_seq_tmp}" "${input}"
+
     echo -e "${BOLD}Signing manifest${NC}"
     info "Input: ${input}"
     info "Key: ${key}"
+    info "Sequence: ${_next_seq}"
 
     # Get algorithm label and public key
     local algo_label
