@@ -335,17 +335,17 @@ hi_record_decision "${HUMAN}" "deny"
 result2=$(hi_check_approval_rate "${HUMAN}" 2>/dev/null)
 assert "90% approval rate (threshold=80%) → rubber_stamping" "rubber_stamping" "${result2}"
 
-# Record more denials to bring rate down
+# Record decisions with high variance — stddev > 4s means H14 should pass
 HUMAN_LOW="test-human-h14-low"
-for i in $(seq 1 5); do
-    hi_record_decision "${HUMAN_LOW}" "approve"
+for elapsed in 2 8 15 5 20; do
+    hi_record_decision "${HUMAN_LOW}" "approve" "${elapsed}" "info"
 done
-for i in $(seq 1 5); do
-    hi_record_decision "${HUMAN_LOW}" "deny"
+for elapsed in 10 3 18 6 12; do
+    hi_record_decision "${HUMAN_LOW}" "deny" "${elapsed}" "info"
 done
 
 result3=$(hi_check_approval_rate "${HUMAN_LOW}" 2>/dev/null)
-assert "50% approval rate → ok" "ok" "${result3}"
+assert "varied response times (stddev > 4s) → ok" "ok" "${result3}"
 
 HI_APPROVAL_RATE_THRESHOLD=90
 HI_APPROVAL_RATE_WINDOW=20
@@ -412,8 +412,9 @@ state_file="${TEMP_DIR}/var/human-state/${HUMAN}.json"
 count=$(jq -r '.decisions_today' "${state_file}" 2>/dev/null)
 assert "decisions_today persisted" "3" "${count}"
 
-approvals_len=$(jq -r '.approvals_recent | length' "${state_file}" 2>/dev/null)
-assert "approvals_recent length" "3" "${approvals_len}"
+# v2.9.0: approvals_recent replaced by response_times
+response_len=$(jq -r '.response_times | length' "${state_file}" 2>/dev/null)
+assert "response_times length" "3" "${response_len}"
 
 # ─── Results ──────────────────────────────────────────────────────────────────
 

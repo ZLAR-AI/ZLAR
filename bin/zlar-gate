@@ -281,6 +281,7 @@ fi
 # is treated as a tamper event, not a benign missing-manifest fallback.
 MANIFEST_LOADED="false"
 MANIFEST_JSON=""
+MANIFEST_HARD_DENY_REASON=""  # Set during load, checked in main() where respond_deny is available
 MANIFEST_FILE="${PROJECT_DIR}/etc/manifest.json"
 MANIFEST_SEQ_FILE="${PROJECT_DIR}/var/log/.manifest-last-seq"
 
@@ -297,10 +298,9 @@ if [ ! -f "${MANIFEST_FILE}" ] && [ -f "${MANIFEST_SEQ_FILE}" ]; then
         curl -s -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
             -H "Content-Type: application/json" -d "${_alert_body}" >/dev/null 2>&1 || true
     fi
-    # Hard deny everything — same posture as tampered manifest
-    respond_deny "Manifest was present but is now missing — possible deletion attack. Restore manifest to resume." "manifest:deletion_attack" 2>/dev/null || \
-        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[manifest:deletion_attack] Manifest missing after being present — hard deny"}}\n'
-    exit 0
+    # Flag for hard deny — respond_deny not yet defined at this point in the script.
+    # The flag is checked in main() where all functions are available.
+    MANIFEST_HARD_DENY_REASON="manifest:deletion_attack|Manifest was present but is now missing — possible deletion attack. Restore manifest to resume."
 fi
 
 if [ -f "${MANIFEST_FILE}" ] && command -v jq &>/dev/null; then
@@ -317,19 +317,27 @@ if [ -f "${MANIFEST_FILE}" ] && command -v jq &>/dev/null; then
         if ! zlar_crypto_verify "${POLICY_PUBKEY}" "${_m_hash}" "${_m_sig_bin}" "ed25519"; then
             _manifest_ok="false"
             echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest signature INVALID — manifest rejected" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+            MANIFEST_HARD_DENY_REASON="manifest:tampered|Manifest signature INVALID — hard deny per invariant 8"
         fi
         rm -f "${_m_canon}" "${_m_hash}" "${_m_sig_bin}"
     elif [ -z "${_manifest_sig}" ]; then
         # Unsigned manifest — fall back to policy-only (invariant #7)
         _manifest_ok="false"
         echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARNING: Manifest is unsigned — ignoring" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+    else
+        # Signature present but public key file missing — cannot verify.
+        # This is misconfiguration or a key deletion attack. Fail closed.
+        _manifest_ok="false"
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest is signed but public key missing — cannot verify" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+        MANIFEST_HARD_DENY_REASON="manifest:missing_pubkey|Manifest is signed but public key file is missing — cannot verify. Possible key deletion attack."
     fi
     if [ "${_manifest_ok}" = "true" ]; then
         # Check expiry (invariant #6: expired = hard deny)
         _m_expires=$(jq -r '.expires // ""' "${MANIFEST_FILE}" 2>/dev/null)
         _m_now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         if [ -n "${_m_expires}" ] && [[ "${_m_now}" > "${_m_expires}" ]]; then
-            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARNING: Manifest expired (${_m_expires}) — manifest rejected" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest expired (${_m_expires}) — hard deny per invariant 6" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+            MANIFEST_HARD_DENY_REASON="manifest:expired|Manifest expired (${_m_expires}) — hard deny per invariant 6. Renew manifest to resume."
         else
             MANIFEST_JSON=$(jq -c '.' "${MANIFEST_FILE}" 2>/dev/null)
 
@@ -360,6 +368,7 @@ if [ -f "${MANIFEST_FILE}" ] && command -v jq &>/dev/null; then
                 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest sequence ${_m_seq} <= last seen ${_m_last_seq} — possible replay attack. Hard deny." >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
                 MANIFEST_LOADED="false"
                 MANIFEST_JSON=""
+                MANIFEST_HARD_DENY_REASON="manifest:replay|Manifest sequence ${_m_seq} <= last seen ${_m_last_seq} — hard deny per invariant 10"
             else
                 MANIFEST_LOADED="true"
                 # Persist sequence (seq file existence also serves as presence marker)
@@ -1359,9 +1368,29 @@ check_pending_approval() {
     fi
 
     # Check inbox for callback matching this action_id
+    # v2.10.0: Gate no longer deletes callback files — inbox dir is root-owned
+    # (agent cannot write, so agent cannot forge). Gate tracks consumed callbacks
+    # in a local file to avoid re-processing. Dispatcher handles cleanup.
     local inbox_dir="/var/run/zlar-tg/inbox/cc"
+    local consumed_file="${PROJECT_DIR}/var/log/.consumed-callbacks"
+    touch "${consumed_file}" 2>/dev/null || true
+    # Prevent unbounded growth
+    local _cc_lines
+    _cc_lines=$(wc -l < "${consumed_file}" 2>/dev/null || echo 0)
+    if [ "${_cc_lines}" -gt 1000 ]; then
+        tail -500 "${consumed_file}" > "${consumed_file}.tmp" 2>/dev/null && \
+            mv "${consumed_file}.tmp" "${consumed_file}" 2>/dev/null || true
+    fi
+
     for cb_file in "${inbox_dir}"/*.json; do
         [ -f "${cb_file}" ] || continue
+        local cb_basename
+        cb_basename=$(basename "${cb_file}")
+        # Skip already-consumed callbacks
+        if grep -qxF "${cb_basename}" "${consumed_file}" 2>/dev/null; then
+            continue
+        fi
+
         local cb_data cb_from cb_id_field cb_hmac
         cb_data=$(jq -r '.data // ""' "${cb_file}" 2>/dev/null)
         cb_from=$(jq -r '.from_id // ""' "${cb_file}" 2>/dev/null)
@@ -1369,23 +1398,30 @@ check_pending_approval() {
         cb_hmac=$(jq -r '.hmac // ""' "${cb_file}" 2>/dev/null)
 
         if [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
-            rm -f "${cb_file}"
+            echo "${cb_basename}" >> "${consumed_file}" 2>/dev/null || true
             continue
         fi
 
-        # Verify HMAC
-        if ! zlar_hmac_verify "${cb_data}" "${cb_from}" "${cb_id_field}" "${cb_hmac}"; then
-            log "SECURITY: inbox HMAC mismatch in pending check: ${cb_file}"
-            rm -f "${cb_file}"
-            continue
+        # HMAC verification — advisory when secret unavailable.
+        # v2.10.0: HMAC secret is root:wheel 600, so the gate cannot read it.
+        # Primary trust is directory ownership (root:staff 750 — agent can't write).
+        # HMAC is defense-in-depth when secret IS available.
+        if [ -n "${ZLAR_INBOX_HMAC_SECRET:-}" ]; then
+            if ! zlar_hmac_verify "${cb_data}" "${cb_from}" "${cb_id_field}" "${cb_hmac}"; then
+                log "SECURITY: inbox HMAC mismatch in pending check: ${cb_file}"
+                echo "${cb_basename}" >> "${consumed_file}" 2>/dev/null || true
+                continue
+            fi
         fi
 
         if [ "${cb_data}" = "cc:approve:${pending_action_id}" ]; then
-            rm -f "${cb_file}" "${pending_file}"
+            echo "${cb_basename}" >> "${consumed_file}" 2>/dev/null || true
+            rm -f "${pending_file}"
             log "Pending approval FOUND: ${rule} approved by human"
             return 0
         elif [ "${cb_data}" = "cc:deny:${pending_action_id}" ]; then
-            rm -f "${cb_file}" "${pending_file}"
+            echo "${cb_basename}" >> "${consumed_file}" 2>/dev/null || true
+            rm -f "${pending_file}"
             log "Pending approval FOUND: ${rule} denied by human"
             return 1
         fi
@@ -1670,6 +1706,16 @@ main() {
     # Keepalive touch
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${PROJECT_DIR}/var/log/.gate-active" 2>/dev/null
 
+    # 0. Manifest hard-deny check — flags set during manifest load (before functions
+    # were defined). Now that respond_deny and emit_event are available, enforce them.
+    if [ -n "${MANIFEST_HARD_DENY_REASON}" ]; then
+        local _mhd_code="${MANIFEST_HARD_DENY_REASON%%|*}"
+        local _mhd_msg="${MANIFEST_HARD_DENY_REASON#*|}"
+        emit_event "gate" "manifest" "deny" "$(printf '%s' "${_mhd_msg}" | jq -Rsc '.')" "${_mhd_code}" "critical" 100 "gate" 2>/dev/null || true
+        respond_deny "${_mhd_msg}" "${_mhd_code}"
+        return
+    fi
+
     # 1. Read hook input from stdin
     local input
     input=$(cat)
@@ -1845,8 +1891,10 @@ main() {
     log "Rule: ${MATCHED_RULE}, action=${MATCHED_ACTION}, risk=${MATCHED_RISK_SCORE}, severity=${MATCHED_SEVERITY}"
 
     # 7b. Manifest escalation override (manifest narrows, never widens)
-    if [ "${MANIFEST_FORCES_ASK:-false}" = "true" ] && [ "${MATCHED_ACTION}" = "allow" ]; then
-        log "MANIFEST: Overriding policy allow → ask (category not in manifest allow list)"
+    # Catches both "allow" and "log" — "log" is functionally allow+audit,
+    # and must not escape manifest narrowing.
+    if [ "${MANIFEST_FORCES_ASK:-false}" = "true" ] && { [ "${MATCHED_ACTION}" = "allow" ] || [ "${MATCHED_ACTION}" = "log" ]; }; then
+        log "MANIFEST: Overriding policy ${MATCHED_ACTION} → ask (category not in manifest allow list)"
         MATCHED_ACTION="ask"
     fi
 
@@ -1875,7 +1923,13 @@ main() {
     case "${MATCHED_ACTION}" in
         allow)
             if [ "${MATCHED_AUDIT}" = "true" ]; then
-                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "allow" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "policy"
+                if ! emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "allow" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "policy"; then
+                    if [ "${ZLAR_REQUIRE_SIGNED_AUDIT:-false}" = "true" ]; then
+                        log "CRITICAL: Audit emit failed in strict mode — denying allow"
+                        respond_deny "Audit trail unavailable (strict signing mode)" "gate:audit_failure"
+                        return
+                    fi
+                fi
             fi
             respond_allow_or_sandbox
             ;;
@@ -2059,7 +2113,13 @@ main() {
             ;;
 
         log)
-            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "logged" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "policy"
+            if ! emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "logged" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "policy"; then
+                if [ "${ZLAR_REQUIRE_SIGNED_AUDIT:-false}" = "true" ]; then
+                    log "CRITICAL: Audit emit failed in strict mode — denying log action"
+                    respond_deny "Audit trail unavailable (strict signing mode)" "gate:audit_failure"
+                    return
+                fi
+            fi
             respond_allow_or_sandbox
             ;;
 

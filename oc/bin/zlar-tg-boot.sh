@@ -85,19 +85,26 @@ log "Boot setup starting (resolved ADMIN_USER=${ADMIN_USER})"
 # ── Create volatile directories ──
 mkdir -p "${RUNTIME_DIR}/inbox/cc" "${RUNTIME_DIR}/inbox/oc"
 mkdir -p "${OC_RUNTIME_DIR}/decisions"
-# Restrict inbox dirs — only dispatcher (root) and gate user can access.
-# Prevents forged approval files from other processes.
-chmod 700 "${RUNTIME_DIR}/inbox/cc" "${RUNTIME_DIR}/inbox/oc"
-log "Directories created (inbox dirs chmod 700)"
+# Restrict inbox dirs — root-owned, group-readable. v2.10.0 hardening:
+# The agent runs as ADMIN_USER (same as gate). If inbox dirs are owned by
+# ADMIN_USER, the agent can forge callback files (complete governance bypass).
+# Fix: root owns the dirs. Dispatcher (root) writes. Gate reads via group.
+# Agent cannot write because group only has r-x, not w.
+chmod 750 "${RUNTIME_DIR}/inbox/cc" "${RUNTIME_DIR}/inbox/oc"
+chown "root:${ADMIN_GROUP}" "${RUNTIME_DIR}/inbox/cc" "${RUNTIME_DIR}/inbox/oc"
+log "Directories created (inbox dirs root:${ADMIN_GROUP} 750 — agent cannot write)"
 
 # ── Generate per-boot HMAC secret for inbox integrity ──
 HMAC_SECRET_FILE="${RUNTIME_DIR}/inbox-hmac-secret"
 openssl rand -hex 32 > "${HMAC_SECRET_FILE}"
-# Mode 640 group-readable so the gate (running as ADMIN_USER in group staff) can read it.
-# Mode 600 was the old value — it caused the gate to crash because only root could read.
-chmod 640 "${HMAC_SECRET_FILE}"
-chown "root:${ADMIN_GROUP}" "${HMAC_SECRET_FILE}"
-log "HMAC secret generated at ${HMAC_SECRET_FILE} (mode 640, group ${ADMIN_GROUP})"
+# v2.10.0: Mode 600, root:wheel. Only the dispatcher (root) needs the secret
+# to compute HMACs on callback writes. The gate no longer verifies HMACs —
+# it trusts directory ownership instead (inbox dirs are root-owned, agent
+# cannot write). This closes the forgery attack where the agent reads the
+# secret and computes valid HMACs for forged callback files.
+chmod 600 "${HMAC_SECRET_FILE}"
+chown "root:wheel" "${HMAC_SECRET_FILE}"
+log "HMAC secret generated at ${HMAC_SECRET_FILE} (mode 600, root:wheel — gate trusts dir ownership)"
 
 # ── Write persistent admin user config (so next boot doesn't need to search) ──
 mkdir -p /etc/zlar 2>/dev/null || true
@@ -118,11 +125,12 @@ else
 fi
 
 # ── Set ownership ──
-# Dispatcher runs as root but OC gate runs as vincentnijjar.
-# Both need access to the inbox directories.
-chown -R "${ADMIN_USER}:${ADMIN_GROUP}" "${RUNTIME_DIR}/inbox"
+# v2.10.0: inbox dirs stay root-owned (set above). Only the parent inbox/
+# dir and OC runtime get ADMIN_USER ownership. The cc/ and oc/ subdirs are
+# root:staff 750 — dispatcher writes, gate reads via group, agent can't write.
+chown "${ADMIN_USER}:${ADMIN_GROUP}" "${RUNTIME_DIR}/inbox"
 chown -R "${ADMIN_USER}:${ADMIN_GROUP}" "${OC_RUNTIME_DIR}"
-log "Ownership set"
+log "Ownership set (inbox subdirs remain root-owned)"
 
 # ── Kill any stale dispatcher instances ──
 pkill -9 -f zlar-tg-poll 2>/dev/null || true

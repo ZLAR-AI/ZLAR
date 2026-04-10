@@ -387,6 +387,22 @@ hi_check_response_variance() {
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
+    # H14 cooldown check: if a lockout is active, enforce it.
+    # If expired, clear it — response_times was wiped when lockout started,
+    # so min_sample check will fail and return "ok" naturally.
+    local _h14_lockout
+    _h14_lockout=$(jq -r '.h14_lockout_until // 0' "${state_file}" 2>/dev/null)
+    if [ "${_h14_lockout}" != "0" ] && [ "${_h14_lockout}" != "null" ]; then
+        local _now_s; _now_s=$(date +%s)
+        if [ "${_now_s}" -lt "${_h14_lockout}" ]; then
+            echo "rubber_stamping"
+            return 1
+        fi
+        # Cooldown expired — clear flag
+        jq '.h14_lockout_until = 0' "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
+            mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
+    fi
+
     # Variance check on non-critical decisions only.
     # Critical decisions are governed by H15 (30s floor) which creates
     # artificial uniformity — including critical in variance would fire H14
@@ -417,6 +433,17 @@ hi_check_response_variance() {
 
     if [ "${is_uniform}" = "yes" ]; then
         _hi_log "H14 WARNING: ${human_id} warn/info response time std_dev is ${stddev}s (floor: ${HI_VARIANCE_STDDEV_FLOOR}s) — suspiciously uniform on non-critical decisions"
+        # Reset + cooldown: clear response_times so the human gets a fresh
+        # window after cooldown expires. Without this, H14 is self-sealing —
+        # it blocks asks, so no decisions are recorded, so variance never
+        # changes, so H14 stays fired until midnight.
+        local _lockout_until
+        _lockout_until=$(( $(date +%s) + 300 ))  # 5-minute cooldown
+        jq --argjson lockout "${_lockout_until}" \
+           '.response_times = [] | .h14_lockout_until = $lockout' \
+           "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
+           mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
+        _hi_log "H14: response_times cleared, 5-minute cooldown set (until $(date -u -r "${_lockout_until}" +%H:%M:%S 2>/dev/null || echo "${_lockout_until}"))"
         echo "rubber_stamping"
         return 1
     fi

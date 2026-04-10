@@ -1,5 +1,106 @@
 # Changelog
 
+## 2.10.0 — 2026-04-10
+
+Eight findings from the third multi-agent design review, fixing security bugs,
+correctness gaps, and a self-sealing lockout. Discovered by nine specialist
+agents (paradox hunter, game theorist, edge case analyst, interaction effects,
+Goodhart auditor, temporal analyst, information theorist, formal verifier,
+red team) running against v2.9.0 code.
+
+### Inbox forgery hardening (CRITICAL — complete governance bypass closed)
+
+A misaligned agent running as the same Unix user as the gate could forge
+Telegram approval callbacks: read the HMAC secret (group-readable), compute
+a valid HMAC, write a forged callback to the inbox directory (user-writable).
+The human never sees the request. Complete bypass of the governance loop.
+
+**Fix — three layers:**
+- `oc/bin/zlar-tg-boot.sh`: inbox directories changed to `root:staff 750`
+  (agent cannot write). HMAC secret changed to `root:wheel 600` (only
+  dispatcher can read). The agent can no longer create files in the inbox.
+- `bin/zlar-gate`: callback files are no longer deleted by the gate (it
+  can't write to root-owned dirs). Consumed callbacks tracked in
+  `var/log/.consumed-callbacks` to avoid re-processing. HMAC verification
+  is now advisory — primary trust is directory ownership.
+- Immediate: `sudo chown root:staff /var/run/zlar-tg/inbox/cc` +
+  `sudo chmod 750` on existing installations.
+
+### Manifest failure modes enforce hard deny (SERIOUS × 5)
+
+MANIFEST-INVARIANTS.md documents that expired, tampered, replayed, and
+deleted manifests produce hard deny. The code fell through to policy-only
+mode for all four, plus silently accepted a signed manifest when the public
+key file was missing. Five distinct bypass paths to strip the manifest's
+capability ceiling.
+
+**Fix:** Flag-based approach — manifest loading (lines 280-370, before
+function definitions) sets `MANIFEST_HARD_DENY_REASON`. The flag is checked
+at the top of `main()` where `respond_deny` and `emit_event` are available.
+All five failure modes now produce: audit event + hard deny + return. No
+policy-only fallback.
+
+Cases now hard-denied:
+- Expired manifest (invariant #6)
+- Tampered manifest / bad signature (invariant #8)
+- Replayed manifest / seq ≤ last (invariant #10)
+- Deleted manifest with seq file present (invariant #9a)
+- Signed manifest with missing public key (new — key deletion attack)
+
+### H14 self-sealing lockout fixed (CRITICAL)
+
+Once H14 (rubber-stamping variance check) fired, it blocked all new asks.
+No asks → no decisions recorded → response_times never changes → H14 stays
+fired until midnight UTC. Up to 24 hours of unrecoverable governance lockout.
+
+**Fix:** Reset + cooldown. When H14 fires: clear `response_times` to `[]`,
+set `h14_lockout_until = now + 300` (5-minute cooldown). After cooldown,
+response_times is empty, min_sample check fails, H14 returns ok. Human
+starts fresh. One state field (`h14_lockout_until`), backward compatible.
+
+### Policy routing fixes
+
+- **"log" action escaped manifest escalation.** The manifest override at
+  line 1867 only caught `allow`, not `log` (functionally equivalent). A
+  policy rule with `action: "log"` in an unmatched manifest category
+  proceeded without human review. Fixed: manifest escalation now catches
+  both `allow` and `log`.
+- **Strict audit mode allowed without audit.** When
+  `ZLAR_REQUIRE_SIGNED_AUDIT=true` and `emit_event` failed, the allow
+  path continued — action executed with no audit record. Fixed: if
+  emit_event fails in strict mode, the allow is converted to deny.
+
+### Atomic writes in human-invariants.mjs
+
+`writeFileSync` is not atomic — crash mid-write produces partial JSON that
+breaks all subsequent `loadState` calls. Changed to `writeFileSync` to
+temp file + `renameSync` (POSIX atomic rename), matching the pattern
+already used in `human-invariants.sh`.
+
+### Not in this release
+
+- **State file integrity (var/ directory).** The game theorist identified
+  that all files in `var/` (human state, canary, session, watchdog) lack
+  HMAC/signature protection. An agent with filesystem access can poison
+  every human invariant. Architectural fix needed — HMAC on write or
+  derive mutable state from the immutable signed audit trail.
+- **`last_ask_epoch` per-ask.** H15/H17 deliberation time is measured
+  against a single scalar, but H13 allows 5 concurrent pending asks.
+  Needs per-ask timestamps keyed by action_hash.
+- **Score recalibration.** Risk score operates at 21% of channel capacity
+  (1.4 bits of 6.66 possible). 73% of escalations carry score 60
+  (hardcoded manifest constant). Dynamic per-instance scoring deferred.
+- **Consequence-first Telegram messages.** 99.6% approval rate across 483
+  decisions. Messages describe what the agent does, not what goes wrong.
+- **Timestamp monoculture.** H14/H15/H17 all operate on wall-clock time.
+  Non-temporal signals needed (complexity-correlated, decision-outcome).
+- **NaN divergence.** Same corrupted input produces opposite outcomes in
+  .sh (false-fires H14) vs .mjs (silently passes). Needs unified handling.
+- **State file race conditions.** No locking on macOS. Concurrent sessions
+  can lose increments. Needs advisory locking strategy.
+
+---
+
 ## 2.9.0 — 2026-04-10
 
 Three security hardening items and one behavioral fix, all discovered during
