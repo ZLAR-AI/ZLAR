@@ -1009,6 +1009,27 @@
       }
     },
     {
+      "id": "R035A",
+      "enabled": true,
+      "description": "Write to .ssh/ — blocked (authorized_keys, config, private keys)",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".ssh"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 95,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
       "id": "R035",
       "enabled": true,
       "description": "Write to Desktop/Documents — allow and audit",
@@ -1027,27 +1048,6 @@
         "irreversibility": 50,
         "consequence": 60,
         "blast_radius": 40
-      }
-    },
-    {
-      "id": "R035",
-      "enabled": true,
-      "description": "Write to .ssh/ — blocked (authorized_keys, config, private keys)",
-      "domain": "write",
-      "action": "deny",
-      "severity": "critical",
-      "audit": true,
-      "match": {
-        "detail": {
-          "path": {
-            "contains": ".ssh"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 95,
-        "consequence": 100,
-        "blast_radius": 95
       }
     },
     {
