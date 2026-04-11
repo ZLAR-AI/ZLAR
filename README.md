@@ -6,7 +6,7 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12381/badge)](https://www.bestpractices.dev/projects/12381)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/ZLAR-AI/ZLAR/badge)](https://securityscorecards.dev/viewer/?uri=github.com/ZLAR-AI/ZLAR)
 [![GitHub release](https://img.shields.io/github/v/tag/ZLAR-AI/ZLAR?label=release&sort=semver)](https://github.com/ZLAR-AI/ZLAR/releases)
-[![Tests](https://img.shields.io/badge/tests-1000%2B_assertions-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
+[![Tests](https://img.shields.io/badge/tests-1100%2B_assertions-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
 
 **ZLAR is a deny-first governance kernel for AI agents.**
 
@@ -22,6 +22,14 @@ It intercepts agent tool calls, evaluates them against signed policy, routes dec
 - SDK membrane — a programming model where agents cannot be constructed without a live gate connection
 - Cryptographic delegation chains for multi-agent systems
 - Framework-agnostic: Claude Code, Cursor, Windsurf, any MCP client, AuthZEN 1.0 PDP interface
+
+### ZLAR 3.0: Agent Health (optional)
+
+ZLAR 3.0 adds restorative governance — behavioral observation that detects when an agent may be drifting and brings the human back into the loop. Five detectors evaluate session traces and produce a trust state. The gate consults the trust state and may escalate actions to human review.
+
+Ships disabled by default (`etc/restore-config.json`, `enabled: false`). The gate behaves identically to 2.x when restore is off.
+
+ZLAR 2.x remains a valid endpoint for users who want strong deterministic enforcement without restorative governance. ZLAR 3.x extends, rather than invalidates, that model.
 
 ## What ZLAR Is Not
 
@@ -233,7 +241,7 @@ const governed = agent.wrapTools({
 
 The canonical entrypoint runs every test suite and prints the total assertion
 count. CI runs this on every push. It is the single source of truth for the
-"1000+ assertions" badge.
+"1100+ assertions" badge.
 
 ```bash
 bash tests/count-assertions.sh            # run all 28 files, print summary
@@ -241,7 +249,7 @@ bash tests/count-assertions.sh --detail   # also show per-file pass counts
 bash tests/count-assertions.sh --badge    # print shields.io badge URL
 ```
 
-Current state (v2.11.1): **28 files, 1046 assertions, 0 failures.**
+Current state (v3.0.0): **32 files, 1171 assertions, 0 failures.**
 
 ### Dependencies
 
@@ -318,8 +326,9 @@ lib/           Shared libraries (crypto, session state, agent identity, receipt,
 adapters/      Framework hooks (claude-code, cursor, windsurf)
 mcp-gate/      MCP TCP proxy gate (Node.js)
 etc/           Policy, manifests, signing keys, standing approvals, receipt schema
-tests/         Test suites (14 bash + 13 Node.js + 1 Python, 1000+ assertions)
+tests/         Test suites (15 bash + 16 Node.js + 1 Python, 1100+ assertions)
                Run all: bash tests/count-assertions.sh
+packages/      ZLAR 3.0 subsystems (zlar-restore: Agent Health engine, detectors, tests)
 docs/          Architecture decisions, manifest invariants, operations
 docs/adr/      Architecture Decision Records
 signal/        Agent-facing signal layer (thesis, origin, proof)

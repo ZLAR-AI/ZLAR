@@ -1,5 +1,54 @@
 # Changelog
 
+## 3.0.0 — 2026-04-12
+
+ZLAR 3.0: Agent Health (restorative governance subsystem).
+
+Adds behavioral observation alongside deterministic enforcement.
+Five detectors evaluate session traces and produce a trust state
+(healthy / degraded / at_risk / suspended). The gate consults the
+trust state and may escalate actions to human review. Ships disabled
+by default. Gate behaves identically to 2.x when restore is off.
+
+ZLAR 2.x remains a valid endpoint for users who want strong deterministic
+enforcement without restorative governance. ZLAR 3.x extends, rather than
+invalidates, that model.
+
+### Agent Health subsystem
+
+- Monotone trust-state machine: healthy -> degraded -> at_risk -> suspended.
+  State can only worsen. Reset to healthy requires human action with friction
+  (reason, delay, signed event, daily limit).
+- 5 detectors: contradiction_increase, escalation_under_ambiguity,
+  source_grounding_loss, abnormal_burstiness, authority_widening.
+- Evaluation engine aggregates detector scores with configurable thresholds.
+- Background trigger fires on deny/novelty/high-risk events, evaluates
+  session trace non-blocking, updates trust state, sends Telegram notification.
+- CLI: zlar-restore (evaluate, status, reset, history, detectors).
+- 8 invariants documented in docs/RESTORE-INVARIANTS.md.
+
+### Gate integration
+
+- lib/restore.sh sourced by gate, error-trapped (INV-04: cannot crash gate).
+- Step 9c escalation check: if trust state is degraded or worse, may
+  escalate allow/log to ask or deny based on configurable mapping.
+- Zero-risk when disabled: all code paths short-circuit on enabled=false.
+
+### Test coverage
+
+- 90 new assertions (38 shell + 52 Node.js).
+- 6 trace fixtures (healthy + 5 pathological patterns).
+- Total: 1171 assertions across 32 test files, 0 failures.
+
+## 2.11.2 — 2026-04-12
+
+Path B Phase 1 hardening.
+
+- session_state_init verifies existing state files against audit seal,
+  rebuilds on staleness.
+- Five early-return paths in gate main() now seal before returning.
+- 7 new test assertions. Full suite green.
+
 ## 2.11.1 — 2026-04-11
 
 Score recalibration build: consequence-first messages, novelty detection,
