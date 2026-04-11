@@ -8,7 +8,7 @@
 [![GitHub release](https://img.shields.io/github/v/tag/ZLAR-AI/ZLAR?label=release&sort=semver)](https://github.com/ZLAR-AI/ZLAR/releases)
 [![Tests](https://img.shields.io/badge/tests-1000%2B_assertions-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
 
-**ZLAR is a deterministic execution governance layer for AI agents.**
+**ZLAR is a deny-first governance kernel for AI agents.**
 
 It intercepts agent tool calls, evaluates them against signed policy, routes decisions to humans when required, and produces cryptographic proof that governance happened. No AI in the enforcement path. The gate pattern-matches. It cannot be persuaded.
 
