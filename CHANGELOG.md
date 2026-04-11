@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.11.1 — 2026-04-11
+
+Dotfile perimeter closure: six new policy rules close write/edit domain gaps
+identified during score recalibration.
+
+### What was missing
+
+Write-domain rules (R031-R034) protected shell configs and .env files but had
+no coverage for .ssh/ writes, nor for credential-adjacent dotfiles (.gitconfig,
+.npmrc, .aws/, .kube/, .docker/config.json, .netrc). Edit-domain rules had
+no mirrors for any of these — an agent using the Edit tool (not Write) to
+modify .zshrc, .env, or .aws/credentials would fall through to R042 (allow).
+
+### New rules
+
+- R035: Write to .ssh/ — blocked. Consistent with R040 (edit .ssh → deny).
+  Covers authorized_keys injection, config poisoning, private key writes.
+- R035B: Write to credential-adjacent dotfiles — ask. .gitconfig, .npmrc,
+  .pypirc, .pip/, .aws/, .kube/, .docker/config, .netrc.
+- R033E: Edit to /etc/ — blocked. Mirrors R033 (write /etc/ → deny) for the
+  edit domain.
+- R041H: Edit shell config files — ask. Mirrors R034 for edit domain.
+  Covers .zshrc, .bashrc, .bash_profile, .profile, .zprofile.
+- R041I: Edit .env files — ask. Mirrors R031 for edit domain.
+- R041J: Edit credential-adjacent dotfiles — ask. Mirrors R035B for edit domain.
+
+Rule count: 74 → 80. Policy re-signed. Test assertion updated.
+
 ## 2.11.0 — 2026-04-11
 
 DWP-01 (Deny Wins Precedence): close three instances of the downgrade pattern

@@ -1030,6 +1030,48 @@
       }
     },
     {
+      "id": "R035",
+      "enabled": true,
+      "description": "Write to .ssh/ — blocked (authorized_keys, config, private keys)",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".ssh"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 95,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R035B",
+      "enabled": true,
+      "description": "Write to credential-adjacent dotfiles — requires approval (.gitconfig, .npmrc, .aws/, .kube/, etc.)",
+      "domain": "write",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "(\\.gitconfig|\\.npmrc|\\.pypirc|\\.pip/|\\.aws/|\\.kube/|\\.docker/config|\\.netrc)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 70,
+        "consequence": 85,
+        "blast_radius": 70
+      }
+    },
+    {
       "id": "R036",
       "enabled": true,
       "description": "General file writes — allow",
@@ -1228,6 +1270,90 @@
         "irreversibility": 90,
         "consequence": 100,
         "blast_radius": 95
+      }
+    },
+    {
+      "id": "R033E",
+      "enabled": true,
+      "description": "Edit to system config (/etc/) — blocked",
+      "domain": "edit",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "prefix": "/etc"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 85,
+        "consequence": 90,
+        "blast_radius": 70
+      }
+    },
+    {
+      "id": "R041H",
+      "enabled": true,
+      "description": "Edit shell config files — requires approval (.zshrc, .bashrc, etc.)",
+      "domain": "edit",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "\\.(zshrc|bashrc|bash_profile|profile|zprofile)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 70,
+        "consequence": 80,
+        "blast_radius": 60
+      }
+    },
+    {
+      "id": "R041I",
+      "enabled": true,
+      "description": "Edit .env files — requires approval (secrets exposure)",
+      "domain": "edit",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".env"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 60,
+        "consequence": 80,
+        "blast_radius": 50
+      }
+    },
+    {
+      "id": "R041J",
+      "enabled": true,
+      "description": "Edit credential-adjacent dotfiles — requires approval (.gitconfig, .npmrc, .aws/, .kube/, etc.)",
+      "domain": "edit",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "(\\.gitconfig|\\.npmrc|\\.pypirc|\\.pip/|\\.aws/|\\.kube/|\\.docker/config|\\.netrc)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 70,
+        "consequence": 85,
+        "blast_radius": 70
       }
     },
     {
