@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# ZLAR Gate v2.11.0 — Claude Code Hook Script
+# ZLAR Gate v2.11.1 — Claude Code Hook Script
 #
 # THE gate. Runs synchronously on every Claude Code PreToolUse hook invocation.
 # Reads tool call from stdin, classifies, evaluates policy, asks Telegram if
@@ -1448,6 +1448,46 @@ check_pending_approval() {
     return 2  # Still waiting
 }
 
+# Generate consequence line for Telegram escalation messages.
+# The human should see what happens if they approve the wrong thing.
+# Keyed on rule family + tool name. Fallback uses risk score.
+get_consequence_line() {
+    local tool_name="$1" rule="$2" risk_score="$3"
+
+    # SubagentStart — authority envelope, not a single act
+    if [ "${tool_name}" = "SubagentStart" ]; then
+        echo "⚠️ *If wrong:* you are approving an authority branch — downstream actions not individually foreseeable"
+        return
+    fi
+
+    # Rule-specific consequences
+    case "${rule}" in
+        R002*)       echo "⚠️ *If wrong:* irreversible file deletion" ;;
+        R003*)       echo "⚠️ *If wrong:* system-level privilege granted to agent" ;;
+        R004*|R005*) echo "⚠️ *If wrong:* arbitrary code execution via shell escape" ;;
+        R006*|R007*) echo "⚠️ *If wrong:* network boundary crossed — data may leave" ;;
+        R008*|R009*) echo "⚠️ *If wrong:* package installation — supply chain risk" ;;
+        R010*|R011*) echo "⚠️ *If wrong:* code execution via interpreter escape" ;;
+        R012*)       echo "⚠️ *If wrong:* governance infrastructure modified" ;;
+        R013*|R014*) echo "⚠️ *If wrong:* network command — data may exit perimeter" ;;
+        R031*|R041I) echo "⚠️ *If wrong:* secrets modified — may propagate to services" ;;
+        R033*|R033E) echo "⚠️ *If wrong:* system configuration altered" ;;
+        R034*|R041H) echo "⚠️ *If wrong:* shell environment altered — persists across sessions" ;;
+        R035*|R041J) echo "⚠️ *If wrong:* credentials overwritten or exposed" ;;
+        R032*|R041*) echo "⚠️ *If wrong:* agent governance rules may be modified" ;;
+        R050*|R051*|R052*) echo "⚠️ *If wrong:* sensitive material exposed to agent context" ;;
+        R080*)       echo "⚠️ *If wrong:* new autonomous agent spawned" ;;
+        R090*|R095*) echo "⚠️ *If wrong:* external service contacted — data may be shared" ;;
+        *)
+            if [ "${risk_score}" -ge 70 ]; then
+                echo "⚠️ *If wrong:* high-consequence action (risk ${risk_score}/100)"
+            else
+                echo "⚠️ *If wrong:* unreviewed action"
+            fi
+            ;;
+    esac
+}
+
 # Send Telegram ask and return immediately (non-blocking).
 # Writes pending file for check_pending_approval to find on retry.
 # Returns: 0 = message sent, 1 = send failed, 2 = no token, 3 = rate limited
@@ -1487,12 +1527,24 @@ telegram_ask_async() {
 "
     fi
 
+    # Consequence line — what happens if the human approves the wrong thing
+    local consequence_line
+    consequence_line=$(get_consequence_line "${tool_name}" "${rule}" "${risk_score}")
+
+    # Authority type — distinguish single-act from envelope approval
+    local authority_type=""
+    if [ "${tool_name}" = "SubagentStart" ]; then
+        authority_type="
+🔷 *Approval type:* Authority envelope (not a single action)"
+    fi
+
     local text="${emoji} 🖥️ *ZLAR Gate*
 ${fatigue_banner}
 *Tool:* \`${tool_name}\`
 *Action:* \`${display}\`
 *Risk:* ${risk_score}/100
 *Rule:* ${rule}
+${consequence_line}${authority_type}
 *Session:* \`${SESSION_ID:-unknown}\`"
 
     text=$(echo "${text}" | sed 's/[_\[\]()~>#+=|{}.!-]/\\&/g' | sed 's/\\`/`/g' | sed 's/\\\*/*/g')

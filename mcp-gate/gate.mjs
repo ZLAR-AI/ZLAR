@@ -590,6 +590,31 @@ async function telegramApi(method, body) {
   }
 }
 
+// Consequence line — what happens if the human approves the wrong thing.
+// Keyed on rule family. Fallback uses risk score.
+function getConsequenceLine(toolName, rule, riskScore) {
+  if (toolName === 'SubagentStart') return '⚠️ *If wrong:* you are approving an authority branch — downstream actions not individually foreseeable';
+  const r = rule || '';
+  if (r.startsWith('R002')) return '⚠️ *If wrong:* irreversible file deletion';
+  if (r.startsWith('R003')) return '⚠️ *If wrong:* system-level privilege granted to agent';
+  if (/^R00[45]/.test(r)) return '⚠️ *If wrong:* arbitrary code execution via shell escape';
+  if (/^R00[67]/.test(r)) return '⚠️ *If wrong:* network boundary crossed — data may leave';
+  if (/^R00[89]/.test(r)) return '⚠️ *If wrong:* package installation — supply chain risk';
+  if (/^R01[01]/.test(r)) return '⚠️ *If wrong:* code execution via interpreter escape';
+  if (r.startsWith('R012')) return '⚠️ *If wrong:* governance infrastructure modified';
+  if (/^R01[34]/.test(r)) return '⚠️ *If wrong:* network command — data may exit perimeter';
+  if (/^R031|^R041I/.test(r)) return '⚠️ *If wrong:* secrets modified — may propagate to services';
+  if (/^R033/.test(r)) return '⚠️ *If wrong:* system configuration altered';
+  if (/^R034|^R041H/.test(r)) return '⚠️ *If wrong:* shell environment altered — persists across sessions';
+  if (/^R035|^R041J/.test(r)) return '⚠️ *If wrong:* credentials overwritten or exposed';
+  if (/^R032|^R041/.test(r)) return '⚠️ *If wrong:* agent governance rules may be modified';
+  if (/^R05[012]/.test(r)) return '⚠️ *If wrong:* sensitive material exposed to agent context';
+  if (r.startsWith('R080')) return '⚠️ *If wrong:* new autonomous agent spawned';
+  if (/^R09[05]/.test(r)) return '⚠️ *If wrong:* external service contacted — data may be shared';
+  if (riskScore >= 70) return `⚠️ *If wrong:* high-consequence action (risk ${riskScore}/100)`;
+  return '⚠️ *If wrong:* unreviewed action';
+}
+
 async function telegramAsk(actionId, toolName, args, rule, riskScore, severity) {
   if (!CONFIG.telegramToken || !CONFIG.telegramChatId) {
     console.error('[gate] No Telegram token or chat ID — cannot ask human');
@@ -598,8 +623,9 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity) 
 
   const emoji = severity === 'critical' ? '🔴' : severity === 'warn' ? '🟡' : '⚡';
   const argsPreview = JSON.stringify(args).substring(0, 100);
+  const consequenceLine = getConsequenceLine(toolName, rule, riskScore);
 
-  const text = `${emoji} 🔷 *MCP Gate*\n\n*Tool:* \`${toolName}\`\n*Args:* \`${argsPreview}\`\n*Risk:* ${riskScore}/100\n*Rule:* ${rule}`;
+  const text = `${emoji} 🔷 *MCP Gate*\n\n*Tool:* \`${toolName}\`\n*Args:* \`${argsPreview}\`\n*Risk:* ${riskScore}/100\n*Rule:* ${rule}\n${consequenceLine}`;
   const escapedText = text.replace(/[_\[\]()~>#+=|{}.!-]/g, '\\$&').replace(/\\`/g, '`').replace(/\\\*/g, '*');
 
   const keyboard = {
