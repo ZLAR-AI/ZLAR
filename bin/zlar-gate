@@ -200,6 +200,42 @@ else
     SESSION_STATE_ENABLED="false"
 fi
 
+# ── Novelty detection ──────────────────────────────────────────────────────
+# Tracks which high-consequence domains have been used this session.
+# First occurrence of mcp (per server) or webfetch → signal novelty.
+# The gate escalates; the human reviews once; subsequent calls proceed normally.
+# This is a training moment, not permanent friction.
+NOVELTY_DETECTED="false"
+
+novelty_check_and_record() {
+    local domain="$1" tool_display="$2"
+    local seen_file="${SESSION_DIR}/${SESSION_ID:-unknown}.seen-domains"
+
+    local check_key="${domain}"
+
+    # For MCP, track per server — different servers are different trust surfaces
+    if [ "${domain}" = "mcp" ]; then
+        local mcp_server
+        mcp_server=$(echo "${tool_display}" | sed -n 's/^MCP:\([^/]*\)\/.*/\1/p' 2>/dev/null)
+        [ -n "${mcp_server}" ] && check_key="mcp:${mcp_server}"
+    fi
+
+    # Only novelty-track high-consequence domains
+    case "${domain}" in
+        mcp|webfetch) ;;
+        *) return 1 ;;
+    esac
+
+    # Check if already seen this session
+    if [ -f "${seen_file}" ] && grep -qF "${check_key}" "${seen_file}" 2>/dev/null; then
+        return 1  # Already seen — not novel
+    fi
+
+    # Record and signal novelty
+    echo "${check_key}" >> "${seen_file}" 2>/dev/null || true
+    return 0  # Novel — first occurrence
+}
+
 # Source canary library (governance health probes for human-in-the-loop integrity)
 # shellcheck source=../lib/canary.sh
 CANARY_LOADED="false"
@@ -1538,8 +1574,15 @@ telegram_ask_async() {
 🔷 *Approval type:* Authority envelope (not a single action)"
     fi
 
+    # Novelty banner — first time this domain/server has been used this session
+    local novelty_banner=""
+    if [ "${NOVELTY_DETECTED}" = "true" ]; then
+        novelty_banner="
+🆕 *First time this session* — one-time review, will not ask again for this"
+    fi
+
     local text="${emoji} 🖥️ *ZLAR Gate*
-${fatigue_banner}
+${fatigue_banner}${novelty_banner}
 *Tool:* \`${tool_name}\`
 *Action:* \`${display}\`
 *Risk:* ${risk_score}/100
@@ -1975,6 +2018,19 @@ main() {
     # consume human attention regardless of velocity. (Human Attention principle.)
     if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ "${MATCHED_ACTION}" = "allow" ] && [ "${MATCHED_RISK_SCORE}" -gt 0 ]; then
         MATCHED_ACTION=$(session_check_escalation "${MATCHED_ACTION}" "${DOMAIN}" "${TOOL_DISPLAY}" "allow")
+    fi
+
+    # 9b. Novelty detection — first occurrence of high-consequence domains
+    # MCP tools and webfetch are the domains where "first time" is a meaningful
+    # signal: a new third-party surface area or a new outbound data channel.
+    # On first occurrence per session: escalate allow/log → ask.
+    # Sets NOVELTY_DETECTED for the Telegram message to include a training banner.
+    NOVELTY_DETECTED="false"
+    if { [ "${MATCHED_ACTION}" = "allow" ] || [ "${MATCHED_ACTION}" = "log" ]; } && novelty_check_and_record "${DOMAIN}" "${TOOL_DISPLAY}"; then
+        log "NOVELTY: First ${DOMAIN} action this session — escalating to ask"
+        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "novelty_escalation" "${DETAIL}" "${MATCHED_RULE}" "info" "${MATCHED_RISK_SCORE}" "gate:novelty"
+        MATCHED_ACTION="ask"
+        NOVELTY_DETECTED="true"
     fi
 
     # 10. Route based on action
