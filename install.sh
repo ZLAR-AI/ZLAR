@@ -22,7 +22,7 @@ _INSTALL_SELF_DIR="$(cd "$(dirname "${_INSTALL_SELF}")" 2>/dev/null && pwd)"
 if [ -f "${_INSTALL_SELF_DIR}/VERSION" ]; then
     ZLAR_VERSION=$(cat "${_INSTALL_SELF_DIR}/VERSION" | tr -d '[:space:]')
 else
-    ZLAR_VERSION="2.7.1"
+    ZLAR_VERSION="3.0.0"
 fi
 INSTALL_DIR="${HOME}/.zlar"
 

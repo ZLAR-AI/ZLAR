@@ -38,7 +38,7 @@ Current ADRs:
 
 ZLAR's invariants are the constitutional floor. They define what the system must always do (and must never do) regardless of feature requests, competitive pressure, or convenience.
 
-Invariants are documented in `docs/MANIFEST-INVARIANTS.md` (manifest-specific) and `ZLAR-2.0/build/invariants-v0.2.md` (full set).
+Invariants are documented in `docs/MANIFEST-INVARIANTS.md` (manifest-specific) and `docs/RESTORE-INVARIANTS.md` (Agent Health, v3.0.0).
 
 **Invariant amendment process:**
 

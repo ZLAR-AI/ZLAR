@@ -18,6 +18,7 @@ We credit reporters in the advisory unless they prefer anonymity.
 
 | Version | Supported |
 |---------|-----------|
+| 3.x.x   | Yes       |
 | 2.x.x   | Yes       |
 | 1.x.x   | Security fixes only |
 | < 1.0   | No        |

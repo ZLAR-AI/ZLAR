@@ -4,7 +4,7 @@ The `zlar` command is the operator's interface to the ZLAR governance system. It
 
 This document is the reference for **what each command does**. For symptom-based problem-solving, see [`troubleshooting.md`](troubleshooting.md). For architectural context, see [`architecture-map.md`](architecture-map.md). For the doctrine, see [`../signal/DOCTRINE.md`](../signal/DOCTRINE.md).
 
-**Last updated:** v2.7.0 — April 7, 2026
+**Last updated:** v3.0.0 — April 12, 2026
 
 ---
 
@@ -33,6 +33,11 @@ Throughout this document:
 | `zlar telegram` | Configure Telegram approval (interactive) | Modifies `${PROJECT_DIR}/.env` and `${PROJECT_DIR}/etc/gate.json` |
 | `zlar uninstall` | Remove the ZLAR installation (interactive) | Destructive — see the command for exact behavior |
 | `zlar help` | Show command list | None |
+| `zlar-restore evaluate` | Run Agent Health detectors against session trace | Writes `var/restore/trust-state.json` if state worsens |
+| `zlar-restore status` | Show current trust state | None (read-only) |
+| `zlar-restore reset <reason>` | Reset trust state to healthy (with friction) | Modifies trust state file after delay |
+| `zlar-restore history` | Show trust state transition history | None (read-only) |
+| `zlar-restore detectors` | List available detectors | None (read-only) |
 
 ---
 

@@ -4,7 +4,7 @@
 
 This document is the answer to "what does this change actually touch?" — the cross-file dependencies that grep alone is slow to surface. It is updated alongside any architectural change.
 
-**Last updated:** v2.7.0 — April 7, 2026
+**Last updated:** v3.0.0 — April 12, 2026
 
 ---
 
@@ -34,9 +34,12 @@ The order in which a Claude Code tool call passes through enforcement layers:
 5. **bin/zlar-gate checks `/etc/zlar/off-flag`** — if present, returns allow immediately. **This is the v2.7.0 structural off-switch** — root-owned, sudoers-NOPASSWD-toggleable, agent cannot reach.
 6. **Policy load and signature verification** — `etc/policies/active.policy.json`, verified against `etc/keys/policy-signing.pub`.
 7. **Policy evaluation** — apply rules to the tool call. Rules can return allow / deny / ask.
-8. **Human invariants** — H6 (daily decision cap), H13 (pending queue), H14 (approval rate), H15 (deliberation floor), H17 (authenticity).
-9. **Telegram approval (if needed)** — route to @ZLAR_00_bot for the human to decide.
-10. **Audit log entry** — written to `var/log/audit.jsonl` with signature.
+8. **Human invariants** — H6 (daily decision cap), H13 (pending queue), H14 (response time variance), H15 (deliberation floor), H17 (authenticity).
+9. **Session state escalation** — velocity, loop, and denial burst detection (step 9). Novelty detection for first-use domains (step 9b).
+9c. **Restore / Agent Health check (v3.0.0)** — if `etc/restore-config.json` is enabled and a trust state file exists, may escalate allow/log to ask or deny based on trust state (healthy / degraded / at_risk / suspended). Error-trapped: cannot crash the gate (RESTORE-INV-04). Reads `lib/restore.sh`.
+10. **Telegram approval (if needed)** — route to @ZLAR_00_bot for the human to decide.
+11. **Audit log entry** — written to `var/log/audit.jsonl` with signature.
+12. **Restore background trigger (v3.0.0)** — on deny, novelty, or high-risk (70+) outcomes, fires `lib/restore-trigger.mjs` in the background. Reads the audit trail, runs 5 detectors, updates trust state monotonically, sends Telegram notification on state change. Non-blocking.
 
 The first allow in this chain is THE SOVEREIGN. v2.6.0 had its sovereign at `~/.claude/.gate-disabled` — agent-writable. v2.7.0 adds a second sovereign at `/etc/zlar/off-flag` — agent-unreachable. During the overlap period, both check independently; either being present means the gate is off.
 
@@ -55,6 +58,28 @@ The structural off-switch lives at `/etc/zlar/off-flag`. Properties:
 **The sudoers entry is a TCB component.** If `/etc/sudoers.d/zlar` is removed or modified, the CLI can no longer toggle the structural flag (the wrapper path still works as fallback). Any installation or migration procedure must preserve it.
 
 **Known gap (v2.7.0):** `repo/bin/zlar` and `tools/zlar` are NOT in R032's path-protection regex. An agent could theoretically overwrite the CLI to lie about gate state. This is a UX-deception attack, not a security bypass — the actual gate still runs. v2.8 backlog item: extend R032 to cover the CLI scripts.
+
+---
+
+## Restore subsystem (v3.0.0 — Agent Health)
+
+ZLAR 3.0 adds a behavioral observation layer that runs alongside the enforcement gate.
+
+| Component | File | Purpose |
+|---|---|---|
+| Shell layer | `lib/restore.sh` | Sourced by `bin/zlar-gate`. Reads trust state file, advises on escalation. Error-trapped. |
+| Config | `etc/restore-config.json` | Feature gate (`enabled: false` by default). Escalation mappings, reset constraints. |
+| Trust state | `var/restore/trust-state.json` | Monotone state machine: healthy / degraded / at_risk / suspended. Written by trigger, read by shell layer. |
+| Trigger | `lib/restore-trigger.mjs` | Backgrounded by gate on deny/novelty/high-risk. Reads audit trail, runs detectors, updates trust state, sends Telegram. |
+| Engine | `packages/zlar-restore/restore-engine.mjs` | Loads and runs detectors, aggregates scores, produces recommendation. |
+| Trust machine | `packages/zlar-restore/trust-state.mjs` | Monotone transition logic. Reset with friction (reason, delay, count). |
+| Detectors | `packages/zlar-restore/detectors/` | 5 files: contradiction, escalation, grounding loss, burstiness, authority widening. |
+| CLI | `bin/zlar-restore` | Operator interface: evaluate, status, reset, history, detectors. |
+| Invariants | `docs/RESTORE-INVARIANTS.md` | 8 invariants (RESTORE-INV-01 through -08). |
+
+**Key architectural fact:** when `enabled: false` (the default), ALL restore code paths short-circuit. The gate runs identically to v2.x. No trust state files are created, no detectors run, no background triggers fire. This is the version boundary: 2.x = enforcement only, 3.x = enforcement + behavioral observation.
+
+**Implication for changes:** the shell layer (`lib/restore.sh`) and the Node.js engine (`packages/zlar-restore/`) are NOT parallel implementations of the same logic (unlike the two gates). They have different responsibilities. The shell layer reads state and advises. The Node.js engine writes state. Changing one does not require changing the other — but the trust state file format must stay consistent between them.
 
 ---
 

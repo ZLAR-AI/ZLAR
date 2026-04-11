@@ -244,7 +244,7 @@ count. CI runs this on every push. It is the single source of truth for the
 "1100+ assertions" badge.
 
 ```bash
-bash tests/count-assertions.sh            # run all 28 files, print summary
+bash tests/count-assertions.sh            # run all 32 files, print summary
 bash tests/count-assertions.sh --detail   # also show per-file pass counts
 bash tests/count-assertions.sh --badge    # print shields.io badge URL
 ```
