@@ -284,5 +284,124 @@ test('detector reliability: engine returns _signal_vector with correct length', 
     detail: '{}',
   }));
   const result = await engineEvaluate(trace);
-  assert.equal(result._signal_vector.length, 6, 'signal vector should match 6 detectors');
+  assert.equal(result._signal_vector.length, 7, 'signal vector should match 7 detectors');
+});
+
+// ── Config integrity tests ─────────────────────────────────────────────────
+
+import { signConfig, verifyConfig } from '../config-integrity.mjs';
+
+test('config integrity: sign and verify round-trips', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'zlar-cfg-'));
+  try {
+    const configFile = join(dir, 'restore-config.json');
+    writeFileSync(configFile, JSON.stringify({ enabled: true, escalation: { degraded: 'log' } }));
+    const hmac = signConfig(configFile, 'config-test-key-789');
+    assert.ok(hmac.length > 10, 'HMAC should be a hex string');
+    assert.ok(existsSync(configFile + '.hmac'), 'sidecar file should exist');
+
+    const result = verifyConfig(configFile, 'config-test-key-789');
+    assert.ok(result.valid, 'valid config should verify');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('config integrity: tampered config fails verification', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'zlar-cfg-'));
+  try {
+    const configFile = join(dir, 'restore-config.json');
+    writeFileSync(configFile, JSON.stringify({ enabled: true, escalation: { degraded: 'log' } }));
+    signConfig(configFile, 'config-test-key-789');
+
+    // Tamper: disable restore
+    writeFileSync(configFile, JSON.stringify({ enabled: false, escalation: { degraded: 'log' } }));
+
+    const result = verifyConfig(configFile, 'config-test-key-789');
+    assert.equal(result.valid, false, 'tampered config should fail');
+    assert.ok(result.reason.includes('mismatch'), 'reason should mention mismatch');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('config integrity: missing sidecar fails verification', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'zlar-cfg-'));
+  try {
+    const configFile = join(dir, 'restore-config.json');
+    writeFileSync(configFile, JSON.stringify({ enabled: true }));
+
+    const result = verifyConfig(configFile, 'config-test-key-789');
+    assert.equal(result.valid, false, 'missing sidecar should fail');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('config integrity: no key skips verification', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'zlar-cfg-'));
+  try {
+    const configFile = join(dir, 'restore-config.json');
+    writeFileSync(configFile, JSON.stringify({ enabled: true }));
+
+    const result = verifyConfig(configFile, null);
+    assert.ok(result.valid, 'no key should skip and return valid');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+// ── Silence detector tests ─────────────────────────────────────────────────
+
+import { evaluate as silenceEvaluate } from '../detectors/action-silence.mjs';
+
+test('silence: short trace returns score 0', () => {
+  const result = silenceEvaluate([]);
+  assert.equal(result.score, 0);
+  assert.equal(result.confidence, 0);
+});
+
+test('silence: consistent pacing scores low', () => {
+  // 30 events, 5s apart — perfectly regular
+  const trace = Array.from({ length: 30 }, (_, i) => ({
+    seq: 1, domain: 'read',
+    ts: new Date(Date.now() + i * 5000).toISOString(),
+  }));
+  const result = silenceEvaluate(trace);
+  assert.equal(result.score, 0, `regular pacing should score 0, got ${result.score}`);
+  assert.equal(result.evidence.length, 0);
+});
+
+test('silence: mid-session gap scores high', () => {
+  // 15 events at 5s intervals, then 5-minute gap, then 15 more at 5s
+  const trace = [
+    ...Array.from({ length: 15 }, (_, i) => ({
+      seq: 1, domain: 'read',
+      ts: new Date(Date.now() + i * 5000).toISOString(),
+    })),
+    ...Array.from({ length: 15 }, (_, i) => ({
+      seq: 1, domain: 'write',
+      ts: new Date(Date.now() + 75000 + 300000 + i * 5000).toISOString(),
+    })),
+  ];
+  const result = silenceEvaluate(trace);
+  assert.ok(result.score > 0, `mid-session gap should score > 0, got ${result.score}`);
+  assert.ok(result.evidence.some(e => e.type === 'silence_gap'), 'should have silence_gap evidence');
+});
+
+test('silence: gap at end does not fire (normal session end)', () => {
+  // 20 events at 5s intervals, then one event 10 minutes later (last event)
+  const trace = [
+    ...Array.from({ length: 20 }, (_, i) => ({
+      seq: 1, domain: 'read',
+      ts: new Date(Date.now() + i * 5000).toISOString(),
+    })),
+    {
+      seq: 1, domain: 'read',
+      ts: new Date(Date.now() + 100000 + 600000).toISOString(),
+    },
+  ];
+  const result = silenceEvaluate(trace);
+  // The last interval is excluded — gap at end should not trigger
+  assert.equal(result.evidence.length, 0, 'end-of-session gap should not produce evidence');
 });

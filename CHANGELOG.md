@@ -1,5 +1,32 @@
 # Changelog
 
+## 3.0.2 — 2026-04-11
+
+Continued hardening. Config integrity, 7th detector, anti-evasion improvements.
+
+Security:
+- Config integrity HMAC (RESTORE-INV-12). Separate key signs restore-config.json
+  via sidecar file. Tampered or unsigned config forces fail-closed: restore ON,
+  all escalations forced to deny, Telegram alert. The attacker who disables
+  restore gets maximum escalation instead.
+- Diffuse weight jitter: the L2 aggregation weight is now jittered +/-10% per
+  evaluation, matching threshold jitter. Removes the last stable target for an
+  agent distributing pathology evenly across detectors.
+- Separate HMAC key support: trust-state and evaluation-history can use
+  independent HMAC keys (trust_state_hmac_key, evaluation_history_hmac_key
+  in config). Shared key still works as fallback. Compartmentalization.
+
+Detection:
+- New detector: action-silence. Detects unusual gaps in agent activity within
+  active sessions. Compares longest mid-session gap against session median
+  interval. End-of-session gaps excluded (normal). 7 detectors total (was 6).
+
+CLI:
+- New command: zlar-restore sign-config. Signs restore-config.json after edits.
+
+Invariants: 12 (was 11). New: RESTORE-INV-12 (config integrity, fail-closed).
+Tests: 122 restore assertions (84 Node + 38 shell), 0 failures.
+
 ## 3.0.1 — 2026-04-11
 
 Agent Health hardening. Security, aggregation, and anti-evasion improvements.

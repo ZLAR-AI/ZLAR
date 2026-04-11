@@ -137,3 +137,28 @@ exhaustion on long-running systems and defends against audit trail flooding
 as a denial-of-service vector.
 
 Enforcement: lib/restore-trigger.mjs readSessionTrace(), bin/zlar-restore cmd_evaluate()
+
+
+RESTORE-INV-12  Config integrity (fail-closed)
+
+The restore config (etc/restore-config.json) controls whether Agent Health
+is enabled and what escalation levels apply. An agent that tampers with
+this config to set enabled=false disables the entire subsystem.
+
+When a config HMAC key exists (etc/keys/restore-config-hmac.key), the gate
+verifies the config against its HMAC sidecar (restore-config.json.hmac) on
+every init. Verification failure forces restore to fail CLOSED:
+  - enabled is forced to true
+  - all escalation levels are forced to deny
+  - Telegram alert is sent
+  - gate log records the failure
+
+The attacker who tampers with config to disable restore gets the opposite
+of what they wanted: maximum escalation on every action.
+
+Without a config HMAC key, integrity checking is skipped. The system works
+but R012 (path-based deny) is the only defense. Config HMAC is recommended.
+
+Enforcement: lib/restore.sh _restore_verify_config_integrity(), _restore_force_closed()
+  config-integrity.mjs signConfig/verifyConfig, bin/zlar-restore sign-config
+Test: test-hardening.mjs (4 config integrity tests)

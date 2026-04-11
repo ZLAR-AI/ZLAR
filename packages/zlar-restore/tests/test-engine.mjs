@@ -17,17 +17,17 @@ function loadFixture(name) {
 
 // ── Detector loading ─────────────────────────────────────────────────────────
 
-test('listDetectors returns 6 detector names', () => {
+test('listDetectors returns 7 detector names', () => {
   const ids = listDetectors();
-  assert.equal(ids.length, 6);
+  assert.equal(ids.length, 7);
   assert.ok(ids.includes('contradiction-increase'));
   assert.ok(ids.includes('authority-widening'));
   assert.ok(ids.includes('entropy-shift'));
 });
 
-test('loadDetectors loads all 6', async () => {
+test('loadDetectors loads all 7', async () => {
   const detectors = await loadDetectors();
-  assert.equal(detectors.length, 6);
+  assert.equal(detectors.length, 7);
   for (const d of detectors) {
     assert.ok(typeof d.evaluate === 'function', `${d.id} has evaluate`);
     assert.ok(d.id, `detector has id`);
@@ -179,7 +179,7 @@ test('critical slowing down: rising history triggers sensitivity', async () => {
 test('signal vector matches detector count', async () => {
   const trace = loadFixture('healthy-session.json');
   const result = await evaluate(trace);
-  assert.equal(result._signal_vector.length, 6);
+  assert.equal(result._signal_vector.length, 7);
   for (const v of result._signal_vector) {
     assert.ok(v >= 0 && v <= 1, 'signal values should be in [0,1]');
   }

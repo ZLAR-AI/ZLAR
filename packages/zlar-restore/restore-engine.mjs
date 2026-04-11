@@ -36,6 +36,7 @@ const DETECTOR_IDS = [
   'abnormal-burstiness',
   'authority-widening',
   'entropy-shift',
+  'action-silence',
 ];
 
 let loadedDetectors = null;
@@ -93,6 +94,10 @@ const ROUTING_HINTS = {
   entropy_shift: {
     syndrome: 'drift',
     advice: 'Agent behavioral diversity shifted sharply. Review recent actions for coherence.',
+  },
+  action_silence: {
+    syndrome: 'stall',
+    advice: 'Agent went quiet mid-session then resumed. Check whether it was stuck, waiting, or doing something off-audit.',
   },
   detector_reliability: {
     syndrome: 'tamper',
@@ -172,7 +177,12 @@ export async function evaluate(trace, options = {}) {
   const l2 = Math.sqrt(signals.reduce((s, x) => s + x * x, 0));
   const diffuse = signals.length > 0 ? l2 / Math.sqrt(signals.length) : 0;
 
-  let effective = Math.max(dominant, diffuse * diffuseWeight);
+  // Anti-evasion: jitter the diffuse weight too. An agent that understands
+  // the dual-path architecture could distribute pathology evenly across
+  // detectors to stay below a constant diffuse weight. Jittering both
+  // paths removes the stable target.
+  const jitteredDiffuseWeight = diffuseWeight * (0.9 + Math.random() * 0.2);
+  let effective = Math.max(dominant, diffuse * jitteredDiffuseWeight);
 
   // Critical slowing down: rising autocorrelation tightens sensitivity
   let slowingDown = null;
@@ -213,7 +223,7 @@ export async function evaluate(trace, options = {}) {
   }
 
   // If diffuse path was the trigger, note it
-  if (diffuse * diffuseWeight > dominant && diffuse * diffuseWeight >= thresholds.degraded) {
+  if (diffuse * jitteredDiffuseWeight > dominant && diffuse * jitteredDiffuseWeight >= thresholds.degraded) {
     primaryDetector = 'diffuse_degradation';
   }
 
@@ -226,7 +236,7 @@ export async function evaluate(trace, options = {}) {
     aggregate: {
       dominant: round(dominant),
       diffuse: round(diffuse),
-      diffuse_weighted: round(diffuse * diffuseWeight),
+      diffuse_weighted: round(diffuse * jitteredDiffuseWeight),
       effective: round(effective),
     },
     slowing_down: slowingDown,

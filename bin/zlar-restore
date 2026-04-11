@@ -265,6 +265,26 @@ cmd_history() {
     jq -r '.history[] | "\(.at)  \(.from) -> \(.to)  [\(.source)]  \(.reason // "")"' "${TRUST_STATE_FILE}" 2>/dev/null
 }
 
+cmd_sign_config() {
+    local hmac_key_file="${PROJECT_DIR}/etc/keys/restore-config-hmac.key"
+
+    if [ ! -f "${hmac_key_file}" ]; then
+        echo "No config HMAC key found at ${hmac_key_file}" >&2
+        echo "Generate one: openssl rand -hex 32 > ${hmac_key_file}" >&2
+        exit 1
+    fi
+
+    node -e "
+        import { signConfig } from '${PROJECT_DIR}/packages/zlar-restore/config-integrity.mjs';
+        import { readFileSync } from 'node:fs';
+        const key = readFileSync('${hmac_key_file}', 'utf-8').trim();
+        const hmac = signConfig('${RESTORE_CONFIG}', key);
+        console.log('Config signed. HMAC: ' + hmac.substring(0, 16) + '...');
+    " 2>/dev/null
+
+    echo "Sidecar written to ${RESTORE_CONFIG}.hmac"
+}
+
 cmd_detectors() {
     echo "Available Detectors"
     echo "==================="
@@ -289,6 +309,7 @@ Commands:
   reset <reason>             Reset trust state (requires reason)
   history                    Show state transition history
   detectors                  List available detectors
+  sign-config                Sign restore-config.json (run after edits)
 
 Agent Health observes. It does not enforce directly.
 EOF
@@ -307,6 +328,7 @@ case "$1" in
     reset)    shift; cmd_reset "$@" ;;
     history)  cmd_history ;;
     detectors) cmd_detectors ;;
+    sign-config) cmd_sign_config ;;
     -h|--help) usage ;;
     *) echo "Unknown command: $1" >&2; usage ;;
 esac

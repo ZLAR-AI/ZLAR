@@ -41,6 +41,9 @@ restore_init() {
 
     if [ "${_enabled}" != "true" ]; then
         RESTORE_ENABLED="false"
+        # Config integrity check: even if disabled, verify the config hasn't been
+        # tampered with. An agent setting enabled=false is the primary attack vector.
+        _restore_verify_config_integrity
         return 0
     fi
 
@@ -69,6 +72,74 @@ restore_init() {
     RESTORE_ESCALATION_DEGRADED=$(jq -r '.escalation.degraded // "log"' "${RESTORE_CONFIG_FILE}" 2>/dev/null || echo "log")
     RESTORE_ESCALATION_AT_RISK=$(jq -r '.escalation.at_risk // "ask"' "${RESTORE_CONFIG_FILE}" 2>/dev/null || echo "ask")
     RESTORE_ESCALATION_SUSPENDED=$(jq -r '.escalation.suspended // "deny"' "${RESTORE_CONFIG_FILE}" 2>/dev/null || echo "deny")
+
+    # Config integrity check (runs whether enabled or disabled)
+    _restore_verify_config_integrity
+}
+
+# ── Config Integrity ──
+#
+# Verifies restore-config.json against its HMAC sidecar file.
+# If the HMAC key exists and verification fails, force restore ON with
+# maximum escalation. The attacker who tampers gets the opposite of
+# what they wanted.
+#
+# RESTORE-INV-12: Config integrity — tampered config forces fail-closed.
+
+_restore_verify_config_integrity() {
+    # No HMAC key for config = no verification (operator hasn't set it up yet)
+    local _config_hmac_key_file="${PROJECT_DIR}/etc/keys/restore-config-hmac.key"
+    [ -f "${_config_hmac_key_file}" ] || return 0
+
+    local _config_hmac_key
+    _config_hmac_key=$(cat "${_config_hmac_key_file}" 2>/dev/null | tr -d '[:space:]')
+    [ -n "${_config_hmac_key}" ] || return 0
+
+    local _config_hmac_file="${RESTORE_CONFIG_FILE}.hmac"
+
+    # Sidecar missing = unsigned config with key present = tampered
+    if [ ! -f "${_config_hmac_file}" ]; then
+        _restore_force_closed "config HMAC sidecar missing"
+        return 0
+    fi
+
+    # Compute and compare
+    local _stored_hmac _canonical _computed_hmac
+    _stored_hmac=$(cat "${_config_hmac_file}" 2>/dev/null | tr -d '[:space:]')
+    _canonical=$(jq -c '.' "${RESTORE_CONFIG_FILE}" 2>/dev/null)
+    _computed_hmac=$(printf '%s' "${_canonical}" | openssl dgst -sha256 -hmac "${_config_hmac_key}" 2>/dev/null | awk '{print $NF}')
+
+    if [ "${_computed_hmac}" != "${_stored_hmac}" ]; then
+        _restore_force_closed "config HMAC mismatch"
+        return 0
+    fi
+}
+
+# Force restore to fail-closed state: enabled with all escalations at deny.
+_restore_force_closed() {
+    local _reason="${1:-unknown}"
+    RESTORE_ENABLED="true"
+    RESTORE_ESCALATION_DEGRADED="deny"
+    RESTORE_ESCALATION_AT_RISK="deny"
+    RESTORE_ESCALATION_SUSPENDED="deny"
+
+    # Set trust state file path if not already set (config was tampered, but we
+    # still need to know where to read trust state from)
+    if [ -z "${RESTORE_TRUST_STATE_FILE}" ]; then
+        RESTORE_TRUST_STATE_FILE="${PROJECT_DIR}/var/restore/trust-state.json"
+        mkdir -p "$(dirname "${RESTORE_TRUST_STATE_FILE}")" 2>/dev/null || true
+    fi
+
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [restore] CRITICAL: Config integrity failure (${_reason}) — forcing fail-closed. All escalations set to deny." >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+
+    # Telegram alert if available
+    if [ -n "${TELEGRAM_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+        local _alert_body
+        _alert_body=$(jq -n --arg chat "${TELEGRAM_CHAT_ID}" --arg reason "${_reason}" \
+            '{"chat_id":$chat,"text":"🚨 ZLAR CRITICAL: Restore config integrity failure (\($reason)). Agent Health forced to maximum escalation. All actions require human approval. Check etc/restore-config.json for tampering.","parse_mode":"Markdown"}')
+        curl -s -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" -d "${_alert_body}" >/dev/null 2>&1 || true
+    fi
 }
 
 # ── Trust State Reader ──
