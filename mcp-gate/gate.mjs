@@ -348,10 +348,12 @@ function evaluatePolicyDual(toolName, args) {
     const mapped = cedarMapAction(result, CEDAR_POLICY_ID_MAP);
 
     if (engine === 'both') {
-      // Both engines: JSON result is primary, Cedar is advisory (logged)
+      // Both engines: stricter result wins on divergence (DWP-01)
       const jsonResult = evaluatePolicy(toolName, args);
       if (jsonResult.action !== mapped.action) {
-        console.log(`[gate] Engine divergence: JSON=${jsonResult.action} Cedar=${mapped.action} — using JSON`);
+        console.log(`[gate] Engine divergence: JSON=${jsonResult.action} Cedar=${mapped.action} — stricter wins`);
+        const order = { deny: 0, ask: 1, allow: 2 };
+        return (order[mapped.action] ?? 1) <= (order[jsonResult.action] ?? 1) ? mapped : jsonResult;
       }
       return jsonResult;
     }
@@ -464,6 +466,14 @@ function genId() {
   return `${hexTs}-${rand}`;
 }
 
+// emitEvent is intentionally synchronous (DWP-01 defensive note):
+// 1. All operations (readFileSync, createHash, cryptoSign, appendFileSync) are sync
+// 2. Node.js event loop does not yield during synchronous code — no hash-chain
+//    race is possible in a single-process architecture
+// 3. Crash handlers (uncaughtException, unhandledRejection) rely on synchronous
+//    completion to ensure audit events are written before process.exit()
+// If any async operation is added to this function in the future, add an
+// in-process mutex to serialize access and prevent hash-chain forks.
 function emitEvent(domain, action, outcome, detail, rule, severity, riskScore, authorizer) {
   SEQ++;
   const ts = new Date().toISOString().replace(/\.\d+Z$/, 'Z');

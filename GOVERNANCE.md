@@ -49,6 +49,8 @@ Invariants are documented in `docs/MANIFEST-INVARIANTS.md` (manifest-specific) a
 
 No invariant may be suspended, overridden, or exempted. If an invariant is wrong, it must be formally amended. There is no `--skip-invariant` flag.
 
+**DWP-01 (Deny Wins Precedence):** Whenever two evaluation paths exist (v0 vs v1, JSON vs Cedar, locked vs unlocked, cached vs fresh), the path with fewer checks must either be removed or must always produce deny on any divergence from the stricter path. No weaker path may silently override a stricter path's decision. Added v2.11.0 after three independent instances of the downgrade pattern were found in the April 11 2026 bug hunt.
+
 ## Releases
 
 Releases follow semantic versioning:

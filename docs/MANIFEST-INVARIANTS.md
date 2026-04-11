@@ -78,6 +78,16 @@ v0 uses an internal dot-notation namespace prefixed with `zlar:cap:`.
 This is explicitly provisional and will map to a cross-vendor standard
 when one exists.
 
+## Cross-path invariant
+
+```
+20. DWP-01 (Deny Wins Precedence): When two evaluation paths exist
+    (v0/v1, JSON/Cedar, locked/unlocked, cached/fresh), the path with
+    fewer checks must either be removed or must produce deny on any
+    divergence from the stricter path. No weaker path may silently
+    override a stricter path's decision.
+```
+
 ## Design principle
 
 Let the gate be complex. Let the manifest be simple.

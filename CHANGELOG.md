@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.11.0 — 2026-04-11
+
+DWP-01 (Deny Wins Precedence): close three instances of the downgrade pattern
+found during the April 11 bug hunt, where a weaker evaluation path silently
+overrode a stricter one.
+
+### Engine divergence now fails strict
+
+When ZLAR_POLICY_ENGINE=both and the JSON and Cedar engines disagree, the
+stricter result now wins (deny > ask > allow). Previously JSON was primary
+and Cedar was advisory — a JSON allow could override a Cedar deny.
+
+### v0 receipt verification now runs semantic validation
+
+verifyReceipt() (v0 path) previously checked structure and Ed25519 signature
+only. It now calls validateSemantics() after signature verification, matching
+the v1 path. Catches rule-outcome violations (deny-only rule claiming allow)
+and authorizer-outcome violations (policy authorizer claiming authorized).
+Existing valid receipts with sound semantics are unaffected.
+
+### DWP-01 invariant added
+
+New cross-path invariant in GOVERNANCE.md and MANIFEST-INVARIANTS.md: when
+two evaluation paths exist, the path with fewer checks must either be removed
+or must produce deny on any divergence from the stricter path.
+
+### emitEvent synchronous design documented
+
+The MCP gate emitEvent function is intentionally synchronous — crash handlers
+rely on it completing before process.exit(). Comment block added explaining
+why and when a mutex would be needed.
+
 ## 2.10.1 — 2026-04-11
 
 Three bugs found live during the April 10 evening session, fixed before
