@@ -30,13 +30,16 @@ Usage: zlar-digest [command] [options]
 Commands:
   generate          Generate governance brief (default)
   send              Generate and send via Telegram
+  session-summary   Brief for a single session (default: most recent)
   schedule          Show how to schedule weekly briefs
 
 Options:
   --period <N>      Period in seconds (default: 604800 = 7 days)
+  --session <id>    Scope to a specific session
   --format human    Human-readable (default)
   --format json     JSON output
   --format telegram Telegram-formatted message
+  --send            (session-summary) Send result via Telegram
 
 The brief surfaces what happened. The human interprets what it means.
 EOF
@@ -48,27 +51,38 @@ EOF
 generate_brief() {
     local period="${1:-604800}"  # default: 7 days
     local format="${2:-human}"
+    local session_id="${3:-}"   # optional: scope to a single session
 
     # Collect events
     local tmp_events
     tmp_events=$(mktemp)
     trap "rm -f ${tmp_events}" EXIT
 
-    audit_events_since "${period}" > "${tmp_events}"
+    if [[ -n "${session_id}" ]]; then
+        audit_events_for_session "${session_id}" > "${tmp_events}"
+    else
+        audit_events_since "${period}" > "${tmp_events}"
+    fi
 
     local total_events
     total_events=$(wc -l < "${tmp_events}" | tr -d ' ')
 
     if [[ ${total_events} -eq 0 ]]; then
+        local empty_label
+        if [[ -n "${session_id}" ]]; then
+            empty_label="session ${session_id:0:12}..."
+        else
+            empty_label="the last $(( period / 86400 )) days"
+        fi
         if [[ "${format}" == "telegram" ]]; then
             echo "📋 *ZLAR Governance Brief*"
             echo ""
-            echo "Period: last $(( period / 86400 )) days"
+            echo "Scope: ${empty_label}"
             echo "Events: 0"
             echo ""
             echo "No governance activity recorded."
         elif [[ "${format}" == "human" ]]; then
-            echo "No governance activity in the last $(( period / 86400 )) days."
+            echo "No governance activity in ${empty_label}."
         else
             echo '{"period_days":'$(( period / 86400 ))',"total_events":0}'
         fi
@@ -152,13 +166,38 @@ generate_brief() {
     local sequence_count
     sequence_count=$(echo "${witness_output}" | jq -r '.sequence_count // 0')
 
+    # ── Narrative grouping ──
+    # Group writes/edits by directory to show what kind of work happened.
+    # This is the "50 files deleted, 20 modified" view Vincent asked for.
+
+    local write_narrative edit_narrative bash_narrative novelty_count
+    write_narrative=$(jq -r 'select(.domain == "write" or .domain == "edit") |
+        (.detail.path // "unknown") | split("/") | .[0:-1] | join("/")' \
+        "${tmp_events}" 2>/dev/null | sort | uniq -c | sort -rn | head -5)
+    bash_narrative=$(jq -r 'select(.domain == "bash") |
+        (.detail.command // "unknown") | split(" ") | .[0:2] | join(" ")' \
+        "${tmp_events}" 2>/dev/null | sort | uniq -c | sort -rn | head -5)
+    novelty_count=$(jq -c 'select(.outcome == "novelty_escalation")' "${tmp_events}" 2>/dev/null | wc -l | tr -d ' ')
+
+    local write_count edit_count bash_count
+    write_count=$(jq -c 'select(.domain == "write")' "${tmp_events}" 2>/dev/null | wc -l | tr -d ' ')
+    edit_count=$(jq -c 'select(.domain == "edit")' "${tmp_events}" 2>/dev/null | wc -l | tr -d ' ')
+    bash_count=$(jq -c 'select(.domain == "bash")' "${tmp_events}" 2>/dev/null | wc -l | tr -d ' ')
+
     # ── Format output ──
+
+    local scope_label
+    if [[ -n "${session_id}" ]]; then
+        scope_label="Session: ${session_id:0:12}..."
+    else
+        scope_label="Period: last $(( period / 86400 )) days"
+    fi
 
     case "${format}" in
         telegram)
             echo "📋 *ZLAR Governance Brief*"
             echo ""
-            echo "📅 Period: last $(( period / 86400 )) days"
+            echo "📅 ${scope_label}"
             echo "📊 Total events: ${total_events}"
             echo "🔑 Sessions: ${unique_sessions}"
             echo ""
@@ -186,6 +225,28 @@ generate_brief() {
                 echo "🔗 Sequence patterns detected: ${sequence_count}"
                 echo "${witness_output}" | jq -r '.sequences[] | "  → [\(.pattern)] \(.fact)"'
             fi
+            if [[ ${novelty_count} -gt 0 ]]; then
+                echo "🆕 Novel actions escalated: ${novelty_count}"
+            fi
+            if [[ ${write_count} -gt 0 || ${edit_count} -gt 0 || ${bash_count} -gt 0 ]]; then
+                echo ""
+                echo "── Activity ──"
+                [[ ${write_count} -gt 0 ]] && echo "📝 Writes: ${write_count}"
+                [[ ${edit_count} -gt 0 ]] && echo "✏️ Edits: ${edit_count}"
+                [[ ${bash_count} -gt 0 ]] && echo "💻 Bash: ${bash_count}"
+                if [[ -n "${write_narrative}" ]]; then
+                    echo "  Top write targets:"
+                    echo "${write_narrative}" | head -3 | while read -r count dir; do
+                        echo "    ${dir}: ${count}x"
+                    done
+                fi
+                if [[ -n "${bash_narrative}" ]]; then
+                    echo "  Top commands:"
+                    echo "${bash_narrative}" | head -3 | while read -r count cmd; do
+                        echo "    ${cmd}: ${count}x"
+                    done
+                fi
+            fi
             echo ""
             echo "── Top Rules ──"
             echo "${top_rules}" | head -5 | while read -r count rule; do
@@ -212,7 +273,7 @@ generate_brief() {
         human)
             echo "═══════════════════════════════════════════════════"
             echo "  ZLAR Governance Brief"
-            echo "  Period: last $(( period / 86400 )) days"
+            echo "  ${scope_label}"
             echo "  Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "═══════════════════════════════════════════════════"
             echo ""
@@ -241,6 +302,28 @@ generate_brief() {
             if [[ ${sequence_count} -gt 0 ]]; then
                 echo "  ── Detected Sequences ──"
                 echo "${witness_output}" | jq -r '.sequences[] | "  [\(.pattern)] \(.name)\n    \(.fact)\n    Note: \(.note)\n"'
+            fi
+            if [[ ${write_count} -gt 0 || ${edit_count} -gt 0 || ${bash_count} -gt 0 ]]; then
+                echo "  ── Activity ──"
+                [[ ${write_count} -gt 0 ]] && echo "  Writes:            ${write_count}"
+                [[ ${edit_count} -gt 0 ]] && echo "  Edits:             ${edit_count}"
+                [[ ${bash_count} -gt 0 ]] && echo "  Bash commands:     ${bash_count}"
+                [[ ${novelty_count} -gt 0 ]] && echo "  Novel escalations: ${novelty_count}"
+                if [[ -n "${write_narrative}" ]]; then
+                    echo ""
+                    echo "  Top write/edit targets:"
+                    echo "${write_narrative}" | head -5 | while read -r count dir; do
+                        echo "    ${dir}: ${count}x"
+                    done
+                fi
+                if [[ -n "${bash_narrative}" ]]; then
+                    echo ""
+                    echo "  Top commands:"
+                    echo "${bash_narrative}" | head -5 | while read -r count cmd; do
+                        echo "    ${cmd}: ${count}x"
+                    done
+                fi
+                echo ""
             fi
             echo "  ── Top Rules Fired ──"
             echo "${top_rules}" | head -5 | while read -r count rule; do
@@ -341,16 +424,49 @@ case "${CMD}" in
     generate)
         PERIOD="604800"
         FORMAT="human"
+        SESSION=""
 
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 --period) PERIOD="$2"; shift 2 ;;
                 --format) FORMAT="$2"; shift 2 ;;
+                --session) SESSION="$2"; shift 2 ;;
                 *) echo "Unknown option: $1" >&2; exit 1 ;;
             esac
         done
 
-        generate_brief "${PERIOD}" "${FORMAT}"
+        generate_brief "${PERIOD}" "${FORMAT}" "${SESSION}"
+        ;;
+    session-summary)
+        # Generate and optionally send a brief for a specific session.
+        # If no session ID given, use the most recent session in the audit trail.
+        SESSION=""
+        SEND=false
+
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --session) SESSION="$2"; shift 2 ;;
+                --send) SEND=true; shift ;;
+                *) echo "Unknown option: $1" >&2; exit 1 ;;
+            esac
+        done
+
+        if [[ -z "${SESSION}" ]]; then
+            # Find most recent session
+            SESSION=$(_audit_cat | jq -r '.session_id // empty' | tail -1)
+            if [[ -z "${SESSION}" ]]; then
+                echo "No sessions found in audit trail." >&2
+                exit 1
+            fi
+        fi
+
+        if [[ "${SEND}" == "true" ]]; then
+            message=$(generate_brief "" "telegram" "${SESSION}")
+            send_telegram "${message}"
+            echo "Session summary for ${SESSION:0:12}... sent via Telegram."
+        else
+            generate_brief "" "human" "${SESSION}"
+        fi
         ;;
     send)
         PERIOD="604800"
