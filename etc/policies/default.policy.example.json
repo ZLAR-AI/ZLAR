@@ -1,8 +1,8 @@
 {
-  "version": "2.6.0",
+  "version": "2.11.1",
   "created_at": "2026-03-29T00:00:00Z",
   "author": "vincentnijjar",
-  "description": "ZLAR v2.6.0 — Perimeter closure: 13 new rules closing 8 escape hatches (claude -p, interpreter escapes, base64 bypass, eval/exec, CLAUDE.md protection, .mcp.json protection, Docker socket, library injection, .env reads upgraded to ask).",
+  "description": "ZLAR v2.11.1 default policy — 80 rules. Deny-first with human escalation. Covers: bash perimeter (deletion, privilege, network, interpreters, ZLAR self-protection), write/edit domain (system config, shell config, .env, credentials, dotfiles, CLAUDE.md, .mcp.json), read domain (signing keys, .ssh, .env), MCP/web (third-party tools, web fetch), agent domain (sub-agent spawns). Example only — sign with your own key before use.",
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",

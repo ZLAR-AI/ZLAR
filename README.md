@@ -241,7 +241,7 @@ bash tests/count-assertions.sh --detail   # also show per-file pass counts
 bash tests/count-assertions.sh --badge    # print shields.io badge URL
 ```
 
-Current state (v2.7.1): **28 files, 1022 assertions, 0 failures.**
+Current state (v2.11.1): **28 files, 1046 assertions, 0 failures.**
 
 ### Dependencies
 

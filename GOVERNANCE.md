@@ -32,6 +32,7 @@ Current ADRs:
 | [004](docs/adr/ADR-004-ed25519-signing.md) | Ed25519 for signing |
 | [005](docs/adr/ADR-005-manifest-narrows-policy.md) | Manifest narrows policy |
 | [006](docs/adr/ADR-006-structural-independence.md) | Structural independence from governed system |
+| [007](docs/adr/ADR-007-receipt-v1-envelope.md) | Receipt v1 envelope format |
 
 ## Invariants
 
