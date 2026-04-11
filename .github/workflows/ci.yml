@@ -82,7 +82,7 @@ jobs:
         run: |
           # Tests that read etc/policies/active.policy.json need it to exist
           # in the fresh checkout. install.sh creates it locally; CI must
-          # replicate. Use the full v2.x default (72 rules), not the
+          # replicate. Use the full v2.x default (74 rules), not the
           # long-tail variant (lt-default) which has only 26 rules and
           # v1.0.0 — that mismatch trips test-perimeter-closure's
           # expected-version check.
