@@ -2,7 +2,33 @@
 
 ## 2.11.1 — 2026-04-11
 
-Dotfile perimeter closure: six new policy rules close write/edit domain gaps
+Score recalibration build: consequence-first messages, novelty detection,
+session-scoped digest, and dotfile perimeter closure.
+
+### Consequence-first Telegram messages
+
+Every gate escalation now includes an "if wrong:" line showing the
+worst plausible outcome. SubagentStart messages carry an authority-type
+marker: "Authority envelope (not a single action)." Both CC gate (bash)
+and MCP gate (Node) updated. 19 rule families covered with fallback.
+
+### Novel action detection
+
+First use of an MCP server or webfetch in a session escalates allow→ask.
+MCP novelty tracked per server (not per tool). One-time review with a
+training banner; subsequent calls to the same surface proceed normally.
+Session-level tracking in var/log/sessions/.seen-domains files.
+
+### Session-scoped governance digest
+
+zlar-digest now supports --session and session-summary commands. Output
+includes activity narrative: writes/edits grouped by directory, bash
+grouped by command prefix, novelty escalation count. Scope label adapts
+to session vs period mode.
+
+### Dotfile perimeter closure
+
+Six new policy rules close write/edit domain gaps
 identified during score recalibration.
 
 ### What was missing
