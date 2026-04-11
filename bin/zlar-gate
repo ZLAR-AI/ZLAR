@@ -202,9 +202,16 @@ fi
 
 # Source restore library (Agent Health trust-state layer)
 # shellcheck source=../lib/restore.sh
+# RESTORE-INV-04: syntax-check before sourcing. A broken restore.sh must not
+# crash the gate. bash -n is a parse-only check (no execution).
 if [ -f "${PROJECT_DIR}/lib/restore.sh" ]; then
-    source "${PROJECT_DIR}/lib/restore.sh"
-    restore_init 2>/dev/null || true  # INV-04: never crash the gate
+    if bash -n "${PROJECT_DIR}/lib/restore.sh" 2>/dev/null; then
+        source "${PROJECT_DIR}/lib/restore.sh"
+        restore_init 2>/dev/null || true  # INV-04: never crash the gate
+    else
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARNING: restore.sh has syntax errors — skipping restore (gate continues without Agent Health)" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+        RESTORE_ENABLED="false"
+    fi
 fi
 
 # ── Novelty detection ──────────────────────────────────────────────────────
