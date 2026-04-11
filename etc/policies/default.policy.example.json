@@ -205,6 +205,32 @@
       }
     },
     {
+      "id": "R012R",
+      "enabled": true,
+      "description": "Read-only access to ZLAR paths — allowed with audit",
+      "domain": "bash",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "/(bin|etc|config|scripts)/zlar-|/\\.claude/(hooks|settings|\\.gate-disabled)|policy.*\\.json|pf-zlar|pf\\.conf|gate\\.json|/var/log/(audit|gate)"
+          }
+        },
+        "compound_guard": {
+          "command": {
+            "regex": "^\\s*(cat|head|tail|less|more|wc|grep|egrep|fgrep|rg|file|stat|ls|diff|md5|shasum|sha256sum|xxd|hexdump|strings)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 0,
+        "blast_radius": 0
+      }
+    },
+    {
       "id": "R012",
       "enabled": true,
       "description": "ZLAR enforcement modification — blocked",
@@ -223,6 +249,32 @@
         "irreversibility": 100,
         "consequence": 100,
         "blast_radius": 100
+      }
+    },
+    {
+      "id": "R012BR",
+      "enabled": true,
+      "description": "Read-only access to audit/log/state files — allowed with audit",
+      "domain": "bash",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "(audit\\.jsonl|gate\\.log|gate-stderr\\.log|watchdog\\.lock|watchdog\\.log|karma\\.json|away-queue|availability\\.state|\\.policy-cache|\\.gate-active|\\.telegram-rate|/sessions/)"
+          }
+        },
+        "compound_guard": {
+          "command": {
+            "regex": "^\\s*(cat|head|tail|less|more|wc|grep|egrep|fgrep|rg|file|stat|ls|diff|md5|shasum|sha256sum|xxd|hexdump|strings)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 0,
+        "blast_radius": 0
       }
     },
     {

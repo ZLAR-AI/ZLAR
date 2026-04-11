@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# ZLAR Gate v2.7.1 — Claude Code Hook Script
+# ZLAR Gate v2.10.1 — Claude Code Hook Script
 #
 # THE gate. Runs synchronously on every Claude Code PreToolUse hook invocation.
 # Reads tool call from stdin, classifies, evaluates policy, asks Telegram if
@@ -364,11 +364,17 @@ if [ -f "${MANIFEST_FILE}" ] && command -v jq &>/dev/null; then
                 _m_last_seq=0  # Reset — trust the signed manifest
             fi
 
-            if [ -n "${_m_seq}" ] && [ "${_m_seq}" != "0" ] && [ "${_m_seq}" -le "${_m_last_seq}" ]; then
-                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest sequence ${_m_seq} <= last seen ${_m_last_seq} — possible replay attack. Hard deny." >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+            if [ -n "${_m_seq}" ] && [ "${_m_seq}" != "0" ] && [ "${_m_seq}" -lt "${_m_last_seq}" ]; then
+                # Strictly less-than: detects manifest rollback (old manifest
+                # replayed after a newer one was loaded). Equal is normal —
+                # the same manifest loads on every gate invocation within a
+                # session. Without this distinction, the first Telegram
+                # approve-then-retry cycle hard-denies because the retry
+                # presents the same seq the original call already persisted.
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest sequence ${_m_seq} < last seen ${_m_last_seq} — possible rollback attack. Hard deny." >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
                 MANIFEST_LOADED="false"
                 MANIFEST_JSON=""
-                MANIFEST_HARD_DENY_REASON="manifest:replay|Manifest sequence ${_m_seq} <= last seen ${_m_last_seq} — hard deny per invariant 10"
+                MANIFEST_HARD_DENY_REASON="manifest:replay|Manifest sequence ${_m_seq} < last seen ${_m_last_seq} — hard deny per invariant 10 (rollback detected)"
             else
                 MANIFEST_LOADED="true"
                 # Persist sequence (seq file existence also serves as presence marker)
@@ -1712,7 +1718,7 @@ main() {
         local _mhd_code="${MANIFEST_HARD_DENY_REASON%%|*}"
         local _mhd_msg="${MANIFEST_HARD_DENY_REASON#*|}"
         emit_event "gate" "manifest" "deny" "$(printf '%s' "${_mhd_msg}" | jq -Rsc '.')" "${_mhd_code}" "critical" 100 "gate" 2>/dev/null || true
-        respond_deny "${_mhd_msg}" "${_mhd_code}"
+        respond_deny "${_mhd_msg} To recover: run 'zlar off' from your terminal." "${_mhd_code}"
         return
     fi
 
@@ -2077,7 +2083,7 @@ main() {
                                 # have announced the gate was blocking.
                                 fail_closed_alert "${_hi_pre_result}" 2>/dev/null || true
                                 emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:human_${_hi_pre_result}"
-                                respond_deny "Human decision-maker unavailable (${_hi_pre_result}). System is protecting human judgment." "gate:human_capacity"
+                                respond_deny "Human decision-maker unavailable (${_hi_pre_result}). System is protecting human judgment. To recover: run 'zlar off' from your terminal." "gate:human_capacity"
                                 return  # exit main() after responding
                             fi
 

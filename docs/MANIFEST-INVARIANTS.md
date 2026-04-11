@@ -34,7 +34,7 @@ authority. It can only constrain.
 9. missing manifest (first run) = fall back to policy-only (no seq file present)
 9a. missing manifest (after load) = hard deny + alert (seq file present = manifest existed;
                                     deletion is an attack, not an absence)
-10. sequence replay (seq ≤ last)  = hard deny (manifest was rolled back or re-used)
+10. sequence rollback (seq < last) = hard deny (manifest was rolled back to older version)
 11. sequence gap attack (Δ > 100) = log critical + alert + self-heal reset (seq file
                                     poisoning would otherwise permanently DoS all loads)
 ```

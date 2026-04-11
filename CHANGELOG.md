@@ -1,5 +1,43 @@
 # Changelog
 
+## 2.10.1 — 2026-04-11
+
+Three bugs found live during the April 10 evening session, fixed before
+turning the gate back on.
+
+### Replay protection lockout fixed (CRITICAL)
+
+The manifest replay check used `<=` (less-than-or-equal), which hard-denied
+every gate invocation after the first within a session. The manifest sequence
+doesn't change between tool calls — the same manifest loads every time. After
+Telegram approval, the retry presented the same sequence the original call
+already persisted, triggering invariant 10 and locking out all subsequent
+tool calls.
+
+**Fix:** Changed to strictly less-than (`<`). Same-sequence reload is normal
+operation. Lower-sequence reload (actual rollback) still hard-denies.
+MANIFEST-INVARIANTS.md updated to match.
+
+### R012 false positive on read-only commands fixed
+
+R012 pattern-matched on ZLAR file paths regardless of whether the command
+read or wrote. A `cat` or `python3 -c open(...)` on audit.jsonl triggered
+score-100 Telegram escalation for a read-only operation.
+
+**Fix:** Added rules R012R and R012BR before R012 and R012B respectively.
+These use `compound_guard` to match read-only command prefixes (`cat`, `head`,
+`tail`, `grep`, `stat`, etc.) combined with ZLAR path patterns. Read-only
+access is allowed with audit logging. Write-intent commands still route to
+R012 (ask human) or R012B (hard deny). First-match-wins ordering ensures
+correct precedence.
+
+### Lockout recovery hint added
+
+When the gate locks out (manifest hard-deny or human capacity exhaustion),
+the deny message now includes: "To recover: run 'zlar off' from your
+terminal." Previously, a locked-out user had no documented escape path
+visible in the error output.
+
 ## 2.10.0 — 2026-04-10
 
 Eight findings from the third multi-agent design review, fixing security bugs,
@@ -43,7 +81,7 @@ policy-only fallback.
 Cases now hard-denied:
 - Expired manifest (invariant #6)
 - Tampered manifest / bad signature (invariant #8)
-- Replayed manifest / seq ≤ last (invariant #10)
+- Rolled-back manifest / seq < last (invariant #10, tightened in v2.10.1)
 - Deleted manifest with seq file present (invariant #9a)
 - Signed manifest with missing public key (new — key deletion attack)
 
