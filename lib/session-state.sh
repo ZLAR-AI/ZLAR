@@ -33,10 +33,27 @@ session_state_init() {
     SESSION_STATE_FILE="${SESSION_STATE_DIR}/${session_id}.state.json"
 
     if [ ! -f "${SESSION_STATE_FILE}" ]; then
-        # Initialize empty state
+        # Path B: Check if audit trail has events for this session.
+        # If so, this is a resumed/recovered session — rebuild state
+        # from the signed audit trail rather than starting from zero.
+        if [ -f "${SESSION_AUDIT_FILE}" ] && \
+           grep -q "\"session_id\":\"${session_id}\"" "${SESSION_AUDIT_FILE}" 2>/dev/null; then
+            if session_state_rebuild "${session_id}"; then
+                return 0
+            fi
+        fi
+        # Fresh session — initialize empty state
         cat > "${SESSION_STATE_FILE}" 2>/dev/null <<INITEOF
-{"session_id":"${session_id}","started":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","total_calls":0,"calls_by_domain":{},"recent_timestamps":[],"recent_actions":[],"consecutive_denials":0,"escalations":0}
+{"session_id":"${session_id}","started":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","total_calls":0,"calls_by_domain":{},"recent_timestamps":[],"recent_actions":[],"consecutive_denials":0,"escalations":0,"_last_audit_id":""}
 INITEOF
+    else
+        # Path B: Existing state file — verify seal against audit trail.
+        # If stale (events occurred after last seal), rebuild to recover.
+        # Without this, a crash between emit_event and seal leaves the
+        # state file silently behind the audit trail.
+        if ! session_state_verify "${session_id}" 2>/dev/null; then
+            session_state_rebuild "${session_id}" 2>/dev/null || true
+        fi
     fi
 }
 
@@ -293,4 +310,167 @@ session_state_summary() {
         "  loop count:  \(.loop_count // 0)",
         "  escalations: \(.escalations // 0)"
     '
+}
+
+# ── Path B Phase 1: Sealed State + Rebuild from Audit Trail ──────────────
+#
+# The gate's session state is a performance cache, not source of truth.
+# These functions make that explicit: state is DERIVED from the signed
+# audit trail and can be rebuilt at any time.
+#
+# Seal: each state file records _last_audit_id — the ID of the most
+# recent audit event when the state was last updated. Verify compares
+# this with the actual last event for the session. Mismatch → rebuild.
+#
+# Rebuild: reconstructs total_calls, calls_by_domain, recent_actions,
+# consecutive_denials, and loop_count from seq=1 audit events.
+# recent_timestamps is left empty (ISO→epoch requires date(1) per
+# event; velocity reactivates naturally after one tool call).
+#
+# Phase 1 scope: sealed state + rebuild. Phase 2: eliminate pending
+# approval files. Phase 3: derive all per-session state from audit.
+# Phase 4: cross-session human-state (deferred).
+
+SESSION_AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+
+# ── Seal ──
+
+# Write audit event ID seal to state file.
+# Called by the gate after emit_event, at end of main().
+_session_state_seal() {
+    local audit_id="${1:?Usage: _session_state_seal <audit_event_id>}"
+    [ -f "${SESSION_STATE_FILE}" ] || return 0
+
+    local sealed
+    sealed=$(jq -c --arg id "${audit_id}" '._last_audit_id = $id' "${SESSION_STATE_FILE}" 2>/dev/null)
+    if [ -n "${sealed}" ] && [ "${sealed}" != "null" ]; then
+        echo "${sealed}" > "${SESSION_STATE_FILE}" 2>/dev/null
+    fi
+}
+
+# ── Verify ──
+
+# Check if state file is consistent with the audit trail.
+# Compares _last_audit_id in state with the actual last audit event
+# for this session. Mismatch means events occurred that state doesn't
+# reflect (crash, manual audit append, etc.).
+#
+# Returns: 0 = consistent, 1 = stale/unverifiable
+session_state_verify() {
+    local session_id="${1:?Usage: session_state_verify <session_id>}"
+    [ -f "${SESSION_STATE_FILE}" ] || return 1
+    [ -f "${SESSION_AUDIT_FILE}" ] || return 1
+
+    local sealed_id
+    sealed_id=$(jq -r '._last_audit_id // ""' "${SESSION_STATE_FILE}" 2>/dev/null)
+    [ -z "${sealed_id}" ] && return 1  # No seal → pre-Phase-B state file
+
+    local last_audit_id
+    last_audit_id=$(grep "\"session_id\":\"${session_id}\"" "${SESSION_AUDIT_FILE}" 2>/dev/null | \
+        tail -1 | jq -r '.id // ""' 2>/dev/null)
+
+    if [ "${sealed_id}" = "${last_audit_id}" ]; then
+        return 0
+    fi
+
+    log "SESSION STATE: Seal stale (sealed=${sealed_id}, last_audit=${last_audit_id})"
+    return 1
+}
+
+# ── Rebuild ──
+
+# Reconstruct session state from the audit trail.
+# Reads all seq=1 events for the session, computes counters and
+# heuristic inputs, writes state file with seal.
+#
+# recent_timestamps left empty — velocity detection reactivates after
+# one tool call (session_state_update populates it with current epoch).
+#
+# The filter includes all seq=1 events, not just state-update-causing
+# ones. This slightly overcounts (includes policy-ask, risk-0 allows)
+# but the error is bounded and harmless for heuristic counters.
+#
+# Returns: 0 = rebuilt, 1 = nothing to rebuild from
+session_state_rebuild() {
+    local session_id="${1:?Usage: session_state_rebuild <session_id>}"
+    [ -f "${SESSION_AUDIT_FILE}" ] || return 1
+
+    log "SESSION STATE: Rebuilding from audit for ${session_id}"
+
+    # Single grep pass — used for both event extraction and seal
+    local all_session_events
+    all_session_events=$(grep "\"session_id\":\"${session_id}\"" "${SESSION_AUDIT_FILE}" 2>/dev/null)
+
+    [ -z "${all_session_events}" ] && return 1
+
+    local events_json
+    events_json=$(echo "${all_session_events}" | \
+        jq -sc '[.[] | select(.seq == 1)]' 2>/dev/null)
+
+    local event_count
+    event_count=$(echo "${events_json}" | jq 'length' 2>/dev/null || echo 0)
+
+    if [ "${event_count}" -eq 0 ] 2>/dev/null; then
+        return 1
+    fi
+
+    # Last event ID for seal (any seq — marks audit position)
+    local last_id
+    last_id=$(echo "${all_session_events}" | tail -1 | jq -r '.id // ""' 2>/dev/null)
+
+    local new_state
+    new_state=$(echo "${events_json}" | jq -c \
+        --arg sid "${session_id}" \
+        --arg last_id "${last_id}" \
+        --argjson loop_t "${LOOP_THRESHOLD}" \
+        --argjson burst_t "${DENIAL_BURST_THRESHOLD}" \
+        '
+        # Consecutive denials from tail
+        (reduce (reverse | .[]) as $e (
+            {count: 0, stopped: false};
+            if .stopped then .
+            elif ($e.outcome == "deny" or $e.outcome == "denied") then
+                {count: (.count + 1), stopped: false}
+            else {count: .count, stopped: true} end
+        ) | .count) as $denials |
+
+        # Loop count: how many of last 20 actions match the most recent
+        ([.[-20:][] | .action] |
+            if length == 0 then 0
+            else . as $arr | $arr[length - 1] as $last |
+                [$arr[] | select(. == $last)] | length
+            end
+        ) as $loops |
+
+        {
+            session_id: $sid,
+            started: (.[0].ts // "unknown"),
+            total_calls: length,
+            calls_by_domain: (
+                group_by(.domain) |
+                map({key: .[0].domain, value: length}) |
+                from_entries
+            ),
+            recent_timestamps: [],
+            recent_actions: [.[-20:][] | .action],
+            consecutive_denials: $denials,
+            escalations: 0,
+            velocity: 0,
+            loop_count: $loops,
+            velocity_exceeded: false,
+            loop_detected: ($loops >= $loop_t),
+            denial_burst: ($denials >= $burst_t),
+            last_updated: (.[-1].ts // "unknown"),
+            _last_audit_id: $last_id
+        }
+    ' 2>/dev/null)
+
+    if [ -z "${new_state}" ] || [ "${new_state}" = "null" ]; then
+        log "SESSION STATE: Rebuild jq failed"
+        return 1
+    fi
+
+    echo "${new_state}" > "${SESSION_STATE_FILE}" 2>/dev/null || return 1
+    log "SESSION STATE: Rebuilt (${event_count} events, sealed=${last_id})"
+    return 0
 }

@@ -465,6 +465,9 @@ mkdir -p "$(dirname "${AUDIT_FILE}")" "${SESSION_DIR}" "${APPROVAL_DIR}" 2>/dev/
 # Sequence counter (per invocation, starts at 0)
 SEQ=0
 
+# Path B Phase 1: last emitted audit event ID (set by emit_event, read by seal)
+LAST_EMITTED_EVENT_ID=""
+
 # ─── Logging ────────────────────────────────────────────────────────────────
 
 log() {
@@ -666,6 +669,7 @@ emit_event() {
     local domain="$1" action="$2" outcome="$3" detail="$4" rule="$5" severity="$6" risk_score="${7:-0}" authorizer="${8:-gate}"
     local id ts
     id=$(gen_id)
+    LAST_EMITTED_EVENT_ID="${id}"
     ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     SEQ=$((SEQ + 1))
 
@@ -1884,6 +1888,10 @@ main() {
             translate_tool "${tool_name}" "${tool_input}"
             emit_event "${DOMAIN}" "${tool_name}" "deny" "${DETAIL}" "watchdog-lock" "critical" 100 "watchdog"
             respond_deny "ZLAR lockdown: ${lock_reason}" "policy"
+            # Path B: seal before early return (audit event emitted above)
+            if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ -n "${LAST_EMITTED_EVENT_ID}" ] && [ -n "${SESSION_STATE_FILE}" ]; then
+                _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
+            fi
             return
         fi
     fi
@@ -1900,6 +1908,10 @@ main() {
         emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "allow" "${DETAIL}" "internal-fast-path" "info" 0 "gate"
         log "Internal tool fast-path: ${tool_name} → allow"
         respond_allow
+        # Path B: seal before early return (audit event emitted above)
+        if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ -n "${LAST_EMITTED_EVENT_ID}" ] && [ -n "${SESSION_STATE_FILE}" ]; then
+            _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
+        fi
         return
     fi
 
@@ -1908,6 +1920,10 @@ main() {
         log "Policy load failed — denying all"
         emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "policy-error" "critical" 0 "gate"
         respond_deny "ZLAR policy error. All actions blocked." "gate_error"
+        # Path B: seal before early return (audit event emitted above)
+        if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ -n "${LAST_EMITTED_EVENT_ID}" ] && [ -n "${SESSION_STATE_FILE}" ]; then
+            _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
+        fi
         return
     fi
 
@@ -2139,6 +2155,10 @@ main() {
                                 rm -f "${APPROVAL_DIR}/${MATCHED_RULE}-${SESSION_ID}.pending" 2>/dev/null
                                 emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:human_${_hi_post_result}"
                                 respond_deny "Approval not accepted (${_hi_post_result}). Please review again with more time." "gate:human_integrity"
+                                # Path B: seal before early return (audit event emitted above)
+                                if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ -n "${LAST_EMITTED_EVENT_ID}" ] && [ -n "${SESSION_STATE_FILE}" ]; then
+                                    _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
+                                fi
                                 return  # exit main() after responding
                             fi
 
@@ -2192,6 +2212,10 @@ main() {
                                 fail_closed_alert "${_hi_pre_result}" 2>/dev/null || true
                                 emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:human_${_hi_pre_result}"
                                 respond_deny "Human decision-maker unavailable (${_hi_pre_result}). System is protecting human judgment. To recover: run 'zlar off' from your terminal." "gate:human_capacity"
+                                # Path B: seal before early return (audit event emitted above)
+                                if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ -n "${LAST_EMITTED_EVENT_ID}" ] && [ -n "${SESSION_STATE_FILE}" ]; then
+                                    _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
+                                fi
                                 return  # exit main() after responding
                             fi
 
@@ -2242,6 +2266,16 @@ main() {
             respond_deny "Unknown policy action: ${MATCHED_ACTION}" "gate_error"
             ;;
     esac
+
+    # Path B Phase 1: Seal state file to audit trail position.
+    # After all routing and audit emission, record the last emitted
+    # event ID in the state file. On session recovery, verify compares
+    # this seal with the actual audit trail to detect staleness.
+    if [ "${SESSION_STATE_ENABLED}" = "true" ] && \
+       [ -n "${LAST_EMITTED_EVENT_ID}" ] && \
+       [ -n "${SESSION_STATE_FILE}" ]; then
+        _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
+    fi
 }
 
 # Run
