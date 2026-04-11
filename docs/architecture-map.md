@@ -39,7 +39,7 @@ The order in which a Claude Code tool call passes through enforcement layers:
 9c. **Restore / Agent Health check (v3.0.0)** — if `etc/restore-config.json` is enabled and a trust state file exists, may escalate allow/log to ask or deny based on trust state (healthy / degraded / at_risk / suspended). Error-trapped: cannot crash the gate (RESTORE-INV-04). Reads `lib/restore.sh`.
 10. **Telegram approval (if needed)** — route to @ZLAR_00_bot for the human to decide.
 11. **Audit log entry** — written to `var/log/audit.jsonl` with signature.
-12. **Restore background trigger (v3.0.0)** — on deny, novelty, or high-risk (70+) outcomes, fires `lib/restore-trigger.mjs` in the background. Reads the audit trail, runs 5 detectors, updates trust state monotonically, sends Telegram notification on state change. Non-blocking.
+12. **Restore background trigger (v3.0.0)** — on deny, novelty, or high-risk (70+) outcomes, fires `lib/restore-trigger.mjs` in the background. Reads the audit trail, runs 6 detectors, updates trust state monotonically, sends Telegram notification on state change. Non-blocking.
 
 The first allow in this chain is THE SOVEREIGN. v2.6.0 had its sovereign at `~/.claude/.gate-disabled` — agent-writable. v2.7.0 adds a second sovereign at `/etc/zlar/off-flag` — agent-unreachable. During the overlap period, both check independently; either being present means the gate is off.
 
@@ -73,7 +73,7 @@ ZLAR 3.0 adds a behavioral observation layer that runs alongside the enforcement
 | Trigger | `lib/restore-trigger.mjs` | Backgrounded by gate on deny/novelty/high-risk. Reads audit trail, runs detectors, updates trust state, sends Telegram. |
 | Engine | `packages/zlar-restore/restore-engine.mjs` | Loads and runs detectors, aggregates scores, produces recommendation. |
 | Trust machine | `packages/zlar-restore/trust-state.mjs` | Monotone transition logic. Reset with friction (reason, delay, count). |
-| Detectors | `packages/zlar-restore/detectors/` | 5 files: contradiction, escalation, grounding loss, burstiness, authority widening. |
+| Detectors | `packages/zlar-restore/detectors/` | 6 files: contradiction, escalation, grounding loss, burstiness, authority widening, entropy shift. |
 | CLI | `bin/zlar-restore` | Operator interface: evaluate, status, reset, history, detectors. |
 | Invariants | `docs/RESTORE-INVARIANTS.md` | 8 invariants (RESTORE-INV-01 through -08). |
 

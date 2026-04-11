@@ -21,6 +21,8 @@
 RESTORE_CONFIG_FILE="${PROJECT_DIR}/etc/restore-config.json"
 RESTORE_ENABLED="false"
 RESTORE_TRUST_STATE_FILE=""
+RESTORE_HMAC_KEY_FILE=""
+RESTORE_HMAC_KEY=""
 RESTORE_ESCALATION_DEGRADED="log"
 RESTORE_ESCALATION_AT_RISK="ask"
 RESTORE_ESCALATION_SUSPENDED="deny"
@@ -53,6 +55,16 @@ restore_init() {
     _trust_dir=$(dirname "${RESTORE_TRUST_STATE_FILE}")
     mkdir -p "${_trust_dir}" 2>/dev/null || true
 
+    # Load HMAC key if configured
+    local _hmac_path
+    _hmac_path=$(jq -r '.hmac_key_file // ""' "${RESTORE_CONFIG_FILE}" 2>/dev/null)
+    if [ -n "${_hmac_path}" ]; then
+        RESTORE_HMAC_KEY_FILE="${PROJECT_DIR}/${_hmac_path}"
+        if [ -f "${RESTORE_HMAC_KEY_FILE}" ]; then
+            RESTORE_HMAC_KEY=$(cat "${RESTORE_HMAC_KEY_FILE}" 2>/dev/null | tr -d '[:space:]')
+        fi
+    fi
+
     # Load escalation mappings
     RESTORE_ESCALATION_DEGRADED=$(jq -r '.escalation.degraded // "log"' "${RESTORE_CONFIG_FILE}" 2>/dev/null || echo "log")
     RESTORE_ESCALATION_AT_RISK=$(jq -r '.escalation.at_risk // "ask"' "${RESTORE_CONFIG_FILE}" 2>/dev/null || echo "ask")
@@ -68,8 +80,55 @@ _restore_read_trust_state() {
     # Not enabled — healthy (no opinion)
     [ "${RESTORE_ENABLED}" = "true" ] || { echo "healthy"; return 0; }
 
+    # Pending evaluation marker: if background trigger is still running,
+    # escalate floor to degraded for interim actions
+    local _eval_marker="${PROJECT_DIR}/var/restore/.evaluating"
+    if [ -f "${_eval_marker}" ]; then
+        local _eval_ts _now_ts _age
+        _eval_ts=$(cat "${_eval_marker}" 2>/dev/null | tr -d '[:space:]')
+        _now_ts=$(date +%s 2>/dev/null)
+        _age=$(( _now_ts - _eval_ts )) 2>/dev/null || _age=999
+        if [ "${_age}" -lt 30 ] 2>/dev/null; then
+            # Evaluation in progress — read file state but floor to degraded
+            local _file_state
+            _file_state=$(_restore_read_trust_state_from_file)
+            case "${_file_state}" in
+                at_risk|suspended)
+                    echo "${_file_state}"
+                    ;;
+                *)
+                    echo "degraded"
+                    ;;
+            esac
+            return 0
+        fi
+    fi
+
+    _restore_read_trust_state_from_file
+}
+
+# Internal: read trust state from the cached file with HMAC verification
+_restore_read_trust_state_from_file() {
     # No file — healthy (INV-01)
     [ -f "${RESTORE_TRUST_STATE_FILE}" ] || { echo "healthy"; return 0; }
+
+    # HMAC verification if key is available
+    if [ -n "${RESTORE_HMAC_KEY}" ]; then
+        local _stored_hmac _payload _computed_hmac
+        _stored_hmac=$(jq -r '._hmac // ""' "${RESTORE_TRUST_STATE_FILE}" 2>/dev/null)
+        if [ -n "${_stored_hmac}" ]; then
+            _payload=$(jq -c 'del(._hmac)' "${RESTORE_TRUST_STATE_FILE}" 2>/dev/null)
+            _computed_hmac=$(printf '%s' "${_payload}" | openssl dgst -sha256 -hmac "${RESTORE_HMAC_KEY}" 2>/dev/null | awk '{print $NF}')
+            if [ "${_computed_hmac}" != "${_stored_hmac}" ]; then
+                echo "degraded"
+                return 0
+            fi
+        elif [ -n "${RESTORE_HMAC_KEY}" ]; then
+            # Key exists but no HMAC in file — treat as tampered
+            echo "degraded"
+            return 0
+        fi
+    fi
 
     local state
     state=$(jq -r '.state // ""' "${RESTORE_TRUST_STATE_FILE}" 2>/dev/null)

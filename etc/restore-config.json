@@ -1,6 +1,9 @@
 {
   "enabled": false,
   "trust_state_file": "var/restore/trust-state.json",
+  "hmac_key_file": "etc/keys/restore-hmac.key",
+  "evaluation_history_file": "var/restore/evaluation-history.json",
+  "diffuse_weight": 1.2,
   "escalation": {
     "degraded": "log",
     "at_risk": "ask",

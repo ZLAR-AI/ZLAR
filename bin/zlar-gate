@@ -2310,6 +2310,9 @@ main() {
        { [ "${MATCHED_ACTION}" = "deny" ] || [ "${NOVELTY_DETECTED}" = "true" ] || [ "${MATCHED_RISK_SCORE}" -ge 70 ]; } && \
        [ -f "${PROJECT_DIR}/lib/restore-trigger.mjs" ] && \
        command -v node &>/dev/null; then
+        # Write pending evaluation marker so the hot path knows a
+        # background evaluation is in progress (temporal gap fix)
+        date +%s > "${PROJECT_DIR}/var/restore/.evaluating" 2>/dev/null || true
         node "${PROJECT_DIR}/lib/restore-trigger.mjs" \
             "${SESSION_ID:-unknown}" \
             "${PROJECT_DIR}" \

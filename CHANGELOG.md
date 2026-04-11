@@ -1,5 +1,46 @@
 # Changelog
 
+## 3.0.1 — 2026-04-11
+
+Agent Health hardening. Security, aggregation, and anti-evasion improvements.
+
+Security hardening:
+- HMAC-SHA256 integrity on trust-state file. Tampered file treated as degraded
+  (RESTORE-INV-09). Opt-in via etc/keys/restore-hmac.key.
+- HMAC integrity on evaluation history file. Tampered history treated as empty
+  (conservative: slowing-down detector does not fire).
+- Detector reliability signal: 2+ crashed detectors in one evaluation triggers
+  degraded regardless of scores. Closes detector-crash evasion vector.
+- Bounded audit trail reads: trigger and CLI read in 64KB reverse-read chunks,
+  capped at 500 events. Prevents OOM on long-running systems (RESTORE-INV-11).
+- Pending evaluation marker: gate writes marker before background trigger,
+  floor to degraded during evaluation window (30s). Closes temporal gap.
+- Threshold randomization: +/-10% jitter per evaluation. Agent cannot predict
+  exact thresholds (RESTORE-INV-10).
+
+Aggregation:
+- Dual-path scoring: dominant (max weighted) + diffuse (L2 norm / sqrt(N)).
+  Five detectors at 0.25 each now triggers degraded. Catches distributed
+  pathology that MAX alone missed.
+- Type-aware Telegram routing: each detector maps to a syndrome name and
+  human-actionable advice in the notification.
+- Critical slowing down: evaluation history ring buffer (8 entries) with
+  lag-1 autocorrelation. Rising autocorrelation tightens sensitivity.
+
+Detection:
+- New detector: entropy-shift. Measures Shannon entropy change rate of
+  action domain distribution. Sharp narrowing or scattering both score.
+  Self-referencing baseline (session's own earlier behavior).
+- 6 detectors total (was 5).
+
+CLI:
+- zlar-restore evaluate now shows dual-path scores and primary signal.
+- CLI reads bounded audit trail (same as trigger).
+- CLI sets HMAC key for evaluate and reset commands.
+
+11 invariants total (was 8). New: RESTORE-INV-09 (integrity),
+RESTORE-INV-10 (anti-evasion), RESTORE-INV-11 (bounded reads).
+
 ## 3.0.0 — 2026-04-12
 
 ZLAR 3.0: Agent Health (restorative governance subsystem).

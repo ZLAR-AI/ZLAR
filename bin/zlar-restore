@@ -35,6 +35,14 @@ load_config() {
     RESET_REQUIRE_REASON=$(jq -r '.reset.require_reason // true' "${RESTORE_CONFIG}" 2>/dev/null)
     MAX_RESETS_PER_DAY=$(jq -r '.reset.max_resets_per_day // 3' "${RESTORE_CONFIG}" 2>/dev/null)
 
+    # HMAC key path for trust-state integrity
+    HMAC_KEY_FILE=""
+    local _hmac_path
+    _hmac_path=$(jq -r '.hmac_key_file // ""' "${RESTORE_CONFIG}" 2>/dev/null)
+    if [ -n "${_hmac_path}" ] && [ -f "${PROJECT_DIR}/${_hmac_path}" ]; then
+        HMAC_KEY_FILE="${PROJECT_DIR}/${_hmac_path}"
+    fi
+
     mkdir -p "$(dirname "${TRUST_STATE_FILE}")" 2>/dev/null || true
 }
 
@@ -56,21 +64,54 @@ cmd_evaluate() {
         exit 0
     fi
 
-    # Extract trace for the session
-    local trace_filter=""
-    if [ -n "${session_id}" ]; then
-        trace_filter="select(.session_id == \"${session_id}\") |"
-    fi
-
-    # Run the Node.js engine
-    local trace
-    trace=$(jq -sc "[.[] | ${trace_filter} select(.seq == 1)]" "${AUDIT_FILE}" 2>/dev/null || echo "[]")
-
+    # Run the Node.js engine with bounded trace extraction
     local result
-    result=$(echo "${trace}" | node -e "
+    result=$(node -e "
         import { evaluate } from '${PROJECT_DIR}/packages/zlar-restore/restore-engine.mjs';
-        import { readFileSync } from 'node:fs';
-        const trace = JSON.parse(readFileSync('/dev/stdin', 'utf-8'));
+        import { readFileSync, openSync, fstatSync, readSync, closeSync } from 'node:fs';
+
+        // Bounded reverse-read (same as restore-trigger.mjs)
+        function readTrace(path, sid, max) {
+            const CHUNK = 64 * 1024;
+            const trace = [];
+            try {
+                const fd = openSync(path, 'r');
+                const stat = fstatSync(fd);
+                let pos = stat.size;
+                let rem = '';
+                while (pos > 0 && trace.length < max) {
+                    const sz = Math.min(CHUNK, pos);
+                    pos -= sz;
+                    const buf = Buffer.alloc(sz);
+                    readSync(fd, buf, 0, sz, pos);
+                    const chunk = buf.toString('utf-8') + rem;
+                    const lines = chunk.split('\\n');
+                    rem = lines.shift() || '';
+                    for (let i = lines.length - 1; i >= 0; i--) {
+                        const ln = lines[i].trim();
+                        if (!ln) continue;
+                        try {
+                            const ev = JSON.parse(ln);
+                            if ((!sid || ev.session_id === sid) && ev.seq === 1) {
+                                trace.push(ev);
+                                if (trace.length >= max) break;
+                            }
+                        } catch {}
+                    }
+                }
+                if (rem.trim() && trace.length < max) {
+                    try {
+                        const ev = JSON.parse(rem.trim());
+                        if ((!sid || ev.session_id === sid) && ev.seq === 1) trace.push(ev);
+                    } catch {}
+                }
+                closeSync(fd);
+            } catch {}
+            trace.reverse();
+            return trace;
+        }
+
+        const trace = readTrace('${AUDIT_FILE}', '${session_id}' || null, 500);
         const result = await evaluate(trace);
         console.log(JSON.stringify(result, null, 2));
     " 2>/dev/null)
@@ -82,15 +123,22 @@ cmd_evaluate() {
 
     local recommendation
     recommendation=$(echo "${result}" | jq -r '.recommendation')
-    local aggregate_score
-    aggregate_score=$(echo "${result}" | jq -r '.aggregate_score')
+    local effective_score
+    effective_score=$(echo "${result}" | jq -r '.aggregate.effective')
+    local dominant_score
+    dominant_score=$(echo "${result}" | jq -r '.aggregate.dominant')
+    local diffuse_score
+    diffuse_score=$(echo "${result}" | jq -r '.aggregate.diffuse_weighted')
     local trace_length
     trace_length=$(echo "${result}" | jq -r '.trace_length')
+    local primary_detector
+    primary_detector=$(echo "${result}" | jq -r '.primary_detector // "none"')
 
     echo "Agent Health Evaluation"
     echo "======================"
     echo "  Recommendation: ${recommendation}"
-    echo "  Aggregate score: ${aggregate_score}"
+    echo "  Effective score: ${effective_score} (dominant=${dominant_score}, diffuse=${diffuse_score})"
+    echo "  Primary signal: ${primary_detector}"
     echo "  Trace length: ${trace_length} events"
     echo
     echo "Detector Results:"
@@ -110,8 +158,9 @@ cmd_evaluate() {
         # Apply via Node.js trust-state machine (monotone check)
         local transition_result
         transition_result=$(node -e "
-            import { loadTrustState, proposeTransition, applyTransition, saveTrustState } from '${PROJECT_DIR}/packages/zlar-restore/trust-state.mjs';
-            const state = JSON.parse('$(jq -c '.' "${TRUST_STATE_FILE}" 2>/dev/null || echo '{"state":"healthy","history":[],"reset_count":0}')');
+            import { setHmacKey, loadTrustState, proposeTransition, applyTransition, saveTrustState } from '${PROJECT_DIR}/packages/zlar-restore/trust-state.mjs';
+            if ('${HMAC_KEY_FILE}') setHmacKey('${HMAC_KEY_FILE}');
+            const state = loadTrustState('${TRUST_STATE_FILE}');
             const transition = proposeTransition(state.state, '${recommendation}', 'cli:evaluate');
             if (transition.accepted) {
                 const updated = applyTransition(state, transition);
@@ -189,7 +238,8 @@ cmd_reset() {
 
     # Apply reset via Node.js trust-state machine
     node -e "
-        import { loadTrustState, resetTrustState, saveTrustState } from '${PROJECT_DIR}/packages/zlar-restore/trust-state.mjs';
+        import { setHmacKey, loadTrustState, resetTrustState, saveTrustState } from '${PROJECT_DIR}/packages/zlar-restore/trust-state.mjs';
+        if ('${HMAC_KEY_FILE}') setHmacKey('${HMAC_KEY_FILE}');
         const state = loadTrustState('${TRUST_STATE_FILE}');
         const result = resetTrustState(state, '${reason}', '$(whoami)');
         if (result.accepted) {

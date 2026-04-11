@@ -97,3 +97,43 @@ trust state file is a cache of the most recent evaluation, not a source
 of truth independent of the audit trail.
 
 Enforcement: lib/restore-trigger.mjs (reads audit trail, runs engine)
+
+
+RESTORE-INV-09  Trust state integrity
+
+The trust state file and evaluation history file are HMAC-signed when a key
+is available (etc/keys/restore-hmac.key). The gate verifies the HMAC on read.
+A file with a missing or mismatched HMAC is treated as tampered:
+  - Trust state: treated as degraded (consistent with INV-02)
+  - Evaluation history: treated as empty (conservative; slowing-down detector
+    does not fire, which means no sensitivity increase)
+
+Without an HMAC key, integrity checking is skipped. The system works but
+without tamper protection. HMAC is opt-in, recommended.
+
+Enforcement: trust-state.mjs loadTrustState/saveTrustState (HMAC sign/verify),
+  evaluation-history.mjs loadHistory/appendHistory (HMAC sign/verify),
+  lib/restore.sh _restore_read_trust_state_from_file (shell-side verification)
+Test: test-hardening.mjs (5 HMAC tests)
+
+
+RESTORE-INV-10  Thresholds resist evasion
+
+Detector-to-state thresholds are jittered by +/-10% on each evaluation. An
+agent that knows the nominal thresholds cannot reliably stay just below them
+because the actual thresholds shift unpredictably.
+
+This is non-deterministic only in the observation layer. Policy enforcement
+in the gate remains fully deterministic.
+
+Enforcement: restore-engine.mjs evaluate() (jitter before threshold comparison)
+
+
+RESTORE-INV-11  Evaluation reads are bounded
+
+The restore trigger and CLI read the audit trail in bounded 64KB reverse-read
+chunks with a hard cap of 500 events per evaluation. This prevents memory
+exhaustion on long-running systems and defends against audit trail flooding
+as a denial-of-service vector.
+
+Enforcement: lib/restore-trigger.mjs readSessionTrace(), bin/zlar-restore cmd_evaluate()

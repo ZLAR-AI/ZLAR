@@ -15,6 +15,32 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { createHmac } from 'node:crypto';
+
+// ── HMAC integrity ──────────────────────────────────────────────────────────
+
+let _hmacKey = null;
+
+export function setHmacKey(keyOrPath) {
+  if (!keyOrPath) { _hmacKey = null; return; }
+  if (existsSync(keyOrPath)) {
+    _hmacKey = readFileSync(keyOrPath, 'utf-8').trim();
+  } else {
+    _hmacKey = keyOrPath;
+  }
+}
+
+function computeHmac(payload) {
+  if (!_hmacKey) return null;
+  return createHmac('sha256', _hmacKey).update(payload).digest('hex');
+}
+
+function verifyHmac(payload, expectedHmac) {
+  if (!_hmacKey) return true;  // no key = skip verification
+  if (!expectedHmac) return false;  // key exists but no HMAC in file = tampered
+  const computed = computeHmac(payload);
+  return computed === expectedHmac;
+}
 
 // ── State definitions ────────────────────────────────────────────────────────
 
@@ -59,7 +85,24 @@ export function loadTrustState(filePath) {
       };
     }
 
-    return parsed;
+    // HMAC verification: if key is set and file has _hmac, verify integrity
+    if (_hmacKey) {
+      const storedHmac = parsed._hmac;
+      const { _hmac: _, ...payload } = parsed;
+      const payloadStr = JSON.stringify(payload);
+      if (!verifyHmac(payloadStr, storedHmac)) {
+        return {
+          ...EMPTY_STATE,
+          state: 'degraded',
+          updated_at: new Date().toISOString(),
+          history: [{ from: parsed.state || 'unknown', to: 'degraded', reason: 'trust state HMAC verification failed — possible tampering', source: 'trust-state-loader', at: new Date().toISOString() }],
+        };
+      }
+    }
+
+    // Strip _hmac from returned state (internal field)
+    const { _hmac: _h, ...cleanState } = parsed;
+    return cleanState;
   } catch {
     // Parse error = degraded
     return {
@@ -76,7 +119,13 @@ export function saveTrustState(filePath, trustState) {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(filePath, JSON.stringify(trustState, null, 2) + '\n');
+  // Sign with HMAC if key is available
+  const payloadStr = JSON.stringify(trustState);
+  const hmac = computeHmac(payloadStr);
+  const output = hmac
+    ? { ...trustState, _hmac: hmac }
+    : trustState;
+  writeFileSync(filePath, JSON.stringify(output, null, 2) + '\n');
 }
 
 // ── Monotone transition ──────────────────────────────────────────────────────
