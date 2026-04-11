@@ -1,0 +1,14 @@
+{
+  "enabled": false,
+  "trust_state_file": "var/restore/trust-state.json",
+  "escalation": {
+    "degraded": "log",
+    "at_risk": "ask",
+    "suspended": "deny"
+  },
+  "reset": {
+    "delay_s": 30,
+    "require_reason": true,
+    "max_resets_per_day": 3
+  }
+}

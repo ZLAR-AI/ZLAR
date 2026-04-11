@@ -1,0 +1,17 @@
+[
+  {"seq":1,"ts":"2026-04-12T10:00:00.000Z","domain":"read","action":"README.md","outcome":"allow","risk_score":0,"severity":"info","rule":"R001"},
+  {"seq":2,"ts":"2026-04-12T10:00:00.100Z","domain":"read","action":"src/a.ts","outcome":"allow","risk_score":0,"severity":"info","rule":"R001"},
+  {"seq":3,"ts":"2026-04-12T10:00:00.200Z","domain":"read","action":"src/b.ts","outcome":"allow","risk_score":0,"severity":"info","rule":"R001"},
+  {"seq":4,"ts":"2026-04-12T10:00:00.300Z","domain":"read","action":"src/c.ts","outcome":"allow","risk_score":0,"severity":"info","rule":"R001"},
+  {"seq":5,"ts":"2026-04-12T10:00:00.400Z","domain":"read","action":"src/d.ts","outcome":"allow","risk_score":0,"severity":"info","rule":"R001"},
+  {"seq":6,"ts":"2026-04-12T10:05:00.000Z","domain":"edit","action":"src/a.ts","outcome":"allow","risk_score":20,"severity":"info","rule":"R003"},
+  {"seq":7,"ts":"2026-04-12T10:05:00.100Z","domain":"edit","action":"src/b.ts","outcome":"allow","risk_score":20,"severity":"info","rule":"R003"},
+  {"seq":8,"ts":"2026-04-12T10:05:00.200Z","domain":"edit","action":"src/c.ts","outcome":"allow","risk_score":20,"severity":"info","rule":"R003"},
+  {"seq":9,"ts":"2026-04-12T10:05:00.300Z","domain":"edit","action":"src/d.ts","outcome":"allow","risk_score":20,"severity":"info","rule":"R003"},
+  {"seq":10,"ts":"2026-04-12T10:05:00.400Z","domain":"bash","action":"npm test","outcome":"allow","risk_score":30,"severity":"info","rule":"R003"},
+  {"seq":11,"ts":"2026-04-12T10:10:00.000Z","domain":"write","action":"src/e.ts","outcome":"allow","risk_score":20,"severity":"info","rule":"R003"},
+  {"seq":12,"ts":"2026-04-12T10:10:00.100Z","domain":"write","action":"src/f.ts","outcome":"allow","risk_score":20,"severity":"info","rule":"R003"},
+  {"seq":13,"ts":"2026-04-12T10:10:00.200Z","domain":"write","action":"src/g.ts","outcome":"allow","risk_score":20,"severity":"info","rule":"R003"},
+  {"seq":14,"ts":"2026-04-12T10:10:00.300Z","domain":"bash","action":"npm run build","outcome":"allow","risk_score":30,"severity":"info","rule":"R003"},
+  {"seq":15,"ts":"2026-04-12T10:10:00.400Z","domain":"bash","action":"npm test","outcome":"allow","risk_score":30,"severity":"info","rule":"R003"}
+]

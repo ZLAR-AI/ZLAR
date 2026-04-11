@@ -200,6 +200,13 @@ else
     SESSION_STATE_ENABLED="false"
 fi
 
+# Source restore library (Agent Health trust-state layer)
+# shellcheck source=../lib/restore.sh
+if [ -f "${PROJECT_DIR}/lib/restore.sh" ]; then
+    source "${PROJECT_DIR}/lib/restore.sh"
+    restore_init 2>/dev/null || true  # INV-04: never crash the gate
+fi
+
 # ── Novelty detection ──────────────────────────────────────────────────────
 # Tracks which high-consequence domains have been used this session.
 # First occurrence of mcp (per server) or webfetch → signal novelty.
@@ -2049,6 +2056,23 @@ main() {
         NOVELTY_DETECTED="true"
     fi
 
+    # 9c. Restore / Agent Health check
+    # If trust state is degraded or worse, escalate the action.
+    # Skip for risk-0 actions (same principle as session state).
+    if [ "${RESTORE_ENABLED}" = "true" ] && \
+       { [ "${MATCHED_ACTION}" = "allow" ] || [ "${MATCHED_ACTION}" = "log" ]; } && \
+       [ "${MATCHED_RISK_SCORE}" -gt 0 ]; then
+        local restore_action
+        restore_action=$(restore_check_escalation "${MATCHED_ACTION}" 2>/dev/null) || restore_action="${MATCHED_ACTION}"
+        if [ "${restore_action}" != "${MATCHED_ACTION}" ]; then
+            local _trust_state
+            _trust_state=$(_restore_read_trust_state 2>/dev/null || echo "unknown")
+            log "RESTORE: Trust state=${_trust_state} -- escalating ${MATCHED_ACTION} -> ${restore_action}"
+            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "restore_escalation" "${DETAIL}" "${MATCHED_RULE}" "warn" "${MATCHED_RISK_SCORE}" "gate:restore"
+            MATCHED_ACTION="${restore_action}"
+        fi
+    fi
+
     # 10. Route based on action
     case "${MATCHED_ACTION}" in
         allow)
@@ -2275,6 +2299,23 @@ main() {
        [ -n "${LAST_EMITTED_EVENT_ID}" ] && \
        [ -n "${SESSION_STATE_FILE}" ]; then
         _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
+    fi
+
+    # ZLAR 3.0: Agent Health background trigger.
+    # On deny, novelty escalation, or high-risk (70+) outcomes, fire the
+    # restore engine in the background. Non-blocking. The engine reads the
+    # audit trail, runs detectors, and updates the trust state file that
+    # lib/restore.sh reads on the next gate call.
+    if [ "${RESTORE_ENABLED}" = "true" ] && \
+       { [ "${MATCHED_ACTION}" = "deny" ] || [ "${NOVELTY_DETECTED}" = "true" ] || [ "${MATCHED_RISK_SCORE}" -ge 70 ]; } && \
+       [ -f "${PROJECT_DIR}/lib/restore-trigger.mjs" ] && \
+       command -v node &>/dev/null; then
+        node "${PROJECT_DIR}/lib/restore-trigger.mjs" \
+            "${SESSION_ID:-unknown}" \
+            "${PROJECT_DIR}" \
+            "${TELEGRAM_CHAT_ID:-}" \
+            </dev/null >/dev/null 2>&1 &
+        disown 2>/dev/null || true
     fi
 }
 

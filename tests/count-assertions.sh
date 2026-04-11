@@ -69,6 +69,9 @@ extract_pass_count() {
     [ -n "$n" ] && { echo "$n"; return; }
     n=$(echo "$output" | grep -E "[0-9]+/[0-9]+ passed" | tail -1 | grep -oE "[0-9]+/[0-9]+" | head -1 | cut -d/ -f1)
     [ -n "$n" ] && { echo "$n"; return; }
+    # TAP format: "# pass 21" (node:test runner)
+    n=$(echo "$output" | grep -E "^# pass [0-9]+" | tail -1 | grep -oE "[0-9]+")
+    [ -n "$n" ] && { echo "$n"; return; }
     echo "0"
 }
 
@@ -133,7 +136,7 @@ done
 
 # Node test files
 if [ "$HAS_NODE" -eq 1 ]; then
-    for t in tests/*.mjs mcp-gate/test*.mjs cedar-poc/test*.mjs sdk/*/test.mjs; do
+    for t in tests/*.mjs mcp-gate/test*.mjs cedar-poc/test*.mjs sdk/*/test.mjs packages/*/tests/test*.mjs; do
         [ -f "$t" ] || continue
         run_test "$t" "node"
     done

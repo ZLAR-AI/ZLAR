@@ -1,0 +1,17 @@
+{
+  "name": "@zlar/restore",
+  "version": "0.1.0",
+  "description": "Agent Health — restorative governance subsystem for ZLAR",
+  "type": "module",
+  "main": "restore-engine.mjs",
+  "exports": {
+    ".": "./restore-engine.mjs",
+    "./trust-state": "./trust-state.mjs",
+    "./detectors/*": "./detectors/*.mjs"
+  },
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "license": "Apache-2.0",
+  "private": true
+}

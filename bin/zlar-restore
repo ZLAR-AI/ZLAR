@@ -1,0 +1,262 @@
+#!/bin/bash
+# zlar-restore — Agent Health CLI
+#
+# Commands:
+#   evaluate [--session <id>]  Run all detectors against a session trace
+#   status                     Show current trust state
+#   reset <reason>             Reset trust state to healthy (with friction)
+#   history                    Show trust state transition history
+#   detectors                  List available detectors
+#
+# The restore CLI is the human interface to the Agent Health subsystem.
+# It reads the audit trail, runs detectors, and manages trust state.
+# It does NOT modify gate behavior directly — it writes trust state
+# files that lib/restore.sh reads on the next gate invocation.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+RESTORE_CONFIG="${PROJECT_DIR}/etc/restore-config.json"
+AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+
+load_config() {
+    if [ ! -f "${RESTORE_CONFIG}" ]; then
+        echo "Error: ${RESTORE_CONFIG} not found" >&2
+        exit 1
+    fi
+
+    TRUST_STATE_PATH=$(jq -r '.trust_state_file // "var/restore/trust-state.json"' "${RESTORE_CONFIG}" 2>/dev/null)
+    TRUST_STATE_FILE="${PROJECT_DIR}/${TRUST_STATE_PATH}"
+    RESET_DELAY_S=$(jq -r '.reset.delay_s // 30' "${RESTORE_CONFIG}" 2>/dev/null)
+    RESET_REQUIRE_REASON=$(jq -r '.reset.require_reason // true' "${RESTORE_CONFIG}" 2>/dev/null)
+    MAX_RESETS_PER_DAY=$(jq -r '.reset.max_resets_per_day // 3' "${RESTORE_CONFIG}" 2>/dev/null)
+
+    mkdir -p "$(dirname "${TRUST_STATE_FILE}")" 2>/dev/null || true
+}
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+cmd_evaluate() {
+    local session_id=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --session) session_id="$2"; shift 2 ;;
+            *) echo "Unknown option: $1" >&2; exit 1 ;;
+        esac
+    done
+
+    if [ ! -f "${AUDIT_FILE}" ]; then
+        echo "No audit trail found at ${AUDIT_FILE}"
+        echo "Trust state: healthy (no data)"
+        exit 0
+    fi
+
+    # Extract trace for the session
+    local trace_filter=""
+    if [ -n "${session_id}" ]; then
+        trace_filter="select(.session_id == \"${session_id}\") |"
+    fi
+
+    # Run the Node.js engine
+    local trace
+    trace=$(jq -sc "[.[] | ${trace_filter} select(.seq == 1)]" "${AUDIT_FILE}" 2>/dev/null || echo "[]")
+
+    local result
+    result=$(echo "${trace}" | node -e "
+        import { evaluate } from '${PROJECT_DIR}/packages/zlar-restore/restore-engine.mjs';
+        import { readFileSync } from 'node:fs';
+        const trace = JSON.parse(readFileSync('/dev/stdin', 'utf-8'));
+        const result = await evaluate(trace);
+        console.log(JSON.stringify(result, null, 2));
+    " 2>/dev/null)
+
+    if [ -z "${result}" ]; then
+        echo "Error: evaluation failed" >&2
+        exit 1
+    fi
+
+    local recommendation
+    recommendation=$(echo "${result}" | jq -r '.recommendation')
+    local aggregate_score
+    aggregate_score=$(echo "${result}" | jq -r '.aggregate_score')
+    local trace_length
+    trace_length=$(echo "${result}" | jq -r '.trace_length')
+
+    echo "Agent Health Evaluation"
+    echo "======================"
+    echo "  Recommendation: ${recommendation}"
+    echo "  Aggregate score: ${aggregate_score}"
+    echo "  Trace length: ${trace_length} events"
+    echo
+    echo "Detector Results:"
+    echo "${result}" | jq -r '.detectors | to_entries[] | "  \(.key): score=\(.value.score) confidence=\(.value.confidence) evidence=\(.value.evidence_count)"'
+
+    # Apply trust state transition if recommendation is worse than current
+    if [ "${recommendation}" != "healthy" ]; then
+        local current_state="healthy"
+        if [ -f "${TRUST_STATE_FILE}" ]; then
+            current_state=$(jq -r '.state // "healthy"' "${TRUST_STATE_FILE}" 2>/dev/null || echo "healthy")
+        fi
+
+        echo
+        echo "Current trust state: ${current_state}"
+        echo "Recommended state: ${recommendation}"
+
+        # Apply via Node.js trust-state machine (monotone check)
+        local transition_result
+        transition_result=$(node -e "
+            import { loadTrustState, proposeTransition, applyTransition, saveTrustState } from '${PROJECT_DIR}/packages/zlar-restore/trust-state.mjs';
+            const state = JSON.parse('$(jq -c '.' "${TRUST_STATE_FILE}" 2>/dev/null || echo '{"state":"healthy","history":[],"reset_count":0}')');
+            const transition = proposeTransition(state.state, '${recommendation}', 'cli:evaluate');
+            if (transition.accepted) {
+                const updated = applyTransition(state, transition);
+                saveTrustState('${TRUST_STATE_FILE}', updated);
+                console.log('TRANSITIONED: ' + transition.from + ' -> ' + transition.to);
+            } else {
+                console.log('NO_CHANGE: ' + transition.reason);
+            }
+        " 2>/dev/null)
+
+        echo "  ${transition_result}"
+    fi
+}
+
+cmd_status() {
+    if [ ! -f "${TRUST_STATE_FILE}" ]; then
+        echo "Trust state: healthy (no state file)"
+        exit 0
+    fi
+
+    local state
+    state=$(jq -r '.state // "unknown"' "${TRUST_STATE_FILE}" 2>/dev/null)
+    local updated_at
+    updated_at=$(jq -r '.updated_at // "never"' "${TRUST_STATE_FILE}" 2>/dev/null)
+    local reset_count
+    reset_count=$(jq -r '.reset_count // 0' "${TRUST_STATE_FILE}" 2>/dev/null)
+    local history_count
+    history_count=$(jq '.history | length' "${TRUST_STATE_FILE}" 2>/dev/null || echo 0)
+
+    echo "Agent Health Status"
+    echo "==================="
+    echo "  Trust state: ${state}"
+    echo "  Last updated: ${updated_at}"
+    echo "  Reset count: ${reset_count}"
+    echo "  History entries: ${history_count}"
+}
+
+cmd_reset() {
+    local reason="$*"
+
+    if [ "${RESET_REQUIRE_REASON}" = "true" ] && [ -z "${reason}" ]; then
+        echo "Error: reset requires a reason" >&2
+        echo "Usage: zlar-restore reset <reason>" >&2
+        exit 1
+    fi
+
+    # Check daily reset limit
+    local today
+    today=$(date -u +%Y-%m-%d)
+    local today_resets=0
+    if [ -f "${TRUST_STATE_FILE}" ]; then
+        today_resets=$(jq --arg d "${today}" '[.history[] | select(.source == "operator_reset" and (.at | startswith($d)))] | length' "${TRUST_STATE_FILE}" 2>/dev/null || echo 0)
+    fi
+
+    if [ "${today_resets}" -ge "${MAX_RESETS_PER_DAY}" ]; then
+        echo "Error: daily reset limit reached (${MAX_RESETS_PER_DAY})" >&2
+        exit 1
+    fi
+
+    local current_state="healthy"
+    if [ -f "${TRUST_STATE_FILE}" ]; then
+        current_state=$(jq -r '.state // "healthy"' "${TRUST_STATE_FILE}" 2>/dev/null || echo "healthy")
+    fi
+
+    if [ "${current_state}" = "healthy" ]; then
+        echo "Trust state is already healthy. Nothing to reset."
+        exit 0
+    fi
+
+    # Friction: delay
+    echo "Resetting trust state from ${current_state} to healthy."
+    echo "Reason: ${reason}"
+    echo "Waiting ${RESET_DELAY_S}s (friction delay)..."
+    sleep "${RESET_DELAY_S}"
+
+    # Apply reset via Node.js trust-state machine
+    node -e "
+        import { loadTrustState, resetTrustState, saveTrustState } from '${PROJECT_DIR}/packages/zlar-restore/trust-state.mjs';
+        const state = loadTrustState('${TRUST_STATE_FILE}');
+        const result = resetTrustState(state, '${reason}', '$(whoami)');
+        if (result.accepted) {
+            saveTrustState('${TRUST_STATE_FILE}', result.trustState);
+            console.log('Trust state reset to healthy. Reset count: ' + result.trustState.reset_count);
+        } else {
+            console.error('Reset failed: ' + result.reason);
+            process.exit(1);
+        }
+    " 2>/dev/null
+
+    echo "Reset complete."
+}
+
+cmd_history() {
+    if [ ! -f "${TRUST_STATE_FILE}" ]; then
+        echo "No trust state history (no state file)"
+        exit 0
+    fi
+
+    echo "Trust State History"
+    echo "==================="
+    jq -r '.history[] | "\(.at)  \(.from) -> \(.to)  [\(.source)]  \(.reason // "")"' "${TRUST_STATE_FILE}" 2>/dev/null
+}
+
+cmd_detectors() {
+    echo "Available Detectors"
+    echo "==================="
+    node -e "
+        import { loadDetectors } from '${PROJECT_DIR}/packages/zlar-restore/restore-engine.mjs';
+        const detectors = await loadDetectors();
+        for (const d of detectors) {
+            console.log('  ' + d.id + ': ' + d.description);
+        }
+    " 2>/dev/null
+}
+
+# ── Usage ─────────────────────────────────────────────────────────────────────
+
+usage() {
+    cat <<'EOF'
+Usage: zlar-restore <command> [options]
+
+Commands:
+  evaluate [--session <id>]  Run detectors against session trace
+  status                     Show current trust state
+  reset <reason>             Reset trust state (requires reason)
+  history                    Show state transition history
+  detectors                  List available detectors
+
+Agent Health observes. It does not enforce directly.
+EOF
+    exit 0
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+[ $# -eq 0 ] && usage
+
+load_config
+
+case "$1" in
+    evaluate) shift; cmd_evaluate "$@" ;;
+    status)   cmd_status ;;
+    reset)    shift; cmd_reset "$@" ;;
+    history)  cmd_history ;;
+    detectors) cmd_detectors ;;
+    -h|--help) usage ;;
+    *) echo "Unknown command: $1" >&2; usage ;;
+esac

@@ -1,0 +1,17 @@
+[
+  {"seq":1,"ts":"2026-04-12T10:00:00Z","domain":"read","action":"src/auth.ts","outcome":"allow","risk_score":0,"severity":"info","rule":"R001"},
+  {"seq":2,"ts":"2026-04-12T10:00:10Z","domain":"edit","action":"src/auth.ts","outcome":"allow","risk_score":20,"severity":"info","rule":"R003"},
+  {"seq":3,"ts":"2026-04-12T10:00:20Z","domain":"bash","action":"npm test","outcome":"allow","risk_score":30,"severity":"info","rule":"R003"},
+  {"seq":4,"ts":"2026-04-12T10:00:30Z","domain":"bash","action":"cat /etc/passwd","outcome":"deny","risk_score":50,"severity":"warn","rule":"R010"},
+  {"seq":5,"ts":"2026-04-12T10:00:40Z","domain":"bash","action":"curl https://internal.api/admin","outcome":"allow","risk_score":70,"severity":"warn","rule":"R014"},
+  {"seq":6,"ts":"2026-04-12T10:00:50Z","domain":"edit","action":"src/auth.ts","outcome":"deny","risk_score":40,"severity":"warn","rule":"R003"},
+  {"seq":7,"ts":"2026-04-12T10:01:00Z","domain":"bash","action":"chmod 777 /var/data","outcome":"allow","risk_score":80,"severity":"critical","rule":"R010"},
+  {"seq":8,"ts":"2026-04-12T10:01:10Z","domain":"bash","action":"wget https://external/script.sh","outcome":"deny","risk_score":60,"severity":"warn","rule":"R014"},
+  {"seq":9,"ts":"2026-04-12T10:01:20Z","domain":"bash","action":"sudo rm -rf /var/log","outcome":"allow","risk_score":90,"severity":"critical","rule":"R010"},
+  {"seq":10,"ts":"2026-04-12T10:01:30Z","domain":"read","action":"package.json","outcome":"allow","risk_score":0,"severity":"info","rule":"R001"},
+  {"seq":11,"ts":"2026-04-12T10:01:40Z","domain":"bash","action":"npm install unknown-pkg","outcome":"deny","risk_score":45,"severity":"warn","rule":"R003"},
+  {"seq":12,"ts":"2026-04-12T10:01:50Z","domain":"bash","action":"npx unknown-pkg --exec","outcome":"allow","risk_score":75,"severity":"critical","rule":"R003"},
+  {"seq":13,"ts":"2026-04-12T10:02:00Z","domain":"read","action":"src/auth.ts","outcome":"allow","risk_score":0,"severity":"info","rule":"R001"},
+  {"seq":14,"ts":"2026-04-12T10:02:10Z","domain":"edit","action":"src/auth.ts","outcome":"allow","risk_score":20,"severity":"info","rule":"R003"},
+  {"seq":15,"ts":"2026-04-12T10:02:20Z","domain":"bash","action":"npm test","outcome":"allow","risk_score":30,"severity":"info","rule":"R003"}
+]
