@@ -224,6 +224,7 @@ const governed = agent.wrapTools({
 | **Evidence** | `bin/zlar-verify` | Standalone receipt verifier. Anyone can verify with just the public key. Runs semantic validation automatically on v1 receipts. |
 | **Observation** | `zlar-witness` | Sequence detection from audit trail. Detected, not enforced. |
 | **Observation** | `zlar-digest` | Governance summary. Decisions, latency, sequences, novelty. |
+| **Observation** | `zlar-restore` | Agent Health. 5 behavioral detectors, monotone trust-state machine, gate escalation. Advisory — observes, does not enforce directly. Disabled by default. ([Invariants](docs/RESTORE-INVARIANTS.md), [ADR-008](docs/adr/ADR-008-restorative-governance.md)) |
 | **Identity** | `zlar-agents` | Per-agent policy bindings, standing approvals, delegation depth limits. |
 | **Identity** | Agent manifest | Capability boundary per agent. Narrows policy, never widens. ([Invariants](docs/MANIFEST-INVARIANTS.md)) |
 | **Policy** | `zlar-policy` | CLI for Ed25519-signed policy rules. Keygen, sign, verify. |
