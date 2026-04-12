@@ -162,3 +162,28 @@ but R012 (path-based deny) is the only defense. Config HMAC is recommended.
 Enforcement: lib/restore.sh _restore_verify_config_integrity(), _restore_force_closed()
   config-integrity.mjs signConfig/verifyConfig, bin/zlar-restore sign-config
 Test: test-hardening.mjs (4 config integrity tests)
+
+
+RESTORE-INV-13  Multi-detector convergence for escalation
+
+A single high-scoring detector can only push trust state to degraded.
+Reaching at_risk or suspended requires 2 or more detectors with weighted
+signals above the convergence floor (the degraded threshold).
+
+This prevents a single miscalibrated or false-positive detector from
+cascading into full escalation. Degraded is visible (Telegram notification)
+but does not change action routing. at_risk and suspended change action
+routing and therefore require convergent evidence from multiple independent
+behavioral signals.
+
+The convergence floor equals the degraded threshold. Any detector whose
+weighted signal (score times confidence) exceeds this floor counts as
+active. The active_detectors count is included in the evaluation result
+for transparency.
+
+Origin: v3.0.4. Production false positive where action_silence alone at
+score 1.0 pushed trust state directly to at_risk, escalating all policy
+allows to asks and interrupting the human 5 times in 30 seconds.
+
+Enforcement: restore-engine.mjs evaluate() (activeDetectorCount filter)
+Test: test-engine.mjs (3 convergence rule tests)

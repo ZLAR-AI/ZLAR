@@ -6,7 +6,7 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12381/badge)](https://www.bestpractices.dev/projects/12381)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/ZLAR-AI/ZLAR/badge)](https://securityscorecards.dev/viewer/?uri=github.com/ZLAR-AI/ZLAR)
 [![GitHub release](https://img.shields.io/github/v/tag/ZLAR-AI/ZLAR?label=release&sort=semver)](https://github.com/ZLAR-AI/ZLAR/releases)
-[![Tests](https://img.shields.io/badge/tests-1100%2B_assertions-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
+[![Tests](https://img.shields.io/badge/tests-1055_assertions-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
 
 **ZLAR is a deny-first governance kernel for AI agents.**
 
@@ -25,11 +25,16 @@ It intercepts agent tool calls, evaluates them against signed policy, routes dec
 
 ### ZLAR 3.0: Agent Health (optional)
 
-ZLAR 3.0 adds restorative governance — behavioral observation that detects when an agent may be drifting and brings the human back into the loop. Five detectors evaluate session traces and produce a trust state. The gate consults the trust state and may escalate actions to human review.
+ZLAR 3.0 adds restorative governance — behavioral observation that detects when an agent may be drifting and brings the human back into the loop. Seven detectors evaluate session traces and produce a trust state. The gate consults the trust state and may escalate actions to human review.
 
-Ships disabled by default (`etc/restore-config.json`, `enabled: false`). The gate behaves identically to 2.x when restore is off.
+Ships disabled by default. Enable with one command:
 
-ZLAR 2.x remains a valid endpoint for users who want strong deterministic enforcement without restorative governance. ZLAR 3.x extends, rather than invalidates, that model.
+```bash
+zlar health on    # generates keys, enables monitoring, signs config
+zlar health off   # disables, signs config — no behavioral data accessed
+```
+
+The gate behaves identically to 2.x when health is off. No performance cost, no behavioral data collected, no detectors running.
 
 ## What ZLAR Is Not
 
@@ -224,7 +229,7 @@ const governed = agent.wrapTools({
 | **Evidence** | `bin/zlar-verify` | Standalone receipt verifier. Anyone can verify with just the public key. Runs semantic validation automatically on v1 receipts. |
 | **Observation** | `zlar-witness` | Sequence detection from audit trail. Detected, not enforced. |
 | **Observation** | `zlar-digest` | Governance summary. Decisions, latency, sequences, novelty. |
-| **Observation** | `zlar-restore` | Agent Health. 5 behavioral detectors, monotone trust-state machine, gate escalation. Advisory — observes, does not enforce directly. Disabled by default. ([Invariants](docs/RESTORE-INVARIANTS.md), [ADR-008](docs/adr/ADR-008-restorative-governance.md)) |
+| **Observation** | `zlar-restore` | Agent Health. 7 behavioral detectors, monotone trust-state machine, gate escalation. Multi-detector convergence required for at_risk+. Advisory — observes, does not enforce directly. Disabled by default. ([Invariants](docs/RESTORE-INVARIANTS.md), [ADR-008](docs/adr/ADR-008-restorative-governance.md)) |
 | **Identity** | `zlar-agents` | Per-agent policy bindings, standing approvals, delegation depth limits. |
 | **Identity** | Agent manifest | Capability boundary per agent. Narrows policy, never widens. ([Invariants](docs/MANIFEST-INVARIANTS.md)) |
 | **Policy** | `zlar-policy` | CLI for Ed25519-signed policy rules. Keygen, sign, verify. |
@@ -250,7 +255,7 @@ bash tests/count-assertions.sh --detail   # also show per-file pass counts
 bash tests/count-assertions.sh --badge    # print shields.io badge URL
 ```
 
-Current state (v3.0.0): **32 files, 1171 assertions, 0 failures.**
+Current state (v3.0.4): **33 files, 1055 assertions, 0 failures.**
 
 ### Dependencies
 
@@ -327,9 +332,9 @@ lib/           Shared libraries (crypto, session state, agent identity, receipt,
 adapters/      Framework hooks (claude-code, cursor, windsurf)
 mcp-gate/      MCP TCP proxy gate (Node.js)
 etc/           Policy, manifests, signing keys, standing approvals, receipt schema
-tests/         Test suites (15 bash + 16 Node.js + 1 Python, 1100+ assertions)
+tests/         Test suites (16 bash + 3 Node.js + 1 Python)
                Run all: bash tests/count-assertions.sh
-packages/      ZLAR 3.0 subsystems (zlar-restore: Agent Health engine, detectors, tests)
+packages/      ZLAR 3.0 subsystems (zlar-restore: 7 detectors, engine, trust state, 4 test files)
 docs/          Architecture decisions, manifest invariants, operations
 docs/adr/      Architecture Decision Records
 signal/        Agent-facing signal layer (thesis, origin, proof)
@@ -349,6 +354,7 @@ Architectural choices are documented as ADRs:
 | [005](docs/adr/ADR-005-manifest-narrows-policy.md) | Manifest narrows policy, never widens |
 | [006](docs/adr/ADR-006-structural-independence.md) | Structural independence from governed system |
 | [007](docs/adr/ADR-007-receipt-v1-envelope.md) | Receipt v1 envelope format (versioned, no alg negotiation) |
+| [008](docs/adr/ADR-008-restorative-governance.md) | Restorative governance (Agent Health) — observe, don't enforce |
 
 ## Further Reading
 
