@@ -90,9 +90,18 @@ fail_closed_alert() {
         esac
     fi
 
+    # Dedupe window: telegram_unreachable uses a shorter window (300s = 5 min)
+    # because the human needs to know quickly when the gate is blocking
+    # everything. Other invariant reasons (H6/H13/H14) use the standard
+    # 3600s window since they are less urgent.
+    local effective_window="${ZLAR_ALERT_INTERVAL_S}"
+    if [ "${reason}" = "telegram_unreachable" ]; then
+        effective_window="${ZLAR_ALERT_INTERVAL_TG_S:-300}"
+    fi
+
     delta=$(( now - last_epoch ))
-    if [ "${last_reason}" = "${reason}" ] && [ "${delta}" -lt "${ZLAR_ALERT_INTERVAL_S}" ]; then
-        _fca_log "suppressed: same reason (${reason}), ${delta}s since last alert (window: ${ZLAR_ALERT_INTERVAL_S}s)"
+    if [ "${last_reason}" = "${reason}" ] && [ "${delta}" -lt "${effective_window}" ]; then
+        _fca_log "suppressed: same reason (${reason}), ${delta}s since last alert (window: ${effective_window}s)"
         return 0
     fi
     if [ -n "${last_reason}" ] && [ "${last_reason}" != "${reason}" ]; then
@@ -113,6 +122,9 @@ fail_closed_alert() {
             ;;
         capacity_exceeded)
             invariant_label="H6 — daily decision cap reached"
+            ;;
+        telegram_unreachable)
+            invariant_label="Telegram send failed — approval requests cannot reach you"
             ;;
         *)
             invariant_label="${reason}"
@@ -156,7 +168,34 @@ EOF
         _fca_log "alert sent: reason=${reason} http=${http_code}"
     else
         _fca_log "alert send failed: reason=${reason} http=${http_code:-no-response}"
+        # Telegram is unreachable — use local macOS notification as fallback.
+        # This is the HAL 9000 fix: when the only notification channel is the
+        # thing that is broken, the human gets no signal. The gate silently
+        # denies everything and the human does not know. Desktop notification
+        # ensures the human is always reachable through at least one channel.
+        _fca_local_notify "${reason}" "${invariant_label}" "${timestamp_iso}"
     fi
 
+    return 0
+}
+
+# Internal: local desktop notification fallback when Telegram is unreachable.
+# macOS only (osascript). Best-effort, silent on failure, deduped by the
+# same flag file as the Telegram alert (so at most once per window).
+_fca_local_notify() {
+    local reason="${1:-unknown}" label="${2:-unknown}" ts="${3:-unknown}"
+
+    # Only attempt on macOS.
+    if ! command -v osascript &>/dev/null; then
+        _fca_log "local fallback skipped: osascript not available (not macOS)"
+        return 0
+    fi
+
+    local title="ZLAR Gate Fail-Closed"
+    local body
+    body=$(printf '%s\n%s' "${label}" "${ts}")
+
+    osascript -e "display notification \"${body}\" with title \"${title}\" sound name \"Basso\"" 2>/dev/null || true
+    _fca_log "local notification sent: reason=${reason}"
     return 0
 }

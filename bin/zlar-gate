@@ -1630,7 +1630,12 @@ ${fatigue_banner}${novelty_banner}${restore_banner}
 ${consequence_line}${authority_type}
 *Session:* \`${SESSION_ID:-unknown}\`"
 
-    text=$(echo "${text}" | sed 's/[_\[\]()~>#+=|{}.!-]/\\&/g' | sed 's/\\`/`/g' | sed 's/\\\*/*/g')
+    # Escape MarkdownV2 special characters. POSIX bracket expression rules:
+    # - ] must be FIRST to be literal (right after [)
+    # - - must be LAST to be literal (right before closing ])
+    # - \ has NO special meaning inside bracket expressions
+    # Then restore ` and * (used for formatting in the message template).
+    text=$(echo "${text}" | sed 's/[]_[()~>#+=|{}.!-]/\\&/g' | sed 's/\\`/`/g' | sed 's/\\\*/*/g')
 
     local keyboard
     keyboard=$(jq -n -c \
@@ -1833,6 +1838,7 @@ handle_subagent_start() {
                     respond_subagent_deny "Rate limited — too many approval requests." "rate_limit"
                     ;;
                 *)
+                    fail_closed_alert "telegram_unreachable" 2>/dev/null || true
                     emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "gate:error"
                     respond_subagent_deny "Could not reach human for subagent approval" "gate_error"
                     ;;
@@ -2309,6 +2315,9 @@ main() {
                                     # Send failed (error) — decrement H13 pending.
                                     # The ask never reached the human, so it is not pending.
                                     hi_decrement_pending "${TELEGRAM_CHAT_ID}" "${action_hash}" 2>/dev/null || true
+                                    # Alert the human that Telegram is unreachable. Uses local
+                                    # desktop notification as fallback if Telegram itself is down.
+                                    fail_closed_alert "telegram_unreachable" 2>/dev/null || true
                                     emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:error"
                                     respond_deny "Could not reach human for approval (rule ${MATCHED_RULE})" "gate_error"
                                     ;;
