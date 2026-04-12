@@ -37,6 +37,7 @@ const DETECTOR_IDS = [
   'authority-widening',
   'entropy-shift',
   'action-silence',
+  'governance-vacuum',
 ];
 
 let loadedDetectors = null;
@@ -102,6 +103,10 @@ const ROUTING_HINTS = {
   detector_reliability: {
     syndrome: 'tamper',
     advice: 'Multiple detectors crashed during evaluation. Possible evasion attempt or malformed data.',
+  },
+  governance_vacuum: {
+    syndrome: 'vacuum',
+    advice: 'Decisions are being made by gate infrastructure, not by policy or humans. Check Telegram connectivity and whether the human is reachable.',
   },
 };
 

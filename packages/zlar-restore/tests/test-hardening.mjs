@@ -284,7 +284,7 @@ test('detector reliability: engine returns _signal_vector with correct length', 
     detail: '{}',
   }));
   const result = await engineEvaluate(trace);
-  assert.equal(result._signal_vector.length, 7, 'signal vector should match 7 detectors');
+  assert.equal(result._signal_vector.length, 8, 'signal vector should match 8 detectors');
 });
 
 // ── Config integrity tests ─────────────────────────────────────────────────

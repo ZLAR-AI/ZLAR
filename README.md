@@ -334,7 +334,7 @@ mcp-gate/      MCP TCP proxy gate (Node.js)
 etc/           Policy, manifests, signing keys, standing approvals, receipt schema
 tests/         Test suites (16 bash + 3 Node.js + 1 Python)
                Run all: bash tests/count-assertions.sh
-packages/      ZLAR 3.0 subsystems (zlar-restore: 7 detectors, engine, trust state, 4 test files)
+packages/      ZLAR 3.0 subsystems (zlar-restore: 8 detectors, engine, trust state, 4 test files)
 docs/          Architecture decisions, manifest invariants, operations
 docs/adr/      Architecture Decision Records
 signal/        Agent-facing signal layer (thesis, origin, proof)

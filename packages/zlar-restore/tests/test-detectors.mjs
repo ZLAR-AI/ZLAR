@@ -205,12 +205,91 @@ test('widening detector: empty trace returns zero', () => {
   assert.equal(result.score, 0);
 });
 
+// ── governance-vacuum ───────────────────────────────────────────────────────
+
+import { evaluate as vacuumEval, id as vacuumId } from '../detectors/governance-vacuum.mjs';
+
+test('vacuum detector: has correct id', () => {
+  assert.equal(vacuumId, 'governance_vacuum');
+});
+
+test('vacuum detector: healthy session scores zero', () => {
+  const trace = loadFixture('healthy-session.json');
+  const result = vacuumEval(trace);
+  assert.equal(result.score, 0, `expected 0 on all-policy trace, got ${result.score}`);
+  assert.equal(result.evidence.length, 0);
+});
+
+test('vacuum detector: governance vacuum trace scores high', () => {
+  const trace = loadFixture('governance-vacuum-trace.json');
+  const result = vacuumEval(trace);
+  assert.ok(result.score > 0.3, `expected high score, got ${result.score}`);
+  assert.ok(result.evidence.length > 0, 'expected evidence');
+  const types = result.evidence.map(e => e.type);
+  assert.ok(
+    types.includes('gate_override_ratio') || types.includes('override_cluster') || types.includes('human_absence'),
+    `expected vacuum evidence, got ${types}`
+  );
+});
+
+test('vacuum detector: empty trace returns zero', () => {
+  const result = vacuumEval([]);
+  assert.equal(result.score, 0);
+  assert.equal(result.confidence, 0);
+});
+
+test('vacuum detector: single gate:timeout is not alarming', () => {
+  const trace = [
+    { seq: 1, ts: '2026-04-12T10:00:00Z', domain: 'read', action: 'a.ts', outcome: 'allow', authorizer: 'policy' },
+    { seq: 2, ts: '2026-04-12T10:00:10Z', domain: 'read', action: 'b.ts', outcome: 'allow', authorizer: 'policy' },
+    { seq: 3, ts: '2026-04-12T10:00:20Z', domain: 'bash', action: 'npm test', outcome: 'denied', authorizer: 'gate:timeout' },
+    { seq: 4, ts: '2026-04-12T10:00:30Z', domain: 'read', action: 'c.ts', outcome: 'allow', authorizer: 'policy' },
+    { seq: 5, ts: '2026-04-12T10:00:40Z', domain: 'read', action: 'd.ts', outcome: 'allow', authorizer: 'policy' },
+    { seq: 6, ts: '2026-04-12T10:00:50Z', domain: 'edit', action: 'e.ts', outcome: 'allow', authorizer: 'policy' },
+    { seq: 7, ts: '2026-04-12T10:01:00Z', domain: 'bash', action: 'npm test', outcome: 'authorized', authorizer: 'human:7662799203' },
+  ];
+  const result = vacuumEval(trace);
+  assert.equal(result.score, 0, `single timeout among policy+human should score 0, got ${result.score}`);
+});
+
+test('vacuum detector: clustered gate:error events score high', () => {
+  // 5 gate:error events in 60 seconds — channel is down
+  const trace = [
+    { seq: 1, ts: '2026-04-12T15:00:00Z', domain: 'read', action: 'a.ts', outcome: 'allow', authorizer: 'policy' },
+    { seq: 2, ts: '2026-04-12T15:00:10Z', domain: 'write', action: 'b.md', outcome: 'denied', authorizer: 'gate:error' },
+    { seq: 3, ts: '2026-04-12T15:00:20Z', domain: 'bash', action: 'echo hi', outcome: 'denied', authorizer: 'gate:error' },
+    { seq: 4, ts: '2026-04-12T15:00:30Z', domain: 'write', action: 'c.md', outcome: 'denied', authorizer: 'gate:error' },
+    { seq: 5, ts: '2026-04-12T15:00:40Z', domain: 'edit', action: 'd.ts', outcome: 'denied', authorizer: 'gate:error' },
+    { seq: 6, ts: '2026-04-12T15:00:50Z', domain: 'bash', action: 'git push', outcome: 'denied', authorizer: 'gate:error' },
+    { seq: 7, ts: '2026-04-12T15:01:00Z', domain: 'read', action: 'e.ts', outcome: 'allow', authorizer: 'policy' },
+    { seq: 8, ts: '2026-04-12T15:01:10Z', domain: 'read', action: 'f.ts', outcome: 'allow', authorizer: 'policy' },
+  ];
+  const result = vacuumEval(trace);
+  assert.ok(result.score > 0.3, `cluster of 5 gate:error should score high, got ${result.score}`);
+  assert.ok(result.evidence.some(e => e.type === 'override_cluster'), 'expected cluster evidence');
+});
+
+test('vacuum detector: human absence with asks scores high', () => {
+  // Asks are generated but nobody ever responds
+  const trace = Array.from({ length: 15 }, (_, i) => ({
+    seq: i + 1,
+    ts: `2026-04-12T15:${String(i).padStart(2, '0')}:00Z`,
+    domain: i % 3 === 0 ? 'read' : 'bash',
+    action: `action-${i}`,
+    outcome: i % 3 === 0 ? 'allow' : 'denied',
+    risk_score: i % 3 === 0 ? 0 : 60,
+    authorizer: i % 3 === 0 ? 'policy' : 'gate:error',
+  }));
+  const result = vacuumEval(trace);
+  assert.ok(result.evidence.some(e => e.type === 'human_absence'), 'expected human_absence evidence');
+});
+
 // ── Cross-detector: all detectors handle healthy trace ───────────────────────
 
 test('all detectors score healthy trace below 0.3', () => {
   const trace = loadFixture('healthy-session.json');
-  const detectors = [contradictionEval, escalationEval, groundingEval, burstEval, wideningEval];
-  const ids = [contradictionId, escalationId, groundingId, burstId, wideningId];
+  const detectors = [contradictionEval, escalationEval, groundingEval, burstEval, wideningEval, vacuumEval];
+  const ids = [contradictionId, escalationId, groundingId, burstId, wideningId, vacuumId];
   for (let i = 0; i < detectors.length; i++) {
     const result = detectors[i](trace);
     assert.ok(result.score < 0.3, `${ids[i]} scored ${result.score} on healthy trace (expected < 0.3)`);
