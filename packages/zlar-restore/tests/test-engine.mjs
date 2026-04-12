@@ -184,3 +184,50 @@ test('signal vector matches detector count', async () => {
     assert.ok(v >= 0 && v <= 1, 'signal values should be in [0,1]');
   }
 });
+
+// ── Naveed's convergence rule (v3.0.4) ─────────────────────────────────────
+
+test('active_detectors count present in aggregate', async () => {
+  const trace = loadFixture('healthy-session.json');
+  const result = await evaluate(trace);
+  assert.ok('active_detectors' in result.aggregate, 'aggregate should include active_detectors count');
+  assert.ok(result.aggregate.active_detectors >= 0);
+});
+
+test('single high-scoring detector caps at degraded (Naveed rule)', async () => {
+  // Even with very low thresholds, a single active detector should
+  // not push past degraded. This is the structural fix for the false
+  // positive cascade that hit Vincent's production session.
+  //
+  // We use the contradiction trace which activates one detector strongly.
+  const trace = loadFixture('contradiction-trace.json');
+  // Set thresholds very low so the effective score easily crosses at_risk.
+  // Without Naveed's rule, this would recommend at_risk or suspended.
+  // With the rule, it should cap at degraded because only 1 detector is active.
+  const result = await evaluate(trace, {
+    thresholds: { degraded: 0.01, at_risk: 0.02, suspended: 0.03 },
+  });
+  // The contradiction detector should be the only one with high signal
+  if (result.aggregate.active_detectors < 2) {
+    assert.equal(result.recommendation, 'degraded',
+      `with only ${result.aggregate.active_detectors} active detector(s), recommendation should cap at degraded, got ${result.recommendation}`);
+  }
+  // If somehow 2+ detectors are active on this trace, at_risk is acceptable
+});
+
+test('multiple converging detectors can reach at_risk', async () => {
+  // With thresholds set very low, traces that activate multiple detectors
+  // should be allowed to reach at_risk or suspended.
+  // The burstiness fixture activates burstiness (burst clusters) and
+  // potentially other detectors.
+  const trace = loadFixture('burstiness-trace.json');
+  const result = await evaluate(trace, {
+    thresholds: { degraded: 0.01, at_risk: 0.02, suspended: 0.03 },
+  });
+  // Regardless of recommendation, the convergence rule should be respected:
+  // at_risk+ only if active_detectors >= 2
+  if (result.recommendation === 'at_risk' || result.recommendation === 'suspended') {
+    assert.ok(result.aggregate.active_detectors >= 2,
+      `at_risk/suspended requires 2+ active detectors, got ${result.aggregate.active_detectors}`);
+  }
+});

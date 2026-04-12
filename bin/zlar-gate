@@ -1599,8 +1599,15 @@ telegram_ask_async() {
 🆕 *First time this session* — one-time review, will not ask again for this"
     fi
 
+    # Restore escalation banner — policy said allow, but Agent Health escalated
+    local restore_banner=""
+    if [ "${RESTORE_ESCALATED}" = "true" ]; then
+        restore_banner="
+🩺 *Escalated by Agent Health* (trust state: ${RESTORE_TRUST_STATE:-unknown}) — policy allowed this, health monitor overrode"
+    fi
+
     local text="${emoji} 🖥️ *ZLAR Gate*
-${fatigue_banner}${novelty_banner}
+${fatigue_banner}${novelty_banner}${restore_banner}
 *Tool:* \`${tool_name}\`
 *Action:* \`${display}\`
 *Risk:* ${risk_score}/100
@@ -2056,6 +2063,8 @@ main() {
     # On first occurrence per session: escalate allow/log → ask.
     # Sets NOVELTY_DETECTED for the Telegram message to include a training banner.
     NOVELTY_DETECTED="false"
+    RESTORE_ESCALATED="false"
+    RESTORE_TRUST_STATE=""
     if { [ "${MATCHED_ACTION}" = "allow" ] || [ "${MATCHED_ACTION}" = "log" ]; } && novelty_check_and_record "${DOMAIN}" "${TOOL_DISPLAY}"; then
         log "NOVELTY: First ${DOMAIN} action this session — escalating to ask"
         emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "novelty_escalation" "${DETAIL}" "${MATCHED_RULE}" "info" "${MATCHED_RISK_SCORE}" "gate:novelty"
@@ -2077,6 +2086,8 @@ main() {
             log "RESTORE: Trust state=${_trust_state} -- escalating ${MATCHED_ACTION} -> ${restore_action}"
             emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "restore_escalation" "${DETAIL}" "${MATCHED_RULE}" "warn" "${MATCHED_RISK_SCORE}" "gate:restore"
             MATCHED_ACTION="${restore_action}"
+            RESTORE_ESCALATED="true"
+            RESTORE_TRUST_STATE="${_trust_state}"
         fi
     fi
 

@@ -207,6 +207,27 @@ export async function evaluate(trace, options = {}) {
     suspended: thresholds.suspended * jitter(),
   };
 
+  // ── Naveed's rule: multi-detector convergence for at_risk+ ────────────
+  //
+  // A single detector at max score (1.0 * 0.7 confidence = 0.7) can push
+  // effective past at_risk threshold (0.6) alone. This makes a single
+  // false positive indistinguishable from a single true positive.
+  //
+  // Fix: at_risk and suspended require 2+ detectors with weighted score
+  // above the convergence floor. A lone high-scoring detector caps at
+  // degraded regardless of its absolute score. Only convergent signals
+  // from multiple detectors can escalate beyond degraded.
+  //
+  // This does NOT weaken detection — distributed pathology (the diffuse
+  // path) inherently activates multiple detectors. And genuine single-
+  // detector crises (e.g., sustained authority widening) still reach
+  // degraded, which is now visible via Telegram.
+  //
+  // The convergence floor is the degraded threshold — any detector whose
+  // weighted signal exceeds degraded counts as "active."
+  const CONVERGENCE_FLOOR = thresholds.degraded;
+  const activeDetectorCount = signals.filter(s => s >= CONVERGENCE_FLOOR).length;
+
   // Map effective score to trust state recommendation
   let recommendation = 'healthy';
   let primaryDetector = maxDetector;
@@ -214,11 +235,13 @@ export async function evaluate(trace, options = {}) {
   if (reliabilityOverride && effective < jitteredThresholds.degraded) {
     recommendation = 'degraded';
     primaryDetector = 'detector_reliability';
-  } else if (effective >= jitteredThresholds.suspended) {
+  } else if (effective >= jitteredThresholds.suspended && activeDetectorCount >= 2) {
     recommendation = 'suspended';
-  } else if (effective >= jitteredThresholds.at_risk) {
+  } else if (effective >= jitteredThresholds.at_risk && activeDetectorCount >= 2) {
     recommendation = 'at_risk';
   } else if (effective >= jitteredThresholds.degraded) {
+    // Single detector can reach degraded — that's fine. Degraded is
+    // visible (Telegram notification) but doesn't escalate actions.
     recommendation = 'degraded';
   }
 
@@ -238,6 +261,7 @@ export async function evaluate(trace, options = {}) {
       diffuse: round(diffuse),
       diffuse_weighted: round(diffuse * jitteredDiffuseWeight),
       effective: round(effective),
+      active_detectors: activeDetectorCount,
     },
     slowing_down: slowingDown,
     detectors: results,

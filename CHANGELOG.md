@@ -1,5 +1,55 @@
 # Changelog
 
+## 3.0.4 — 2026-04-12
+
+Structural fixes from first production data and 12-agent simulation.
+Two detectors caused false escalation to at_risk during normal human-
+agent interaction, making ZLAR feel slow instead of fast. Three
+structural changes prevent the cascade pattern from recurring.
+
+Structural:
+- Naveed's convergence rule: a single high-scoring detector can only
+  push trust state to degraded, never to at_risk or suspended. at_risk
+  and suspended now require 2+ detectors with signals above the
+  convergence floor (degraded threshold). Previously: action_silence
+  alone at score 1.0 could push straight to at_risk. This was the root
+  cause of the false positive cascade.
+- Degraded is now visible: Telegram notification sent on degraded
+  transition with informational headline ("watching, not slowing down").
+  Previously: degraded only escalated to "log" which the human never
+  sees. Now the human knows something is off without being interrupted.
+- Cassandra's clock fix: action-silence detector now segments the trace
+  into contiguous activity windows (split at 15-minute gaps). Only gaps
+  WITHIN a window are analyzed. Gaps BETWEEN windows are human-absence
+  (cleaning house, eating, meetings), not agent-silence. Previously:
+  the detector treated the entire session span as one continuous period
+  and flagged every human pause as pathological.
+
+Calibration:
+- action-silence: 15-minute absolute floor. Ratio threshold 5x to 20x.
+  Score cap 50x to 200x. Window-scoped analysis.
+- abnormal-burstiness: read-only domains (read, glob, grep) excluded
+  from CV calculation. CV threshold 2.0 to 4.0. Burst clusters (500ms)
+  unchanged.
+
+UX:
+- Telegram ask messages show restore escalation banner when Agent Health
+  overrides policy. "Escalated by Agent Health (trust state: X)" so the
+  human knows the source.
+- Telegram health notifications now include active_detectors count and
+  state-specific headlines (degraded = watching, at_risk = slowed,
+  suspended = blocked).
+
+Fix:
+- Trust state reset to healthy after false positive. Evaluation history
+  cleared.
+
+Tests: 129 restore assertions (91 Node + 38 shell), 0 failures.
+  8 new tests: convergence rule (single detector caps at degraded,
+  multi-detector reaches at_risk), active_detectors in aggregate,
+  human-absence window splitting, sub-15-min within-window gaps,
+  read-heavy explore patterns, write bursts still caught.
+
 ## 3.0.3 — 2026-04-11
 
 Post-unification hardening. Privacy invariant, health toggle UX, approval

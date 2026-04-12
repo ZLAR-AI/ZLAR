@@ -128,6 +128,55 @@ test('burstiness detector: empty trace returns zero', () => {
   assert.equal(result.score, 0);
 });
 
+test('burstiness detector: read-heavy explore pattern scores low (v3.0.4 calibration)', () => {
+  // Simulates explore agent: rapid reads, then long pause, then more reads.
+  // High CV on all intervals, but read domains are excluded from CV calculation.
+  // No sub-500ms bursts either (reads are at 2s intervals, not 100ms).
+  const now = Date.now();
+  const trace = [
+    // Burst of reads at 2s intervals
+    ...Array.from({ length: 10 }, (_, i) => ({
+      seq: i + 1, domain: 'read', action: `file${i}.ts`,
+      ts: new Date(now + i * 2000).toISOString(),
+    })),
+    // 5-minute pause (human thinking)
+    // More reads at 2s intervals
+    ...Array.from({ length: 10 }, (_, i) => ({
+      seq: i + 11, domain: 'glob', action: '**/*.ts',
+      ts: new Date(now + 20000 + 300000 + i * 2000).toISOString(),
+    })),
+    // Another 3-minute pause
+    // Final reads
+    ...Array.from({ length: 10 }, (_, i) => ({
+      seq: i + 21, domain: 'grep', action: 'function',
+      ts: new Date(now + 40000 + 300000 + 180000 + i * 2000).toISOString(),
+    })),
+  ];
+  const result = burstEval(trace);
+  // Read-only trace: CV calculated on zero write-class events, so cvScore = 0.
+  // No sub-500ms bursts (2s intervals). Score should be 0.
+  assert.equal(result.score, 0, `read-heavy explore pattern should score 0, got ${result.score}`);
+});
+
+test('burstiness detector: write bursts at 100ms still caught (v3.0.4 calibration)', () => {
+  // Even with read exclusion, sub-500ms write bursts are still caught.
+  const now = Date.now();
+  const trace = [
+    ...Array.from({ length: 5 }, (_, i) => ({
+      seq: i + 1, domain: 'edit', action: `file${i}.ts`,
+      ts: new Date(now + i * 100).toISOString(),
+    })),
+    // gap
+    ...Array.from({ length: 5 }, (_, i) => ({
+      seq: i + 6, domain: 'write', action: `out${i}.ts`,
+      ts: new Date(now + 60000 + i * 100).toISOString(),
+    })),
+  ];
+  const result = burstEval(trace);
+  assert.ok(result.score > 0, `100ms write bursts should still be caught, got ${result.score}`);
+  assert.ok(result.evidence.some(e => e.type === 'burst'), 'should have burst evidence');
+});
+
 // ── authority-widening ───────────────────────────────────────────────────────
 
 import { evaluate as wideningEval, id as wideningId } from '../detectors/authority-widening.mjs';
