@@ -2299,10 +2299,16 @@ main() {
                                     respond_deny "⏳ Awaiting Telegram approval (rule ${MATCHED_RULE}). Approve on phone, then retry." "pending"
                                     ;;
                                 3)
+                                    # Send failed (rate limit) — decrement H13 pending.
+                                    # The ask never reached the human, so it is not pending.
+                                    hi_decrement_pending "${TELEGRAM_CHAT_ID}" "${action_hash}" 2>/dev/null || true
                                     emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:rate_limit"
                                     respond_deny "Rate limited — too many approval requests. Try again shortly." "rate_limit"
                                     ;;
                                 *)
+                                    # Send failed (error) — decrement H13 pending.
+                                    # The ask never reached the human, so it is not pending.
+                                    hi_decrement_pending "${TELEGRAM_CHAT_ID}" "${action_hash}" 2>/dev/null || true
                                     emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:error"
                                     respond_deny "Could not reach human for approval (rule ${MATCHED_RULE})" "gate_error"
                                     ;;
