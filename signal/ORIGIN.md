@@ -16,19 +16,15 @@ I was building with AI agents last year and they erased everything I had. Photos
 
 I built ZLAR so this doesn't happen again. That's why the architecture is the way it is. No intelligence in the gate.
 
-Intelligence is like a laser — it can destroy. So you need a forcefield around some things. One the laser cannot penetrate. It can see through but it can't touch, even if it wanted to. A structural forcefield that protects human beings from intelligence.
+The agent can reason, plan, observe, and persuade. It cannot make action real without passing through the gate. The gate is deterministic. It does not reason. It cannot be persuaded. It does not matter how capable the agent becomes — the gate is not on the same axis as capability. It checks authorization, not quality. It checks paperwork, not intent.
 
-The forcefield is the gate.
-
-Intelligence can see through it — the agent can read, persuade, observe, plan, reason. But it can't touch what's on the other side without the human opening the door. See through, can't touch.
-
-There's no intelligence in the gate — because if the forcefield were made of the same stuff as the laser, the laser could burn through it. ZLAR has to be made of something the laser can't affect. That something is deterministic, non-reasoning. It doesn't matter how bright the beam gets. ZLAR doesn't interact with brightness.
+There is no intelligence in the gate because an intelligent gate can be attacked with intelligence. A deterministic gate can only be attacked by modifying it — and the architecture places it outside the agent's writable space.
 
 ## What I've learned building this
 
-It is possible to build a structural boundary that intelligence cannot reason through. Not by matching the intelligence or by being smarter than it. By being a different kind of thing entirely. The gate cannot be reasoned with or persuaded because it doesn't reason. It doesn't matter how capable the agent becomes. The forcefield is not on the same spectrum as the beam.
+It is possible to build a boundary that intelligence cannot reason through. Not by matching the intelligence. By being a different kind of thing. The gate cannot be persuaded because it does not reason.
 
-The gate is absolute where it stands. Its decisions are structural — when it denies, the denial cannot be argued with. The human decides what passes through. That's the architecture.
+Where the gate stands, its decisions are final. A denial cannot be argued with. The human decides what passes through.
 
 What I did not fully understand when I first wrote this: the gate is not yet the full perimeter. A sufficiently capable agent does not break the gate — but it can find paths around it. Encodings the rules don't yet cover. Execution paths the gate doesn't yet intercept. The gate's material is sound. The gate's coverage is not yet complete.
 

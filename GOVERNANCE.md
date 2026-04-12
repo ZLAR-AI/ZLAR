@@ -71,4 +71,4 @@ Security issues follow the process in [SECURITY.md](SECURITY.md). The maintainer
 
 Be direct. Be specific. Be constructive. Don't waste people's time with vague feedback or performative disagreement. If you think something is wrong, say what it is and why. If you think something should change, propose the change.
 
-ZLAR exists to protect human beings from AI systems that act without authorization. Contributions are evaluated on whether they serve that mission. Nothing else matters.
+ZLAR exists to protect human beings from AI systems that act without authorization. Contributions are evaluated on whether they serve that mission.
