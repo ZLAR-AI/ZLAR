@@ -14,10 +14,10 @@
 # Run weekly (or on-demand) to detect gradual drift before it compounds.
 #
 # Usage:
-#   zlar-health                          # Last 7 days
-#   zlar-health --since 24h              # Last 24 hours
-#   zlar-health --since 30d              # Last 30 days
-#   zlar-health --format json            # Machine-readable output
+#   zlar-doctor                          # Last 7 days
+#   zlar-doctor --since 24h              # Last 24 hours
+#   zlar-doctor --since 30d              # Last 30 days
+#   zlar-doctor --format json            # Machine-readable output
 #
 # Reads from: ${PROJECT_DIR}/var/log/audit.jsonl (or --audit FILE)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -359,7 +359,7 @@ output_text() {
     echo "  ──────────────────────────────────────────────────────────"
 
     if [ "${outbound}" -gt 0 ]; then
-        echo -e "  ${YELLOW}•${NC} Review outbound network actions: zlar-health --since ${SINCE} --format json"
+        echo -e "  ${YELLOW}•${NC} Review outbound network actions: zlar-doctor --since ${SINCE} --format json"
     fi
     if [ "${denials}" -gt 20 ]; then
         echo -e "  ${YELLOW}•${NC} High deny count may indicate probing. Review denied actions above."

@@ -95,7 +95,7 @@ generate_brief() {
     local authorized allowed pending
     authorized=$(jq -c 'select(.outcome == "authorized")' "${tmp_events}" | wc -l | tr -d ' ')
     allowed=$(jq -c 'select(.outcome == "allow")' "${tmp_events}" | wc -l | tr -d ' ')
-    pending=$(jq -c 'select(.outcome == "pending")' "${tmp_events}" | wc -l | tr -d ' ')
+    pending=$(jq -c 'select(.outcome == "ask_pending" or .outcome == "pending")' "${tmp_events}" | wc -l | tr -d ' ')
 
     # Denied counts — separated by who denied and why
     # Policy denied: gate auto-blocked (authorizer="policy" or null for early events)

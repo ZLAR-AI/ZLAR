@@ -267,7 +267,7 @@
         },
         "compound_guard": {
           "command": {
-            "regex": "^\\s*(cat|head|tail|less|more|wc|grep|egrep|fgrep|rg|file|stat|ls|diff|md5|shasum|sha256sum|xxd|hexdump|strings)\\b"
+            "regex": "^\\s*(cat|head|tail|less|more|wc|grep|egrep|fgrep|rg|file|stat|ls|diff|md5|shasum|sha256sum|xxd|hexdump|strings|ZLAR_AUDIT_FILE=)\\b|bin/zlar-(digest|brief|audit|restore)\\b"
           }
         }
       },

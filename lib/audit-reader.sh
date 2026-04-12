@@ -17,7 +17,7 @@
 #   .session_id            — session UUID
 #   .domain                — tool domain (bash, read, write, edit, glob, grep, agent, internal, unknown)
 #   .action                — what was attempted (or "ask_sent" for pending Telegram requests)
-#   .outcome               — "allow" (auto), "deny", "authorized" (human-approved), "pending"
+#   .outcome               — "allow" (auto), "deny", "authorized" (human-approved), "ask_pending"
 #   .risk_score            — numeric risk score (0-100)
 #   .detail                — { command, path, cwd, content_length, content_sha256, ... }
 #   .rule                  — policy rule that matched
@@ -147,10 +147,10 @@ audit_extract_approvals() {
 }
 
 # Extract pending events (waiting for Telegram approval)
-# These are seq=1 events with outcome "pending" and action "ask_sent"
+# These are seq=1 events with outcome "ask_pending" (CC gate) or "pending" (legacy)
 # Usage: cat events | audit_extract_pending
 audit_extract_pending() {
-    jq -c 'select(.outcome == "pending") | {
+    jq -c 'select(.outcome == "ask_pending" or .outcome == "pending") | {
         ts: .ts,
         session_id: .session_id,
         domain: .domain,
@@ -177,8 +177,9 @@ audit_approval_latencies() {
             (.[0] | split("-") | (.[0] | tonumber) * 31536000 + (.[1] | tonumber) * 2592000 + (.[2] | tonumber) * 86400) +
             (.[1] | rtrimstr("Z") | split(":") | (.[0] | tonumber) * 3600 + (.[1] | tonumber) * 60 + (.[2] | tonumber));
 
-        # Find all indices where outcome is "pending" and seq is 1
-        [to_entries[] | select(.value.outcome == "pending" and .value.seq == 1) | .key] as $pend_idxs |
+        # Find all indices where outcome is "ask_pending" (or legacy "pending")
+        # Note: seq varies by gate version (CC gate uses action-chain seq, not event-type seq)
+        [to_entries[] | select(.value.outcome == "ask_pending" or .value.outcome == "pending") | .key] as $pend_idxs |
 
         # For each pending index, look ahead (up to 10 lines) for matching authorized
         [$pend_idxs[] as $i |
@@ -189,7 +190,6 @@ audit_approval_latencies() {
             map($all[.]) |
             map(select(
                 .outcome == "authorized" and
-                .seq == 2 and
                 .session_id == $p.session_id and
                 .domain == $p.domain and
                 .rule == $p.rule

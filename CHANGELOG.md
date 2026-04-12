@@ -1,5 +1,44 @@
 # Changelog
 
+## 3.0.3 — 2026-04-11
+
+Post-unification hardening. Privacy invariant, health toggle UX, approval
+latency fix, key permissions, naming cleanup.
+
+Security:
+- HMAC key files restricted to 0600, keys directory to 0700. Previously
+  world-readable (0644). adversarial reviewer's audit finding.
+- Shell injection fix in zlar-restore CLI: session_id and reset reason now
+  passed via environment variables instead of string interpolation into
+  Node -e strings. Defense-in-depth (CLI is operator-facing).
+- R012BR policy fix: ZLAR reporting tools (zlar-digest, zlar-brief,
+  zlar-audit, zlar-restore) now allowed to read audit files. Previously
+  blocked by R012B which couldn't distinguish read from write.
+
+Privacy:
+- Privacy invariant on zlar-restore CLI. Four commands (evaluate, status,
+  reset, history) now check enabled flag before accessing behavioral data.
+  When Agent Health is disabled, CLI prints "not enabled" and exits.
+  Enforces the unified-line contract: health off means no behavioral
+  data access, period.
+
+UX:
+- New command: zlar health on/off/status. Single command to enable Agent
+  Health (generates HMAC keys if missing, sets enabled, signs config).
+  Idempotent — safe to run twice. Replaces the 3-step manual procedure.
+- Renamed bin/zlar-health to bin/zlar-doctor. Clears namespace collision
+  with the new zlar health subcommand.
+
+Data quality:
+- SEQ-005 fix: approval latency pairing now works. The digest and
+  audit-reader looked for outcome "pending" but the CC gate writes
+  "ask_pending". Readers now match both. Also removed stale seq==1/seq==2
+  filter that assumed per-event-type sequence numbering (CC gate uses
+  per-action-chain seq). 45 approval latencies now measurable from
+  existing audit data.
+
+Tests: 122 restore assertions (84 Node + 38 shell), 0 failures.
+
 ## 3.0.2 — 2026-04-11
 
 Continued hardening. Config integrity, 7th detector, anti-evasion improvements.

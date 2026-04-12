@@ -46,9 +46,23 @@ load_config() {
     mkdir -p "$(dirname "${TRUST_STATE_FILE}")" 2>/dev/null || true
 }
 
+# ── Privacy invariant ─────────────────────────────────────────────────────────
+
+require_enabled() {
+    local _enabled
+    _enabled=$(jq -r '.enabled // false' "${RESTORE_CONFIG}" 2>/dev/null || echo "false")
+    if [ "${_enabled}" != "true" ]; then
+        echo "Agent Health is not enabled." >&2
+        echo "Run: zlar health on" >&2
+        exit 1
+    fi
+}
+
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 cmd_evaluate() {
+    require_enabled
+
     local session_id=""
 
     while [ $# -gt 0 ]; do
@@ -66,7 +80,7 @@ cmd_evaluate() {
 
     # Run the Node.js engine with bounded trace extraction
     local result
-    result=$(node -e "
+    result=$(ZLAR_SESSION_ID="${session_id}" node -e "
         import { evaluate } from '${PROJECT_DIR}/packages/zlar-restore/restore-engine.mjs';
         import { readFileSync, openSync, fstatSync, readSync, closeSync } from 'node:fs';
 
@@ -111,7 +125,7 @@ cmd_evaluate() {
             return trace;
         }
 
-        const trace = readTrace('${AUDIT_FILE}', '${session_id}' || null, 500);
+        const trace = readTrace('${AUDIT_FILE}', process.env.ZLAR_SESSION_ID || null, 500);
         const result = await evaluate(trace);
         console.log(JSON.stringify(result, null, 2));
     " 2>/dev/null)
@@ -176,6 +190,8 @@ cmd_evaluate() {
 }
 
 cmd_status() {
+    require_enabled
+
     if [ ! -f "${TRUST_STATE_FILE}" ]; then
         echo "Trust state: healthy (no state file)"
         exit 0
@@ -199,6 +215,8 @@ cmd_status() {
 }
 
 cmd_reset() {
+    require_enabled
+
     local reason="$*"
 
     if [ "${RESET_REQUIRE_REASON}" = "true" ] && [ -z "${reason}" ]; then
@@ -237,11 +255,11 @@ cmd_reset() {
     sleep "${RESET_DELAY_S}"
 
     # Apply reset via Node.js trust-state machine
-    node -e "
+    ZLAR_RESET_REASON="${reason}" ZLAR_RESET_USER="$(whoami)" node -e "
         import { setHmacKey, loadTrustState, resetTrustState, saveTrustState } from '${PROJECT_DIR}/packages/zlar-restore/trust-state.mjs';
         if ('${HMAC_KEY_FILE}') setHmacKey('${HMAC_KEY_FILE}');
         const state = loadTrustState('${TRUST_STATE_FILE}');
-        const result = resetTrustState(state, '${reason}', '$(whoami)');
+        const result = resetTrustState(state, process.env.ZLAR_RESET_REASON, process.env.ZLAR_RESET_USER);
         if (result.accepted) {
             saveTrustState('${TRUST_STATE_FILE}', result.trustState);
             console.log('Trust state reset to healthy. Reset count: ' + result.trustState.reset_count);
@@ -255,6 +273,8 @@ cmd_reset() {
 }
 
 cmd_history() {
+    require_enabled
+
     if [ ! -f "${TRUST_STATE_FILE}" ]; then
         echo "No trust state history (no state file)"
         exit 0
