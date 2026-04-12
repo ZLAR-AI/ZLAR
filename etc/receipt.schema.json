@@ -128,6 +128,11 @@
         "audit_prev_hash": {
           "type": "string",
           "description": "prev_hash from the audit trail entry. Anchors the receipt to the hash chain."
+        },
+        "escalation_source": {
+          "type": ["string", "null"],
+          "enum": ["policy", "novelty", "restore", "session", null],
+          "description": "Why this action was escalated to human review, if it was. null means the policy rule directly specified the action (no override). 'novelty' = first use of domain this session. 'restore' = Agent Health trust state degradation. 'session' = velocity/loop detection. Auditors use this to distinguish policy-driven asks from system-driven escalations."
         }
       }
     },

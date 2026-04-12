@@ -590,7 +590,8 @@ rotate_audit_if_needed() {
 
 _emit_receipt() {
     local event_id="$1" ts="$2" action="$3" domain="$4" detail="$5" \
-          outcome="$6" rule="$7" authorizer="$8" policy_version="$9" prev_hash="${10}"
+          outcome="$6" rule="$7" authorizer="$8" policy_version="$9" prev_hash="${10}" \
+          escalation_source="${11:-null}"
 
     # Compute detail hash: SHA-256 of canonical detail JSON
     local detail_hash
@@ -620,6 +621,17 @@ _emit_receipt() {
 
     # Build unsigned receipt
     local unsigned_receipt
+    # Escalation source for auditor transparency.
+    # null = no escalation (policy allow/deny as-is)
+    # "policy" = the matched rule said "ask"
+    # "novelty" = first use of this domain/server this session
+    # "restore" = Agent Health trust state degradation
+    # "session" = session velocity/loop detection
+    local esc_json="null"
+    if [ "${escalation_source}" != "null" ]; then
+        esc_json="\"${escalation_source}\""
+    fi
+
     unsigned_receipt=$(jq -n -c \
         --arg rv "0.1.0" \
         --arg id "${receipt_id}" \
@@ -637,12 +649,14 @@ _emit_receipt() {
         --arg audit_event_id "${event_id}" \
         --arg audit_prev_hash "${prev_hash}" \
         --argjson prev_receipt_hash "${prev_receipt_hash}" \
+        --argjson escalation_source "${esc_json}" \
         '{receipt_version:$rv,id:$id,
           governed_action:{tool:$tool,domain:$domain,detail_hash:$detail_hash},
           decision:{outcome:$outcome,rule:$rule,authorizer:$authorizer,timestamp:$timestamp},
           evidence:{policy_version:$policy_version,manifest_version:$manifest_version,
             manifest_agent_id:$manifest_agent_id,manifest_principal:$manifest_principal,
-            delegation_chain:[],audit_event_id:$audit_event_id,audit_prev_hash:$audit_prev_hash},
+            delegation_chain:[],audit_event_id:$audit_event_id,audit_prev_hash:$audit_prev_hash,
+            escalation_source:$escalation_source},
           prev_receipt_hash:$prev_receipt_hash}')
 
     # Sign the receipt (same approach as audit entry signing)
@@ -783,7 +797,8 @@ emit_event() {
     # Generate receipt if enabled (outside audit lock — receipts are additive)
     if [ "${ZLAR_EMIT_RECEIPTS}" = "true" ]; then
         _emit_receipt "${id}" "${ts}" "${action}" "${domain}" "${detail}" \
-            "${outcome}" "${rule}" "${authorizer}" "${POLICY_VERSION:-unknown}" "${prev_hash}"
+            "${outcome}" "${rule}" "${authorizer}" "${POLICY_VERSION:-unknown}" "${prev_hash}" \
+            "${ESCALATION_SOURCE:-null}"
     fi
 }
 
@@ -2054,7 +2069,11 @@ main() {
     # Skip for risk-0 actions — they are structurally safe and should never
     # consume human attention regardless of velocity. (Human Attention principle.)
     if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ "${MATCHED_ACTION}" = "allow" ] && [ "${MATCHED_RISK_SCORE}" -gt 0 ]; then
+        local _pre_session_action="${MATCHED_ACTION}"
         MATCHED_ACTION=$(session_check_escalation "${MATCHED_ACTION}" "${DOMAIN}" "${TOOL_DISPLAY}" "allow")
+        if [ "${MATCHED_ACTION}" != "${_pre_session_action}" ]; then
+            ESCALATION_SOURCE="session"
+        fi
     fi
 
     # 9b. Novelty detection — first occurrence of high-consequence domains
@@ -2065,11 +2084,13 @@ main() {
     NOVELTY_DETECTED="false"
     RESTORE_ESCALATED="false"
     RESTORE_TRUST_STATE=""
+    ESCALATION_SOURCE="null"
     if { [ "${MATCHED_ACTION}" = "allow" ] || [ "${MATCHED_ACTION}" = "log" ]; } && novelty_check_and_record "${DOMAIN}" "${TOOL_DISPLAY}"; then
         log "NOVELTY: First ${DOMAIN} action this session — escalating to ask"
         emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "novelty_escalation" "${DETAIL}" "${MATCHED_RULE}" "info" "${MATCHED_RISK_SCORE}" "gate:novelty"
         MATCHED_ACTION="ask"
         NOVELTY_DETECTED="true"
+        ESCALATION_SOURCE="novelty"
     fi
 
     # 9c. Restore / Agent Health check
@@ -2088,6 +2109,7 @@ main() {
             MATCHED_ACTION="${restore_action}"
             RESTORE_ESCALATED="true"
             RESTORE_TRUST_STATE="${_trust_state}"
+            ESCALATION_SOURCE="restore"
         fi
     fi
 
