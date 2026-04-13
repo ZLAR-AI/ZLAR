@@ -162,6 +162,9 @@ _CONSTITUTION_VALIDATED=""
 # Extract lines 991-1130 which contain the complete function.
 eval "$(sed -n '991,1149p' "${REAL_PROJECT_DIR}/bin/zlar-gate")"
 
+# Source _dp03_check from the constitution CLI for direct testing.
+eval "$(sed -n '692,780p' "${REAL_PROJECT_DIR}/bin/zlar-constitution")"
+
 # ── Run setup ──────────────────────────────────────────────────────────────
 
 setup_keys
@@ -615,6 +618,21 @@ _CONSTITUTION_VALIDATED=""
 rm -f "${SESSION_DIR}/${SESSION_ID}.constitution-valid" 2>/dev/null
 validate_constitution && g5_result="pass" || g5_result="fail"
 assert "G5: Re-signed constitution validates" "pass" "${g5_result}"
+
+# G6: DP-03 rejects garbage manifest_deny_required_classes (content, not just cardinality)
+# Create constitution with six entries that are NOT the required class names
+garbage_constitution=$(mktemp "${TEST_DIR}/garbage-const.XXXXXX")
+jq '.amendable_constraints.manifest_deny_required_classes = ["a","b","c","d","e","f"]' \
+    "${CONSTITUTION_FILE}" > "${garbage_constitution}" 2>/dev/null
+dp03_output=$(_dp03_check "${garbage_constitution}" 2>&1) && dp03_rc=0 || dp03_rc=$?
+assert "G6a: DP-03 rejects garbage deny classes" "1" "$([ "${dp03_rc}" -ge 1 ] && echo 1 || echo 0)"
+echo "${dp03_output}" | grep -q "missing 'governance_mutation'" && g6b="found" || g6b="not_found"
+assert "G6b: DP-03 names the missing class" "found" "${g6b}"
+rm -f "${garbage_constitution}"
+
+# G7: DP-03 accepts correct six classes
+dp03_valid=$(_dp03_check "${CONSTITUTION_FILE}" 2>&1) && dp03_valid_rc=0 || dp03_valid_rc=$?
+assert "G7: DP-03 accepts valid constitution" "0" "${dp03_valid_rc}"
 
 echo
 

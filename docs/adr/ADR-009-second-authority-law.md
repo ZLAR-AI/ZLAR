@@ -84,6 +84,10 @@ Three limitations stated for the record:
 
 3. DP-03 coverage is bounded by the validator's known properties. The consistency check validates linear inequality constraints on Layer 3 parameters against Layer 1 and Layer 2 obligations. All current constraints are linear, so the admissible parameter region is convex and single-point checking is sufficient. Unknown inconsistencies and non-linear constraints (if added in future) require human review. DP-03 is a check of known consistency, not a proof of total consistency.
 
+4. Constitutional key compromise has no governed response path. The operator must re-key out of band with no audit trail distinguishing legitimate key rotation from covert regime change. A governed key rotation ceremony is a future phase.
+
+5. Rollback re-runs DP-03 with the current validator code, not the validator that was active when the archive was created. If future versions add new DP-03 checks, a previously valid archive could fail validation and block emergency rollback. When adding new DP-03 constraints, verify that existing archives remain rollback-eligible or document the break explicitly.
+
 ## Alternatives Considered
 
 1. AI-based policy review. Rejected: this places intelligence in the enforcement path. The constitution must be checkable by a deterministic validator that cannot be persuaded.

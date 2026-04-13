@@ -765,12 +765,16 @@ _dp03_check() {
     fi
 
     # PC-05: all six governance-critical powers must be in required deny list
-    local deny_count
-    deny_count=$(jq '.amendable_constraints.manifest_deny_required_classes | length' "${constitution_file}" 2>/dev/null)
-    if [ "${deny_count:-0}" -lt 6 ]; then
-        echo "DP-03: manifest_deny_required_classes has ${deny_count} entries, need 6 (PC-05)"
-        violations=$((violations + 1))
-    fi
+    # Check content, not just cardinality — ["a","b","c","d","e","f"] must not pass
+    local _required_class _deny_classes
+    _deny_classes=$(jq -r '.amendable_constraints.manifest_deny_required_classes[]' "${constitution_file}" 2>/dev/null)
+    for _required_class in governance_mutation evidence_mutation stop_restart_control \
+        key_material_signing_authority self_expansion_of_authority communication_channel_mutation; do
+        if ! echo "${_deny_classes}" | grep -q "^${_required_class}$" 2>/dev/null; then
+            echo "DP-03: manifest_deny_required_classes missing '${_required_class}' (PC-05)"
+            violations=$((violations + 1))
+        fi
+    done
 
     return ${violations}
 }
