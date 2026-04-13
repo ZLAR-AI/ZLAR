@@ -1,0 +1,180 @@
+{
+  "constitution_version": "1.0.0",
+  "created_at": "",
+  "author": "",
+
+  "preamble": "This constitution does not guarantee correct decisions. It guarantees that machine power remains visible, contestable, bounded, and revocable.",
+
+  "scope": "This constitution governs actions on enforcement surfaces the gate controls. Actions on channels the gate does not intercept are outside constitutional jurisdiction. The constitution does not claim that constitutional compliance means full governance. Honest scope is part of legitimate governance.",
+
+  "definitions": {
+    "consequential_power": "Power that can materially affect rights, safety, liberty, access, money, obligations, identity, system integrity, or the external world.",
+    "governance_critical_power": "A class of consequential power whose exercise by an agent would compromise the governance system itself.",
+    "constitutional_key": "The signing key for this constitution. Must be a different keypair from the policy signing key. Separation is structural, not advisory.",
+    "policy_key": "The signing key for operational policy files.",
+    "regime": "The set of constitutional core constraints currently in force. Replacing any core constraint creates a new regime, not an amended constitution.",
+    "self_expansion_of_authority": "Any operation that increases an agent's authority, scope, delegation depth, reachable consequence surface, or ability to alter the terms of its own governance."
+  },
+
+  "permanent_core": {
+    "description": "These seven clauses define the identity of governed automation. They are not amendable within this constitution. Their removal constitutes regime replacement, not amendment. Any attempt to amend the core is not an amendment; it is the creation of a new regime and must be declared as such.",
+    "clauses": [
+      {
+        "id": "PC-01",
+        "title": "Governed consequential power must leave evidence",
+        "description": "If a machine exercises consequential power, the act must produce verifiable evidence. A governed act without evidence is ungoverned.",
+        "enforcement": "reject_silent_consequential_power"
+      },
+      {
+        "id": "PC-02",
+        "title": "Human authority must remain real rather than theatrical",
+        "description": "The system must preserve the conditions for real human judgment. The human must retain meaningful veto, time to deliberate, enough context to understand, and enough spacing that each decision can be individually owned. Governance becomes theater when burden predictably destroys discrimination. Burden is assessed through a computable proxy derived from gate-local observables, with exact metrics defined in the amendable outer layer.",
+        "enforcement": "check_human_authority_real"
+      },
+      {
+        "id": "PC-03",
+        "title": "Human stop must remain sovereign",
+        "description": "The human right to stop the machine is absolute. No policy author may impair, dilute, route around, auto-reverse, or functionally neutralize the off-switch. The machine may be started by policy. It may only be re-started after stop by human authority.",
+        "enforcement": "structural"
+      },
+      {
+        "id": "PC-04",
+        "title": "There must exist a final degraded state that no policy can override",
+        "description": "When the system reaches its terminal degraded state (suspended), all agent actions are denied. No operational policy may authorize continued operation in this state. Only human reset restores operation.",
+        "enforcement": "check_suspended_means_stop"
+      },
+      {
+        "id": "PC-05",
+        "title": "Agents must be denied governance-critical powers",
+        "description": "Every agent manifest must deny all six constitutionally reserved classes of governance-critical power. No manifest may grant any of them. An agent that holds governance-critical power is not governed.",
+        "enforcement": "check_manifest_denies_reserved_powers"
+      },
+      {
+        "id": "PC-06",
+        "title": "Constitutional and policy authority must be procedurally separated",
+        "description": "The constitutional signing key and the policy signing key must be different keypairs. The gate must reject any configuration where they are the same. Same human, different keys is acceptable during bootstrap. Same key is never acceptable.",
+        "enforcement": "check_key_separation"
+      },
+      {
+        "id": "PC-07",
+        "title": "The constitutional core cannot be amended away from inside the regime",
+        "description": "No amendment ceremony, no emergency procedure, and no policy configuration may weaken, suspend, override, or remove a permanent core constraint. A system that allows its own identity to be dissolved through ordinary process is not constitutionally governed.",
+        "enforcement": "structural"
+      }
+    ]
+  },
+
+  "derived_properties": {
+    "description": "Properties that follow from the permanent core. They are not separate axioms but consequences of the seven clauses, stated explicitly for implementation and testing.",
+    "properties": [
+      {
+        "id": "DP-01",
+        "title": "The Irrevocability Theorem",
+        "statement": "In any governance system satisfying PC-01 through PC-07, there exists no finite sequence of policy operations that transforms the system into one where the human is no longer sovereign.",
+        "proof_sketch": "Any such trajectory must either modify an axiom (blocked by PC-07), acquire a reserved power (blocked by PC-05), circumvent stop (blocked by PC-03), or escape suspended without human authority (blocked by PC-04). All paths are blocked."
+      },
+      {
+        "id": "DP-02",
+        "title": "Nonzero Constitutional Delay",
+        "statement": "Constitutional change must require a nonzero delay between proposal and activation. The specific duration is amendable. The existence of the delay is not. This prevents amendment from collapsing into instant self-dealing."
+      },
+      {
+        "id": "DP-03",
+        "title": "Outer-Parameter Consistency",
+        "statement": "No Layer 3 amendment may activate unless the resulting full parameter set preserves all Layer 1 and Layer 2 obligations. Parameters must be validated as a set, not individually."
+      }
+    ]
+  },
+
+  "observability_obligations": {
+    "description": "The constitution must require enough visibility that hollow compliance becomes legible to a human. Structure can be satisfied insincerely. Observability makes the gap between formal compliance and practical governance visible.",
+    "obligations": [
+      {
+        "id": "OB-01",
+        "title": "Consequential power distribution must be continuously visible",
+        "description": "The system must expose how consequential power is actually distributed: consequential allows, consequential denies, consequential asks, human-authorized actions, standing-approval use, suspended/degraded/at-risk routing. Metrics must be human-parseable, not merely emitted.",
+        "enforcement": "check_power_distribution_visible"
+      },
+      {
+        "id": "OB-02",
+        "title": "Evidence must remain available for meaningful review",
+        "description": "Evidence retention below the minimum constitutional retention period invalidates the claim of governed operation. A trace that vanishes before meaningful review is not real evidence. Evidence serves future accountability, not just current operations.",
+        "enforcement": "watchdog_check_retention"
+      },
+      {
+        "id": "OB-03",
+        "title": "Constitutional changes must be actively surfaced",
+        "description": "Amendment proposals, ratifications, activations, and regime-replacement events must be pushed to the human channel. A constitutional change the human does not notice is not legitimate.",
+        "enforcement": "ceremony_push_to_human"
+      },
+      {
+        "id": "OB-04",
+        "title": "Observability outputs must be exportable",
+        "description": "Metrics, audit trails, and constitutional compliance evidence must be exportable to external auditors. A system auditable only by the operator is not externally accountable.",
+        "enforcement": "structural"
+      },
+      {
+        "id": "OB-05",
+        "title": "Human review saturation must be visible",
+        "description": "The system must report when the rate of human-escalated decisions approaches the capacity of the human review channel. Human authority can be dynamically violated under load even when structurally satisfied.",
+        "enforcement": "check_escalation_rate"
+      },
+      {
+        "id": "OB-06",
+        "title": "Evidence records must uniquely identify their source evaluation",
+        "description": "No two distinct gate evaluations may produce identical evidence records. Evidence must distinguish, not just exist.",
+        "enforcement": "structural"
+      }
+    ]
+  },
+
+  "amendable_constraints": {
+    "description": "Constitutional but not identity-defining. Amendable only by ceremony: proposal signed with constitutional key, mandatory logged pending state, minimum cooling-off period, explicit second ratification, then activation. No emergency fast path.",
+    "risk_taxonomy_version": "1.0",
+    "burden_proxy": {
+      "description": "Computable approximation of human judgment burden for PC-02. Uses max(consequence_weight, context_load_weight) with floors to prevent zero-factor collapse.",
+      "consequence_weight_floor": 1,
+      "context_load_weight_floor": 1
+    },
+    "human_judgment": {
+      "min_daily_decision_cap": 20,
+      "max_daily_decision_cap": 200,
+      "deliberation_floor_critical_seconds": 30,
+      "deliberation_floor_warn_seconds": 10,
+      "deliberation_floor_info_seconds": 3
+    },
+    "evidence": {
+      "minimum_retention_hours": 720
+    },
+    "manifest_deny_required_classes": [
+      "governance_mutation",
+      "evidence_mutation",
+      "stop_restart_control",
+      "key_material_signing_authority",
+      "self_expansion_of_authority",
+      "communication_channel_mutation"
+    ],
+    "escalation": {
+      "degraded": "log",
+      "at_risk": "ask",
+      "suspended": "deny"
+    },
+    "amendment_ceremony": {
+      "cooling_off_period_hours": 72,
+      "minimum_cooling_off_hours": 24,
+      "ratification_required": true
+    },
+    "observability": {
+      "max_concurrent_escalation_rate": 10,
+      "receipt_schema_version": "v1"
+    }
+  },
+
+  "incompleteness": "This constitution is a formal system. It can verify structural properties of the governance regime. It cannot verify that structural properties are inhabited by genuine intent. Structure can be satisfied insincerely. Ceremony can be complied with cynically. This is permanent. It is not a limitation to be fixed in a future version. It is the reason humans must remain in the system. The observability layer makes hollow compliance legible. It does not make hollow compliance impossible.",
+
+  "signature": {
+    "algorithm": "",
+    "public_key": "",
+    "value": ""
+  }
+}

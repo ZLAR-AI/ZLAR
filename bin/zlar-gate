@@ -109,6 +109,12 @@ chmod 700 "${GATE_TMP}" 2>/dev/null || true
 GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
 POLICY_FILE="${PROJECT_DIR}/etc/policies/active.policy.json"
 POLICY_PUBKEY="${PROJECT_DIR}/etc/keys/policy-signing.pub"
+
+# ── Second Authority Law: Constitution ─────────────────────────────────────
+CONSTITUTION_FILE="${PROJECT_DIR}/etc/constitution.json"
+CONSTITUTION_PUBKEY="${PROJECT_DIR}/etc/keys/constitution-signing.pub"
+CONSTITUTION_PRESENCE_FILE="${PROJECT_DIR}/var/log/.constitution-last-hash"
+_CONSTITUTION_VALIDATED=""
 AUDIT_SIGNING_KEY="${HOME}/.zlar-signing.key"
 ZLAR_REQUIRE_SIGNED_AUDIT="${ZLAR_REQUIRE_SIGNED_AUDIT:-false}"
 AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
@@ -971,6 +977,158 @@ translate_tool() {
 
 # ─── Policy Loader ──────────────────────────────────────────────────────────
 
+# ── Second Authority Law: Constitutional Validation ──────────────────────────
+#
+# Validates the operational policy against the constitution at load time.
+# The constitution constrains what policies are permitted to contain.
+# Session-scoped cache: validate once per session, not per tool call.
+#
+# Pre-constitutional mode: if no constitution has ever been deployed
+# (no file AND no presence tracker), the gate operates normally. Once a
+# constitution is deployed, the presence tracker is set and the gate
+# requires the constitution from that point forward.
+
+validate_constitution() {
+    # 1. Presence check (bootstrap tolerance)
+    if [ ! -f "${CONSTITUTION_FILE}" ]; then
+        if [ -f "${CONSTITUTION_PRESENCE_FILE}" ]; then
+            log "FATAL: Constitution was present but is now missing — possible deletion attack"
+            if [ -n "${TELEGRAM_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+                local _alert_body
+                _alert_body=$(jq -n --arg chat "${TELEGRAM_CHAT_ID}" \
+                    '{"chat_id":$chat,"text":"🚨 ZLAR CRITICAL: Constitution file was present but is now missing. Possible deletion attack. Gate hard-denied until constitution is restored."}')
+                curl -s -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+                    -H "Content-Type: application/json" -d "${_alert_body}" >/dev/null 2>&1 || true
+            fi
+            return 1
+        fi
+        # No constitution ever deployed = pre-constitutional mode
+        log "INFO: No constitution file — pre-constitutional mode"
+        return 0
+    fi
+
+    # 2. Session cache check
+    if [ -n "${SESSION_ID:-}" ]; then
+        local _cache_file="${SESSION_DIR}/${SESSION_ID}.constitution-valid"
+        local _current_hash
+        _current_hash=$(shasum -a 256 "${CONSTITUTION_FILE}" 2>/dev/null | awk '{print $1}')
+        if [ -f "${_cache_file}" ]; then
+            local _cached_hash
+            _cached_hash=$(cat "${_cache_file}" 2>/dev/null | tr -d '[:space:]')
+            if [ "${_current_hash}" = "${_cached_hash}" ]; then
+                return 0  # Cache hit
+            fi
+        fi
+    fi
+
+    # 3. Constitutional public key must exist
+    if [ ! -f "${CONSTITUTION_PUBKEY}" ]; then
+        log "FATAL: Constitution public key not found at ${CONSTITUTION_PUBKEY}"
+        return 1
+    fi
+
+    # 4. Key separation (PC-06)
+    local _const_fp _policy_fp
+    _const_fp=$(zlar_crypto_pubkey_fingerprint "${CONSTITUTION_PUBKEY}" 2>/dev/null)
+    _policy_fp=$(zlar_crypto_pubkey_fingerprint "${POLICY_PUBKEY}" 2>/dev/null)
+    if [ -n "${_const_fp}" ] && [ -n "${_policy_fp}" ] && [ "${_const_fp}" = "${_policy_fp}" ]; then
+        log "FATAL: PC-06 VIOLATED — constitutional key fingerprint matches policy key"
+        return 1
+    fi
+
+    # 5. Verify constitution signature
+    local _c_sig_value _c_sig_algo
+    _c_sig_value=$(jq -r '.signature.value // ""' "${CONSTITUTION_FILE}" 2>/dev/null)
+    _c_sig_algo=$(jq -r '.signature.algorithm // "ed25519"' "${CONSTITUTION_FILE}" 2>/dev/null)
+    if [ -z "${_c_sig_value}" ] || [ "${_c_sig_value}" = "" ]; then
+        log "FATAL: Constitution is unsigned"
+        return 1
+    fi
+
+    local _c_canon _c_hash _c_sig
+    _c_canon=$(mktemp "${GATE_TMP}/c-canon.XXXXXX")
+    _c_hash=$(mktemp "${GATE_TMP}/c-hash.XXXXXX")
+    _c_sig=$(mktemp "${GATE_TMP}/c-sig.XXXXXX")
+    jq '.signature.value = ""' "${CONSTITUTION_FILE}" > "${_c_canon}" 2>/dev/null
+    zlar_crypto_hash "${_c_canon}" "${_c_hash}"
+    echo "${_c_sig_value}" | base64 -d > "${_c_sig}" 2>/dev/null
+    if ! zlar_crypto_verify "${CONSTITUTION_PUBKEY}" "${_c_hash}" "${_c_sig}" "${_c_sig_algo}"; then
+        rm -f "${_c_canon}" "${_c_hash}" "${_c_sig}"
+        log "FATAL: Constitution signature INVALID"
+        return 1
+    fi
+    rm -f "${_c_canon}" "${_c_hash}" "${_c_sig}"
+
+    # 6. PC-01: No rule exercising consequential power with audit: false
+    local _silent_rules
+    _silent_rules=$(jq -r '
+      [.rules[] |
+        select(
+          (.audit == false) and
+          ((.risk_score.irreversibility // 0) > 0 or
+           (.risk_score.consequence // 0) > 0 or
+           (.risk_score.blast_radius // 0) > 0)
+        ) | .id
+      ] | join(", ")' "${POLICY_FILE}" 2>/dev/null)
+    if [ -n "${_silent_rules}" ]; then
+        log "FATAL: PC-01 VIOLATED — rules with consequential risk and audit:false: ${_silent_rules}"
+        return 1
+    fi
+
+    # 7. PC-02: At least one ask rule must exist (human contestability)
+    local _ask_count
+    _ask_count=$(jq '[.rules[] | select(.action == "ask")] | length' "${POLICY_FILE}" 2>/dev/null)
+    if [ "${_ask_count:-0}" -eq 0 ]; then
+        log "FATAL: PC-02 VIOLATED — no ask rules in policy (no human contestability path)"
+        return 1
+    fi
+
+    # 8. PC-04: Suspended escalation must be deny
+    if [ -f "${PROJECT_DIR}/etc/restore-config.json" ]; then
+        local _esc_suspended
+        _esc_suspended=$(jq -r '.escalation.suspended // "deny"' "${PROJECT_DIR}/etc/restore-config.json" 2>/dev/null)
+        if [ "${_esc_suspended}" != "deny" ]; then
+            log "FATAL: PC-04 VIOLATED — suspended escalation is '${_esc_suspended}', must be 'deny'"
+            return 1
+        fi
+    fi
+
+    # 9. PC-05 (deny-wins): default_action must be deny
+    local _default_action
+    _default_action=$(jq -r '.default_action // ""' "${POLICY_FILE}" 2>/dev/null)
+    if [ "${_default_action}" != "deny" ]; then
+        log "FATAL: PC-05 VIOLATED — default_action is '${_default_action}', must be 'deny'"
+        return 1
+    fi
+
+    # 10. PC-05: Manifest must deny all six governance-critical power classes
+    if [ "${MANIFEST_LOADED}" = "true" ] && [ -n "${MANIFEST_JSON}" ]; then
+        local _required_classes _manifest_denies _missing_class=""
+        _required_classes=$(jq -r '.amendable_constraints.manifest_deny_required_classes[]' "${CONSTITUTION_FILE}" 2>/dev/null)
+        _manifest_denies=$(echo "${MANIFEST_JSON}" | jq -r '.authority.deny[]' 2>/dev/null)
+        for _rc in ${_required_classes}; do
+            if ! echo "${_manifest_denies}" | grep -q "^${_rc}$" 2>/dev/null; then
+                _missing_class="${_missing_class} ${_rc}"
+            fi
+        done
+        if [ -n "${_missing_class}" ]; then
+            log "FATAL: PC-05 VIOLATED — manifest missing required deny classes:${_missing_class}"
+            return 1
+        fi
+    fi
+
+    # 11. Write session cache + presence tracker
+    if [ -n "${SESSION_ID:-}" ]; then
+        local _current_hash
+        _current_hash=$(shasum -a 256 "${CONSTITUTION_FILE}" 2>/dev/null | awk '{print $1}')
+        echo "${_current_hash}" > "${SESSION_DIR}/${SESSION_ID}.constitution-valid" 2>/dev/null || true
+    fi
+    shasum -a 256 "${CONSTITUTION_FILE}" 2>/dev/null | awk '{print $1}' > "${CONSTITUTION_PRESENCE_FILE}" 2>/dev/null || true
+
+    log "Constitution validated: v$(jq -r '.constitution_version // "?"' "${CONSTITUTION_FILE}" 2>/dev/null)"
+    return 0
+}
+
 POLICY_VERSION=""
 POLICY_DEFAULT_ACTION="deny"
 POLICY_RULES_JSON=""
@@ -1021,6 +1179,17 @@ load_policy() {
         fi
         rm -f "${canon_file}" "${hash_file}" "${sig_file}"
     }
+
+    # ── Second Authority Law: Constitutional validation ──
+    # Validate policy against constitution if one is deployed.
+    # Cached per session — full validation runs once, then hash-check.
+    if [ "${_CONSTITUTION_VALIDATED}" != "true" ]; then
+        if ! validate_constitution; then
+            log "FATAL: Constitutional validation failed — hard deny"
+            return 1
+        fi
+        _CONSTITUTION_VALIDATED="true"
+    fi
 
     # Parse policy
     POLICY_VERSION=$(jq -r '.version // "unknown"' "${POLICY_FILE}" 2>/dev/null)

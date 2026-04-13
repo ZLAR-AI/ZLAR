@@ -1,0 +1,639 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR Constitution CLI — Second Authority Law
+#
+# Manages the constitutional layer: generate keys, sign, verify, deploy,
+# inspect, validate policy against constitution.
+#
+# The constitution constrains what operational policies are permitted to
+# contain. It is signed with a separate key from the policy signing key.
+# Key separation is structural, not advisory.
+#
+# Usage:
+#   zlar-constitution keygen                        Generate constitutional keypair
+#   zlar-constitution sign   --input F --key K      Sign a constitution file
+#   zlar-constitution verify --input F              Verify constitution signature
+#   zlar-constitution deploy --input F              Deploy signed constitution
+#   zlar-constitution inspect [--input F]           Display constitution summary
+#   zlar-constitution validate --policy F           Check policy against constitution
+#
+# Phase 2 (amendment ceremony):
+#   zlar-constitution propose-amendment --key K --path P --value V --reason R
+#   zlar-constitution ratify --proposal ID --key K
+#   zlar-constitution activate --proposal ID
+#   zlar-constitution amendment-status
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# Source cryptographic abstraction layer
+export _CRYPTO_PROJECT_DIR="${PROJECT_DIR}"
+# shellcheck source=../lib/crypto.sh
+source "${PROJECT_DIR}/lib/crypto.sh"
+
+ZLAR_ROOT="${PROJECT_DIR}/etc"
+KEYS_DIR="${ZLAR_ROOT}/keys"
+CONSTITUTION_FILE="${ZLAR_ROOT}/constitution.json"
+CONSTITUTION_TEMPLATE="${ZLAR_ROOT}/constitution.json.template"
+CONST_PUBKEY="${KEYS_DIR}/constitution-signing.pub"
+POLICY_PUBKEY="${KEYS_DIR}/policy-signing.pub"
+ACTIVE_POLICY="${ZLAR_ROOT}/policies/active.policy.json"
+LOG_DIR="${PROJECT_DIR}/var/log"
+AMENDMENTS_DIR="${PROJECT_DIR}/var/amendments"
+
+# Colors
+if [ -t 1 ]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; BOLD=''; DIM=''; NC=''
+fi
+
+ok()   { echo -e "${GREEN}  ✓${NC} $*"; }
+fail() { echo -e "${RED}  ✗${NC} $*" >&2; exit 1; }
+warn() { echo -e "${YELLOW}  ⚠${NC} $*"; }
+info() { echo -e "${BLUE}  ℹ${NC} $*"; }
+
+# ─── Key Generation ──────────────────────────────────────────────────────────
+
+cmd_keygen() {
+    local algo_label
+    algo_label=$(zlar_crypto_label)
+    echo -e "${BOLD}Generating ${algo_label} constitutional keypair${NC}"
+    echo ""
+
+    local privkey="${HOME}/.zlar-constitution.key"
+    local pubkey="${CONST_PUBKEY}"
+
+    if [ -f "${privkey}" ]; then
+        warn "Constitutional private key already exists at ${privkey}"
+        echo -n "  Overwrite? [y/N] "
+        read -r answer
+        if [ "${answer}" != "y" ] && [ "${answer}" != "Y" ]; then
+            echo "  Aborted."
+            return 1
+        fi
+    fi
+
+    mkdir -p "${KEYS_DIR}" 2>/dev/null || true
+
+    if ! zlar_crypto_keygen "${privkey}" "${pubkey}"; then
+        fail "Key generation failed"
+    fi
+    ok "Private key: ${privkey} (mode 600)"
+    ok "Public key:  ${pubkey} (mode 644)"
+
+    echo ""
+    info "Algorithm: ${algo_label}"
+    info "This is the CONSTITUTIONAL key. It signs the constitution."
+    info "It must be a DIFFERENT keypair from the policy signing key."
+    info "It should NEVER be accessible to an AI agent."
+
+    # Key separation check
+    if [ -f "${POLICY_PUBKEY}" ]; then
+        local const_fp policy_fp
+        const_fp=$(zlar_crypto_pubkey_fingerprint "${pubkey}")
+        policy_fp=$(zlar_crypto_pubkey_fingerprint "${POLICY_PUBKEY}")
+        if [ "${const_fp}" = "${policy_fp}" ]; then
+            fail "FATAL: Constitutional key fingerprint matches policy key. PC-06 violated. Generate a different keypair."
+        fi
+        ok "Key separation verified (constitutional != policy)"
+    else
+        warn "Policy public key not found — cannot verify key separation yet"
+    fi
+
+    echo ""
+    local fingerprint
+    fingerprint=$(zlar_crypto_pubkey_fingerprint "${pubkey}")
+    info "Public key fingerprint (SHA-256): ${fingerprint}..."
+}
+
+# ─── Sign ────────────────────────────────────────────────────────────────────
+
+cmd_sign() {
+    local input="" key="" output=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --input)  shift; input="$1"; shift ;;
+            --key)    shift; key="$1"; shift ;;
+            --output) shift; output="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${input}" ]; then
+        fail "Missing --input <constitution.json>"
+    fi
+    if [ -z "${key}" ]; then
+        key="${HOME}/.zlar-constitution.key"
+        if [ ! -f "${key}" ]; then
+            fail "No --key specified and default key not found at ${key}"
+        fi
+        info "Using default constitutional key: ${key}"
+    fi
+    if [ -z "${output}" ]; then
+        output="${input}"
+    fi
+
+    if [ ! -f "${input}" ]; then
+        fail "Constitution file not found: ${input}"
+    fi
+    if [ ! -f "${key}" ]; then
+        fail "Constitutional private key not found: ${key}"
+    fi
+
+    echo -e "${BOLD}Signing constitution${NC}"
+
+    # Validate JSON
+    if ! jq empty "${input}" 2>/dev/null; then
+        fail "Invalid JSON in ${input}"
+    fi
+
+    # Read version
+    local version
+    version=$(jq -r '.constitution_version // "unknown"' "${input}" 2>/dev/null)
+    info "Constitution version: ${version}"
+
+    # Count core clauses
+    local clause_count
+    clause_count=$(jq '.permanent_core.clauses | length' "${input}" 2>/dev/null || echo "?")
+    info "Permanent core clauses: ${clause_count}"
+
+    # Resolve algorithm
+    local algo algo_label
+    algo=$(zlar_crypto_algorithm)
+    algo_label=$(zlar_crypto_label)
+    info "Signing algorithm: ${algo_label}"
+
+    # Extract public key for embedding
+    local pubkey_b64
+    pubkey_b64=$(zlar_crypto_pubkey_b64 "${key}")
+
+    # Create canonical form (empty signature) for signing
+    local canon_file
+    canon_file=$(mktemp /tmp/zlar-const-canon.XXXXXX)
+    jq --arg pubkey "${pubkey_b64}" \
+       --arg algo "${algo}" \
+       '.signature.algorithm = $algo | .signature.public_key = $pubkey | .signature.value = ""' \
+       "${input}" > "${canon_file}"
+
+    # Hash canonical form
+    local hash_file
+    hash_file=$(mktemp /tmp/zlar-const-hash.XXXXXX)
+    zlar_crypto_hash "${canon_file}" "${hash_file}"
+
+    # Sign
+    local sig_file
+    sig_file=$(mktemp /tmp/zlar-const-sig.XXXXXX)
+    if ! zlar_crypto_sign "${key}" "${hash_file}" "${sig_file}"; then
+        rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+        fail "Signing failed"
+    fi
+
+    local sig_b64
+    sig_b64=$(base64 < "${sig_file}" | tr -d '\n')
+
+    # Create signed output
+    local signed_tmp
+    signed_tmp=$(mktemp /tmp/zlar-const-signed.XXXXXX)
+    jq --arg pubkey "${pubkey_b64}" \
+       --arg sig "${sig_b64}" \
+       --arg algo "${algo}" \
+       '.signature.algorithm = $algo | .signature.public_key = $pubkey | .signature.value = $sig' \
+       "${input}" > "${signed_tmp}"
+    mv "${signed_tmp}" "${output}"
+
+    rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+
+    ok "Signed constitution written to: ${output}"
+
+    local output_hash
+    output_hash=$(shasum -a 256 "${output}" | awk '{print $1}')
+    info "SHA-256: ${output_hash:0:16}..."
+    echo ""
+    info "To deploy: zlar-constitution deploy --input ${output}"
+}
+
+# ─── Verify ──────────────────────────────────────────────────────────────────
+
+cmd_verify() {
+    local input="" pubkey=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --input)  shift; input="$1"; shift ;;
+            --pubkey) shift; pubkey="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${input}" ]; then
+        input="${CONSTITUTION_FILE}"
+    fi
+    if [ -z "${pubkey}" ]; then
+        pubkey="${CONST_PUBKEY}"
+    fi
+
+    if [ ! -f "${input}" ]; then
+        fail "Constitution file not found: ${input}"
+    fi
+    if [ ! -f "${pubkey}" ]; then
+        fail "Constitutional public key not found: ${pubkey}"
+    fi
+
+    echo -e "${BOLD}Verifying constitution signature${NC}"
+
+    local sig_value sig_algo
+    sig_value=$(jq -r '.signature.value // ""' "${input}" 2>/dev/null)
+    sig_algo=$(jq -r '.signature.algorithm // "ed25519"' "${input}" 2>/dev/null)
+
+    if [ -z "${sig_value}" ] || [ "${sig_value}" = "" ]; then
+        fail "Constitution has no signature"
+    fi
+
+    info "Signature algorithm: ${sig_algo}"
+
+    # Canonical form
+    local canon_file hash_file sig_file
+    canon_file=$(mktemp /tmp/zlar-const-verify-canon.XXXXXX)
+    hash_file=$(mktemp /tmp/zlar-const-verify-hash.XXXXXX)
+    sig_file=$(mktemp /tmp/zlar-const-verify-sig.XXXXXX)
+
+    jq '.signature.value = ""' "${input}" > "${canon_file}"
+    zlar_crypto_hash "${canon_file}" "${hash_file}"
+    echo "${sig_value}" | base64 -d > "${sig_file}" 2>/dev/null
+
+    if zlar_crypto_verify "${pubkey}" "${hash_file}" "${sig_file}" "${sig_algo}"; then
+        ok "Constitution signature is VALID"
+    else
+        rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+        fail "Constitution signature is INVALID"
+    fi
+
+    rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+
+    local version author
+    version=$(jq -r '.constitution_version // "unknown"' "${input}" 2>/dev/null)
+    author=$(jq -r '.author // "unknown"' "${input}" 2>/dev/null)
+    info "Version: ${version}"
+    info "Author:  ${author}"
+}
+
+# ─── Deploy ──────────────────────────────────────────────────────────────────
+
+cmd_deploy() {
+    local input=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --input) shift; input="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${input}" ]; then
+        fail "Missing --input <signed-constitution.json>"
+    fi
+    if [ ! -f "${input}" ]; then
+        fail "Constitution file not found: ${input}"
+    fi
+
+    echo -e "${BOLD}Deploying constitution${NC}"
+
+    # Verify signature before deploy
+    if [ -f "${CONST_PUBKEY}" ]; then
+        info "Verifying signature before deploy..."
+        if ! cmd_verify --input "${input}" --pubkey "${CONST_PUBKEY}" >/dev/null 2>&1; then
+            fail "Constitution signature verification FAILED — cannot deploy"
+        fi
+        ok "Signature verified"
+    else
+        fail "Constitutional public key not found — cannot verify"
+    fi
+
+    # Key separation check (PC-06)
+    if [ -f "${POLICY_PUBKEY}" ] && [ -f "${CONST_PUBKEY}" ]; then
+        local const_fp policy_fp
+        const_fp=$(zlar_crypto_pubkey_fingerprint "${CONST_PUBKEY}")
+        policy_fp=$(zlar_crypto_pubkey_fingerprint "${POLICY_PUBKEY}")
+        if [ "${const_fp}" = "${policy_fp}" ]; then
+            fail "PC-06 VIOLATED: Constitutional key fingerprint matches policy key. Deploy rejected."
+        fi
+        ok "Key separation verified (PC-06)"
+    fi
+
+    # Archive current constitution if exists
+    if [ -f "${CONSTITUTION_FILE}" ]; then
+        local current_version
+        current_version=$(jq -r '.constitution_version // "unknown"' "${CONSTITUTION_FILE}" 2>/dev/null)
+        local archive_dir="${ZLAR_ROOT}/constitutions/archive"
+        mkdir -p "${archive_dir}" 2>/dev/null || true
+        local archive_name="constitution-v${current_version}-$(date +%Y%m%d%H%M%S).json"
+        cp "${CONSTITUTION_FILE}" "${archive_dir}/${archive_name}"
+        info "Archived current constitution: ${archive_name}"
+    fi
+
+    # Atomic deploy
+    local deploy_tmp="${CONSTITUTION_FILE}.deploying"
+    cp "${input}" "${deploy_tmp}"
+    mv "${deploy_tmp}" "${CONSTITUTION_FILE}"
+
+    # Write presence tracker (same pattern as manifest seq file)
+    local presence_file="${LOG_DIR}/.constitution-last-hash"
+    mkdir -p "${LOG_DIR}" 2>/dev/null || true
+    shasum -a 256 "${CONSTITUTION_FILE}" | awk '{print $1}' > "${presence_file}"
+
+    ok "Constitution deployed to: ${CONSTITUTION_FILE}"
+
+    local version
+    version=$(jq -r '.constitution_version // "unknown"' "${CONSTITUTION_FILE}" 2>/dev/null)
+    info "Active constitution: v${version}"
+    echo ""
+    info "The gate will now validate policy against this constitution."
+    info "Pre-constitutional mode is permanently disabled for this installation."
+}
+
+# ─── Inspect ─────────────────────────────────────────────────────────────────
+
+cmd_inspect() {
+    local input=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --input) shift; input="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${input}" ]; then
+        input="${CONSTITUTION_FILE}"
+    fi
+
+    if [ ! -f "${input}" ]; then
+        fail "Constitution file not found: ${input}"
+    fi
+
+    local version author created
+    version=$(jq -r '.constitution_version // "unknown"' "${input}" 2>/dev/null)
+    author=$(jq -r '.author // "unknown"' "${input}" 2>/dev/null)
+    created=$(jq -r '.created_at // "unknown"' "${input}" 2>/dev/null)
+
+    echo -e "${BOLD}ZLAR Constitution v${version}${NC}"
+    echo ""
+
+    # Preamble
+    local preamble
+    preamble=$(jq -r '.preamble // ""' "${input}" 2>/dev/null)
+    if [ -n "${preamble}" ]; then
+        echo -e "  ${DIM}${preamble}${NC}"
+        echo ""
+    fi
+
+    # Signature status
+    local sig_value
+    sig_value=$(jq -r '.signature.value // ""' "${input}" 2>/dev/null)
+    if [ -n "${sig_value}" ] && [ "${sig_value}" != "" ]; then
+        ok "Signed"
+    else
+        warn "UNSIGNED"
+    fi
+    info "Author: ${author}"
+    info "Created: ${created}"
+    echo ""
+
+    # Permanent core
+    echo -e "${BOLD}Permanent Core (unamendable)${NC}"
+    local clause_count
+    clause_count=$(jq '.permanent_core.clauses | length' "${input}" 2>/dev/null)
+    local i=0
+    while [ "${i}" -lt "${clause_count}" ]; do
+        local cid ctitle
+        cid=$(jq -r ".permanent_core.clauses[${i}].id" "${input}" 2>/dev/null)
+        ctitle=$(jq -r ".permanent_core.clauses[${i}].title" "${input}" 2>/dev/null)
+        echo -e "  ${GREEN}${cid}${NC}  ${ctitle}"
+        i=$((i + 1))
+    done
+    echo ""
+
+    # Derived properties
+    echo -e "${BOLD}Derived Properties${NC}"
+    local dp_count
+    dp_count=$(jq '.derived_properties.properties | length' "${input}" 2>/dev/null)
+    i=0
+    while [ "${i}" -lt "${dp_count}" ]; do
+        local did dtitle
+        did=$(jq -r ".derived_properties.properties[${i}].id" "${input}" 2>/dev/null)
+        dtitle=$(jq -r ".derived_properties.properties[${i}].title" "${input}" 2>/dev/null)
+        echo -e "  ${BLUE}${did}${NC}  ${dtitle}"
+        i=$((i + 1))
+    done
+    echo ""
+
+    # Observability
+    echo -e "${BOLD}Observability Obligations${NC}"
+    local ob_count
+    ob_count=$(jq '.observability_obligations.obligations | length' "${input}" 2>/dev/null)
+    i=0
+    while [ "${i}" -lt "${ob_count}" ]; do
+        local oid otitle
+        oid=$(jq -r ".observability_obligations.obligations[${i}].id" "${input}" 2>/dev/null)
+        otitle=$(jq -r ".observability_obligations.obligations[${i}].title" "${input}" 2>/dev/null)
+        echo -e "  ${YELLOW}${oid}${NC}  ${otitle}"
+        i=$((i + 1))
+    done
+    echo ""
+
+    # Amendable constraints summary
+    echo -e "${BOLD}Amendable Constraints${NC}"
+    local retention cooling_off
+    retention=$(jq -r '.amendable_constraints.evidence.minimum_retention_hours // "?"' "${input}" 2>/dev/null)
+    cooling_off=$(jq -r '.amendable_constraints.amendment_ceremony.cooling_off_period_hours // "?"' "${input}" 2>/dev/null)
+    info "Evidence retention: ${retention} hours"
+    info "Amendment cooling-off: ${cooling_off} hours"
+    local esc_suspended
+    esc_suspended=$(jq -r '.amendable_constraints.escalation.suspended // "?"' "${input}" 2>/dev/null)
+    info "Suspended escalation: ${esc_suspended}"
+
+    # Manifest required deny classes
+    echo ""
+    echo -e "${BOLD}Manifest Required Deny Classes (PC-05)${NC}"
+    jq -r '.amendable_constraints.manifest_deny_required_classes[]' "${input}" 2>/dev/null | while read -r cls; do
+        echo -e "  ${RED}deny${NC}  ${cls}"
+    done
+}
+
+# ─── Validate ────────────────────────────────────────────────────────────────
+# Check an operational policy against the constitution.
+# This is the offline version of what the gate does at load time.
+
+cmd_validate() {
+    local policy="" constitution=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --policy)       shift; policy="$1"; shift ;;
+            --constitution) shift; constitution="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${policy}" ]; then
+        policy="${ACTIVE_POLICY}"
+    fi
+    if [ -z "${constitution}" ]; then
+        constitution="${CONSTITUTION_FILE}"
+    fi
+
+    if [ ! -f "${policy}" ]; then
+        fail "Policy file not found: ${policy}"
+    fi
+    if [ ! -f "${constitution}" ]; then
+        fail "Constitution file not found: ${constitution}"
+    fi
+
+    echo -e "${BOLD}Validating policy against constitution${NC}"
+    echo ""
+
+    local violations=0
+
+    # PC-01: No rule exercising consequential power with audit: false
+    local silent_rules
+    silent_rules=$(jq -r '
+      [.rules[] |
+        select(
+          (.audit == false) and
+          ((.risk_score.irreversibility // 0) > 0 or
+           (.risk_score.consequence // 0) > 0 or
+           (.risk_score.blast_radius // 0) > 0)
+        ) | .id
+      ] | join(", ")' "${policy}" 2>/dev/null)
+    if [ -n "${silent_rules}" ]; then
+        echo -e "  ${RED}✗ PC-01${NC}  Silent consequential power: rules ${silent_rules} have audit:false with risk > 0"
+        violations=$((violations + 1))
+    else
+        echo -e "  ${GREEN}✓ PC-01${NC}  No silent consequential power"
+    fi
+
+    # PC-02: At least one ask rule exists (human contestability path)
+    local ask_count
+    ask_count=$(jq '[.rules[] | select(.action == "ask")] | length' "${policy}" 2>/dev/null)
+    if [ "${ask_count:-0}" -eq 0 ]; then
+        echo -e "  ${RED}✗ PC-02${NC}  No ask rules — no human contestability path"
+        violations=$((violations + 1))
+    else
+        echo -e "  ${GREEN}✓ PC-02${NC}  Human contestability: ${ask_count} ask rules"
+    fi
+
+    # PC-04: Suspended escalation must be deny
+    if [ -f "${PROJECT_DIR}/etc/restore-config.json" ]; then
+        local esc_suspended
+        esc_suspended=$(jq -r '.escalation.suspended // "deny"' "${PROJECT_DIR}/etc/restore-config.json" 2>/dev/null)
+        if [ "${esc_suspended}" != "deny" ]; then
+            echo -e "  ${RED}✗ PC-04${NC}  Suspended escalation is '${esc_suspended}', must be 'deny'"
+            violations=$((violations + 1))
+        else
+            echo -e "  ${GREEN}✓ PC-04${NC}  Suspended means full stop"
+        fi
+    else
+        echo -e "  ${DIM}  PC-04${NC}  Restore config not found — skipped"
+    fi
+
+    # PC-05: default_action must be deny (deny-wins)
+    local default_action
+    default_action=$(jq -r '.default_action // ""' "${policy}" 2>/dev/null)
+    if [ "${default_action}" != "deny" ]; then
+        echo -e "  ${RED}✗ PC-05${NC}  default_action is '${default_action}', must be 'deny'"
+        violations=$((violations + 1))
+    else
+        echo -e "  ${GREEN}✓ PC-05${NC}  Deny-wins: default_action is deny"
+    fi
+
+    # PC-05: Manifest deny-required classes
+    if [ -f "${ZLAR_ROOT}/manifest.json" ]; then
+        local required_classes manifest_denies missing_denies
+        required_classes=$(jq -r '.amendable_constraints.manifest_deny_required_classes[]' "${constitution}" 2>/dev/null)
+        manifest_denies=$(jq -r '.authority.deny[]' "${ZLAR_ROOT}/manifest.json" 2>/dev/null)
+        missing_denies=""
+        for rc in ${required_classes}; do
+            if ! echo "${manifest_denies}" | grep -q "^${rc}$" 2>/dev/null; then
+                missing_denies="${missing_denies} ${rc}"
+            fi
+        done
+        if [ -n "${missing_denies}" ]; then
+            echo -e "  ${RED}✗ PC-05${NC}  Manifest missing required deny classes:${missing_denies}"
+            violations=$((violations + 1))
+        else
+            echo -e "  ${GREEN}✓ PC-05${NC}  Manifest denies all governance-critical powers"
+        fi
+    else
+        echo -e "  ${DIM}  PC-05${NC}  Manifest not found — skipped"
+    fi
+
+    # PC-06: Key separation
+    if [ -f "${CONST_PUBKEY}" ] && [ -f "${POLICY_PUBKEY}" ]; then
+        local const_fp policy_fp
+        const_fp=$(zlar_crypto_pubkey_fingerprint "${CONST_PUBKEY}")
+        policy_fp=$(zlar_crypto_pubkey_fingerprint "${POLICY_PUBKEY}")
+        if [ "${const_fp}" = "${policy_fp}" ]; then
+            echo -e "  ${RED}✗ PC-06${NC}  Constitutional key = policy key (fingerprints match)"
+            violations=$((violations + 1))
+        else
+            echo -e "  ${GREEN}✓ PC-06${NC}  Key separation verified"
+        fi
+    else
+        echo -e "  ${DIM}  PC-06${NC}  Keys not found — skipped"
+    fi
+
+    echo ""
+    if [ "${violations}" -gt 0 ]; then
+        fail "CONSTITUTIONAL VALIDATION FAILED: ${violations} violation(s)"
+    else
+        ok "Policy passes all constitutional checks"
+    fi
+}
+
+# ─── Main Dispatch ───────────────────────────────────────────────────────────
+
+cmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "${cmd}" in
+    keygen)     cmd_keygen "$@" ;;
+    sign)       cmd_sign "$@" ;;
+    verify)     cmd_verify "$@" ;;
+    deploy)     cmd_deploy "$@" ;;
+    inspect)    cmd_inspect "$@" ;;
+    validate)   cmd_validate "$@" ;;
+
+    # Phase 2: Amendment ceremony (placeholder)
+    propose-amendment|ratify|activate|amendment-status)
+        warn "Amendment ceremony commands are not yet implemented."
+        info "Coming in Phase 2 of the Second Authority Law build."
+        ;;
+
+    help|--help|-h)
+        echo "ZLAR Constitution CLI — Second Authority Law"
+        echo ""
+        echo "Commands:"
+        echo "  keygen                        Generate constitutional keypair"
+        echo "  sign   --input F --key K      Sign a constitution file"
+        echo "  verify --input F              Verify constitution signature"
+        echo "  deploy --input F              Deploy signed constitution"
+        echo "  inspect [--input F]           Display constitution summary"
+        echo "  validate --policy F           Check policy against constitution"
+        echo ""
+        echo "Amendment ceremony (Phase 2):"
+        echo "  propose-amendment             Propose a change to amendable constraints"
+        echo "  ratify                        Ratify a pending amendment"
+        echo "  activate                      Activate a ratified amendment"
+        echo "  amendment-status              Show pending amendments"
+        ;;
+
+    *)
+        fail "Unknown command: ${cmd}. Try: zlar-constitution help"
+        ;;
+esac
