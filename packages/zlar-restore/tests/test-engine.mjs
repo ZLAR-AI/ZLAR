@@ -231,3 +231,70 @@ test('multiple converging detectors can reach at_risk', async () => {
       `at_risk/suspended requires 2+ active detectors, got ${result.aggregate.active_detectors}`);
   }
 });
+
+// ── Keyed PRNG: reproducible jitter (v3.0.5) ──────────────────────────────
+
+test('keyed PRNG: same trace produces identical results', async () => {
+  // THE test. If this passes, every evaluation is auditably reproducible.
+  const trace = loadFixture('healthy-session.json');
+  const opts = { thresholds: { degraded: 0.3, at_risk: 0.6, suspended: 0.85 } };
+
+  const result1 = await evaluate(trace, opts);
+  const result2 = await evaluate(trace, opts);
+
+  assert.equal(result1.recommendation, result2.recommendation,
+    'same trace must produce same recommendation');
+  assert.equal(result1.aggregate.effective, result2.aggregate.effective,
+    'same trace must produce same effective score');
+  assert.equal(result1.aggregate.diffuse_weighted, result2.aggregate.diffuse_weighted,
+    'same trace must produce same diffuse_weighted');
+  assert.deepStrictEqual(result1._jitter, result2._jitter,
+    'same trace must produce identical jitter values');
+});
+
+test('keyed PRNG: different traces produce different jitter', async () => {
+  const trace1 = loadFixture('healthy-session.json');
+  const trace2 = loadFixture('contradiction-trace.json');
+
+  const result1 = await evaluate(trace1);
+  const result2 = await evaluate(trace2);
+
+  // Different traces should produce different jitter seeds.
+  // The jitter values COULD theoretically collide, but with HMAC-derived
+  // randomness across different seeds, collision is astronomically unlikely.
+  const j1 = result1._jitter;
+  const j2 = result2._jitter;
+  const same = j1.diffuse_weight === j2.diffuse_weight &&
+               j1.thresholds.degraded === j2.thresholds.degraded &&
+               j1.thresholds.at_risk === j2.thresholds.at_risk;
+  assert.ok(!same, 'different traces should produce different jitter (HMAC-derived)');
+});
+
+test('keyed PRNG: jitter values are in expected range', async () => {
+  const trace = loadFixture('healthy-session.json');
+  const result = await evaluate(trace);
+
+  // Diffuse weight should be jittered: base 1.2 * [0.9, 1.1] = [1.08, 1.32]
+  assert.ok(result._jitter.diffuse_weight >= 1.08,
+    `diffuse_weight ${result._jitter.diffuse_weight} should be >= 1.08`);
+  assert.ok(result._jitter.diffuse_weight <= 1.32,
+    `diffuse_weight ${result._jitter.diffuse_weight} should be <= 1.32`);
+
+  // Thresholds: base * [0.9, 1.1]
+  // degraded base 0.3 -> [0.27, 0.33]
+  assert.ok(result._jitter.thresholds.degraded >= 0.27,
+    `degraded threshold ${result._jitter.thresholds.degraded} should be >= 0.27`);
+  assert.ok(result._jitter.thresholds.degraded <= 0.33,
+    `degraded threshold ${result._jitter.thresholds.degraded} should be <= 0.33`);
+});
+
+test('keyed PRNG: _jitter field present in result', async () => {
+  const trace = loadFixture('healthy-session.json');
+  const result = await evaluate(trace);
+  assert.ok('_jitter' in result, 'result should include _jitter for audit reproducibility');
+  assert.ok('diffuse_weight' in result._jitter);
+  assert.ok('thresholds' in result._jitter);
+  assert.ok('degraded' in result._jitter.thresholds);
+  assert.ok('at_risk' in result._jitter.thresholds);
+  assert.ok('suspended' in result._jitter.thresholds);
+});

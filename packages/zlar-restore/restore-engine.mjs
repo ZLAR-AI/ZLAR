@@ -17,10 +17,18 @@
 // Invariants:
 //   RESTORE-INV-07: Detectors are composable and independently removable.
 //   RESTORE-INV-08: Trust state is derived from audit trail (rebuild-capable).
+//   RESTORE-INV-13: Jitter is keyed PRNG, not Math.random(). Same trace
+//     always produces the same evaluation. Auditability is non-negotiable.
+//
+// Trace contract: the engine receives seq===1 events only (agent intent,
+// not human resolution). This projection is applied by restore-trigger.mjs
+// and session-state.sh. Detectors must not assume resolution data exists.
+// See the PROJECTION CONTRACT comment in restore-trigger.mjs.
 
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readdirSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -110,6 +118,35 @@ const ROUTING_HINTS = {
   },
 };
 
+// ── Keyed PRNG ──────────────────────────────────────────────────────────────
+//
+// Deterministic jitter seeded from the trace content. Same trace always
+// produces the same jitter values — fully reproducible for auditing.
+// Unpredictable to an adversary without knowledge of the event IDs
+// (which are generated from openssl rand).
+//
+// This replaces Math.random(). The anti-evasion property is preserved
+// (an adversary cannot predict the thresholds) while restoring the
+// auditability property (an operator can replay any past evaluation).
+
+function createKeyedPRNG(trace) {
+  // Seed from trace boundaries + length. Event IDs contain openssl rand
+  // hex, so this is unpredictable without access to the audit trail.
+  const firstId = trace[0]?.id || 'empty';
+  const lastId = trace[trace.length - 1]?.id || 'empty';
+  const seed = `${firstId}:${lastId}:${trace.length}`;
+  let counter = 0;
+
+  return function random() {
+    const hmac = createHmac('sha256', seed);
+    hmac.update(String(counter++));
+    const bytes = hmac.digest();
+    // First 4 bytes as uint32, normalized to [0, 1)
+    const uint32 = bytes.readUInt32BE(0);
+    return uint32 / 0x100000000;
+  };
+}
+
 // ── Evaluation ───────────────────────────────────────────────────────────────
 
 // Thresholds for mapping effective score to trust state recommendations.
@@ -127,6 +164,11 @@ export async function evaluate(trace, options = {}) {
   const thresholds = options.thresholds || DEFAULT_THRESHOLDS;
   const diffuseWeight = options.diffuse_weight ?? DEFAULT_DIFFUSE_WEIGHT;
   const evaluationHistory = options.evaluation_history || null;
+
+  // Keyed PRNG: deterministic jitter seeded from trace content.
+  // Same trace → same jitter → reproducible evaluation.
+  // Adversary without audit trail access cannot predict thresholds.
+  const prng = createKeyedPRNG(trace);
 
   const detectors = await loadDetectors();
   const results = {};
@@ -182,11 +224,13 @@ export async function evaluate(trace, options = {}) {
   const l2 = Math.sqrt(signals.reduce((s, x) => s + x * x, 0));
   const diffuse = signals.length > 0 ? l2 / Math.sqrt(signals.length) : 0;
 
-  // Anti-evasion: jitter the diffuse weight too. An agent that understands
+  // Anti-evasion: jitter the diffuse weight. An agent that understands
   // the dual-path architecture could distribute pathology evenly across
   // detectors to stay below a constant diffuse weight. Jittering both
   // paths removes the stable target.
-  const jitteredDiffuseWeight = diffuseWeight * (0.9 + Math.random() * 0.2);
+  //
+  // Uses keyed PRNG — deterministic per-trace, unpredictable per-adversary.
+  const jitteredDiffuseWeight = diffuseWeight * (0.9 + prng() * 0.2);
   let effective = Math.max(dominant, diffuse * jitteredDiffuseWeight);
 
   // Critical slowing down: rising autocorrelation tightens sensitivity
@@ -203,9 +247,10 @@ export async function evaluate(trace, options = {}) {
   // Anti-evasion: jitter thresholds by ±10% per evaluation.
   // An agent that knows the nominal thresholds cannot stay just below them
   // because the actual thresholds shift unpredictably each time.
-  // This is non-deterministic only in the observation layer — policy
-  // enforcement in the gate remains fully deterministic.
-  const jitter = () => 0.9 + Math.random() * 0.2;
+  // Keyed PRNG: deterministic per-trace (auditable), unpredictable per-
+  // adversary (anti-evasion). Policy enforcement in the gate remains
+  // fully deterministic — this jitter is in the observation layer only.
+  const jitter = () => 0.9 + prng() * 0.2;
   const jitteredThresholds = {
     degraded: thresholds.degraded * jitter(),
     at_risk: thresholds.at_risk * jitter(),
@@ -272,6 +317,16 @@ export async function evaluate(trace, options = {}) {
     detectors: results,
     trace_length: trace.length,
     evaluated_at: new Date().toISOString(),
+    // Jitter values for audit reproducibility — same trace always
+    // produces the same jitter, so these are deterministic proof.
+    _jitter: {
+      diffuse_weight: round(jitteredDiffuseWeight),
+      thresholds: {
+        degraded: round(jitteredThresholds.degraded),
+        at_risk: round(jitteredThresholds.at_risk),
+        suspended: round(jitteredThresholds.suspended),
+      },
+    },
     // Signal vector for history storage
     _signal_vector: signals.map(round),
   };
