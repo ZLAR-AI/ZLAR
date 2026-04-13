@@ -118,6 +118,10 @@ CONSTEOF
        "${TEST_DIR}/etc/constitution-unsigned.json" > "${output}"
 
     rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+
+    # Set presence tracker (simulates zlar-constitution deploy)
+    mkdir -p "$(dirname "${CONSTITUTION_PRESENCE_FILE}")" 2>/dev/null || true
+    shasum -a 256 "${output}" 2>/dev/null | awk '{print $1}' > "${CONSTITUTION_PRESENCE_FILE}"
 }
 
 # ── Setup: create a valid policy ───────────────────────────────────────────
@@ -156,7 +160,7 @@ _CONSTITUTION_VALIDATED=""
 
 # Source the validate_constitution function from the gate.
 # Extract lines 991-1130 which contain the complete function.
-eval "$(sed -n '991,1130p' "${REAL_PROJECT_DIR}/bin/zlar-gate")"
+eval "$(sed -n '991,1149p' "${REAL_PROJECT_DIR}/bin/zlar-gate")"
 
 # ── Run setup ──────────────────────────────────────────────────────────────
 
@@ -177,7 +181,7 @@ rm -f "${CONSTITUTION_FILE}" "${CONSTITUTION_PRESENCE_FILE}" 2>/dev/null
 _CONSTITUTION_VALIDATED=""
 rm -f "${SESSION_DIR}/${SESSION_ID}.constitution-valid" 2>/dev/null
 validate_constitution && result="pass" || result="fail"
-assert "A1: No constitution, no presence = pre-constitutional (pass)" "pass" "${result}"
+assert "A1: No file, no tracker = pre-constitutional (pass)" "pass" "${result}"
 
 # A2: No constitution + presence file = deletion attack (fail)
 echo "deadbeef" > "${CONSTITUTION_PRESENCE_FILE}"
@@ -185,13 +189,23 @@ rm -f "${CONSTITUTION_FILE}" 2>/dev/null
 _CONSTITUTION_VALIDATED=""
 rm -f "${SESSION_DIR}/${SESSION_ID}.constitution-valid" 2>/dev/null
 validate_constitution && result="pass" || result="fail"
-assert "A2: No constitution, presence exists = deletion attack (fail)" "fail" "${result}"
+assert "A2: No file, tracker exists = deletion attack (fail)" "fail" "${result}"
+
+# A2b: File exists + no tracker = ignore (DoS prevention — pass)
+rm -f "${CONSTITUTION_PRESENCE_FILE}" 2>/dev/null
+echo '{"constitution_version":"fake","signature":{"value":""}}' > "${CONSTITUTION_FILE}"
+_CONSTITUTION_VALIDATED=""
+rm -f "${SESSION_DIR}/${SESSION_ID}.constitution-valid" 2>/dev/null
+validate_constitution && result="pass" || result="fail"
+assert "A2b: Fake file, no tracker = ignored (DoS prevention, pass)" "pass" "${result}"
+rm -f "${CONSTITUTION_FILE}"
 
 # A3: Unsigned constitution = fail
-rm -f "${CONSTITUTION_PRESENCE_FILE}" 2>/dev/null
 cat > "${CONSTITUTION_FILE}" <<'EOF'
 {"constitution_version":"1.0.0","signature":{"algorithm":"","public_key":"","value":""}}
 EOF
+# Set tracker so validation engages (simulates prior deploy)
+shasum -a 256 "${CONSTITUTION_FILE}" 2>/dev/null | awk '{print $1}' > "${CONSTITUTION_PRESENCE_FILE}"
 _CONSTITUTION_VALIDATED=""
 rm -f "${SESSION_DIR}/${SESSION_ID}.constitution-valid" 2>/dev/null
 validate_constitution && result="pass" || result="fail"

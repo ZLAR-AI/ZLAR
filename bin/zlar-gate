@@ -989,22 +989,41 @@ translate_tool() {
 # requires the constitution from that point forward.
 
 validate_constitution() {
-    # 1. Presence check (bootstrap tolerance)
-    if [ ! -f "${CONSTITUTION_FILE}" ]; then
-        if [ -f "${CONSTITUTION_PRESENCE_FILE}" ]; then
-            log "FATAL: Constitution was present but is now missing — possible deletion attack"
-            if [ -n "${TELEGRAM_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-                local _alert_body
-                _alert_body=$(jq -n --arg chat "${TELEGRAM_CHAT_ID}" \
-                    '{"chat_id":$chat,"text":"🚨 ZLAR CRITICAL: Constitution file was present but is now missing. Possible deletion attack. Gate hard-denied until constitution is restored."}')
-                curl -s -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-                    -H "Content-Type: application/json" -d "${_alert_body}" >/dev/null 2>&1 || true
-            fi
-            return 1
+    # 1. Presence check (deployment-gated validation)
+    #
+    # The presence tracker is set ONLY by `zlar-constitution deploy`.
+    # It is the ceremony marker that distinguishes "constitution was properly
+    # deployed" from "a file happens to exist at the constitution path."
+    #
+    # Without the tracker, the constitution file is IGNORED — even if it
+    # exists. This prevents a DoS attack where an agent drops a fake
+    # unsigned constitution.json to trigger hard-deny on validation failure.
+    #
+    # Four states:
+    #   file exists + tracker exists  → full validation (deployed constitution)
+    #   file exists + no tracker      → ignore file (not deployed via ceremony)
+    #   no file + tracker exists      → deletion attack (hard deny)
+    #   no file + no tracker          → pre-constitutional mode (pass)
+    if [ ! -f "${CONSTITUTION_PRESENCE_FILE}" ]; then
+        if [ -f "${CONSTITUTION_FILE}" ]; then
+            log "INFO: Constitution file exists but no deployment tracker — ignoring (not deployed via ceremony)"
+        else
+            log "INFO: No constitution file — pre-constitutional mode"
         fi
-        # No constitution ever deployed = pre-constitutional mode
-        log "INFO: No constitution file — pre-constitutional mode"
         return 0
+    fi
+
+    # Tracker exists — constitution was deployed. File must be present.
+    if [ ! -f "${CONSTITUTION_FILE}" ]; then
+        log "FATAL: Constitution was deployed but file is now missing — possible deletion attack"
+        if [ -n "${TELEGRAM_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            local _alert_body
+            _alert_body=$(jq -n --arg chat "${TELEGRAM_CHAT_ID}" \
+                '{"chat_id":$chat,"text":"🚨 ZLAR CRITICAL: Constitution file was deployed but is now missing. Possible deletion attack. Gate hard-denied until constitution is restored."}')
+            curl -s -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+                -H "Content-Type: application/json" -d "${_alert_body}" >/dev/null 2>&1 || true
+        fi
+        return 1
     fi
 
     # 2. Session cache check
