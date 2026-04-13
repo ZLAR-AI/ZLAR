@@ -553,6 +553,128 @@ cmd_status() {
     echo ""
 }
 
+# ─── Evidence Retention Check (OB-02) ──────────────────────────────────────
+# Enforces the constitutional obligation that evidence must remain available
+# for meaningful review. If the audit trail has been truncated below the
+# retention floor, governance is compromised — lockdown.
+#
+# Checks both the current audit file and rotated archives. Normal rotation
+# (audit.jsonl.YYYYMMDDHHMMSS) is NOT truncation — the rotated files still
+# contain the evidence. Truncation means rotated files have been deleted
+# while their entries are younger than the retention floor.
+
+check_evidence_retention() {
+    run_check
+
+    # Read retention floor from constitution if deployed
+    local retention_hours=720  # 30 days default
+    local constitution_file="${PROJECT_DIR}/etc/constitution.json"
+    if [ -f "${constitution_file}" ] && command -v jq &>/dev/null; then
+        local _cr
+        _cr=$(jq -r '.amendable_constraints.evidence.minimum_retention_hours // ""' "${constitution_file}" 2>/dev/null)
+        [ -n "${_cr}" ] && retention_hours="${_cr}"
+    fi
+
+    local retention_seconds=$((retention_hours * 3600))
+    local now_epoch
+    now_epoch=$(date +%s)
+    local cutoff_epoch=$((now_epoch - retention_seconds))
+
+    # Find the oldest surviving audit entry across current + rotated files
+    local oldest_epoch=""
+    local all_audit_files=()
+
+    # Current audit file
+    if [ -f "${AUDIT_FILE}" ]; then
+        all_audit_files+=("${AUDIT_FILE}")
+    fi
+
+    # Rotated files
+    for rotated in "${AUDIT_FILE}".*; do
+        [ -f "${rotated}" ] && all_audit_files+=("${rotated}")
+    done
+
+    if [ ${#all_audit_files[@]} -eq 0 ]; then
+        # No audit files at all — if constitution is deployed, this may be a problem
+        # But a fresh install has no audit trail yet. Don't lockdown on empty.
+        pass "Evidence retention: no audit files (fresh install or pre-operational)"
+        return 0
+    fi
+
+    # Find oldest entry timestamp across all files
+    for af in "${all_audit_files[@]}"; do
+        local first_ts
+        first_ts=$(head -1 "${af}" 2>/dev/null | jq -r '.ts // .timestamp // ""' 2>/dev/null)
+        if [ -n "${first_ts}" ] && [ "${first_ts}" != "" ]; then
+            local entry_epoch
+            entry_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${first_ts}" +%s 2>/dev/null || date -d "${first_ts}" +%s 2>/dev/null || echo "")
+            if [ -n "${entry_epoch}" ]; then
+                if [ -z "${oldest_epoch}" ] || [ "${entry_epoch}" -lt "${oldest_epoch}" ]; then
+                    oldest_epoch="${entry_epoch}"
+                fi
+            fi
+        fi
+    done
+
+    if [ -z "${oldest_epoch}" ]; then
+        pass "Evidence retention: no parseable timestamps (likely fresh install)"
+        return 0
+    fi
+
+    local oldest_age_hours=$(( (now_epoch - oldest_epoch) / 3600 ))
+
+    # Check: if oldest entry is younger than retention floor, evidence may have been truncated.
+    # But only if the system has been running long enough for the retention floor to matter.
+    # If the system started 2 days ago and retention is 30 days, the oldest entry being 2 days
+    # old is normal, not truncation.
+    #
+    # The violation condition: oldest entry is younger than retention floor AND
+    # the system has been running longer than retention floor (evidenced by the
+    # gate-active timestamp being older than the retention floor).
+    local gate_active_file="${PROJECT_DIR}/var/log/.gate-active"
+    if [ -f "${gate_active_file}" ]; then
+        local gate_first_epoch
+        gate_first_epoch=$(stat -f %m "${gate_active_file}" 2>/dev/null || stat -c %Y "${gate_active_file}" 2>/dev/null || echo "${now_epoch}")
+
+        # Only check retention violation if gate has been active longer than retention period
+        # AND oldest audit entry is younger than retention floor
+        if [ "${oldest_epoch}" -gt "${cutoff_epoch}" ] && [ $((now_epoch - gate_first_epoch)) -gt "${retention_seconds}" ]; then
+            fail "Evidence retention VIOLATED: oldest entry is ${oldest_age_hours}h old, floor is ${retention_hours}h. Evidence may have been truncated."
+            FAILURES=$((FAILURES + 1))
+            log_wd "CRITICAL: Evidence retention violated — oldest entry ${oldest_age_hours}h < floor ${retention_hours}h"
+            return 1
+        fi
+    fi
+
+    pass "Evidence retention: oldest entry ${oldest_age_hours}h (floor: ${retention_hours}h)"
+    return 0
+}
+
+cmd_check_retention() {
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    echo -e "${BOLD}ZLAR Watchdog — Evidence Retention Check (OB-02)${NC}"
+    echo "  ${ts}"
+    echo ""
+
+    check_evidence_retention
+    local rc=$?
+
+    if [ ${rc} -ne 0 ]; then
+        echo ""
+        echo -e "  ${RED}EVIDENCE RETENTION VIOLATED${NC}"
+        echo "  The audit trail has been truncated below the constitutional minimum."
+        echo "  This invalidates the claim of governed operation (PC-01)."
+        echo ""
+        echo "  To lockdown: zlar-watchdog lockdown 'Evidence retention below constitutional minimum'"
+        echo "  To investigate: check var/log/audit.jsonl and rotated files"
+    else
+        echo ""
+        echo -e "  ${GREEN}Evidence retention is within constitutional bounds${NC}"
+    fi
+}
+
 # ─── Run All Checks ─────────────────────────────────────────────────────────
 
 cmd_check() {
@@ -592,6 +714,7 @@ cmd_check() {
     echo -e "${BOLD}  Audit${NC}"
     echo "  ─────────────────────────────────────────────────────"
     check_audit_writable || true
+    check_evidence_retention || true
     echo ""
 
     echo -e "${BOLD}  Gate Scripts${NC}"
@@ -653,6 +776,9 @@ case "${ACTION}" in
     status)
         cmd_status
         ;;
+    check-retention)
+        cmd_check_retention
+        ;;
     *)
         echo "ZLAR Watchdog — Membrane health checker"
         echo ""
@@ -660,6 +786,7 @@ case "${ACTION}" in
         echo ""
         echo "Commands:"
         echo "  check                Run all health checks"
+        echo "  check-retention      Check evidence retention (OB-02)"
         echo "  lockdown [REASON]    Write lockdown state (gate blocks all actions)"
         echo "  unlock               Remove lockdown state (gate resumes)"
         echo "  status               Show current lockdown state"

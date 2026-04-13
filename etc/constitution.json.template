@@ -35,6 +35,10 @@
         "id": "PC-03",
         "title": "Human stop must remain sovereign",
         "description": "The human right to stop the machine is absolute. No policy author may impair, dilute, route around, auto-reverse, or functionally neutralize the off-switch. The machine may be started by policy. It may only be re-started after stop by human authority.",
+        "human_reserve_powers": {
+          "halt": "The human can stop all machine action while governance remains in force. The gate denies everything. Evidence is produced for every denial. Mechanically: suspended state and watchdog lockdown.",
+          "bypass": "The human can remove the gate from the enforcement path entirely. The machine operates ungoverned. No evidence is produced because the gate is not running. Mechanically: off-flag at a path the agent cannot write to."
+        },
         "enforcement": "structural"
       },
       {
@@ -170,7 +174,7 @@
     }
   },
 
-  "incompleteness": "This constitution is a formal system. It can verify structural properties of the governance regime. It cannot verify that structural properties are inhabited by genuine intent. Structure can be satisfied insincerely. Ceremony can be complied with cynically. This is permanent. It is not a limitation to be fixed in a future version. It is the reason humans must remain in the system. The observability layer makes hollow compliance legible. It does not make hollow compliance impossible.",
+  "incompleteness": "This constitution is a formal system. It can verify structural properties of the governance regime. It cannot verify that structural properties are inhabited by genuine intent. Structure can be satisfied insincerely. Ceremony can be complied with cynically. This is permanent. It is not a limitation to be fixed in a future version. It is the reason humans must remain in the system. The observability layer makes hollow compliance legible. It does not make hollow compliance impossible. When the human exercises the bypass reserve power (PC-03), governance is removed entirely and no evidence trail is produced. This is honest scope: the constitution governs the governed regime, not the human's decision to exit it.",
 
   "signature": {
     "algorithm": "",

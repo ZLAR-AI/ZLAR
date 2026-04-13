@@ -27,12 +27,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+_INSTALL_DIR="$(dirname "${SCRIPT_DIR}")"
+PROJECT_DIR="${ZLAR_PROJECT_DIR:-${_INSTALL_DIR}}"
 
-# Source cryptographic abstraction layer
-export _CRYPTO_PROJECT_DIR="${PROJECT_DIR}"
+# Source cryptographic abstraction layer (always from install dir, not overridden PROJECT_DIR)
+export _CRYPTO_PROJECT_DIR="${_INSTALL_DIR}"
 # shellcheck source=../lib/crypto.sh
-source "${PROJECT_DIR}/lib/crypto.sh"
+source "${_INSTALL_DIR}/lib/crypto.sh"
 
 ZLAR_ROOT="${PROJECT_DIR}/etc"
 KEYS_DIR="${ZLAR_ROOT}/keys"
@@ -464,6 +465,24 @@ cmd_inspect() {
     jq -r '.amendable_constraints.manifest_deny_required_classes[]' "${input}" 2>/dev/null | while read -r cls; do
         echo -e "  ${RED}deny${NC}  ${cls}"
     done
+
+    # Surface pending amendments (Tomas's requirement)
+    if [ -d "${AMENDMENTS_DIR}" ]; then
+        local pending_count=0
+        for _af in "${AMENDMENTS_DIR}"/*.proposal.json; do
+            [ -f "${_af}" ] || continue
+            local _as
+            _as=$(jq -r '.state' "${_af}" 2>/dev/null)
+            if [ "${_as}" = "proposed" ] || [ "${_as}" = "ratified" ]; then
+                pending_count=$((pending_count + 1))
+            fi
+        done
+        if [ "${pending_count}" -gt 0 ]; then
+            echo ""
+            echo -e "${YELLOW}${BOLD}⚠ ${pending_count} pending amendment(s)${NC}"
+            echo -e "  Run: zlar-constitution amendment-status"
+        fi
+    fi
 }
 
 # ─── Validate ────────────────────────────────────────────────────────────────
@@ -596,24 +615,1023 @@ cmd_validate() {
     fi
 }
 
+# ─── Telegram Notification (OB-03) ──────────────────────────────────────────
+# Best-effort push to human channel. Failure is logged, never blocks ceremony.
+
+_notify_telegram() {
+    local event="$1" detail="$2"
+
+    # Load Telegram credentials
+    local token="" chat_id=""
+    local env_file="${PROJECT_DIR}/.env"
+    if [ -f "${env_file}" ]; then
+        while IFS='=' read -r key value; do
+            [[ "${key}" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${key}" ]] && continue
+            value="${value%\"}"; value="${value#\"}"
+            value="${value%\'}"; value="${value#\'}"
+            case "${key}" in
+                TELEGRAM_BOT_TOKEN|ZLAR_TELEGRAM_TOKEN) token="${value}" ;;
+            esac
+        done < "${env_file}"
+    fi
+    token="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-${token}}}"
+
+    # Chat ID from gate config
+    if [ -f "${PROJECT_DIR}/etc/gate.json" ]; then
+        chat_id=$(jq -r '.telegram.chat_id // ""' "${PROJECT_DIR}/etc/gate.json" 2>/dev/null)
+    fi
+    chat_id="${ZLAR_TELEGRAM_CHAT_ID:-${chat_id:-}}"
+
+    if [ -z "${token}" ] || [ -z "${chat_id}" ]; then
+        warn "Telegram not configured — OB-03 notification not delivered"
+        return 1
+    fi
+
+    local msg="📜 *ZLAR Constitution*
+
+*Event:* ${event}
+${detail}"
+
+    # Escape MarkdownV2
+    msg=$(echo "${msg}" | sed 's/[]_[()~>#+=|{}.!-]/\\&/g' | sed 's/\\`/`/g' | sed 's/\\\*/*/g')
+
+    local body
+    body=$(jq -n -c --arg chat "${chat_id}" --arg text "${msg}" \
+        '{chat_id:$chat,text:$text,parse_mode:"MarkdownV2"}')
+
+    curl -s --connect-timeout 5 --max-time 10 \
+        -X POST -H "Content-Type: application/json" \
+        -d "${body}" \
+        --config - 2>/dev/null <<EOF
+url = "https://api.telegram.org/bot${token}/sendMessage"
+EOF
+    local rc=$?
+    if [ ${rc} -ne 0 ]; then
+        warn "Telegram notification failed (OB-03)"
+        return 1
+    fi
+    return 0
+}
+
+# ─── Amendment ID Generation ────────────────────────────────────────────────
+
+_amendment_id() {
+    local hex_ts
+    hex_ts=$(printf '%x' "$(date +%s)")
+    local rand
+    rand=$(openssl rand -hex 8 2>/dev/null || head -c 16 /dev/urandom | xxd -p)
+    echo "amend-${hex_ts}-${rand}"
+}
+
+# ─── DP-03: Parameter Consistency Check ─────────────────────────────────────
+# Validates that a parameter set preserves all Layer 1 and Layer 2 obligations.
+# All constraints are linear inequalities on individual parameters (convex
+# admissible region), so single-point checking is sufficient.
+
+_dp03_check() {
+    local constitution_file="$1"
+    local violations=0
+
+    # PC-02: burden proxy floors must be >= 1 (prevent zero-factor collapse)
+    local cw_floor cl_floor
+    cw_floor=$(jq -r '.amendable_constraints.burden_proxy.consequence_weight_floor // 1' "${constitution_file}" 2>/dev/null)
+    cl_floor=$(jq -r '.amendable_constraints.burden_proxy.context_load_weight_floor // 1' "${constitution_file}" 2>/dev/null)
+    if [ "${cw_floor}" -lt 1 ] 2>/dev/null || [ "${cl_floor}" -lt 1 ] 2>/dev/null; then
+        echo "DP-03: Burden proxy floors < 1 violates PC-02 (zero-factor collapse)"
+        violations=$((violations + 1))
+    fi
+
+    # PC-02: deliberation floors must be > 0
+    local df_crit df_warn df_info
+    df_crit=$(jq -r '.amendable_constraints.human_judgment.deliberation_floor_critical_seconds // 30' "${constitution_file}" 2>/dev/null)
+    df_warn=$(jq -r '.amendable_constraints.human_judgment.deliberation_floor_warn_seconds // 10' "${constitution_file}" 2>/dev/null)
+    df_info=$(jq -r '.amendable_constraints.human_judgment.deliberation_floor_info_seconds // 3' "${constitution_file}" 2>/dev/null)
+    if [ "${df_crit}" -le 0 ] 2>/dev/null || [ "${df_warn}" -le 0 ] 2>/dev/null || [ "${df_info}" -le 0 ] 2>/dev/null; then
+        echo "DP-03: Deliberation floor <= 0 violates PC-02 (human review cannot be instantaneous)"
+        violations=$((violations + 1))
+    fi
+
+    # PC-02: deliberation ordering (critical >= warn >= info)
+    if [ "${df_crit}" -lt "${df_warn}" ] 2>/dev/null; then
+        echo "DP-03: critical deliberation floor < warn floor violates PC-02 ordering"
+        violations=$((violations + 1))
+    fi
+    if [ "${df_warn}" -lt "${df_info}" ] 2>/dev/null; then
+        echo "DP-03: warn deliberation floor < info floor violates PC-02 ordering"
+        violations=$((violations + 1))
+    fi
+
+    # PC-02: daily decision cap must be >= min and <= max
+    local min_cap max_cap
+    min_cap=$(jq -r '.amendable_constraints.human_judgment.min_daily_decision_cap // 20' "${constitution_file}" 2>/dev/null)
+    max_cap=$(jq -r '.amendable_constraints.human_judgment.max_daily_decision_cap // 200' "${constitution_file}" 2>/dev/null)
+    if [ "${min_cap}" -le 0 ] 2>/dev/null; then
+        echo "DP-03: min_daily_decision_cap <= 0 violates PC-02"
+        violations=$((violations + 1))
+    fi
+    if [ "${max_cap}" -lt "${min_cap}" ] 2>/dev/null; then
+        echo "DP-03: max_daily_decision_cap < min violates PC-02"
+        violations=$((violations + 1))
+    fi
+
+    # PC-04: suspended escalation must be deny
+    local esc_suspended
+    esc_suspended=$(jq -r '.amendable_constraints.escalation.suspended // "deny"' "${constitution_file}" 2>/dev/null)
+    if [ "${esc_suspended}" != "deny" ]; then
+        echo "DP-03: suspended escalation is '${esc_suspended}', must be 'deny' (PC-04)"
+        violations=$((violations + 1))
+    fi
+
+    # DP-02: cooling-off must be >= minimum floor (24h)
+    local cooling_off min_cooling
+    cooling_off=$(jq -r '.amendable_constraints.amendment_ceremony.cooling_off_period_hours // 72' "${constitution_file}" 2>/dev/null)
+    min_cooling=$(jq -r '.amendable_constraints.amendment_ceremony.minimum_cooling_off_hours // 24' "${constitution_file}" 2>/dev/null)
+    if [ "${cooling_off}" -lt "${min_cooling}" ] 2>/dev/null; then
+        echo "DP-03: cooling_off_period (${cooling_off}h) < minimum (${min_cooling}h) violates DP-02"
+        violations=$((violations + 1))
+    fi
+    if [ "${min_cooling}" -le 0 ] 2>/dev/null; then
+        echo "DP-03: minimum_cooling_off_hours <= 0 violates DP-02 (nonzero delay required)"
+        violations=$((violations + 1))
+    fi
+
+    # OB-02: evidence retention must be > 0
+    local retention
+    retention=$(jq -r '.amendable_constraints.evidence.minimum_retention_hours // 720' "${constitution_file}" 2>/dev/null)
+    if [ "${retention}" -le 0 ] 2>/dev/null; then
+        echo "DP-03: evidence retention <= 0 violates OB-02"
+        violations=$((violations + 1))
+    fi
+
+    # PC-05: all six governance-critical powers must be in required deny list
+    local deny_count
+    deny_count=$(jq '.amendable_constraints.manifest_deny_required_classes | length' "${constitution_file}" 2>/dev/null)
+    if [ "${deny_count:-0}" -lt 6 ]; then
+        echo "DP-03: manifest_deny_required_classes has ${deny_count} entries, need 6 (PC-05)"
+        violations=$((violations + 1))
+    fi
+
+    return ${violations}
+}
+
+# ─── Propose Amendment ──────────────────────────────────────────────────────
+
+cmd_propose_amendment() {
+    local key="" path="" value="" reason=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --key)    shift; key="$1"; shift ;;
+            --path)   shift; path="$1"; shift ;;
+            --value)  shift; value="$1"; shift ;;
+            --reason) shift; reason="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${key}" ]; then
+        fail "Missing --key <constitutional-private-key>"
+    fi
+    if [ -z "${path}" ]; then
+        fail "Missing --path <amendable_constraints.X.Y>"
+    fi
+    if [ -z "${value}" ]; then
+        fail "Missing --value <new-value>"
+    fi
+    if [ -z "${reason}" ]; then
+        fail "Missing --reason <justification>"
+    fi
+    if [ ! -f "${key}" ]; then
+        fail "Constitutional key not found: ${key}"
+    fi
+
+    echo -e "${BOLD}Proposing Constitutional Amendment${NC}"
+    echo ""
+
+    # Verify constitution exists and is deployed
+    if [ ! -f "${CONSTITUTION_FILE}" ]; then
+        fail "No deployed constitution. Deploy first: zlar-constitution deploy --input <file>"
+    fi
+
+    # Reject amendments targeting permanent core (PC-07: regime change, not amendment)
+    case "${path}" in
+        permanent_core*|derived_properties*|preamble*|scope*|incompleteness*|definitions*)
+            fail "Cannot amend '${path}' — this targets the permanent core or structural elements. Changing these is regime replacement, not amendment. It must be declared as such (PC-07)."
+            ;;
+        amendable_constraints.*)
+            ;; # Valid target
+        *)
+            fail "Amendment path must target 'amendable_constraints.*'. Got: '${path}'"
+            ;;
+    esac
+
+    # Extract current value
+    local jq_path
+    jq_path=$(echo "${path}" | sed 's/\././g')  # Already dotted
+    local current_value
+    current_value=$(jq -r ".${jq_path} // null" "${CONSTITUTION_FILE}" 2>/dev/null)
+    if [ "${current_value}" = "null" ]; then
+        warn "Path '${path}' does not exist in current constitution — this will create it"
+    fi
+
+    # Read cooling-off period from constitution
+    local cooling_off_hours
+    cooling_off_hours=$(jq -r '.amendable_constraints.amendment_ceremony.cooling_off_period_hours // 72' "${CONSTITUTION_FILE}" 2>/dev/null)
+
+    # Generate proposal
+    local proposal_id
+    proposal_id=$(_amendment_id)
+    local now_iso
+    now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local now_epoch
+    now_epoch=$(date +%s)
+    local deadline_epoch=$((now_epoch + cooling_off_hours * 3600))
+    local deadline_iso
+    deadline_iso=$(date -u -r "${deadline_epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@${deadline_epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+
+    # Get proposer key fingerprint
+    local proposer_fp
+    local pubkey_tmp
+    pubkey_tmp=$(mktemp /tmp/zlar-amend-pub.XXXXXX)
+    if zlar_crypto_extract_pubkey "${key}" "${pubkey_tmp}" 2>/dev/null; then
+        proposer_fp=$(zlar_crypto_pubkey_fingerprint "${pubkey_tmp}" 2>/dev/null || echo "unknown")
+    else
+        proposer_fp="unknown"
+    fi
+    rm -f "${pubkey_tmp}"
+
+    # Detect value type for JSON construction
+    local json_value
+    if echo "${value}" | jq empty 2>/dev/null; then
+        json_value="${value}"  # Already valid JSON
+    elif [[ "${value}" =~ ^[0-9]+$ ]]; then
+        json_value="${value}"  # Integer
+    elif [[ "${value}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+        json_value="${value}"  # Float
+    elif [ "${value}" = "true" ] || [ "${value}" = "false" ]; then
+        json_value="${value}"  # Boolean
+    else
+        json_value="\"${value}\""  # String
+    fi
+
+    # Build unsigned proposal
+    local unsigned_proposal
+    unsigned_proposal=$(jq -n -c \
+        --arg pid "${proposal_id}" \
+        --arg proposed_at "${now_iso}" \
+        --arg proposer_fp "${proposer_fp}" \
+        --arg target_path "${path}" \
+        --argjson current_value "$(echo "${current_value}" | jq -R 'try fromjson catch .')" \
+        --argjson proposed_value "${json_value}" \
+        --arg reason "${reason}" \
+        --arg deadline "${deadline_iso}" \
+        --arg state "proposed" \
+        '{
+            proposal_id: $pid,
+            proposed_at: $proposed_at,
+            proposer_key_fingerprint: $proposer_fp,
+            target_path: $target_path,
+            current_value: $current_value,
+            proposed_value: $proposed_value,
+            reason: $reason,
+            cooling_off_deadline: $deadline,
+            state: $state,
+            ob03_notifications: [],
+            signature: {algorithm: "", value: "", key_id: ""}
+        }')
+
+    # Sign proposal (state is in the signed payload — Number Theorist requirement)
+    local canon_file hash_file sig_file
+    canon_file=$(mktemp /tmp/zlar-amend-canon.XXXXXX)
+    hash_file=$(mktemp /tmp/zlar-amend-hash.XXXXXX)
+    sig_file=$(mktemp /tmp/zlar-amend-sig.XXXXXX)
+
+    echo "${unsigned_proposal}" | jq -S -c '.' > "${canon_file}"
+    zlar_crypto_hash "${canon_file}" "${hash_file}"
+
+    if ! zlar_crypto_sign "${key}" "${hash_file}" "${sig_file}"; then
+        rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+        fail "Failed to sign proposal"
+    fi
+
+    local sig_b64
+    sig_b64=$(base64 < "${sig_file}" | tr -d '\n')
+    local algo
+    algo=$(zlar_crypto_algorithm)
+
+    rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+
+    # Assemble signed proposal
+    local signed_proposal
+    signed_proposal=$(echo "${unsigned_proposal}" | jq -c \
+        --arg algo "${algo}" \
+        --arg sig "${sig_b64}" \
+        --arg key_id "${proposer_fp}" \
+        '.signature.algorithm = $algo | .signature.value = $sig | .signature.key_id = $key_id')
+
+    # Write proposal
+    mkdir -p "${AMENDMENTS_DIR}" 2>/dev/null || true
+    echo "${signed_proposal}" | jq '.' > "${AMENDMENTS_DIR}/${proposal_id}.proposal.json"
+
+    ok "Amendment proposed: ${proposal_id}"
+    info "Target: ${path}"
+    info "Current value: ${current_value}"
+    info "Proposed value: ${value}"
+    info "Reason: ${reason}"
+    info "Cooling-off: ${cooling_off_hours} hours"
+    info "Deadline: ${deadline_iso}"
+    echo ""
+
+    # OB-03: notify human channel
+    local ob03_delivered="false"
+    if _notify_telegram "Amendment Proposed" "*Proposal:* \`${proposal_id}\`
+*Path:* \`${path}\`
+*Current:* ${current_value}
+*Proposed:* ${value}
+*Reason:* ${reason}
+*Cooling\\-off:* ${cooling_off_hours}h
+*Deadline:* ${deadline_iso}" 2>/dev/null; then
+        ob03_delivered="true"
+        ok "OB-03: Telegram notification delivered"
+    else
+        warn "OB-03: Telegram notification not delivered"
+    fi
+
+    # Record OB-03 delivery status
+    jq --arg event "proposed" --arg ts "${now_iso}" --argjson delivered "${ob03_delivered}" \
+        '.ob03_notifications += [{event: $event, delivered: $delivered, ts: $ts}]' \
+        "${AMENDMENTS_DIR}/${proposal_id}.proposal.json" > "${AMENDMENTS_DIR}/${proposal_id}.proposal.json.tmp"
+    mv "${AMENDMENTS_DIR}/${proposal_id}.proposal.json.tmp" "${AMENDMENTS_DIR}/${proposal_id}.proposal.json"
+
+    info "Proposal written to: ${AMENDMENTS_DIR}/${proposal_id}.proposal.json"
+}
+
+# ─── Ratify Amendment ───────────────────────────────────────────────────────
+
+cmd_ratify() {
+    local proposal="" key=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --proposal) shift; proposal="$1"; shift ;;
+            --key)      shift; key="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${proposal}" ]; then
+        fail "Missing --proposal <proposal-id>"
+    fi
+    if [ -z "${key}" ]; then
+        fail "Missing --key <constitutional-private-key> (explicit key required for ceremony acts)"
+    fi
+    if [ ! -f "${key}" ]; then
+        fail "Constitutional key not found: ${key}"
+    fi
+
+    local proposal_file="${AMENDMENTS_DIR}/${proposal}.proposal.json"
+    if [ ! -f "${proposal_file}" ]; then
+        fail "Proposal not found: ${proposal}"
+    fi
+
+    echo -e "${BOLD}Ratifying Amendment${NC}"
+    echo ""
+
+    # Check state
+    local state
+    state=$(jq -r '.state' "${proposal_file}" 2>/dev/null)
+    if [ "${state}" != "proposed" ]; then
+        fail "Proposal is in state '${state}', must be 'proposed' to ratify"
+    fi
+
+    # Verify proposal signature
+    local prop_sig prop_algo
+    prop_sig=$(jq -r '.signature.value // ""' "${proposal_file}" 2>/dev/null)
+    prop_algo=$(jq -r '.signature.algorithm // "ed25519"' "${proposal_file}" 2>/dev/null)
+    if [ -z "${prop_sig}" ]; then
+        fail "Proposal has no signature — cannot verify authenticity"
+    fi
+
+    if [ -f "${CONST_PUBKEY}" ]; then
+        local _v_canon _v_hash _v_sig
+        _v_canon=$(mktemp /tmp/zlar-ratify-canon.XXXXXX)
+        _v_hash=$(mktemp /tmp/zlar-ratify-hash.XXXXXX)
+        _v_sig=$(mktemp /tmp/zlar-ratify-sig.XXXXXX)
+        # Canonical form: zero signature and ob03_notifications (ob03 is appended
+        # after signing and changes between propose/ratify). The signature covers
+        # the proposal content, not the delivery tracking metadata.
+        jq -S -c '.signature = {algorithm:"",value:"",key_id:""} | .ob03_notifications = []' "${proposal_file}" > "${_v_canon}"
+        zlar_crypto_hash "${_v_canon}" "${_v_hash}"
+        echo "${prop_sig}" | base64 -d > "${_v_sig}" 2>/dev/null
+        if ! zlar_crypto_verify "${CONST_PUBKEY}" "${_v_hash}" "${_v_sig}" "${prop_algo}"; then
+            rm -f "${_v_canon}" "${_v_hash}" "${_v_sig}"
+            fail "Proposal signature is INVALID — cannot ratify"
+        fi
+        rm -f "${_v_canon}" "${_v_hash}" "${_v_sig}"
+        ok "Proposal signature verified"
+    fi
+
+    # Check cooling-off period using SIGNED proposal timestamp (adversarial reviewer's requirement)
+    local proposed_at deadline
+    proposed_at=$(jq -r '.proposed_at' "${proposal_file}" 2>/dev/null)
+    deadline=$(jq -r '.cooling_off_deadline' "${proposal_file}" 2>/dev/null)
+    local now_iso
+    now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    if [[ "${now_iso}" < "${deadline}" ]]; then
+        local remaining
+        local now_epoch deadline_epoch
+        now_epoch=$(date +%s)
+        # Parse deadline to epoch
+        deadline_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${deadline}" +%s 2>/dev/null || date -d "${deadline}" +%s 2>/dev/null)
+        remaining=$(( (deadline_epoch - now_epoch) / 3600 ))
+        fail "Cooling-off period has NOT elapsed. ${remaining} hours remaining (deadline: ${deadline}). DP-02 requires nonzero constitutional delay."
+    fi
+
+    ok "Cooling-off period elapsed (proposed: ${proposed_at}, deadline: ${deadline})"
+
+    # Second signing act — ratification signature includes state transition
+    local ratify_payload
+    ratify_payload=$(jq -c --arg state "ratified" --arg ts "${now_iso}" \
+        '.state = $state | .ratified_at = $ts' "${proposal_file}")
+
+    local r_canon r_hash r_sig
+    r_canon=$(mktemp /tmp/zlar-ratify-sign-canon.XXXXXX)
+    r_hash=$(mktemp /tmp/zlar-ratify-sign-hash.XXXXXX)
+    r_sig=$(mktemp /tmp/zlar-ratify-sign-sig.XXXXXX)
+
+    echo "${ratify_payload}" | jq -S -c '.signature = {algorithm:"",value:"",key_id:""}' > "${r_canon}"
+    zlar_crypto_hash "${r_canon}" "${r_hash}"
+
+    if ! zlar_crypto_sign "${key}" "${r_hash}" "${r_sig}"; then
+        rm -f "${r_canon}" "${r_hash}" "${r_sig}"
+        fail "Failed to sign ratification"
+    fi
+
+    local r_sig_b64
+    r_sig_b64=$(base64 < "${r_sig}" | tr -d '\n')
+    local r_algo
+    r_algo=$(zlar_crypto_algorithm)
+
+    rm -f "${r_canon}" "${r_hash}" "${r_sig}"
+
+    # Get ratifier fingerprint
+    local ratifier_fp
+    local r_pub_tmp
+    r_pub_tmp=$(mktemp /tmp/zlar-ratify-pub.XXXXXX)
+    if zlar_crypto_extract_pubkey "${key}" "${r_pub_tmp}" 2>/dev/null; then
+        ratifier_fp=$(zlar_crypto_pubkey_fingerprint "${r_pub_tmp}" 2>/dev/null || echo "unknown")
+    else
+        ratifier_fp="unknown"
+    fi
+    rm -f "${r_pub_tmp}"
+
+    # Write ratified proposal
+    local ratified
+    ratified=$(echo "${ratify_payload}" | jq -c \
+        --arg algo "${r_algo}" \
+        --arg sig "${r_sig_b64}" \
+        --arg key_id "${ratifier_fp}" \
+        '.signature.algorithm = $algo | .signature.value = $sig | .signature.key_id = $key_id')
+
+    echo "${ratified}" | jq '.' > "${proposal_file}"
+
+    ok "Amendment ratified: ${proposal}"
+    local target_path proposed_value
+    target_path=$(jq -r '.target_path' "${proposal_file}" 2>/dev/null)
+    proposed_value=$(jq -r '.proposed_value' "${proposal_file}" 2>/dev/null)
+    info "Target: ${target_path}"
+    info "Proposed value: ${proposed_value}"
+    echo ""
+
+    # OB-03
+    local ob03_delivered="false"
+    if _notify_telegram "Amendment Ratified" "*Proposal:* \`${proposal}\`
+*Path:* \`${target_path}\`
+*Value:* ${proposed_value}
+*Ratified at:* ${now_iso}" 2>/dev/null; then
+        ob03_delivered="true"
+        ok "OB-03: Telegram notification delivered"
+    else
+        warn "OB-03: Telegram notification not delivered"
+    fi
+    jq --arg event "ratified" --arg ts "${now_iso}" --argjson delivered "${ob03_delivered}" \
+        '.ob03_notifications += [{event: $event, delivered: $delivered, ts: $ts}]' \
+        "${proposal_file}" > "${proposal_file}.tmp"
+    mv "${proposal_file}.tmp" "${proposal_file}"
+
+    info "Ready to activate: zlar-constitution activate --proposal ${proposal} --key <key>"
+}
+
+# ─── Activate Amendment ─────────────────────────────────────────────────────
+
+cmd_activate() {
+    local proposal="" key=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --proposal) shift; proposal="$1"; shift ;;
+            --key)      shift; key="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${proposal}" ]; then
+        fail "Missing --proposal <proposal-id>"
+    fi
+    if [ -z "${key}" ]; then
+        fail "Missing --key <constitutional-private-key> (explicit key required for ceremony acts)"
+    fi
+    if [ ! -f "${key}" ]; then
+        fail "Constitutional key not found: ${key}"
+    fi
+
+    local proposal_file="${AMENDMENTS_DIR}/${proposal}.proposal.json"
+    if [ ! -f "${proposal_file}" ]; then
+        fail "Proposal not found: ${proposal}"
+    fi
+
+    echo -e "${BOLD}Activating Amendment${NC}"
+    echo ""
+
+    # Check state
+    local state
+    state=$(jq -r '.state' "${proposal_file}" 2>/dev/null)
+    if [ "${state}" != "ratified" ]; then
+        fail "Proposal is in state '${state}', must be 'ratified' to activate"
+    fi
+
+    if [ ! -f "${CONSTITUTION_FILE}" ]; then
+        fail "No deployed constitution"
+    fi
+
+    # Apply proposed change to a copy and run DP-03
+    local target_path proposed_value
+    target_path=$(jq -r '.target_path' "${proposal_file}" 2>/dev/null)
+    proposed_value=$(jq -c '.proposed_value' "${proposal_file}" 2>/dev/null)
+
+    local candidate
+    candidate=$(mktemp /tmp/zlar-activate-candidate.XXXXXX)
+    jq --argjson val "${proposed_value}" ".${target_path} = \$val" "${CONSTITUTION_FILE}" > "${candidate}" 2>/dev/null
+
+    info "Running DP-03 consistency check..."
+    local dp03_output
+    dp03_output=$(_dp03_check "${candidate}" 2>&1)
+    local dp03_rc=$?
+
+    if [ ${dp03_rc} -ne 0 ]; then
+        echo -e "${RED}  DP-03 FAILED:${NC}"
+        echo "${dp03_output}" | while read -r line; do
+            echo -e "    ${RED}✗${NC} ${line}"
+        done
+        rm -f "${candidate}"
+        fail "Amendment activation rejected — DP-03 consistency check failed. The proposed parameter set violates constitutional obligations."
+    fi
+
+    ok "DP-03: Parameter consistency verified"
+
+    # Re-sign the constitution with the amendment applied
+    info "Applying amendment and re-signing constitution..."
+
+    # Get algorithm and public key
+    local algo pubkey_b64
+    algo=$(zlar_crypto_algorithm)
+    pubkey_b64=$(zlar_crypto_pubkey_b64 "${key}")
+
+    # Build new constitution with empty signature for canonical form
+    local new_const
+    new_const=$(jq --arg pubkey "${pubkey_b64}" --arg algo "${algo}" \
+        '.signature.algorithm = $algo | .signature.public_key = $pubkey | .signature.value = ""' \
+        "${candidate}")
+
+    local c_canon c_hash c_sig
+    c_canon=$(mktemp /tmp/zlar-activate-canon.XXXXXX)
+    c_hash=$(mktemp /tmp/zlar-activate-hash.XXXXXX)
+    c_sig=$(mktemp /tmp/zlar-activate-sig.XXXXXX)
+
+    echo "${new_const}" > "${c_canon}"
+    zlar_crypto_hash "${c_canon}" "${c_hash}"
+
+    if ! zlar_crypto_sign "${key}" "${c_hash}" "${c_sig}"; then
+        rm -f "${candidate}" "${c_canon}" "${c_hash}" "${c_sig}"
+        fail "Failed to sign amended constitution"
+    fi
+
+    local c_sig_b64
+    c_sig_b64=$(base64 < "${c_sig}" | tr -d '\n')
+
+    # Final signed constitution
+    local final_const
+    final_const=$(echo "${new_const}" | jq --arg sig "${c_sig_b64}" '.signature.value = $sig')
+
+    rm -f "${candidate}" "${c_canon}" "${c_hash}" "${c_sig}"
+
+    # Archive current constitution
+    local current_version
+    current_version=$(jq -r '.constitution_version // "unknown"' "${CONSTITUTION_FILE}" 2>/dev/null)
+    local archive_dir="${ZLAR_ROOT}/constitutions/archive"
+    mkdir -p "${archive_dir}" 2>/dev/null || true
+    local archive_name="constitution-v${current_version}-pre-${proposal}-$(date +%Y%m%d%H%M%S).json"
+    cp "${CONSTITUTION_FILE}" "${archive_dir}/${archive_name}"
+    info "Archived pre-amendment constitution: ${archive_name}"
+
+    # Atomic deploy
+    local deploy_tmp="${CONSTITUTION_FILE}.deploying"
+    echo "${final_const}" | jq '.' > "${deploy_tmp}"
+    mv "${deploy_tmp}" "${CONSTITUTION_FILE}"
+
+    # Update presence tracker
+    shasum -a 256 "${CONSTITUTION_FILE}" | awk '{print $1}' > "${LOG_DIR}/.constitution-last-hash" 2>/dev/null || true
+
+    # Invalidate session cache (force gate to re-validate)
+    rm -f "${PROJECT_DIR}/var/log/sessions/"*.constitution-valid 2>/dev/null || true
+
+    # Update proposal state
+    local now_iso
+    now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    jq --arg state "activated" --arg ts "${now_iso}" --arg archive "${archive_name}" \
+        '.state = $state | .activated_at = $ts | .archive = $archive' \
+        "${proposal_file}" > "${proposal_file}.tmp"
+    mv "${proposal_file}.tmp" "${proposal_file}"
+
+    ok "Amendment activated: ${proposal}"
+    info "Constitution updated. Gate will validate on next invocation."
+    echo ""
+
+    # OB-03
+    local ob03_delivered="false"
+    if _notify_telegram "Amendment Activated" "*Proposal:* \`${proposal}\`
+*Path:* \`${target_path}\`
+*New value:* ${proposed_value}
+*Activated at:* ${now_iso}
+*Archive:* ${archive_name}" 2>/dev/null; then
+        ob03_delivered="true"
+        ok "OB-03: Telegram notification delivered"
+    else
+        warn "OB-03: Telegram notification not delivered"
+    fi
+    jq --arg event "activated" --arg ts "${now_iso}" --argjson delivered "${ob03_delivered}" \
+        '.ob03_notifications += [{event: $event, delivered: $delivered, ts: $ts}]' \
+        "${proposal_file}" > "${proposal_file}.tmp"
+    mv "${proposal_file}.tmp" "${proposal_file}"
+}
+
+# ─── Withdraw Amendment ─────────────────────────────────────────────────────
+
+cmd_withdraw() {
+    local proposal="" key=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --proposal) shift; proposal="$1"; shift ;;
+            --key)      shift; key="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${proposal}" ]; then
+        fail "Missing --proposal <proposal-id>"
+    fi
+    if [ -z "${key}" ]; then
+        fail "Missing --key <constitutional-private-key>"
+    fi
+    if [ ! -f "${key}" ]; then
+        fail "Constitutional key not found: ${key}"
+    fi
+
+    local proposal_file="${AMENDMENTS_DIR}/${proposal}.proposal.json"
+    if [ ! -f "${proposal_file}" ]; then
+        fail "Proposal not found: ${proposal}"
+    fi
+
+    local state
+    state=$(jq -r '.state' "${proposal_file}" 2>/dev/null)
+    if [ "${state}" != "proposed" ] && [ "${state}" != "ratified" ]; then
+        fail "Proposal is in state '${state}' — can only withdraw from 'proposed' or 'ratified'"
+    fi
+
+    echo -e "${BOLD}Withdrawing Amendment${NC}"
+    echo ""
+
+    local now_iso
+    now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Sign the withdrawal (state transition in signed payload)
+    local withdraw_payload
+    withdraw_payload=$(jq -c --arg state "withdrawn" --arg ts "${now_iso}" \
+        '.state = $state | .withdrawn_at = $ts' "${proposal_file}")
+
+    local w_canon w_hash w_sig
+    w_canon=$(mktemp /tmp/zlar-withdraw-canon.XXXXXX)
+    w_hash=$(mktemp /tmp/zlar-withdraw-hash.XXXXXX)
+    w_sig=$(mktemp /tmp/zlar-withdraw-sig.XXXXXX)
+
+    echo "${withdraw_payload}" | jq -S -c '.signature = {algorithm:"",value:"",key_id:""}' > "${w_canon}"
+    zlar_crypto_hash "${w_canon}" "${w_hash}"
+
+    if ! zlar_crypto_sign "${key}" "${w_hash}" "${w_sig}"; then
+        rm -f "${w_canon}" "${w_hash}" "${w_sig}"
+        fail "Failed to sign withdrawal"
+    fi
+
+    local w_sig_b64
+    w_sig_b64=$(base64 < "${w_sig}" | tr -d '\n')
+    local w_algo
+    w_algo=$(zlar_crypto_algorithm)
+
+    rm -f "${w_canon}" "${w_hash}" "${w_sig}"
+
+    local w_fp
+    local w_pub_tmp
+    w_pub_tmp=$(mktemp /tmp/zlar-withdraw-pub.XXXXXX)
+    if zlar_crypto_extract_pubkey "${key}" "${w_pub_tmp}" 2>/dev/null; then
+        w_fp=$(zlar_crypto_pubkey_fingerprint "${w_pub_tmp}" 2>/dev/null || echo "unknown")
+    else
+        w_fp="unknown"
+    fi
+    rm -f "${w_pub_tmp}"
+
+    local withdrawn
+    withdrawn=$(echo "${withdraw_payload}" | jq -c \
+        --arg algo "${w_algo}" \
+        --arg sig "${w_sig_b64}" \
+        --arg key_id "${w_fp}" \
+        '.signature.algorithm = $algo | .signature.value = $sig | .signature.key_id = $key_id')
+
+    echo "${withdrawn}" | jq '.' > "${proposal_file}"
+
+    ok "Amendment withdrawn: ${proposal}"
+    local target_path
+    target_path=$(jq -r '.target_path' "${proposal_file}" 2>/dev/null)
+    info "Path: ${target_path}"
+    info "Previous state: ${state}"
+    echo ""
+
+    # OB-03
+    local ob03_delivered="false"
+    if _notify_telegram "Amendment Withdrawn" "*Proposal:* \`${proposal}\`
+*Path:* \`${target_path}\`
+*Previous state:* ${state}
+*Withdrawn at:* ${now_iso}" 2>/dev/null; then
+        ob03_delivered="true"
+        ok "OB-03: Telegram notification delivered"
+    else
+        warn "OB-03: Telegram notification not delivered"
+    fi
+    jq --arg event "withdrawn" --arg ts "${now_iso}" --argjson delivered "${ob03_delivered}" \
+        '.ob03_notifications += [{event: $event, delivered: $delivered, ts: $ts}]' \
+        "${proposal_file}" > "${proposal_file}.tmp"
+    mv "${proposal_file}.tmp" "${proposal_file}"
+}
+
+# ─── Rollback Constitution ──────────────────────────────────────────────────
+# Emergency restore of the most recent archived constitution.
+# The decision to return is evidence (Intuitionist requirement).
+
+cmd_rollback() {
+    local key="" target=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --last)   target="last"; shift ;;
+            --key)    shift; key="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -z "${key}" ]; then
+        fail "Missing --key <constitutional-private-key> (explicit key required for rollback)"
+    fi
+    if [ ! -f "${key}" ]; then
+        fail "Constitutional key not found: ${key}"
+    fi
+    if [ "${target}" != "last" ]; then
+        fail "Must specify --last (rollback to most recent archived constitution)"
+    fi
+
+    echo -e "${BOLD}Constitutional Rollback${NC}"
+    echo ""
+
+    local archive_dir="${ZLAR_ROOT}/constitutions/archive"
+    if [ ! -d "${archive_dir}" ]; then
+        fail "No constitutional archive directory"
+    fi
+
+    # Find most recent archive
+    local latest_archive
+    latest_archive=$(ls -t "${archive_dir}"/constitution-*.json 2>/dev/null | head -1)
+    if [ -z "${latest_archive}" ]; then
+        fail "No archived constitutions found"
+    fi
+
+    info "Rolling back to: $(basename "${latest_archive}")"
+
+    # Verify archive signature
+    if [ -f "${CONST_PUBKEY}" ]; then
+        local _a_sig
+        _a_sig=$(jq -r '.signature.value // ""' "${latest_archive}" 2>/dev/null)
+        if [ -n "${_a_sig}" ] && [ "${_a_sig}" != "" ]; then
+            local _a_canon _a_hash _a_sig_bin
+            _a_canon=$(mktemp /tmp/zlar-rollback-canon.XXXXXX)
+            _a_hash=$(mktemp /tmp/zlar-rollback-hash.XXXXXX)
+            _a_sig_bin=$(mktemp /tmp/zlar-rollback-sig.XXXXXX)
+            jq '.signature.value = ""' "${latest_archive}" > "${_a_canon}"
+            zlar_crypto_hash "${_a_canon}" "${_a_hash}"
+            echo "${_a_sig}" | base64 -d > "${_a_sig_bin}" 2>/dev/null
+            if ! zlar_crypto_verify "${CONST_PUBKEY}" "${_a_hash}" "${_a_sig_bin}" "$(jq -r '.signature.algorithm // "ed25519"' "${latest_archive}" 2>/dev/null)"; then
+                rm -f "${_a_canon}" "${_a_hash}" "${_a_sig_bin}"
+                fail "Archived constitution signature INVALID — cannot rollback to tampered archive"
+            fi
+            rm -f "${_a_canon}" "${_a_hash}" "${_a_sig_bin}"
+            ok "Archive signature verified"
+        else
+            warn "Archive is unsigned — proceeding with caution"
+        fi
+    fi
+
+    # Run DP-03 on the archive (it was valid when archived, but verify)
+    local dp03_output
+    dp03_output=$(_dp03_check "${latest_archive}" 2>&1)
+    if [ $? -ne 0 ]; then
+        echo "${dp03_output}"
+        fail "Archived constitution fails DP-03 — cannot rollback"
+    fi
+    ok "DP-03: Archived constitution passes consistency check"
+
+    # Archive current (pre-rollback) constitution
+    if [ -f "${CONSTITUTION_FILE}" ]; then
+        local current_version
+        current_version=$(jq -r '.constitution_version // "unknown"' "${CONSTITUTION_FILE}" 2>/dev/null)
+        local pre_rollback="constitution-v${current_version}-pre-rollback-$(date +%Y%m%d%H%M%S).json"
+        cp "${CONSTITUTION_FILE}" "${archive_dir}/${pre_rollback}"
+        info "Archived pre-rollback constitution: ${pre_rollback}"
+    fi
+
+    # Deploy archived version
+    local deploy_tmp="${CONSTITUTION_FILE}.deploying"
+    cp "${latest_archive}" "${deploy_tmp}"
+    mv "${deploy_tmp}" "${CONSTITUTION_FILE}"
+
+    # Update presence tracker
+    shasum -a 256 "${CONSTITUTION_FILE}" | awk '{print $1}' > "${LOG_DIR}/.constitution-last-hash" 2>/dev/null || true
+
+    # Invalidate session cache
+    rm -f "${PROJECT_DIR}/var/log/sessions/"*.constitution-valid 2>/dev/null || true
+
+    # Create rollback receipt (Intuitionist requirement: the decision to return is evidence)
+    local now_iso
+    now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local rollback_receipt
+    rollback_receipt=$(jq -n -c \
+        --arg ts "${now_iso}" \
+        --arg restored_from "$(basename "${latest_archive}")" \
+        --arg restored_version "$(jq -r '.constitution_version // "?"' "${latest_archive}" 2>/dev/null)" \
+        --arg reason "emergency constitutional rollback" \
+        '{event: "constitutional_rollback", timestamp: $ts, restored_from: $restored_from, restored_version: $restored_version, reason: $reason}')
+
+    # Write to audit trail
+    echo "${rollback_receipt}" >> "${LOG_DIR}/audit.jsonl" 2>/dev/null || true
+
+    ok "Constitution rolled back to: $(basename "${latest_archive}")"
+    local restored_version
+    restored_version=$(jq -r '.constitution_version // "?"' "${CONSTITUTION_FILE}" 2>/dev/null)
+    info "Active constitution: v${restored_version}"
+    echo ""
+
+    # OB-03
+    _notify_telegram "Constitutional Rollback" "*Restored from:* $(basename "${latest_archive}")
+*Version:* v${restored_version}
+*Rolled back at:* ${now_iso}" 2>/dev/null || true
+}
+
+# ─── Amendment Status ───────────────────────────────────────────────────────
+
+cmd_amendment_status() {
+    local proposal=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --proposal) shift; proposal="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -n "${proposal}" ]; then
+        # Show single proposal detail
+        local proposal_file="${AMENDMENTS_DIR}/${proposal}.proposal.json"
+        if [ ! -f "${proposal_file}" ]; then
+            fail "Proposal not found: ${proposal}"
+        fi
+        echo -e "${BOLD}Amendment Detail: ${proposal}${NC}"
+        echo ""
+        jq '.' "${proposal_file}"
+        return
+    fi
+
+    echo -e "${BOLD}Constitutional Amendments${NC}"
+    echo ""
+
+    if [ ! -d "${AMENDMENTS_DIR}" ] || [ -z "$(ls "${AMENDMENTS_DIR}"/*.proposal.json 2>/dev/null)" ]; then
+        info "No amendments on record."
+        return
+    fi
+
+    # Show delta-from-original if constitution exists (Bayesian's requirement)
+    local show_delta="false"
+    if [ -f "${CONSTITUTION_FILE}" ]; then
+        show_delta="true"
+    fi
+
+    local now_epoch
+    now_epoch=$(date +%s)
+
+    for f in "${AMENDMENTS_DIR}"/*.proposal.json; do
+        local pid state target proposed_at deadline
+        pid=$(jq -r '.proposal_id' "${f}" 2>/dev/null)
+        state=$(jq -r '.state' "${f}" 2>/dev/null)
+        target=$(jq -r '.target_path' "${f}" 2>/dev/null)
+        proposed_at=$(jq -r '.proposed_at' "${f}" 2>/dev/null)
+        deadline=$(jq -r '.cooling_off_deadline' "${f}" 2>/dev/null)
+
+        local state_color="${NC}"
+        case "${state}" in
+            proposed)  state_color="${YELLOW}" ;;
+            ratified)  state_color="${BLUE}" ;;
+            activated) state_color="${GREEN}" ;;
+            withdrawn) state_color="${DIM}" ;;
+        esac
+
+        # Calculate age
+        local proposed_epoch age_days
+        proposed_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${proposed_at}" +%s 2>/dev/null || date -d "${proposed_at}" +%s 2>/dev/null || echo "${now_epoch}")
+        age_days=$(( (now_epoch - proposed_epoch) / 86400 ))
+
+        echo -e "  ${state_color}${state}${NC}  ${pid}"
+        echo -e "         Path: ${target}"
+        echo -e "         Proposed: ${proposed_at} (${age_days}d ago)"
+
+        if [ "${state}" = "proposed" ]; then
+            if [[ "$(date -u +%Y-%m-%dT%H:%M:%SZ)" < "${deadline}" ]]; then
+                echo -e "         ${YELLOW}Cooling-off until: ${deadline}${NC}"
+            else
+                echo -e "         ${GREEN}Ready to ratify${NC}"
+            fi
+        fi
+
+        # OB-03 delivery status
+        local ob03_count ob03_failed
+        ob03_count=$(jq '.ob03_notifications | length' "${f}" 2>/dev/null)
+        ob03_failed=$(jq '[.ob03_notifications[] | select(.delivered == false)] | length' "${f}" 2>/dev/null)
+        if [ "${ob03_failed:-0}" -gt 0 ]; then
+            echo -e "         ${RED}OB-03: ${ob03_failed}/${ob03_count} notifications failed${NC}"
+        fi
+
+        echo ""
+    done
+
+    # Delta-from-original view (Bayesian's drift visibility)
+    if [ "${show_delta}" = "true" ]; then
+        local activated_count
+        activated_count=$(ls "${AMENDMENTS_DIR}"/*.proposal.json 2>/dev/null | while read -r f; do
+            jq -r 'select(.state == "activated") | .proposal_id' "${f}" 2>/dev/null
+        done | wc -l | tr -d ' ')
+
+        if [ "${activated_count}" -gt 0 ]; then
+            echo -e "${BOLD}Cumulative Parameter Drift${NC}"
+            echo ""
+            for f in "${AMENDMENTS_DIR}"/*.proposal.json; do
+                local s target cv pv
+                s=$(jq -r '.state' "${f}" 2>/dev/null)
+                [ "${s}" != "activated" ] && continue
+                target=$(jq -r '.target_path' "${f}" 2>/dev/null)
+                cv=$(jq -r '.current_value' "${f}" 2>/dev/null)
+                pv=$(jq -r '.proposed_value' "${f}" 2>/dev/null)
+                echo -e "  ${target}: ${cv} → ${pv}"
+            done
+            echo ""
+        fi
+    fi
+}
+
 # ─── Main Dispatch ───────────────────────────────────────────────────────────
 
 cmd="${1:-help}"
 shift 2>/dev/null || true
 
 case "${cmd}" in
-    keygen)     cmd_keygen "$@" ;;
-    sign)       cmd_sign "$@" ;;
-    verify)     cmd_verify "$@" ;;
-    deploy)     cmd_deploy "$@" ;;
-    inspect)    cmd_inspect "$@" ;;
-    validate)   cmd_validate "$@" ;;
-
-    # Phase 2: Amendment ceremony (placeholder)
-    propose-amendment|ratify|activate|amendment-status)
-        warn "Amendment ceremony commands are not yet implemented."
-        info "Coming in Phase 2 of the Second Authority Law build."
-        ;;
+    keygen)             cmd_keygen "$@" ;;
+    sign)               cmd_sign "$@" ;;
+    verify)             cmd_verify "$@" ;;
+    deploy)             cmd_deploy "$@" ;;
+    inspect)            cmd_inspect "$@" ;;
+    validate)           cmd_validate "$@" ;;
+    propose-amendment)  cmd_propose_amendment "$@" ;;
+    ratify)             cmd_ratify "$@" ;;
+    activate)           cmd_activate "$@" ;;
+    withdraw)           cmd_withdraw "$@" ;;
+    rollback)           cmd_rollback "$@" ;;
+    amendment-status)   cmd_amendment_status "$@" ;;
 
     help|--help|-h)
         echo "ZLAR Constitution CLI — Second Authority Law"
@@ -626,11 +1644,13 @@ case "${cmd}" in
         echo "  inspect [--input F]           Display constitution summary"
         echo "  validate --policy F           Check policy against constitution"
         echo ""
-        echo "Amendment ceremony (Phase 2):"
+        echo "Amendment ceremony:"
         echo "  propose-amendment             Propose a change to amendable constraints"
-        echo "  ratify                        Ratify a pending amendment"
-        echo "  activate                      Activate a ratified amendment"
-        echo "  amendment-status              Show pending amendments"
+        echo "  ratify                        Ratify a proposed amendment (after cooling-off)"
+        echo "  activate                      Activate a ratified amendment (runs DP-03)"
+        echo "  withdraw                      Withdraw a proposed or ratified amendment"
+        echo "  rollback --last               Emergency restore of previous constitution"
+        echo "  amendment-status              Show amendments and parameter drift"
         ;;
 
     *)
