@@ -70,16 +70,9 @@ if [[ -f "${HOOKS_FILE}" ]] && grep -q "PreToolUse" "${HOOKS_FILE}" 2>/dev/null;
     CC_GATE_ACTIVE="true"
 fi
 
-# OC gate status
+# OC gate discontinued (April 14, 2026). OC subtree archived to Archive/openclaw/.
+# OC_GATE_ACTIVE kept as always-false for JSON schema backward compatibility.
 OC_GATE_ACTIVE="false"
-OC_GATE_LOG="/var/log/zlar-oc/gate.log"
-if [[ -f "${OC_GATE_LOG}" ]]; then
-    # Check if heartbeat is recent (last 5 minutes)
-    local_last=$(tail -1 "${OC_GATE_LOG}" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || true)
-    if [[ -n "${local_last}" ]]; then
-        OC_GATE_ACTIVE="true"
-    fi
-fi
 
 # ── JSON output ──
 
@@ -172,11 +165,6 @@ if [[ "${CC_GATE_ACTIVE}" == "true" ]]; then
     printf "  CC gate (Claude Code)    ${GREEN}●${RESET} active\n"
 else
     printf "  CC gate (Claude Code)    ${RED}○${RESET} inactive\n"
-fi
-if [[ "${OC_GATE_ACTIVE}" == "true" ]]; then
-    printf "  OC gate (OpenClaw)       ${GREEN}●${RESET} active\n"
-else
-    printf "  OC gate (OpenClaw)       ${DIM}○ unknown${RESET}\n"
 fi
 
 # Policy

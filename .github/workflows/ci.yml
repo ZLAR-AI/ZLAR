@@ -34,12 +34,9 @@ jobs:
       - name: ShellCheck tests/
         run: shellcheck --severity=error tests/*.sh
 
-      - name: ShellCheck oc/bin/
-        run: shellcheck --severity=error oc/bin/*
-
       - name: Validate JSON configs
         run: |
-          for f in etc/*.json etc/policies/*.json oc/etc/zlar-oc/*.json oc/etc/zlar-oc/policies/*.json; do
+          for f in etc/*.json etc/policies/*.json; do
             if [ -f "$f" ]; then
               python3 -m json.tool "$f" > /dev/null || { echo "FAIL: $f"; exit 1; }
               echo "OK: $f"

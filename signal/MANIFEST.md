@@ -30,7 +30,6 @@ format: structured-index
     - installer: install.sh — zero-config installation, one command
     - ops: bin/zlar-au, zlar-fl, zlar-audit, etc. — observation, audit, fleet, health
     - nt: bin/zlar-nt — network egress policy enforcement
-    - oc: oc/ — OS-level containment for autonomous agents
 
 ## Website
 

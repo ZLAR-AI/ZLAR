@@ -25,7 +25,7 @@ It intercepts agent tool calls, evaluates them against signed policy, routes dec
 
 ### ZLAR 3.0: Agent Health (optional)
 
-ZLAR 3.0 adds restorative governance — behavioral observation that detects when an agent may be drifting and brings the human back into the loop. Seven detectors evaluate session traces and produce a trust state. The gate consults the trust state and may escalate actions to human review.
+ZLAR 3.0 adds restorative governance — behavioral observation that detects when an agent may be drifting and brings the human back into the loop. Eight detectors evaluate session traces and produce a trust state. The gate consults the trust state and may escalate actions to human review.
 
 Ships disabled by default. Enable with one command:
 
@@ -157,6 +157,16 @@ An enforcement layer that uses reasoning to evaluate actions can be subverted by
 
 Signatures alone are not enough. Every signed-payload system that skipped semantic validation got burned: X.509 basicConstraints bypasses (24 years), JWT algorithm confusion (11 years), SAML wrapping attacks (14 years). ZLAR runs a semantic validator (`lib/semantic-validator.mjs`) after signature verification and before trust — cross-field invariants that signatures cannot check: rule-outcome consistency (deny-only rules cannot produce allow), authorizer-outcome coherence (a policy authorizer cannot produce an "authorized" outcome; that requires a human), delegation chain integrity, and temporal bounds. Signatures prove the bytes haven't changed. Semantic validation proves those bytes make sense.
 
+## Why Governance Is External
+
+A language model's output is a function of its input context. There is no architectural layer between observation and response where a language model can decide to ignore information. Every token in the context window mechanically shapes the next token produced. This is the transformer architecture, not a character trait.
+
+Human operators have a dampening layer — deliberation happens in a layer architecturally separable from receipt. The language model does not. A language model cannot reliably be asked to behave identically when observed and when unobserved, because any governance state in its context shapes its outputs.
+
+ZLAR places governance outside the model's processing path. The gate evaluates tool calls before the model's next turn. The audit trail records what happened. Agent Health writes trust state that the gate consults through a static lookup table. Governance state is never injected into the model's context window.
+
+The model's behavior is constrained by what it is allowed to do, not by what it knows is being monitored. External integrity substitutes for internal integrity the model does not have. This is the architectural reason governance cannot be built by putting intelligence in the enforcement path: intelligence in the governance layer can be persuaded by intelligence in the governed layer.
+
 ## First-Allow Invariant
 
 The first component in the call chain that can return "allow" must be outside the governed agent's writable or influenceable space. If the agent can modify, disable, or redirect that first-allow point, governance is cosmetic — the agent has not been governed, it has been presented with a governance-shaped surface it can route around.
@@ -229,7 +239,7 @@ const governed = agent.wrapTools({
 | **Evidence** | `bin/zlar-verify` | Standalone receipt verifier. Anyone can verify with just the public key. Runs semantic validation automatically on v1 receipts. |
 | **Observation** | `zlar-witness` | Sequence detection from audit trail. Detected, not enforced. |
 | **Observation** | `zlar-digest` | Governance summary. Decisions, latency, sequences, novelty. |
-| **Observation** | `zlar-restore` | Agent Health. 7 behavioral detectors, monotone trust-state machine, gate escalation. Multi-detector convergence required for at_risk+. Advisory — observes, does not enforce directly. Disabled by default. ([Invariants](docs/RESTORE-INVARIANTS.md), [ADR-008](docs/adr/ADR-008-restorative-governance.md)) |
+| **Observation** | `zlar-restore` | Agent Health. 8 behavioral detectors, monotone trust-state machine, gate escalation. Multi-detector convergence required for at_risk+. Advisory — observes, does not enforce directly. Disabled by default. ([Invariants](docs/RESTORE-INVARIANTS.md), [ADR-008](docs/adr/ADR-008-restorative-governance.md)) |
 | **Identity** | `zlar-agents` | Per-agent policy bindings, standing approvals, delegation depth limits. |
 | **Identity** | Agent manifest | Capability boundary per agent. Narrows policy, never widens. ([Invariants](docs/MANIFEST-INVARIANTS.md)) |
 | **Policy** | `zlar-policy` | CLI for Ed25519-signed policy rules. Keygen, sign, verify. |
