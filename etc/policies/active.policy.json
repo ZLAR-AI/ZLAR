@@ -1,12 +1,12 @@
 {
-  "version": "2.11.1",
+  "version": "3.0.6",
   "created_at": "2026-03-29T00:00:00Z",
   "author": "vincentnijjar",
   "description": "ZLAR v2.11.1 — Dotfile perimeter closure. Six new rules close write/edit domain gaps: R035 (write .ssh/ deny), R035B (write credential dotfiles ask), R033E (edit /etc/ deny), R041H (edit shell configs ask), R041I (edit .env ask), R041J (edit credential dotfiles ask). Mirrors write-domain protection to edit domain throughout.",
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "clxgf67NTGcnFiGIcYDZTNCHi3IG5LD+fElWzQtyipvchxPp6KKET3Cbuxjg4FzSDPacAbd/Lmqs1wmHtVA6Aw=="
+    "value": "d5aYJH21di6vOa5GvY4QRP8i1c8Z1f5lp53xx7MyvJQxFWsHtLp61CUZcBvxyfhGMUiWCEVSOEZTyUKYZoBiCg=="
   },
   "default_action": "deny",
   "scoring_thresholds": {

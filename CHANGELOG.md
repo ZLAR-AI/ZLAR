@@ -1,5 +1,36 @@
 # Changelog
 
+## 3.0.6 — 2026-04-15
+
+Human authority over throughput pressure — gates advise, humans decide.
+
+H6 (daily cap) is now advisory. When the cap is reached, a Telegram notice
+fires and the gate routes the ask anyway. The human decides whether to
+continue. This matches the H13 treatment from v3.0.5. Only H14
+(rubber-stamping detection) still blocks — it protects decision quality, not
+throughput.
+
+Risk-weighted H6 counting: each decision costs max(10, risk_score)/100
+weighted units toward the daily budget. A risk-100 action costs 1.0 unit
+(same as the old integer count). A risk-10 action costs 0.10. Low-risk
+housekeeping consumes far less budget than high-risk one-shot actions.
+
+Telegram approval messages improved:
+- Context line: shows .description from Bash tool_input — why the agent
+  ran the command, not just what it ran.
+- Verify line: policy-authored check prompt. 23 ask-action rules now carry
+  a specific question ("what file is being deleted?", "will this expose
+  credentials?", etc.) that appears in the approval message on mobile.
+  Helps the human know what to look for before tapping approve.
+
+Both CC gate and MCP gate updated for all of the above.
+
+Cross-gate adapter install script (adapters/claude-code/install.sh):
+- Stamps ~/.claude/zlar-gate.sh with the correct PROJECT_DIR at install time
+- Wires settings.json PreToolUse hook idempotently via Python3
+- Checks /usr/local/bin/zlar symlink
+- Fixes the silent break when the repo is moved or used on a second machine
+
 ## 3.0.4 — 2026-04-12
 
 Structural fixes from false-positive analysis and simulation testing.
