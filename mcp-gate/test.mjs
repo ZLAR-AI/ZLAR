@@ -17,20 +17,35 @@ const TEST_ALLOW_POLICY = join(__dirname, 'test-allow-policy.json');
 // Clean up test files
 if (existsSync(TEST_AUDIT)) unlinkSync(TEST_AUDIT);
 
-// Create a self-contained allow policy so tests don't depend on a signed active policy
+// Create a self-contained allow policy so tests don't depend on a signed active policy.
+// The policy structure satisfies PC-02 (at least one ask rule present for human
+// contestability) via a narrow dummy rule that won't match test inputs, keeping
+// R095's allow behavior as the observable outcome for MCP tool calls.
 writeFileSync(TEST_ALLOW_POLICY, JSON.stringify({
   version: 'test-allow',
   default_action: 'allow',
-  rules: [{
-    id: 'R095',
-    enabled: true,
-    description: 'MCP catch-all allow for testing',
-    domain: 'mcp',
-    action: 'allow',
-    severity: 'info',
-    match: { domain: 'mcp' },
-    risk_score: { irreversibility: 0, consequence: 0, blast_radius: 0 },
-  }],
+  rules: [
+    {
+      id: 'R095',
+      enabled: true,
+      description: 'MCP catch-all allow for testing',
+      domain: 'mcp',
+      action: 'allow',
+      severity: 'info',
+      match: { domain: 'mcp' },
+      risk_score: { irreversibility: 0, consequence: 0, blast_radius: 0 },
+    },
+    {
+      id: 'R999_PC02_SATISFIER',
+      enabled: true,
+      description: 'PC-02 placeholder — ask rule for test fixture constitutional compliance',
+      domain: 'test_never_matches',
+      action: 'ask',
+      severity: 'info',
+      match: { domain: 'test_never_matches', detail: { tool_name: '__never_matches__' } },
+      risk_score: { irreversibility: 0, consequence: 0, blast_radius: 0 },
+    },
+  ],
 }));
 
 // ─── Mock MCP Server ─────────────────────────────────────────────────────────

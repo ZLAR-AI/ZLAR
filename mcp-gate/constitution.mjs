@@ -27,6 +27,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash, verify as cryptoVerify } from 'node:crypto';
 import { canonicalize, sha256hex, pubkeyFingerprint } from '../lib/receipt.mjs';
+import { canonicalFormVariants, verifyAnyCanonical } from '../lib/sig-verify.mjs';
 
 // ─── Signature Verification ──────────────────────────────────────────────────
 
@@ -50,9 +51,15 @@ function verifyEd25519(publicKeyPath, canonicalObj, sigBase64) {
   if (!existsSync(publicKeyPath)) return false;
   try {
     const pubKeyPem = readFileSync(publicKeyPath, 'utf8');
-    const hashHex = sha256hex(canonicalize(canonicalObj));
-    const sigBytes = Buffer.from(sigBase64, 'base64');
-    return cryptoVerify(null, Buffer.from(hashHex, 'utf8'), pubKeyPem, sigBytes);
+    // Try all three canonical forms currently in circulation (ADR-011).
+    // Constitution is signed under the bash-pretty form; manifest under the
+    // bash-pipeline form; future signers should use the spec form.
+    const forms = canonicalFormVariants(canonicalObj);
+    const result = verifyAnyCanonical(forms, pubKeyPem, sigBase64);
+    if (result.ok && result.form !== 'spec') {
+      console.warn(`[gate] WARN: signature verified under LEGACY canonical form "${result.form}". Migration tracked by ADR-011.`);
+    }
+    return result.ok;
   } catch {
     return false;
   }

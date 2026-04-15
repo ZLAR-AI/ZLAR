@@ -32,6 +32,12 @@ import {
   sha256hex
 } from '../lib/receipt.mjs';
 
+// Multi-canonical Ed25519 verification (see ADR-011)
+import {
+  canonicalFormVariants,
+  verifyAnyCanonical,
+} from '../lib/sig-verify.mjs';
+
 // Human invariant enforcement (H6, H13, H14, H15, H17)
 import {
   preAskCheck,
@@ -226,15 +232,20 @@ function verifyJsonSignature(obj, publicKeyPath) {
   try {
     const pubKeyPem = readFileSync(publicKeyPath, 'utf8');
 
-    // Zero ONLY .signature.value — must match bash gate: jq '.signature.value = ""'
-    // The bash gate preserves .algorithm and .key_id in the canonical form.
-    const canonical = JSON.parse(JSON.stringify(obj));
-    canonical.signature = { ...canonical.signature, value: '' };
-    const hashHex = sha256hex(canonicalize(canonical));
-    const sigBytes = Buffer.from(sig.value, 'base64');
-    const ok = cryptoVerify(null, Buffer.from(hashHex, 'utf8'), pubKeyPem, sigBytes);
+    // Zero ONLY .signature.value — matches the policy / standing-approvals
+    // signing convention in bash (`jq '.signature.value = ""'`). Algorithm
+    // and public_key fields are preserved in the canonical form.
+    const cleared = JSON.parse(JSON.stringify(obj));
+    cleared.signature = { ...cleared.signature, value: '' };
 
-    return ok ? { ok: true } : { ok: false, reason: 'signature verification failed' };
+    // Verify under any of the three canonical forms currently in use in
+    // the project. See ADR-011 and lib/sig-verify.mjs.
+    const forms = canonicalFormVariants(cleared);
+    const result = verifyAnyCanonical(forms, pubKeyPem, sig.value);
+    if (result.ok && result.form !== 'spec') {
+      console.warn(`[gate] WARN: signature verified under LEGACY canonical form "${result.form}". Migration tracked by ADR-011.`);
+    }
+    return result;
   } catch (e) {
     return { ok: false, reason: e.message };
   }

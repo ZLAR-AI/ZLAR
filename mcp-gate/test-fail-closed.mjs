@@ -168,6 +168,63 @@ console.log('\n── Strict audit signing (startup refusal) ──────�
   assert('opt-out: strict FATAL absent', true, !/ZLAR_REQUIRE_SIGNED_AUDIT is true/.test(stderr));
 }
 
+// ─── Deployed-artifact verification (ADR-011 multi-canonical acceptance) ────
+console.log('\n── Deployed artifact verification ─────────────────────────────');
+
+// The MCP gate must be able to verify the currently-deployed, bash-signed
+// policy and constitution on this machine. Regression guard for the
+// canonicalization-mismatch bug fixed in commit introducing lib/sig-verify.mjs.
+{
+  const { existsSync: exists } = await import('fs');
+  const repoRoot = join(__dirname, '..');
+  const policyPath = join(repoRoot, 'etc/policies/active.policy.json');
+  const policyPubPath = join(repoRoot, 'etc/keys/policy-signing.pub');
+  const constPath = join(repoRoot, 'etc/constitution.json');
+  const constPubPath = join(repoRoot, 'etc/keys/constitution-signing.pub');
+  const { canonicalFormVariants, verifyAnyCanonical } = await import('../lib/sig-verify.mjs');
+  const { readFileSync } = await import('fs');
+
+  function tryVerify(filePath, pubPath, label) {
+    if (!exists(filePath) || !exists(pubPath)) {
+      console.log(`  SKIP: ${label} deployed file missing (${filePath})`);
+      return;
+    }
+    const raw = JSON.parse(readFileSync(filePath, 'utf8'));
+    const cleared = JSON.parse(JSON.stringify(raw));
+    cleared.signature = { ...cleared.signature, value: '' };
+    const forms = canonicalFormVariants(cleared);
+    const result = verifyAnyCanonical(forms, readFileSync(pubPath, 'utf8'), raw.signature.value);
+    assert(`${label} verifies under some canonical form`, true, result.ok);
+    if (result.ok) {
+      assert(`${label} form label is known`, true, ['spec', 'bash-pipeline', 'bash-pretty'].includes(result.form));
+    }
+  }
+
+  tryVerify(policyPath, policyPubPath, 'deployed policy');
+  tryVerify(constPath, constPubPath, 'deployed constitution');
+}
+
+// Multi-form acceptance must still reject tampered signatures.
+{
+  const { canonicalFormVariants, verifyAnyCanonical } = await import('../lib/sig-verify.mjs');
+  const { readFileSync } = await import('fs');
+  const repoRoot = join(__dirname, '..');
+  const policyPath = join(repoRoot, 'etc/policies/active.policy.json');
+  if (existsSync(policyPath)) {
+    const raw = JSON.parse(readFileSync(policyPath, 'utf8'));
+    const cleared = JSON.parse(JSON.stringify(raw));
+    cleared.rules = [];  // TAMPER: remove all rules
+    cleared.signature = { ...cleared.signature, value: '' };
+    const forms = canonicalFormVariants(cleared);
+    const result = verifyAnyCanonical(
+      forms,
+      readFileSync(join(repoRoot, 'etc/keys/policy-signing.pub'), 'utf8'),
+      raw.signature.value
+    );
+    assert('tampered policy rejected across all forms', false, result.ok);
+  }
+}
+
 // ─── Cleanup ────────────────────────────────────────────────────────────────
 rmSync(SCRATCH, { recursive: true, force: true });
 
