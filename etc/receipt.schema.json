@@ -65,8 +65,8 @@
         },
         "authorizer": {
           "type": "string",
-          "enum": ["policy", "human", "gate", "timeout", "manifest"],
-          "description": "Who made the final decision. policy = deterministic rule. human = person via Telegram. gate = fail-closed default. timeout = escalation window expired. manifest = agent manifest constraint."
+          "pattern": "^(policy|human|gate|timeout|manifest|standing)(:[A-Za-z0-9_.\\-]+)?$",
+          "description": "Who made the final decision. policy = deterministic rule. human = person via Telegram. gate = fail-closed default. timeout = escalation window expired. manifest = agent manifest constraint. standing = pre-approved standing rule. An optional ':suffix' carries provenance detail (e.g. 'standing:sa_abc', 'gate:human_H14_exceeded')."
         },
         "timestamp": {
           "type": "string",

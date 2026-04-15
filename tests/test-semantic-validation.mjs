@@ -223,6 +223,46 @@ for (const r of expectedDenyOnly) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+console.log('=== Prefixed Authorizers (MCP gate emits these) ===');
+console.log();
+
+// standing:<id> → allow is coherent
+const vStandingAllow = validateSemantics(
+  validPayload({ authorizer: 'standing:sa_abc123', outcome: 'allow', rule: 'R095' }),
+  { skipTemporalCheck: true });
+assert('standing:<id> allow accepted', true, vStandingAllow.valid);
+
+// standing:<id> with deny is NOT coherent (standing approvals only auto-allow)
+const vStandingDeny = validateSemantics(
+  validPayload({ authorizer: 'standing:sa_abc123', outcome: 'deny', rule: 'R002' }),
+  { skipTemporalCheck: true });
+assert('standing:<id> deny rejected', false, vStandingDeny.valid);
+
+// gate:<reason> deny is coherent
+const vGatePrefix = validateSemantics(
+  validPayload({ authorizer: 'gate:human_H14_exceeded', outcome: 'deny', rule: 'R002' }),
+  { skipTemporalCheck: true });
+assert('gate:<reason> deny accepted', true, vGatePrefix.valid);
+
+// human:<chat_id> authorized is coherent
+const vHumanPrefix = validateSemantics(
+  validPayload({ authorizer: 'human:1234567890', outcome: 'authorized', rule: 'R095' }),
+  { skipTemporalCheck: true });
+assert('human:<id> authorized accepted', true, vHumanPrefix.valid);
+
+// Unknown base still rejected
+const vUnknown = validateSemantics(
+  validPayload({ authorizer: 'bogus:whatever', outcome: 'allow' }),
+  { skipTemporalCheck: true });
+assert('unknown authorizer base rejected', false, vUnknown.valid);
+
+// Empty-string authorizer rejected
+const vEmpty = validateSemantics(
+  validPayload({ authorizer: '' }),
+  { skipTemporalCheck: true });
+assert('empty authorizer rejected', false, vEmpty.valid);
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Summary
 console.log();
 console.log(`=== Results: ${pass}/${total} passed, ${fail} failed ===`);

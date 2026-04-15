@@ -45,9 +45,15 @@ function sha256hex(buf) {
 }
 
 const VALID_OUTCOMES = new Set(['allow', 'deny', 'authorized', 'denied', 'timeout']);
-const VALID_AUTHORIZERS = new Set(['policy', 'human', 'gate', 'timeout', 'manifest']);
+const VALID_AUTHORIZER_BASES = new Set(['policy', 'human', 'gate', 'timeout', 'manifest', 'standing']);
 const APPROVAL_OUTCOMES = new Set(['allow', 'authorized']);
 const DENY_ONLY_RULES = new Set(['R002', 'R003', 'R005', 'R006', 'R030', 'R032', 'R033', 'R034']);
+
+function authorizerBase(a) {
+  if (typeof a !== 'string' || a.length === 0) return null;
+  const i = a.indexOf(':');
+  return i === -1 ? a : a.substring(0, i);
+}
 
 const COHERENT_OUTCOMES = {
   policy:   new Set(['allow', 'deny']),
@@ -55,6 +61,7 @@ const COHERENT_OUTCOMES = {
   timeout:  new Set(['timeout', 'denied', 'deny']),
   gate:     new Set(['deny', 'allow']),
   manifest: new Set(['allow', 'deny']),
+  standing: new Set(['allow']),
 };
 
 function semanticValidate(payload) {
@@ -68,10 +75,11 @@ function semanticValidate(payload) {
 
   // Outcome / authorizer enums
   if (!VALID_OUTCOMES.has(payload.outcome)) return { valid: false, code: 'INVALID_OUTCOME', value: payload.outcome };
-  if (!VALID_AUTHORIZERS.has(payload.authorizer)) return { valid: false, code: 'INVALID_AUTHORIZER', value: payload.authorizer };
+  const authzBase = authorizerBase(payload.authorizer);
+  if (!authzBase || !VALID_AUTHORIZER_BASES.has(authzBase)) return { valid: false, code: 'INVALID_AUTHORIZER', value: payload.authorizer };
 
   // Coherence
-  const expected = COHERENT_OUTCOMES[payload.authorizer];
+  const expected = COHERENT_OUTCOMES[authzBase];
   if (expected && !expected.has(payload.outcome)) {
     return { valid: false, code: 'AUTHORIZER_OUTCOME_MISMATCH', authorizer: payload.authorizer, outcome: payload.outcome };
   }
