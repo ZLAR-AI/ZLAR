@@ -109,6 +109,7 @@ for (let i = 0; i < args.length; i++) {
     }
     case '--audit-file': CONFIG.auditFile = args[++i]; break;
     case '--policy-file': CONFIG.policyFile = args[++i]; break;
+    case '--policy-pubkey': CONFIG.policyPubkey = args[++i]; break;
     case '--agent-id': CONFIG.agentId = args[++i]; break;
     case '--telegram-chat-id': CONFIG.telegramChatId = args[++i]; break;
     case '--policy-engine': CONFIG.policyEngine = args[++i]; break;
@@ -124,6 +125,7 @@ Options:
   --policy-engine <kind>   Policy engine: json (default), cedar, or both
   --audit-file <path>      Audit trail path
   --policy-file <path>     Policy file path
+  --policy-pubkey <path>   Policy signing public key (defaults to etc/keys/policy-signing.pub)
   --agent-id <id>          Agent identifier for audit trail
   --telegram-chat-id <id>  Telegram chat ID for HITL approvals
 `);

@@ -8,20 +8,48 @@ import { createServer, createConnection } from 'net';
 import { readFileSync, existsSync, unlinkSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { generateKeyPairSync, sign as cryptoSign } from 'crypto';
+import { canonicalize, sha256hex } from '../lib/receipt.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = join(__dirname, '..');
 const TEST_AUDIT = join(__dirname, 'test-audit.jsonl');
 const TEST_ALLOW_POLICY = join(__dirname, 'test-allow-policy.json');
+const TEST_POLICY_PUBKEY = join(__dirname, 'test-policy-signing.pub');
 
 // Clean up test files
 if (existsSync(TEST_AUDIT)) unlinkSync(TEST_AUDIT);
 
-// Create a self-contained allow policy so tests don't depend on a signed active policy.
-// The policy structure satisfies PC-02 (at least one ask rule present for human
-// contestability) via a narrow dummy rule that won't match test inputs, keeping
-// R095's allow behavior as the observable outcome for MCP tool calls.
-writeFileSync(TEST_ALLOW_POLICY, JSON.stringify({
+// Generate an ephemeral Ed25519 keypair for test fixtures. The private half
+// lives in memory only; the public half is written to a temp file and passed
+// to the spawned gate via --policy-pubkey. This decouples the test from the
+// machine's production signing keys and lets the fixture be signed under
+// ZLAR spec canonical form (no LEGACY warnings for test fixtures).
+const { publicKey: TEST_PUBKEY, privateKey: TEST_PRIVKEY } = generateKeyPairSync('ed25519');
+writeFileSync(TEST_POLICY_PUBKEY, TEST_PUBKEY.export({ type: 'spki', format: 'pem' }));
+
+// Sign the test policy under spec canonical form (see ADR-011).
+// Zero .signature.value, canonicalize via lib/canonicalize.mjs (matches
+// the MCP gate's spec-form verifier), SHA-256, Ed25519 sign the hex bytes.
+function signPolicyUnderSpec(policyObj) {
+  const withSig = {
+    ...policyObj,
+    signature: {
+      algorithm: 'ed25519',
+      public_key: TEST_PUBKEY.export({ type: 'spki', format: 'der' }).toString('base64'),
+      value: '',
+    },
+  };
+  const hashHex = sha256hex(canonicalize(withSig));
+  const sig = cryptoSign(null, Buffer.from(hashHex, 'utf8'), TEST_PRIVKEY);
+  return { ...withSig, signature: { ...withSig.signature, value: sig.toString('base64') } };
+}
+
+// Self-contained signed test policy.
+// Structure satisfies PC-02 (at least one ask rule for human contestability)
+// via a narrow dummy rule that cannot match test inputs, so R095's allow
+// behavior remains the observable outcome for MCP tool calls under test.
+const TEST_POLICY_OBJ = {
   version: 'test-allow',
   default_action: 'allow',
   rules: [
@@ -46,7 +74,8 @@ writeFileSync(TEST_ALLOW_POLICY, JSON.stringify({
       risk_score: { irreversibility: 0, consequence: 0, blast_radius: 0 },
     },
   ],
-}));
+};
+writeFileSync(TEST_ALLOW_POLICY, JSON.stringify(signPolicyUnderSpec(TEST_POLICY_OBJ)));
 
 // ─── Mock MCP Server ─────────────────────────────────────────────────────────
 
@@ -117,6 +146,7 @@ async function runTests() {
     '--upstream', `localhost:${MOCK_PORT}`,
     '--audit-file', TEST_AUDIT,
     '--policy-file', TEST_ALLOW_POLICY,
+    '--policy-pubkey', TEST_POLICY_PUBKEY,
     '--agent-id', 'test-agent',
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
@@ -195,22 +225,37 @@ async function runTests() {
   );
 
   // ─── Test with deny policy ───────────────────────────────────────────
-  // Create a minimal test policy that denies MCP tools/call
+  // Minimal test policy that denies MCP tools/call. Signed under the same
+  // ephemeral key as the allow policy so the gate's strict-signature check
+  // passes and the DENY path is exercised cleanly. PC-02 is satisfied by
+  // R999_PC02_SATISFIER even though this policy's intent is deny-all.
   const denyPolicyPath = join(__dirname, 'test-deny-policy.json');
-  writeFileSync(denyPolicyPath, JSON.stringify({
+  writeFileSync(denyPolicyPath, JSON.stringify(signPolicyUnderSpec({
     version: 'test-deny',
     default_action: 'deny',
-    rules: [{
-      id: 'T001',
-      enabled: true,
-      description: 'Deny all MCP tool calls',
-      domain: 'mcp',
-      action: 'deny',
-      severity: 'critical',
-      match: { domain: 'mcp' },
-      risk_score: { irreversibility: 100, consequence: 100, blast_radius: 100 },
-    }],
-  }));
+    rules: [
+      {
+        id: 'T001',
+        enabled: true,
+        description: 'Deny all MCP tool calls',
+        domain: 'mcp',
+        action: 'deny',
+        severity: 'critical',
+        match: { domain: 'mcp' },
+        risk_score: { irreversibility: 100, consequence: 100, blast_radius: 100 },
+      },
+      {
+        id: 'R999_PC02_SATISFIER',
+        enabled: true,
+        description: 'PC-02 placeholder — ask rule for test fixture constitutional compliance',
+        domain: 'test_never_matches',
+        action: 'ask',
+        severity: 'info',
+        match: { domain: 'test_never_matches', detail: { tool_name: '__never_matches__' } },
+        risk_score: { irreversibility: 0, consequence: 0, blast_radius: 0 },
+      },
+    ],
+  })));
 
   // Start a second gate with deny policy
   const DENY_GATE_PORT = 3102;
@@ -220,6 +265,7 @@ async function runTests() {
     '--upstream', `localhost:${MOCK_PORT}`,
     '--audit-file', TEST_AUDIT,
     '--policy-file', denyPolicyPath,
+    '--policy-pubkey', TEST_POLICY_PUBKEY,
     '--agent-id', 'test-deny-agent',
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
@@ -327,6 +373,7 @@ async function runTests() {
   mockServer.close();
   if (existsSync(TEST_AUDIT)) unlinkSync(TEST_AUDIT);
   if (existsSync(TEST_ALLOW_POLICY)) unlinkSync(TEST_ALLOW_POLICY);
+  if (existsSync(TEST_POLICY_PUBKEY)) unlinkSync(TEST_POLICY_PUBKEY);
 
   process.exit(failed > 0 ? 1 : 0);
 }

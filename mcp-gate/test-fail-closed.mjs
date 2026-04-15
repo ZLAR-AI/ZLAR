@@ -163,8 +163,14 @@ console.log('\n── Strict audit signing (startup refusal) ──────�
   let stderr = '';
   child.stderr.on('data', d => { stderr += d.toString(); });
   await new Promise(r => setTimeout(r, 500));
-  child.kill('SIGTERM');
-  await new Promise(r => child.on('exit', r));
+  // Race on-exit with a hard timeout so a stuck subprocess cannot hang
+  // the test. The stderr assertion below does not depend on exit.
+  await new Promise((resolve) => {
+    const done = () => resolve();
+    child.once('exit', done);
+    try { child.kill('SIGTERM'); } catch {}
+    setTimeout(() => { try { child.kill('SIGKILL'); } catch {}; done(); }, 1500);
+  });
   assert('opt-out: strict FATAL absent', true, !/ZLAR_REQUIRE_SIGNED_AUDIT is true/.test(stderr));
 }
 
@@ -223,6 +229,63 @@ console.log('\n── Deployed artifact verification ─────────
     );
     assert('tampered policy rejected across all forms', false, result.ok);
   }
+}
+
+// ─── Test-fixture signing path (test.mjs signPolicyUnderSpec) ──────────────
+console.log('\n── Test fixture signed under spec form (ADR-011) ──────────────');
+
+// The mcp-gate/test.mjs fixture generates an ephemeral keypair and signs
+// the TEST_ALLOW_POLICY under ZLAR spec canonical form before spawning the
+// gate with --policy-file and --policy-pubkey. This test duplicates that
+// signing path in isolation (no port binding, no subprocess) and asserts
+// the resulting file verifies under spec form — so the integration harness
+// is guaranteed to find a signature-valid fixture even when the test
+// environment cannot bind listen ports.
+{
+  const { canonicalFormVariants, verifyAnyCanonical } = await import('../lib/sig-verify.mjs');
+  const { publicKey: fxPub, privateKey: fxPriv } = generateKeyPairSync('ed25519');
+  const fxPubPem = fxPub.export({ type: 'spki', format: 'pem' });
+
+  function signPolicyUnderSpec(policyObj) {
+    const withSig = {
+      ...policyObj,
+      signature: {
+        algorithm: 'ed25519',
+        public_key: fxPub.export({ type: 'spki', format: 'der' }).toString('base64'),
+        value: '',
+      },
+    };
+    const hashHex = sha256hex(canonicalize(withSig));
+    const sig = cryptoSign(null, Buffer.from(hashHex, 'utf8'), fxPriv);
+    return { ...withSig, signature: { ...withSig.signature, value: sig.toString('base64') } };
+  }
+
+  const policyObj = {
+    version: 'test-allow',
+    default_action: 'allow',
+    rules: [
+      { id: 'R095', enabled: true, domain: 'mcp', action: 'allow', match: { domain: 'mcp' }, risk_score: { irreversibility: 0, consequence: 0, blast_radius: 0 } },
+      { id: 'R999', enabled: true, domain: 'x', action: 'ask', match: { domain: 'x' }, risk_score: { irreversibility: 0, consequence: 0, blast_radius: 0 } },
+    ],
+  };
+
+  const signed = signPolicyUnderSpec(policyObj);
+  // Reproduce the gate's verifyJsonSignature logic: clear .signature.value,
+  // canonicalFormVariants, verifyAnyCanonical.
+  const cleared = JSON.parse(JSON.stringify(signed));
+  cleared.signature = { ...cleared.signature, value: '' };
+  const result = verifyAnyCanonical(canonicalFormVariants(cleared), fxPubPem, signed.signature.value);
+  assert('test fixture signature verifies', true, result.ok);
+  assert('test fixture verifies under SPEC form (no LEGACY warning)', 'spec', result.form);
+
+  // And if the fixture is tampered with post-signing, verification fails
+  // across all forms — so fixture-level tampering cannot sneak past.
+  const tampered = JSON.parse(JSON.stringify(signed));
+  tampered.default_action = 'deny';  // TAMPER
+  const clearedT = JSON.parse(JSON.stringify(tampered));
+  clearedT.signature = { ...clearedT.signature, value: '' };
+  const resultT = verifyAnyCanonical(canonicalFormVariants(clearedT), fxPubPem, signed.signature.value);
+  assert('tampered test fixture rejected', false, resultT.ok);
 }
 
 // ─── Cleanup ────────────────────────────────────────────────────────────────

@@ -22,10 +22,13 @@ etc/agent-policy-bindings.json
 # identity-bound, time-bounded — not distributable)
 etc/manifest.json
 
-# mcp-gate test-allow-policy fixture: created and deleted by mcp-gate/test.mjs
-# on every run — tracking it is meaningless since the test overwrites its
-# content in writeFileSync at setup and unlinks it at teardown.
+# mcp-gate test fixtures: created and deleted by mcp-gate/test.mjs on every
+# run — tracking them is meaningless since the test overwrites at setup
+# and unlinks at teardown. test-policy-signing.pub is an ephemeral Ed25519
+# public key paired with an in-memory private key used to sign the test
+# policy under ZLAR spec canonical form.
 mcp-gate/test-allow-policy.json
+mcp-gate/test-policy-signing.pub
 
 # Keys (generated at install)
 etc/keys/
