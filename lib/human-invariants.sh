@@ -124,6 +124,15 @@ _hi_ensure_state() {
 
 # ─── H6: No Throughput Pressure ───────────────────────────────────────────────
 # Check if the human has capacity for another decision today.
+#
+# v2.8.1: decisions_today is now a risk-weighted float. Each decision costs
+# max(10, risk_score) / 100 units toward the daily budget. A risk-100 decision
+# costs 1.0 unit (same as before). A risk-10 decision costs 0.10 units.
+# Default risk 100 preserves backward compatibility for callers that don't
+# pass risk_score — one decision = one unit, same as the old integer count.
+#
+# Float comparison done in jq (not bash) to handle fractional values correctly.
+#
 # Returns: "ok" if within cap, "exceeded" if cap reached.
 
 hi_check_capacity() {
@@ -131,11 +140,15 @@ hi_check_capacity() {
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
-    local decisions_today
-    decisions_today=$(jq -r '.decisions_today // 0' "${state_file}" 2>/dev/null)
+    local result
+    result=$(jq -r --argjson cap "${HI_DAILY_DECISION_CAP}" \
+        'if ((.decisions_today // 0) >= $cap) then "exceeded" else "ok" end' \
+        "${state_file}" 2>/dev/null || echo "ok")
 
-    if [ "${decisions_today}" -ge "${HI_DAILY_DECISION_CAP}" ]; then
-        _hi_log "H6 VIOLATED: ${human_id} has reached daily cap (${decisions_today}/${HI_DAILY_DECISION_CAP})"
+    if [ "${result}" = "exceeded" ]; then
+        local decisions_today
+        decisions_today=$(jq -r '.decisions_today // 0' "${state_file}" 2>/dev/null)
+        _hi_log "H6 ADVISORY: ${human_id} has reached daily cap (${decisions_today}/${HI_DAILY_DECISION_CAP} weighted units)"
         echo "exceeded"
         return 1
     fi
@@ -373,15 +386,21 @@ hi_record_decision() {
     local decision="${2:?}"        # "approve" or "deny" (kept for audit trail)
     local elapsed_s="${3:-0}"      # response time in seconds
     local severity="${4:-info}"    # severity tier of the decision
+    local risk_score="${5:-100}"   # 0-100 risk score; default 100 = 1.0 unit (backward-compat)
 
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
+    # decisions_today is a float. Each decision costs max(10, risk_score) / 100 units.
+    # risk=100 → 1.0 unit (same as old integer 1). risk=10 → 0.10 unit.
     # Store {elapsed, severity} pairs. Severity weighting applied at check time.
     jq --argjson elapsed "${elapsed_s}" \
        --arg sev "${severity}" \
+       --argjson risk "${risk_score}" \
        --argjson window "${HI_VARIANCE_WINDOW}" \
-       '.decisions_today += 1 | .response_times = (.response_times + [{elapsed:$elapsed,severity:$sev}] | .[-$window:])' \
+       '([$risk, 10] | max | . / 100) as $cost |
+        .decisions_today = ((.decisions_today // 0) + $cost) |
+        .response_times = (.response_times + [{elapsed:$elapsed,severity:$sev}] | .[-$window:])' \
         "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
         mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
 }
@@ -518,6 +537,7 @@ hi_post_response_check() {
     local severity="${2:-info}"
     local decision="${3:?}"  # "approve" or "deny"
     local action_hash="${4:-}"
+    local risk_score="${5:-100}"  # passed through to hi_record_decision
 
     # Decrement pending (by hash if provided, else oldest)
     hi_decrement_pending "${human_id}" "${action_hash}"
@@ -544,7 +564,7 @@ hi_post_response_check() {
     _ask_epoch=$(jq -r '.last_ask_epoch // 0' "${_state_file}" 2>/dev/null || echo 0)
     _now_epoch=$(date +%s)
     _elapsed=$(( _now_epoch - _ask_epoch ))
-    hi_record_decision "${human_id}" "${decision}" "${_elapsed}" "${severity}"
+    hi_record_decision "${human_id}" "${decision}" "${_elapsed}" "${severity}" "${risk_score}"
 
     echo "ok"
     return 0

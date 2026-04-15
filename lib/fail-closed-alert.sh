@@ -2,8 +2,9 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # ZLAR Fail-Closed Alert — out-of-band notification when invariants fire
 #
-# When a human invariant fires (H6 capacity_exceeded, H13 overloaded,
-# H14 rubber_stamping), the gate refuses to route new asks to the human.
+# When a human invariant fires (H14 rubber_stamping), the gate refuses to route
+# new asks to the human. H6 (capacity_exceeded) and H13 (overloaded) now send
+# advisory alerts — the gate still routes asks, authority belongs to the human.
 # In the original v2.7.x design the alert path that would notify the
 # human was subject to the same uniform invariant check as agent tool
 # calls — the gate could block the notification that would have announced
@@ -136,6 +137,11 @@ fail_closed_alert() {
         # H13 advisory: queue at capacity but gate is still routing (v2.8.1).
         # The human decides if they're overwhelmed — do not lock them out.
         text=$(printf '⚠️ ZLAR Queue Advisory\n─────────────────────\nApproval queue is at capacity.\nInvariant: %s\nTime: %s\nHost: %s\n\nNew asks are still routing to you. Approve or deny pending items to clear the queue.' \
+            "${invariant_label}" "${timestamp_iso}" "${hostname_s}")
+    elif [ "${reason}" = "capacity_exceeded" ]; then
+        # H6 advisory: daily cap reached but gate is still routing (v2.8.1).
+        # The human decides if they want to continue — do not lock them out.
+        text=$(printf '⚠️ ZLAR Daily Cap Advisory\n─────────────────────\nYou have reached your daily decision limit.\nInvariant: %s\nTime: %s\nHost: %s\n\nNew asks are still routing to you. This is informational — you decide whether to continue.' \
             "${invariant_label}" "${timestamp_iso}" "${hostname_s}")
     else
         text=$(printf '🚨 ZLAR Gate Fail-Closed\n─────────────────────\nReason: %s\nInvariant: %s\nTime: %s\nHost: %s\n\nThe gate is refusing to route new asks until the invariant clears. This alert is sent at most once per %s seconds.' \
