@@ -289,6 +289,7 @@ function evaluatePolicy(toolName, args) {
       riskScore,
       severity: rule.severity || 'info',
       description: rule.description || '',
+      verifyHint: rule.verify_hint || '',
     };
   }
 
@@ -721,7 +722,7 @@ function getConsequenceLine(toolName, rule, riskScore) {
   return '⚠️ *If wrong:* unreviewed action';
 }
 
-async function telegramAsk(actionId, toolName, args, rule, riskScore, severity) {
+async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, verifyHint = '') {
   if (!CONFIG.telegramToken || !CONFIG.telegramChatId) {
     console.error('[gate] No Telegram token or chat ID — cannot ask human');
     return 'error';
@@ -731,9 +732,16 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity) 
   const argsPreview = JSON.stringify(args).substring(0, 80) + (JSON.stringify(args).length > 80 ? '…' : '');
   const consequenceLine = getConsequenceLine(toolName, rule, riskScore);
 
-  // Message layout mirrors bash gate v2.8.1: consequence first, action for context,
-  // rule+risk as compact metadata at bottom.
-  const text = `${emoji} 🔷 *${rule}*\n\n${consequenceLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${riskScore}/100`;
+  // Agent intent: .description from Bash tool_input. Shows why the agent ran this.
+  const intentRaw = (toolName === 'Bash' && args?.description) ? String(args.description).substring(0, 120) : '';
+  const intentLine = intentRaw ? `\n📋 *Context:* ${intentRaw}` : '';
+
+  // Verify hint: policy-authored check prompt for this rule.
+  const verifyLine = verifyHint ? `\n🔍 *Verify:* ${verifyHint}` : '';
+
+  // Message layout mirrors bash gate v2.8.1: consequence first, intent (if present),
+  // verify hint (if present), action for context, rule+risk as compact metadata at bottom.
+  const text = `${emoji} 🔷 *${rule}*\n\n${consequenceLine}${intentLine}${verifyLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${riskScore}/100`;
   const escapedText = text.replace(/[_\[\]()~>#+=|{}.!-]/g, '\\$&').replace(/\\`/g, '`').replace(/\\\*/g, '*');
 
   const keyboard = {
@@ -948,7 +956,7 @@ async function handleRequest(msg) {
       recordAskTime(humanId);
 
       const actionId = genId();
-      const decision = await telegramAsk(actionId, toolName, args, evaluation.rule, evaluation.riskScore, evaluation.severity);
+      const decision = await telegramAsk(actionId, toolName, args, evaluation.rule, evaluation.riskScore, evaluation.severity, evaluation.verifyHint || '');
 
       switch (decision) {
         case 'allow': {

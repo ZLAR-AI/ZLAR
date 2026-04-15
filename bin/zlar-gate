@@ -813,6 +813,7 @@ emit_event() {
 DOMAIN=""
 DETAIL="{}"
 TOOL_DISPLAY=""
+TOOL_INTENT=""  # optional .description from tool_input — shown as Context in Telegram ask
 
 sanitize_path() {
     # Strip newlines (injection vector), resolve symlinks (laundering vector).
@@ -855,6 +856,8 @@ translate_tool() {
     local tool_name="$1"
     local tool_input="$2"
 
+    TOOL_INTENT=""  # Reset on every translate — Bash sets it, others leave blank.
+
     case "${tool_name}" in
         Bash)
             DOMAIN="bash"
@@ -865,6 +868,7 @@ translate_tool() {
             sanitized_command=$(echo "${tool_input}" | jq -r '.command // ""' 2>/dev/null | tr '\n\r' '  ')
             DETAIL=$(jq -n -c --arg cmd "${sanitized_command}" --arg cwd "$(echo "${tool_input}" | jq -r '.cwd // ""' 2>/dev/null)" '{command: $cmd, cwd: $cwd}')
             TOOL_DISPLAY=$(echo "${sanitized_command}" | head -c 200)
+            TOOL_INTENT=$(echo "${tool_input}" | jq -r '.description // ""' 2>/dev/null | head -c 120)
             ;;
         Write)
             DOMAIN="write"
@@ -1301,6 +1305,7 @@ MATCHED_ACTION=""
 MATCHED_SEVERITY=""
 MATCHED_RISK_SCORE=0
 MATCHED_AUDIT="true"
+MATCHED_VERIFY_HINT=""  # optional human-readable check prompt from the matched rule
 
 evaluate_policy() {
     local domain="$1"
@@ -1311,6 +1316,7 @@ evaluate_policy() {
     MATCHED_SEVERITY="info"
     MATCHED_RISK_SCORE=0
     MATCHED_AUDIT="true"
+    MATCHED_VERIFY_HINT=""
 
     local rule_count
     rule_count=$(echo "${POLICY_RULES_JSON}" | jq 'length' 2>/dev/null || echo 0)
@@ -1419,6 +1425,7 @@ _set_matched() {
     MATCHED_ACTION=$(echo "${rule}" | jq -r '.action // "deny"' 2>/dev/null)
     MATCHED_SEVERITY=$(echo "${rule}" | jq -r '.severity // "info"' 2>/dev/null)
     MATCHED_AUDIT=$(echo "${rule}" | jq -r '.audit // true' 2>/dev/null)
+    MATCHED_VERIFY_HINT=$(echo "${rule}" | jq -r '.verify_hint // ""' 2>/dev/null)
 
     local has_score
     has_score=$(echo "${rule}" | jq 'has("risk_score")' 2>/dev/null)
@@ -1833,6 +1840,20 @@ telegram_ask_async() {
 🩺 *Agent Health escalated* — trust state: ${RESTORE_TRUST_STATE:-unknown}"
     fi
 
+    # Agent intent — .description field from Bash tool_input (why the agent ran this)
+    local intent_line=""
+    if [ -n "${TOOL_INTENT:-}" ]; then
+        intent_line="
+📋 *Context:* ${TOOL_INTENT}"
+    fi
+
+    # Verify hint — policy-authored check prompt for this rule
+    local verify_line=""
+    if [ -n "${MATCHED_VERIFY_HINT:-}" ]; then
+        verify_line="
+🔍 *Verify:* ${MATCHED_VERIFY_HINT}"
+    fi
+
     # Action label: domain-prefixed, command trimmed to 80 chars for readability.
     # Bash commands shown raw but short — the consequence line provides context.
     local short_display
@@ -1864,7 +1885,7 @@ telegram_ask_async() {
     # message unreadable at a glance on mobile.
     local text="${emoji} 🖥️ *${rule}*${fatigue_banner}${novelty_banner}${restore_banner}${authority_type}
 
-${consequence_line}
+${consequence_line}${intent_line}${verify_line}
 
 *${action_label}:* \`${short_display}\`
 Risk ${risk_score}/100 · Session \`${short_session}\`"

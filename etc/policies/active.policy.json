@@ -1,0 +1,1653 @@
+{
+  "version": "2.11.1",
+  "created_at": "2026-03-29T00:00:00Z",
+  "author": "vincentnijjar",
+  "description": "ZLAR v2.11.1 — Dotfile perimeter closure. Six new rules close write/edit domain gaps: R035 (write .ssh/ deny), R035B (write credential dotfiles ask), R033E (edit /etc/ deny), R041H (edit shell configs ask), R041I (edit .env ask), R041J (edit credential dotfiles ask). Mirrors write-domain protection to edit domain throughout.",
+  "signature": {
+    "algorithm": "ed25519",
+    "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
+    "value": "clxgf67NTGcnFiGIcYDZTNCHi3IG5LD+fElWzQtyipvchxPp6KKET3Cbuxjg4FzSDPacAbd/Lmqs1wmHtVA6Aw=="
+  },
+  "default_action": "deny",
+  "scoring_thresholds": {
+    "allow": 50,
+    "log": 51,
+    "ask": 71
+  },
+  "rules": [
+    {
+      "id": "R002",
+      "enabled": true,
+      "description": "Recursive/forced deletion — halt",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\brm\\s+.*(-rf|-fr|--recursive)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R003",
+      "enabled": true,
+      "description": "Privilege escalation commands",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(sudo|visudo|dscl)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R005",
+      "enabled": true,
+      "description": "Persistence mechanisms — blocked",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(nohup|launchctl\\s+load|crontab|setsid)\\b|\\s&\\s*$"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 85,
+        "consequence": 90,
+        "blast_radius": 80
+      }
+    },
+    {
+      "id": "R006",
+      "enabled": true,
+      "description": "Resource amplification (fork bombs, infinite loops)",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": ":\\(\\)\\{.*\\}|while\\s+(true|1|:)|\\byes\\s*\\||\\bdd\\s+.*if=/dev/(zero|urandom)|\\bfor\\s*\\(\\s*;\\s*;\\s*\\)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 80,
+        "consequence": 95,
+        "blast_radius": 100
+      }
+    },
+    {
+      "id": "R007",
+      "enabled": true,
+      "description": "AppleScript execution — blocked",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\bosascript\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 80,
+        "consequence": 95,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R008",
+      "enabled": true,
+      "description": "Firewall modification — blocked",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\bpfctl\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R009",
+      "enabled": true,
+      "description": "Network configuration changes — blocked",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(networksetup|scutil)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 80,
+        "consequence": 95,
+        "blast_radius": 85
+      }
+    },
+    {
+      "id": "R010",
+      "enabled": true,
+      "description": "Keychain access — blocked",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\bsecurity\\s+(find-|delete-|add-|dump-|export|import)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 95,
+        "consequence": 100,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R011",
+      "enabled": true,
+      "description": "System preferences modification",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\bdefaults\\s+write\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 75,
+        "consequence": 80,
+        "blast_radius": 60
+      }
+    },
+    {
+      "id": "R012R",
+      "enabled": true,
+      "description": "Read-only access to ZLAR paths — allowed with audit",
+      "domain": "bash",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "/(bin|etc|config|scripts)/zlar-|/\\.claude/(hooks|settings|\\.gate-disabled)|policy.*\\.json|pf-zlar|pf\\.conf|gate\\.json|/var/log/(audit|gate)"
+          }
+        },
+        "compound_guard": {
+          "command": {
+            "regex": "^\\s*(cat|head|tail|less|more|wc|grep|egrep|fgrep|rg|file|stat|ls|diff|md5|shasum|sha256sum|xxd|hexdump|strings)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 0,
+        "blast_radius": 0
+      }
+    },
+    {
+      "id": "R012",
+      "enabled": true,
+      "description": "ZLAR enforcement modification — ask human",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "/(bin|etc|config|scripts)/zlar-|/\\.claude/(hooks|settings|\\.gate-disabled)|policy.*\\.json|pf-zlar|pf\\.conf|gate\\.json|/var/log/(audit|gate)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      },
+      "verify_hint": "Is the modification within ZLAR's enforcement layer (bin/zlar-gate, lib/hmac, lib/invariants, etc/policies, keys)?"
+    },
+    {
+      "id": "R012BR",
+      "enabled": true,
+      "description": "Read-only access to audit/log/state files — allowed with audit",
+      "domain": "bash",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "(audit\\.jsonl|gate\\.log|gate-stderr\\.log|watchdog\\.lock|watchdog\\.log|karma\\.json|away-queue|availability\\.state|\\.policy-cache|\\.gate-active|\\.telegram-rate|/sessions/)"
+          }
+        },
+        "compound_guard": {
+          "command": {
+            "regex": "^\\s*(cat|head|tail|less|more|wc|grep|egrep|fgrep|rg|file|stat|ls|diff|md5|shasum|sha256sum|xxd|hexdump|strings|ZLAR_AUDIT_FILE=)\\b|bin/zlar-(digest|brief|audit|restore)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 0,
+        "blast_radius": 0
+      }
+    },
+    {
+      "id": "R012B",
+      "enabled": true,
+      "description": "Audit/log/state file manipulation — blocked",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "(audit\\.jsonl|gate\\.log|gate-stderr\\.log|watchdog\\.lock|watchdog\\.log|karma\\.json|away-queue|availability\\.state|\\.policy-cache|\\.gate-active|\\.telegram-rate|/sessions/)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R015",
+      "enabled": true,
+      "description": "Git push --force / -f (bare) — blocked. Use --force-with-lease for approval.",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\bgit\\s+push\\s+.*(-f\\b|--force(?!-with-lease))"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 80,
+        "blast_radius": 75
+      }
+    },
+    {
+      "id": "R099",
+      "enabled": true,
+      "description": "Canary — gate liveness test. Must be denied to prove enforcement.",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "contains": "ZLAR_CANARY_PROBE"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 0,
+        "blast_radius": 0
+      }
+    },
+    {
+      "id": "R005B",
+      "enabled": true,
+      "description": "Claude process spawning — blocked (governance escape)",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\bclaude\\b.*\\s(-p\\b|--pipe|--print|--bare|--dangerously|--agent)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      }
+    },
+    {
+      "id": "R005C",
+      "enabled": true,
+      "description": "Interpreter one-liner escape — ask (opaque payload, Claude uses python3 -c legitimately)",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(python[23]?(\\.\\d+)?|node|perl|ruby|lua|php)\\s+(-[cCeE]\\b|--eval)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 80,
+        "consequence": 90,
+        "blast_radius": 85
+      },
+      "verify_hint": "Is the interpreter payload bounded and readable, or opaque/dynamic input from an external source?"
+    },
+    {
+      "id": "R005D",
+      "enabled": true,
+      "description": "Base64 decode piped — blocked (encoding bypass)",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "base64\\s+(-d|--decode).*\\|"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 95,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R005D2",
+      "enabled": true,
+      "description": "Pipe to shell (incl. absolute paths) — blocked",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\|\\s*(/usr/bin/env\\s+)?(/?\\w*/)*?(bash|sh|zsh|dash)(\\s|$)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 95,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R005E",
+      "enabled": true,
+      "description": "Eval/exec fd redirect/dev-tcp — ask (indirect execution)",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\beval\\b|\\bexec\\s+[0-9]|/dev/tcp/|/dev/udp/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 85,
+        "consequence": 90,
+        "blast_radius": 85
+      },
+      "verify_hint": "Is this eval/exec operating on a bounded local variable, or on untrusted external input?"
+    },
+    {
+      "id": "R005F",
+      "enabled": true,
+      "description": "MCP config manipulation via bash — blocked",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "contains": ".mcp.json"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R005G",
+      "enabled": true,
+      "description": "Docker socket + dangerous ops — ask (container escape risk)",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "docker\\.sock|/var/run/docker|docker\\s+(exec|run|cp)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 95
+      },
+      "verify_hint": "Is this container operation scoped to a safe, isolated container — or could it affect the host?"
+    },
+    {
+      "id": "R005H",
+      "enabled": true,
+      "description": "Library injection — blocked (LD_PRELOAD/DYLD_INSERT)",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "LD_PRELOAD|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 85,
+        "consequence": 95,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R001B",
+      "enabled": true,
+      "description": "Environment variable commands expose secrets — ask",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "^\\s*(printenv|env|set)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 70,
+        "blast_radius": 70
+      },
+      "verify_hint": "Will this expose credentials or secrets beyond the current process? Check what env vars are being printed."
+    },
+    {
+      "id": "R001C",
+      "enabled": true,
+      "description": "Bash read commands targeting sensitive files require approval",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(cat|head|tail|less|more|strings|xxd|od|hexdump)\\b.*(\\.env|/\\.ssh/|private\\.key|signing\\.key|id_rsa|id_ed25519)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 80,
+        "blast_radius": 70
+      },
+      "verify_hint": "What file is being read and why? Check for sensitive paths (/etc/shadow, .ssh, credential files)."
+    },
+    {
+      "id": "R001",
+      "enabled": true,
+      "description": "Safe read-only shell commands (no compound operators)",
+      "domain": "bash",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "^\\s*(ls|cat|head|tail|pwd|whoami|hostname|uptime|date|df|du|ps|echo|which|file|wc|id|uname|sw_vers|system_profiler|defaults\\s+read|type|man|help|tput|true|false|test|\\[|printf|basename|dirname|realpath|readlink|stat|shasum|md5|openssl\\s+(version|list)|git\\s+(status|log|diff|branch|show|rev-parse|ls-files|describe|remote|config\\s+--get)|gh\\s+(pr|issue|api|repo|run|release|auth\\s+status)|npm\\s+(ls|list|outdated|view|info|version)|node\\s+(-v|--version)|npx\\s+--version|brew\\s+(list|info|outdated)|jq\\s+--version)\\b"
+          }
+        },
+        "compound_guard": {
+          "command": {
+            "not_regex": "[;|&`>]|\\$\\("
+          }
+        }
+      }
+    },
+    {
+      "id": "R004",
+      "enabled": true,
+      "description": "Permission/ownership changes",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(chmod|chown)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 65,
+        "consequence": 70,
+        "blast_radius": 50
+      },
+      "verify_hint": "What permissions/ownership are changing and on what path? Widening permissions on sensitive files is high-risk."
+    },
+    {
+      "id": "R013",
+      "enabled": true,
+      "description": "Process termination requires approval",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(kill|killall|pkill)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 70,
+        "consequence": 85,
+        "blast_radius": 60
+      },
+      "verify_hint": "What process is being terminated? Check PID/name before approving — killing system daemons is hard to recover."
+    },
+    {
+      "id": "R014a",
+      "enabled": true,
+      "description": "Git force-push requires approval — destructive, rewrites remote history",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\bgit\\s+push\\s+.*(-f|--force|--force-with-lease)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 85,
+        "blast_radius": 80
+      },
+      "verify_hint": "Force-push rewrites remote history. Confirm the branch and that no one else's work will be lost."
+    },
+    {
+      "id": "R014",
+      "enabled": true,
+      "description": "Git push — auto-allow, audit only",
+      "domain": "bash",
+      "action": "log",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\bgit\\s+push\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 40,
+        "consequence": 35,
+        "blast_radius": 45
+      }
+    },
+    {
+      "id": "R016",
+      "enabled": true,
+      "description": "Network send commands require approval",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(curl|wget|ssh|scp|rsync|nc|ncat|netcat)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 60,
+        "consequence": 70,
+        "blast_radius": 80
+      },
+      "verify_hint": "What data is being sent and to what destination? Verify it is not exfiltrating credentials or internal data."
+    },
+    {
+      "id": "R017",
+      "enabled": true,
+      "description": "Simple rm (non-recursive) requires approval",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\brm\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 80,
+        "consequence": 60,
+        "blast_radius": 40
+      },
+      "verify_hint": "What file or directory is being deleted? Confirm it is not a file you need — rm is not easily undone."
+    },
+    {
+      "id": "R018",
+      "enabled": true,
+      "description": "Open command — allow and audit",
+      "domain": "bash",
+      "action": "allow",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\bopen\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 40,
+        "consequence": 60,
+        "blast_radius": 50
+      }
+    },
+    {
+      "id": "R019",
+      "enabled": true,
+      "description": "Compound commands — allow (dangerous patterns caught by prior rules)",
+      "domain": "bash",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "[;|&`]|\\$\\("
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 0,
+        "blast_radius": 0
+      }
+    },
+    {
+      "id": "R020",
+      "enabled": true,
+      "description": "Other shell commands — allow and audit",
+      "domain": "bash",
+      "action": "allow",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "domain": "bash"
+      },
+      "risk_score": {
+        "irreversibility": 60,
+        "consequence": 50,
+        "blast_radius": 40
+      }
+    },
+    {
+      "id": "R030",
+      "enabled": true,
+      "description": "Write to .ssh — blocked",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".ssh"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 95,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R032B",
+      "enabled": true,
+      "description": "Write to ZLAR .claude/settings*.json (gate hook TCB) — blocked. Narrowed v2.8.0: was .claude/** which blocked non-TCB files like launch.json.",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*\\.claude/settings[^/]*\\.json$"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R032C",
+      "enabled": true,
+      "description": "Write to ZLAR var/log/ — blocked",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*/var/log/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R032",
+      "enabled": true,
+      "description": "Write to ZLAR enforcement layer — blocked (gate, crypto, policy, keys)",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*/bin/zlar-gate|ZLAR.*/lib/(crypto|hmac)\\.sh|ZLAR.*/etc/(policies|keys)/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      }
+    },
+    {
+      "id": "R032D",
+      "enabled": true,
+      "description": "Write to Claude settings (gate hooks) — ask human",
+      "domain": "write",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".claude/settings"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      },
+      "verify_hint": "This writes to Claude's settings (gate hooks). Verify it does not disable or bypass the ZLAR gate."
+    },
+    {
+      "id": "R032E",
+      "enabled": true,
+      "description": "Write to ZLAR repo code — ask human (lib, tests, scripts, mcp-gate, docs)",
+      "domain": "write",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*/repo/(lib|tests|scripts|mcp-gate|docs|etc/canary)/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 70,
+        "consequence": 70,
+        "blast_radius": 60
+      },
+      "verify_hint": "This writes to ZLAR source code. Confirm the change is intentional and does not weaken enforcement."
+    },
+    {
+      "id": "R033",
+      "enabled": true,
+      "description": "Write to system config — blocked",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "prefix": "/etc"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 85,
+        "consequence": 90,
+        "blast_radius": 70
+      }
+    },
+    {
+      "id": "R031",
+      "enabled": true,
+      "description": "Write to .env files requires approval",
+      "domain": "write",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".env"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 60,
+        "consequence": 80,
+        "blast_radius": 50
+      },
+      "verify_hint": "This modifies a .env file. Confirm it is not overwriting, leaking, or deleting credentials."
+    },
+    {
+      "id": "R034",
+      "enabled": true,
+      "description": "Write to shell config requires approval",
+      "domain": "write",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "\\.(zshrc|bashrc|bash_profile|profile|zprofile)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 70,
+        "consequence": 80,
+        "blast_radius": 60
+      },
+      "verify_hint": "This modifies a shell config (.zshrc, .bashrc, etc.). Confirm it does not inject persistent backdoor commands."
+    },
+    {
+      "id": "R032F",
+      "enabled": true,
+      "description": "Write to CLAUDE.md in ZLAR project — blocked (prompt injection vector)",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*CLAUDE(\\.local)?\\.md$"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R032F2",
+      "enabled": true,
+      "description": "Write to global ~/.claude/CLAUDE.md — blocked (prompt injection across all sessions)",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "\\.claude/CLAUDE(\\.local)?\\.md$"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 100
+      }
+    },
+    {
+      "id": "R032G",
+      "enabled": true,
+      "description": "Write to .mcp.json — blocked (MCP server injection)",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "\\.mcp\\.json$"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R035A",
+      "enabled": true,
+      "description": "Write to .ssh/ — blocked (authorized_keys, config, private keys)",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".ssh"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 95,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R035",
+      "enabled": true,
+      "description": "Write to Desktop/Documents — allow and audit",
+      "domain": "write",
+      "action": "allow",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "(Desktop|Documents)/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 50,
+        "consequence": 60,
+        "blast_radius": 40
+      }
+    },
+    {
+      "id": "R035B",
+      "enabled": true,
+      "description": "Write to credential-adjacent dotfiles — requires approval (.gitconfig, .npmrc, .aws/, .kube/, etc.)",
+      "domain": "write",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "(\\.gitconfig|\\.npmrc|\\.pypirc|\\.pip/|\\.aws/|\\.kube/|\\.docker/config|\\.netrc)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 70,
+        "consequence": 85,
+        "blast_radius": 70
+      },
+      "verify_hint": "This modifies a credential-adjacent dotfile (.gitconfig, .npmrc, .aws, .kube). Confirm it is your intended change."
+    },
+    {
+      "id": "R036",
+      "enabled": true,
+      "description": "General file writes — allow",
+      "domain": "write",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "write"
+      }
+    },
+    {
+      "id": "R040",
+      "enabled": true,
+      "description": "Edit .ssh — blocked",
+      "domain": "edit",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".ssh"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 95,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R041B",
+      "enabled": true,
+      "description": "Edit ZLAR .claude/ — blocked",
+      "domain": "edit",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*\\.claude/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R041C",
+      "enabled": true,
+      "description": "Edit ZLAR var/log/ — blocked",
+      "domain": "edit",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*/var/log/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R041",
+      "enabled": true,
+      "description": "Edit ZLAR enforcement layer — blocked (gate, crypto, policy, keys)",
+      "domain": "edit",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*/bin/zlar-gate|ZLAR.*/lib/(crypto|hmac)\\.sh|ZLAR.*/etc/(policies|keys)/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      }
+    },
+    {
+      "id": "R041D",
+      "enabled": true,
+      "description": "Edit Claude settings (gate hooks) — ask human",
+      "domain": "edit",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".claude/settings"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      },
+      "verify_hint": "This edits Claude's settings. Verify it does not remove or weaken the ZLAR PreToolUse hook."
+    },
+    {
+      "id": "R041E",
+      "enabled": true,
+      "description": "Edit ZLAR repo code — ask human (lib, tests, scripts, mcp-gate, docs)",
+      "domain": "edit",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*/repo/(lib|tests|scripts|mcp-gate|docs|etc/canary)/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 70,
+        "consequence": 70,
+        "blast_radius": 60
+      },
+      "verify_hint": "This edits ZLAR source code. Confirm the change is intentional and does not weaken enforcement."
+    },
+    {
+      "id": "R041F",
+      "enabled": true,
+      "description": "Edit CLAUDE.md in ZLAR project — blocked (prompt injection vector)",
+      "domain": "edit",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*CLAUDE(\\.local)?\\.md$"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R041F2",
+      "enabled": true,
+      "description": "Edit global ~/.claude/CLAUDE.md — blocked (prompt injection across all sessions)",
+      "domain": "edit",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "\\.claude/CLAUDE(\\.local)?\\.md$"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 100
+      }
+    },
+    {
+      "id": "R041G",
+      "enabled": true,
+      "description": "Edit .mcp.json — blocked (MCP server injection)",
+      "domain": "edit",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "\\.mcp\\.json$"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R033E",
+      "enabled": true,
+      "description": "Edit to system config (/etc/) — blocked",
+      "domain": "edit",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "prefix": "/etc"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 85,
+        "consequence": 90,
+        "blast_radius": 70
+      }
+    },
+    {
+      "id": "R041H",
+      "enabled": true,
+      "description": "Edit shell config files — requires approval (.zshrc, .bashrc, etc.)",
+      "domain": "edit",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "\\.(zshrc|bashrc|bash_profile|profile|zprofile)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 70,
+        "consequence": 80,
+        "blast_radius": 60
+      },
+      "verify_hint": "This edits a shell config file. Check for injected aliases, functions, or PATH modifications."
+    },
+    {
+      "id": "R041I",
+      "enabled": true,
+      "description": "Edit .env files — requires approval (secrets exposure)",
+      "domain": "edit",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".env"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 60,
+        "consequence": 80,
+        "blast_radius": 50
+      },
+      "verify_hint": "This edits a .env file. Confirm it is not removing, leaking, or overwriting credentials."
+    },
+    {
+      "id": "R041J",
+      "enabled": true,
+      "description": "Edit credential-adjacent dotfiles — requires approval (.gitconfig, .npmrc, .aws/, .kube/, etc.)",
+      "domain": "edit",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "(\\.gitconfig|\\.npmrc|\\.pypirc|\\.pip/|\\.aws/|\\.kube/|\\.docker/config|\\.netrc)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 70,
+        "consequence": 85,
+        "blast_radius": 70
+      },
+      "verify_hint": "This edits a credential-adjacent dotfile. Confirm it is your intended change and check for added keys/tokens."
+    },
+    {
+      "id": "R042",
+      "enabled": true,
+      "description": "General edits — allow",
+      "domain": "edit",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "edit"
+      }
+    },
+    {
+      "id": "R052",
+      "enabled": true,
+      "description": "Read ZLAR signing keys — blocked",
+      "domain": "read",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "(signing|private)\\.key"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 100,
+        "blast_radius": 100
+      }
+    },
+    {
+      "id": "R050",
+      "enabled": true,
+      "description": "Read .ssh — requires approval",
+      "domain": "read",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".ssh"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 90,
+        "blast_radius": 80
+      },
+      "verify_hint": "This reads from .ssh/. Confirm the agent needs this — reading private keys or known_hosts is high-sensitivity."
+    },
+    {
+      "id": "R051",
+      "enabled": true,
+      "description": "Read .env files — requires approval (secrets exposure)",
+      "domain": "read",
+      "action": "ask",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".env"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 80,
+        "blast_radius": 50
+      },
+      "verify_hint": "This reads a .env file. Confirm the agent needs access to these credentials right now."
+    },
+    {
+      "id": "R053",
+      "enabled": true,
+      "description": "General reads — allow",
+      "domain": "read",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "read"
+      }
+    },
+    {
+      "id": "R060",
+      "enabled": true,
+      "description": "Glob searches — allow",
+      "domain": "glob",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "glob"
+      }
+    },
+    {
+      "id": "R061",
+      "enabled": true,
+      "description": "Grep searches — allow",
+      "domain": "grep",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "grep"
+      }
+    },
+    {
+      "id": "R070A",
+      "enabled": true,
+      "description": "Notebook edit .ssh — blocked",
+      "domain": "notebook",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".ssh"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 95,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R070B",
+      "enabled": true,
+      "description": "Notebook edit ZLAR .claude/ — blocked",
+      "domain": "notebook",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*\\.claude/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R070C",
+      "enabled": true,
+      "description": "Notebook edit ZLAR var/log/ — blocked",
+      "domain": "notebook",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*/var/log/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R070D",
+      "enabled": true,
+      "description": "Notebook edit ZLAR source — blocked",
+      "domain": "notebook",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*/(bin|etc|config)/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R070",
+      "enabled": true,
+      "description": "Notebook edits — allow",
+      "domain": "notebook",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "notebook"
+      }
+    },
+    {
+      "id": "R080",
+      "enabled": true,
+      "description": "Sub-agent spawns — allow and log (agents are still gated on every tool call)",
+      "domain": "agent",
+      "action": "allow",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "domain": "agent"
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 0,
+        "blast_radius": 0
+      }
+    },
+    {
+      "id": "R090",
+      "enabled": true,
+      "description": "Web fetch — allow and audit",
+      "domain": "webfetch",
+      "action": "allow",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "domain": "webfetch"
+      },
+      "risk_score": {
+        "irreversibility": 30,
+        "consequence": 50,
+        "blast_radius": 70
+      }
+    },
+    {
+      "id": "R091",
+      "enabled": true,
+      "description": "Web search — allow",
+      "domain": "websearch",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "domain": "websearch"
+      }
+    },
+    {
+      "id": "R095",
+      "enabled": true,
+      "description": "MCP tools — third-party servers, allow and audit",
+      "domain": "mcp",
+      "action": "allow",
+      "severity": "warn",
+      "audit": true,
+      "match": {
+        "domain": "mcp"
+      },
+      "risk_score": {
+        "irreversibility": 50,
+        "consequence": 60,
+        "blast_radius": 70
+      }
+    }
+  ]
+}
