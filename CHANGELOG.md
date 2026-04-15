@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.0.7 — 2026-04-15
+
+zlar lock — intentional fail-closed before stepping away.
+
+'zlar lock' sets ~/.claude/.gate-locked. The gate hard-denies all agent
+actions with no Telegram routing and no policy evaluation — the agent
+cannot act at all until 'zlar unlock' is run. No sudo required. Works
+from any terminal at the keyboard.
+
+Differs from 'zlar off' (which allows everything for maintenance) and
+from the normal ON state (which routes decisions to Telegram). Lock is
+the third state: gone but not permissive.
+
+'zlar status' shows the lock flag and resolved gate state prominently.
+'zlar on' clears the lock as well as the off flags.
+'zlar help' now lists on/off/lock/unlock under a Gate control section.
+
 ## 3.0.6 — 2026-04-15
 
 Human authority over throughput pressure — gates advise, humans decide.

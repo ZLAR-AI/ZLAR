@@ -102,7 +102,18 @@ cmd_status() {
         STRUCT_OFF=no
     fi
 
-    # Resolved gate state — either flag present means OFF
+    # Lock flag — human-set intentional fail-closed (zlar lock)
+    LOCK_FLAG="${HOME}/.claude/.gate-locked"
+    if [ -f "${LOCK_FLAG}" ]; then
+        LOCK_TIME=$(cat "${LOCK_FLAG}" 2>/dev/null | tr -d '[:space:]')
+        printf "    Lock flag (~/.claude/.gate-locked):          ${RED}LOCKED${NC} (${LOCK_TIME:-unknown})\n"
+        GATE_LOCKED=yes
+    else
+        printf "    Lock flag (~/.claude/.gate-locked):          ${DIM}absent${NC}\n"
+        GATE_LOCKED=no
+    fi
+
+    # Resolved gate state — either off flag present means OFF; lock means LOCKED
     if [ "${WRAPPER_OFF}" = "yes" ] || [ "${STRUCT_OFF}" = "yes" ]; then
         if [ "${WRAPPER_OFF}" = "yes" ] && [ "${STRUCT_OFF}" = "yes" ]; then
             RESOLVED_REASON="both flags"
@@ -112,6 +123,8 @@ cmd_status() {
             RESOLVED_REASON="structural flag"
         fi
         printf "    Resolved gate state:                         ${YELLOW}OFF${NC} (${RESOLVED_REASON})\n"
+    elif [ "${GATE_LOCKED}" = "yes" ]; then
+        printf "    Resolved gate state:                         ${RED}🔒 LOCKED${NC} — all actions denied, no Telegram routing\n"
     else
         printf "    Resolved gate state:                         ${GREEN}ON${NC}\n"
     fi
@@ -875,6 +888,12 @@ cmd_doctor() {
 cmd_help() {
     printf "\n${BOLD}ZLAR v${VERSION}${NC} — Zero-config governance for AI coding agents\n\n"
     printf "  ${BOLD}Usage:${NC} zlar <command>\n\n"
+    printf "  ${BOLD}Gate control:${NC}\n"
+    printf "    on          Resume enforcement (policy active, Telegram routing on)\n"
+    printf "    off         Suspend enforcement (allow all — for maintenance/build)\n"
+    printf "    lock        Deny all agent actions, no Telegram routing (away/sleep)\n"
+    printf "    unlock      Remove lock and resume normal enforcement\n"
+    printf "\n"
     printf "  ${BOLD}Commands:${NC}\n"
     printf "    status      Show governed frameworks, policy summary, audit count\n"
     printf "    doctor      Check installation health (deps, keys, hooks, policy)\n"
@@ -910,7 +929,21 @@ case "${COMMAND}" in
     on)
         rm -f "$HOME/.claude/.gate-disabled"
         sudo -n rm -f /etc/zlar/off-flag 2>/dev/null || true
+        rm -f "$HOME/.claude/.gate-locked" 2>/dev/null || true
         echo "Gate ON — policy enforced"
+        ;;
+    lock)
+        LOCK_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        printf '%s\n' "${LOCK_TIME}" > "$HOME/.claude/.gate-locked"
+        echo "Gate LOCKED at ${LOCK_TIME} — all agent actions denied. Run 'zlar unlock' to resume."
+        ;;
+    unlock)
+        if [ -f "$HOME/.claude/.gate-locked" ]; then
+            rm -f "$HOME/.claude/.gate-locked"
+            echo "Gate UNLOCKED — enforcement resumed"
+        else
+            echo "Gate was not locked"
+        fi
         ;;
     help|--help|-h) cmd_help ;;
     *)

@@ -75,6 +75,25 @@ if [ -f /etc/zlar/off-flag ]; then
     exit 0
 fi
 
+# ─── Human Lock: Intentional Fail-Closed ──────────────────────────────────────
+# User-set flag at ~/.claude/.gate-locked. Set by 'zlar lock' before stepping
+# away. Differs from 'zlar off' (which allows everything) — lock denies
+# everything with no Telegram routing. The agent cannot act at all until
+# 'zlar unlock' is run. No sudo required; any human at the keyboard can set it.
+#
+# Checked after off-flag: if the human explicitly turned the gate off, lock
+# does not override that (off means maintenance mode, not governance). If both
+# are set, off wins — the human present at the keyboard chose that state.
+if [ -f "${HOME}/.claude/.gate-locked" ]; then
+    INPUT=$(cat <&0 2>/dev/null || echo '{}')
+    EVENT_NAME=$(echo "${INPUT}" | jq -r '.hook_event_name // "PreToolUse"' 2>/dev/null)
+    [ -z "${EVENT_NAME}" ] && EVENT_NAME="PreToolUse"
+    LOCKED_AT=$(cat "${HOME}/.claude/.gate-locked" 2>/dev/null | tr -d '[:space:]')
+    printf '{"hookSpecificOutput":{"hookEventName":"%s","permissionDecision":"deny","permissionDecisionReason":"[gate:locked] Gate locked by human at %s. Run '\''zlar unlock'\'' to resume."}}\n' \
+        "${EVENT_NAME}" "${LOCKED_AT:-unknown}"
+    exit 0
+fi
+
 # Set when hook event type is determined (before main processing).
 _GATE_HOOK_EVENT="PreToolUse"
 
