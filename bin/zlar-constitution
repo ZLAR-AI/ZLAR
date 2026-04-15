@@ -174,13 +174,17 @@ cmd_sign() {
     local pubkey_b64
     pubkey_b64=$(zlar_crypto_pubkey_b64 "${key}")
 
-    # Create canonical form (empty signature) for signing
+    # Create canonical form (empty signature) for signing.
+    # Phase B of ADR-011 — spec form: compact, sorted, no trailing newline.
+    # jq -S -c sorts and emits compact; tr -d '\n' strips the trailing
+    # newline. Result matches lib/canonicalize.mjs byte-for-byte so the
+    # MCP gate's spec-form verifier can validate it without LEGACY fallback.
     local canon_file
     canon_file=$(mktemp /tmp/zlar-const-canon.XXXXXX)
-    jq --arg pubkey "${pubkey_b64}" \
+    jq -S -c --arg pubkey "${pubkey_b64}" \
        --arg algo "${algo}" \
        '.signature.algorithm = $algo | .signature.public_key = $pubkey | .signature.value = ""' \
-       "${input}" > "${canon_file}"
+       "${input}" | tr -d '\n' > "${canon_file}"
 
     # Hash canonical form
     local hash_file
@@ -258,24 +262,41 @@ cmd_verify() {
 
     info "Signature algorithm: ${sig_algo}"
 
-    # Canonical form
-    local canon_file hash_file sig_file
-    canon_file=$(mktemp /tmp/zlar-const-verify-canon.XXXXXX)
-    hash_file=$(mktemp /tmp/zlar-const-verify-hash.XXXXXX)
+    # Phase B of ADR-011 — accept spec form (new) AND bash-pretty legacy
+    # form (existing deployed artifacts). Order matters: try spec first so
+    # new signatures do not trip the LEGACY warning.
+    local canon_spec canon_pretty hash_spec hash_pretty sig_file
+    canon_spec=$(mktemp /tmp/zlar-const-verify-canon-spec.XXXXXX)
+    canon_pretty=$(mktemp /tmp/zlar-const-verify-canon-pretty.XXXXXX)
+    hash_spec=$(mktemp /tmp/zlar-const-verify-hash-spec.XXXXXX)
+    hash_pretty=$(mktemp /tmp/zlar-const-verify-hash-pretty.XXXXXX)
     sig_file=$(mktemp /tmp/zlar-const-verify-sig.XXXXXX)
 
-    jq '.signature.value = ""' "${input}" > "${canon_file}"
-    zlar_crypto_hash "${canon_file}" "${hash_file}"
+    jq -S -c '.signature.value = ""' "${input}" | tr -d '\n' > "${canon_spec}"
+    zlar_crypto_hash "${canon_spec}" "${hash_spec}"
+
+    jq '.signature.value = ""' "${input}" > "${canon_pretty}"
+    zlar_crypto_hash "${canon_pretty}" "${hash_pretty}"
+
     echo "${sig_value}" | base64 -d > "${sig_file}" 2>/dev/null
 
-    if zlar_crypto_verify "${pubkey}" "${hash_file}" "${sig_file}" "${sig_algo}"; then
-        ok "Constitution signature is VALID"
-    else
-        rm -f "${canon_file}" "${hash_file}" "${sig_file}"
-        fail "Constitution signature is INVALID"
+    local _const_verified=""
+    if zlar_crypto_verify "${pubkey}" "${hash_spec}" "${sig_file}" "${sig_algo}"; then
+        _const_verified="spec"
+    elif zlar_crypto_verify "${pubkey}" "${hash_pretty}" "${sig_file}" "${sig_algo}"; then
+        _const_verified="bash-pretty"
     fi
 
-    rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+    rm -f "${canon_spec}" "${canon_pretty}" "${hash_spec}" "${hash_pretty}" "${sig_file}"
+
+    if [ "${_const_verified}" = "spec" ]; then
+        ok "Constitution signature is VALID (spec canonical form)"
+    elif [ "${_const_verified}" = "bash-pretty" ]; then
+        ok "Constitution signature is VALID"
+        warn "Verified under LEGACY canonical form \"bash-pretty\" — migration tracked by ADR-011."
+    else
+        fail "Constitution signature is INVALID (tried spec and bash-pretty canonical forms)"
+    fi
 
     local version author
     version=$(jq -r '.constitution_version // "unknown"' "${input}" 2>/dev/null)
