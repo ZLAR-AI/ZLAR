@@ -7,6 +7,13 @@ etc/gate.json
 etc/jq.sha256
 etc/policies/active.policy.json
 
+# Per-install policy rotation archive — grows one file per rotation,
+# content is hostname/activity-bound via downstream receipt evidence.
+etc/policies/archive/
+
+# Per-install HMAC tags — bound to local HMAC key, not distributable.
+etc/*.hmac
+
 # Generated runtime data (contains hostname, username, activity patterns)
 etc/agents.registry.json
 etc/agent-policy-bindings.json
