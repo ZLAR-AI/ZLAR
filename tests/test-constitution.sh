@@ -64,6 +64,7 @@ setup_keys() {
 
 create_valid_constitution() {
     local output="${1:-${TEST_DIR}/etc/constitution.json}"
+    local jq_override="${2:-.}"
     cat > "${TEST_DIR}/etc/constitution-unsigned.json" <<'CONSTEOF'
 {
   "constitution_version": "1.0.0",
@@ -96,6 +97,14 @@ create_valid_constitution() {
   "signature": {"algorithm":"","public_key":"","value":""}
 }
 CONSTEOF
+
+    # Apply optional jq override to the unsigned template before signing
+    if [ "${jq_override}" != "." ]; then
+        jq "${jq_override}" "${TEST_DIR}/etc/constitution-unsigned.json" \
+            > "${TEST_DIR}/etc/constitution-unsigned.json.tmp"
+        mv "${TEST_DIR}/etc/constitution-unsigned.json.tmp" \
+           "${TEST_DIR}/etc/constitution-unsigned.json"
+    fi
 
     # Sign it
     local algo pubkey_b64 canon_file hash_file sig_file sig_b64
@@ -159,8 +168,9 @@ TELEGRAM_CHAT_ID=""
 _CONSTITUTION_VALIDATED=""
 
 # Source the validate_constitution function from the gate.
-# Extract lines 991-1130 which contain the complete function.
-eval "$(sed -n '991,1149p' "${REAL_PROJECT_DIR}/bin/zlar-gate")"
+# awk range extraction rather than fixed line numbers — robust against
+# the function growing when new PC checks are added.
+eval "$(awk '/^validate_constitution\(\) \{/,/^}$/' "${REAL_PROJECT_DIR}/bin/zlar-gate")"
 
 # Source _dp03_check from the constitution CLI for direct testing.
 eval "$(sed -n '692,780p' "${REAL_PROJECT_DIR}/bin/zlar-constitution")"
@@ -360,6 +370,32 @@ _CONSTITUTION_VALIDATED=""
 rm -f "${SESSION_DIR}/${SESSION_ID}.constitution-valid" 2>/dev/null
 validate_constitution && result="pass" || result="fail"
 assert "C8: PC-05 default_action=deny = pass" "pass" "${result}"
+
+# C9: PC-05 — constitution without manifest_deny_required_classes = fail
+# Defense-in-depth: deploy-time _dp03_check content-validates the six names;
+# this covers post-deploy tamper and pre-_dp03_check deployments.
+rm -f "${CONSTITUTION_PRESENCE_FILE}" 2>/dev/null
+create_valid_constitution "${CONSTITUTION_FILE}" 'del(.amendable_constraints.manifest_deny_required_classes)'
+_CONSTITUTION_VALIDATED=""
+rm -f "${SESSION_DIR}/${SESSION_ID}.constitution-valid" 2>/dev/null
+validate_constitution && result="pass" || result="fail"
+assert "C9: PC-05 missing required_classes = fail" "fail" "${result}"
+
+# C10: PC-05 — empty required_classes array = fail
+rm -f "${CONSTITUTION_PRESENCE_FILE}" 2>/dev/null
+create_valid_constitution "${CONSTITUTION_FILE}" '.amendable_constraints.manifest_deny_required_classes = []'
+_CONSTITUTION_VALIDATED=""
+rm -f "${SESSION_DIR}/${SESSION_ID}.constitution-valid" 2>/dev/null
+validate_constitution && result="pass" || result="fail"
+assert "C10: PC-05 empty required_classes = fail" "fail" "${result}"
+
+# C11: PC-05 — required_classes populated only with invalid entries = fail
+rm -f "${CONSTITUTION_PRESENCE_FILE}" 2>/dev/null
+create_valid_constitution "${CONSTITUTION_FILE}" '.amendable_constraints.manifest_deny_required_classes = ["", null, 42]'
+_CONSTITUTION_VALIDATED=""
+rm -f "${SESSION_DIR}/${SESSION_ID}.constitution-valid" 2>/dev/null
+validate_constitution && result="pass" || result="fail"
+assert "C11: PC-05 all-invalid-entries required_classes = fail" "fail" "${result}"
 
 echo
 

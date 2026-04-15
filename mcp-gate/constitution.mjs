@@ -283,14 +283,35 @@ export function validateConstitution(opts) {
     };
   }
 
-  // ── 10. PC-05b: Manifest must deny required governance classes ────────
+  // ── 10a. PC-05b-pre: Constitution must declare ≥1 required deny class ──
+  // Defense-in-depth against a vacuously-empty required_classes field.
+  // bin/zlar-constitution _dp03_check (line 767-777) already enforces the
+  // specific six-class content at deploy time, so this gate-load check
+  // guards against post-deploy tamper and against constitutions deployed
+  // by older ceremony versions that predated _dp03_check.
+  //
+  // Filters to non-empty strings only — a required_classes field populated
+  // with nulls, non-strings, or empty strings is treated as vacuous.
+  // Array.isArray guard handles the case where the field is a non-array
+  // (string, number, object); bash gate's jq handles this via `if type ==
+  // "array"`. Without the guard, JS would crash with TypeError on .filter.
+  const _rawClasses = constitution.amendable_constraints?.manifest_deny_required_classes;
+  const requiredClasses = (Array.isArray(_rawClasses) ? _rawClasses : [])
+    .filter(c => typeof c === 'string' && c.length > 0);
+  if (requiredClasses.length === 0) {
+    return {
+      ok: false,
+      reason: 'PC-05 VIOLATED — constitution does not declare amendable_constraints.manifest_deny_required_classes (no reserved classes declared)',
+    };
+  }
+
+  // ── 10b. PC-05b: Manifest must deny required governance classes ────────
   // Parity with bash gate lines 1124-1137: check runs when the manifest is
   // loaded (null-manifest means the manifest failed to load and the sub-check
   // is skipped — bash MANIFEST_LOADED=false behavior). A manifest that IS
   // loaded but omits authority or authority.deny must fail, because bash's
   // grep over an empty deny-set reports every required class as missing.
   if (manifest) {
-    const requiredClasses = constitution.amendable_constraints?.manifest_deny_required_classes || [];
     const manifestDenies = new Set(manifest.authority?.deny || []);
     const missing = requiredClasses.filter(c => !manifestDenies.has(c));
     if (missing.length > 0) {

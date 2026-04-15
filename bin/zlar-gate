@@ -1120,10 +1120,29 @@ validate_constitution() {
         return 1
     fi
 
-    # 10. PC-05: Manifest must deny all six governance-critical power classes
+    # 10a. PC-05: Constitution must declare ≥1 required deny class
+    # Defense-in-depth against a vacuously-empty required_classes field.
+    # bin/zlar-constitution _dp03_check already content-checks the six-class
+    # list at deploy time; this gate-load check guards against post-deploy
+    # tamper and against constitutions deployed by older ceremony versions.
+    # Filters to non-empty strings — nulls, non-strings, and "" are treated
+    # as vacuous.
+    local _declared_classes_count
+    _declared_classes_count=$(jq -r '
+      .amendable_constraints.manifest_deny_required_classes
+      | if type == "array"
+        then [.[] | select(type == "string" and length > 0)] | length
+        else 0
+        end' "${CONSTITUTION_FILE}" 2>/dev/null || echo 0)
+    if [ -z "${_declared_classes_count}" ] || [ "${_declared_classes_count}" -eq 0 ] 2>/dev/null; then
+        log "FATAL: PC-05 VIOLATED — constitution does not declare amendable_constraints.manifest_deny_required_classes (no reserved classes declared)"
+        return 1
+    fi
+
+    # 10b. PC-05: Manifest must deny all governance-critical power classes
     if [ "${MANIFEST_LOADED}" = "true" ] && [ -n "${MANIFEST_JSON}" ]; then
         local _required_classes _manifest_denies _missing_class=""
-        _required_classes=$(jq -r '.amendable_constraints.manifest_deny_required_classes[]' "${CONSTITUTION_FILE}" 2>/dev/null)
+        _required_classes=$(jq -r '.amendable_constraints.manifest_deny_required_classes[] | select(type == "string" and length > 0)' "${CONSTITUTION_FILE}" 2>/dev/null)
         _manifest_denies=$(echo "${MANIFEST_JSON}" | jq -r '.authority.deny[]' 2>/dev/null)
         for _rc in ${_required_classes}; do
             if ! echo "${_manifest_denies}" | grep -q "^${_rc}$" 2>/dev/null; then

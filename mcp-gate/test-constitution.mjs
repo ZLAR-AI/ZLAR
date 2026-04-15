@@ -415,6 +415,96 @@ console.log('\n── PC-05a: default deny-wins ──────────�
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// PC-05c: Constitution must declare required classes (defense-in-depth)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Defense-in-depth against a vacuously-empty required_classes field. The
+// deploy ceremony's _dp03_check content-checks the six specific class names
+// at proposal/activate time; this gate-load check guards against post-deploy
+// tamper and against constitutions deployed by older ceremony versions.
+
+console.log('\n── PC-05c: constitution declares required classes ─────────────');
+
+// amendable_constraints missing entirely → fail
+{
+  undeploy();
+  writeRestoreConfig('deny');
+  const manifest = signManifest(buildManifest(), POLICY_PRIV_PEM);
+  writeFileSync(MANIFEST_FILE, JSON.stringify(manifest, null, 2));
+  const bad = signConstitution(buildConstitution({ amendable_constraints: undefined }), CONST_PRIV_PEM);
+  deployConstitution(bad);
+  const r = validateConstitution(baseOpts({ manifest }));
+  assert('PC-05c no amendable_constraints fails', false, r.ok);
+  assertIncludes('PC-05c no amendable_constraints reason', r.reason, 'does not declare');
+}
+
+// amendable_constraints present, manifest_deny_required_classes MISSING → fail
+{
+  undeploy();
+  writeRestoreConfig('deny');
+  const bad = signConstitution(buildConstitution({ amendable_constraints: { other_field: 'x' } }), CONST_PRIV_PEM);
+  deployConstitution(bad);
+  const r = validateConstitution(baseOpts());
+  assert('PC-05c missing field fails', false, r.ok);
+  assertIncludes('PC-05c missing field reason', r.reason, 'does not declare');
+}
+
+// manifest_deny_required_classes = [] → fail
+{
+  undeploy();
+  writeRestoreConfig('deny');
+  const bad = signConstitution(buildConstitution({ amendable_constraints: { manifest_deny_required_classes: [] } }), CONST_PRIV_PEM);
+  deployConstitution(bad);
+  const r = validateConstitution(baseOpts());
+  assert('PC-05c empty array fails', false, r.ok);
+  assertIncludes('PC-05c empty array reason', r.reason, 'does not declare');
+}
+
+// manifest_deny_required_classes = null → fail
+{
+  undeploy();
+  writeRestoreConfig('deny');
+  const bad = signConstitution(buildConstitution({ amendable_constraints: { manifest_deny_required_classes: null } }), CONST_PRIV_PEM);
+  deployConstitution(bad);
+  const r = validateConstitution(baseOpts());
+  assert('PC-05c null field fails', false, r.ok);
+  assertIncludes('PC-05c null field reason', r.reason, 'does not declare');
+}
+
+// manifest_deny_required_classes = ['', null, 42] → all filtered to empty → fail
+{
+  undeploy();
+  writeRestoreConfig('deny');
+  const bad = signConstitution(buildConstitution({ amendable_constraints: { manifest_deny_required_classes: ['', null, 42] } }), CONST_PRIV_PEM);
+  deployConstitution(bad);
+  const r = validateConstitution(baseOpts());
+  assert('PC-05c all-invalid-entries fails', false, r.ok);
+  assertIncludes('PC-05c all-invalid-entries reason', r.reason, 'does not declare');
+}
+
+// manifest_deny_required_classes = "not-an-array" → non-array guard, fail
+{
+  undeploy();
+  writeRestoreConfig('deny');
+  const bad = signConstitution(buildConstitution({ amendable_constraints: { manifest_deny_required_classes: 'governance_mutation' } }), CONST_PRIV_PEM);
+  deployConstitution(bad);
+  const r = validateConstitution(baseOpts());
+  assert('PC-05c non-array string fails', false, r.ok);
+  assertIncludes('PC-05c non-array reason', r.reason, 'does not declare');
+}
+
+// manifest_deny_required_classes = 42 → non-array guard, fail
+{
+  undeploy();
+  writeRestoreConfig('deny');
+  const bad = signConstitution(buildConstitution({ amendable_constraints: { manifest_deny_required_classes: 42 } }), CONST_PRIV_PEM);
+  deployConstitution(bad);
+  const r = validateConstitution(baseOpts());
+  assert('PC-05c non-array number fails', false, r.ok);
+  assertIncludes('PC-05c non-array number reason', r.reason, 'does not declare');
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // PC-05b: Manifest must deny required governance classes
 // ═════════════════════════════════════════════════════════════════════════════
 
