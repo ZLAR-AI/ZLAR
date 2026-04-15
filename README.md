@@ -265,7 +265,7 @@ bash tests/count-assertions.sh --detail   # also show per-file pass counts
 bash tests/count-assertions.sh --badge    # print shields.io badge URL
 ```
 
-Current state (v3.0.4): **33 files, 1055 assertions, 0 failures.**
+Current state (v3.0.5): **37 files, 1425 assertions, 2 pre-existing failures** (mcp-gate/test.mjs and cedar-poc/test.mjs — constitution signature not available in CI environment).
 
 ### Dependencies
 

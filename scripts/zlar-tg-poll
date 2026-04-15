@@ -237,7 +237,7 @@ while true; do
             _approval_dir="${PROJECT_DIR}/var/log/approvals"
             _action_hash=""
             # Scan pending files for the one containing this action_id.
-            for _pf in "${_approval_dir}"/*.pending 2>/dev/null; do
+            for _pf in "${_approval_dir}"/*.pending; do
                 [ -f "${_pf}" ] || continue
                 _pf_action_id=$(head -n1 "${_pf}" 2>/dev/null || true)
                 if [ "${_pf_action_id}" = "${_denied_action_id}" ]; then
