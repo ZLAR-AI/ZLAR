@@ -51,6 +51,12 @@ import {
   mapToGateAction as cedarMapAction,
 } from '../lib/cedar-evaluator.mjs';
 
+// Constitutional validation (Second Authority Law parity with bash gate)
+import {
+  loadManifest,
+  validateConstitution,
+} from './constitution.mjs';
+
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 const CONFIG = {
@@ -61,6 +67,12 @@ const CONFIG = {
   auditFile: join(PROJECT_DIR, 'var/log/audit.jsonl'),
   policyFile: join(PROJECT_DIR, 'etc/policies/active.policy.json'),
   policyPubkey: join(PROJECT_DIR, 'etc/keys/policy-signing.pub'),
+  // Second Authority Law (parity with bash gate)
+  constitutionFile: join(PROJECT_DIR, 'etc/constitution.json'),
+  constitutionPubkey: join(PROJECT_DIR, 'etc/keys/constitution-signing.pub'),
+  constitutionPresenceFile: join(PROJECT_DIR, 'var/log/.constitution-last-hash'),
+  manifestFile: join(PROJECT_DIR, 'etc/manifest.json'),
+  restoreConfigFile: join(PROJECT_DIR, 'etc/restore-config.json'),
   telegramToken: null,
   telegramChatId: null,
   telegramTimeoutS: 300,
@@ -363,6 +375,75 @@ function evaluatePolicyDual(toolName, args) {
 
   // Unknown engine — fail-closed
   return { action: 'deny', rule: 'unknown-engine', riskScore: 100, severity: 'critical' };
+}
+
+// ─── Constitutional Validation (Second Authority Law) ──────────────────────
+// Parity with bash gate validate_constitution() at bin/zlar-gate:991-1149.
+// Called at startup AND on every tools/call to catch mid-run tamper. The
+// validateConstitution module caches by constitution file hash, so the hot
+// path is a single SHA-256 read.
+//
+// Fail-closed semantics: if the constitution has been deployed (presence
+// tracker exists) and validation fails for any reason, the gate denies all
+// subsequent tool calls until the condition is cleared. Pre-constitutional
+// mode (no tracker) is an explicit pass state.
+//
+// Audit: one `constitution.invalid` event is emitted on each transition
+// from ok → fail, so the audit trail records tamper events without spamming.
+
+let MANIFEST = null;
+let MANIFEST_LOAD_REASON = null;
+let CONSTITUTION_VALID = true;
+let CONSTITUTION_FAIL_REASON = null;
+let CONSTITUTION_LAST_OK = true;
+
+function loadManifestAndValidateConstitution(emitOnChange = true) {
+  // Reload manifest every time we revalidate — the manifest-deny set
+  // participates in PC-05b and can change between tool calls if the
+  // operator rotates it.
+  const m = loadManifest(CONFIG.manifestFile, CONFIG.policyPubkey);
+  if (m.ok) {
+    MANIFEST = m.manifest;
+    MANIFEST_LOAD_REASON = null;
+  } else {
+    // Manifest failed to load (missing / tampered / expired). Bash gate
+    // behavior: leave MANIFEST_LOADED=false and skip the PC-05b sub-check.
+    // We match that. Manifest-load failure is surfaced separately in logs
+    // and is enforced by the bash gate's own manifest-load path; the MCP
+    // gate's job here is constitutional parity, not manifest enforcement.
+    MANIFEST = null;
+    MANIFEST_LOAD_REASON = m.reason;
+  }
+
+  const result = validateConstitution({
+    constitutionFile: CONFIG.constitutionFile,
+    constitutionPubkey: CONFIG.constitutionPubkey,
+    constitutionPresenceFile: CONFIG.constitutionPresenceFile,
+    policyPubkey: CONFIG.policyPubkey,
+    policy: POLICY,
+    manifest: MANIFEST,
+    restoreConfigFile: CONFIG.restoreConfigFile,
+  });
+
+  const wasOk = CONSTITUTION_LAST_OK;
+  if (result.ok) {
+    CONSTITUTION_VALID = true;
+    CONSTITUTION_FAIL_REASON = null;
+    CONSTITUTION_LAST_OK = true;
+  } else {
+    CONSTITUTION_VALID = false;
+    CONSTITUTION_FAIL_REASON = result.reason;
+    CONSTITUTION_LAST_OK = false;
+    // Emit audit event only on ok → fail transition (not every call)
+    if (emitOnChange && wasOk) {
+      try {
+        emitEvent('mcp', 'constitution.invalid', 'deny',
+          { reason: result.reason, manifest_load: MANIFEST_LOAD_REASON },
+          '', 'critical', 100, 'gate');
+      } catch {}
+    }
+  }
+  return result;
 }
 
 // ─── Standing Approvals ──────────────────────────────────────────────────────
@@ -732,6 +813,27 @@ async function handleRequest(msg) {
 
   console.log(`[gate] Intercepted tools/call: ${toolName}`);
 
+  // Second Authority Law: re-validate constitution + manifest before every
+  // tool call. Cheap in the happy path (hash cache hit); catches mid-run
+  // tamper (constitution deleted, manifest replaced, etc.).
+  loadManifestAndValidateConstitution(true);
+  if (!CONSTITUTION_VALID) {
+    emitEvent('mcp', toolName, 'deny',
+      { tool: toolName, reason: 'constitution_invalid', detail: CONSTITUTION_FAIL_REASON },
+      '', 'critical', 100, 'gate');
+    return {
+      action: 'deny',
+      response: {
+        jsonrpc: '2.0',
+        id: msg.id,
+        error: {
+          code: -32600,
+          message: `[gate] Constitutional validation failed (${CONSTITUTION_FAIL_REASON}) — denied (fail-closed)`,
+        },
+      },
+    };
+  }
+
   // Evaluate policy (JSON, Cedar, or both — depending on CONFIG.policyEngine)
   const evaluation = evaluatePolicyDual(toolName, args);
   console.log(`[gate] Policy: ${evaluation.rule} → ${evaluation.action} (risk ${evaluation.riskScore})`);
@@ -871,6 +973,12 @@ function startTcpProxy() {
   loadPolicy();
   loadStandingApprovals();
   loadCedar();
+  // Second Authority Law: validate constitution + manifest after policy is loaded.
+  // Fails-closed at startup if a deployed constitution is tampered / deleted.
+  loadManifestAndValidateConstitution(false);
+  if (!CONSTITUTION_VALID) {
+    console.error(`[gate] CRITICAL: Constitutional validation failed at startup — fail-closed: ${CONSTITUTION_FAIL_REASON}`);
+  }
 
   const server = createServer(async (clientSocket) => {
     console.log(`[gate] Client connected`);
