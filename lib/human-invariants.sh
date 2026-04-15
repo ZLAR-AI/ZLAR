@@ -37,8 +37,13 @@ HI_PENDING_CAP="${ZLAR_PENDING_CAP:-5}"
 
 # H13: Pending TTL in seconds. Entries older than this are aged out on every
 # read, so orphaned increments (gate crashed, human pivoted, no response path)
-# cannot drift the counter permanently. Default: 1800 (30 min).
-HI_PENDING_TTL="${ZLAR_PENDING_TTL:-1800}"
+# cannot drift the counter permanently.
+# Default: 360 (6 min). Matches TELEGRAM_TIMEOUT_S (300s) + 60s buffer, so
+# entries whose pending files have already expired are also aged out of H13.
+# v2.8.1: reduced from 1800 (30 min) — the old TTL created a 25-min window
+# where H13 counted entries whose pending files had already expired, causing
+# spurious "overloaded" blocks during build sessions with many denied actions.
+HI_PENDING_TTL="${ZLAR_PENDING_TTL:-360}"
 
 # H14: Response time variance — low variance = rubber-stamping warning.
 # Replaces approval rate tracking (which penalizes a well-calibrated gate).

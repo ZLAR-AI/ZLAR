@@ -29,6 +29,10 @@ else
     exit 1
 fi
 
+# Source human-invariants for immediate H13 cleanup on deny (best-effort).
+_HI_PROJECT_DIR="${PROJECT_DIR}"
+[ -f "${PROJECT_DIR}/lib/human-invariants.sh" ] && source "${PROJECT_DIR}/lib/human-invariants.sh" 2>/dev/null || true
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 log_poll() {
@@ -221,6 +225,31 @@ while true; do
         chmod 640 "${cb_file}"
 
         log_poll "Routed: ${cb_data} → ${cb_file}"
+
+        # H13 immediate cleanup (v2.8.1): when the human denies a CC request,
+        # immediately decrement the H13 pending count. Without this, the H13
+        # entry persists for the full TTL (6 min) because the gate only decrements
+        # when the agent retries — and denied actions are rarely retried.
+        # This prevents spurious H13 "overloaded" advisory messages during sessions
+        # where the human denies multiple requests without the agent retrying.
+        if [[ "${cb_data}" == cc:deny:* ]]; then
+            _denied_action_id="${cb_data#cc:deny:}"
+            _approval_dir="${PROJECT_DIR}/var/log/approvals"
+            _action_hash=""
+            # Scan pending files for the one containing this action_id.
+            for _pf in "${_approval_dir}"/*.pending 2>/dev/null; do
+                [ -f "${_pf}" ] || continue
+                _pf_action_id=$(head -n1 "${_pf}" 2>/dev/null || true)
+                if [ "${_pf_action_id}" = "${_denied_action_id}" ]; then
+                    _action_hash=$(sed -n '2p' "${_pf}" 2>/dev/null || true)
+                    break
+                fi
+            done
+            if [ -n "${_action_hash}" ] && command -v hi_decrement_pending &>/dev/null; then
+                hi_decrement_pending "${cb_from}" "${_action_hash}" 2>/dev/null || true
+                log_poll "H13 decremented: action_id=${_denied_action_id} hash=${_action_hash:0:8}..."
+            fi
+        fi
 
         j=$((j + 1))
     done

@@ -2495,7 +2495,17 @@ main() {
                             # before the human had a chance to approve.
                             local _hi_pre_result
                             _hi_pre_result=$(hi_pre_ask_check "${TELEGRAM_CHAT_ID}" "${action_hash}" 2>/dev/null) || true
-                            if [ "${_hi_pre_result}" != "ok" ]; then
+                            if [ "${_hi_pre_result}" = "overloaded" ]; then
+                                # H13 advisory path (v2.8.1): queue at capacity is a signal,
+                                # not a lockout. The human decides if they're overwhelmed.
+                                # Route the ask anyway — send an advisory alert and continue.
+                                # Authority belongs to the human, not to the queue counter.
+                                log "H13 ADVISORY: queue at capacity — routing ask anyway per human authority"
+                                fail_closed_alert "overloaded" 2>/dev/null || true
+                                # Fall through to H15 and Telegram ask below.
+                            elif [ "${_hi_pre_result}" != "ok" ]; then
+                                # H6 (capacity_exceeded) or H14 (rubber_stamping) — still block.
+                                # These protect decision quality, not queue mechanics.
                                 log "HUMAN INVARIANT: ${_hi_pre_result} — not routing to human"
                                 # Out-of-band alert: notify the human that the gate is fail-closed.
                                 # This is a direct curl to Telegram, dedupe-throttled, and never

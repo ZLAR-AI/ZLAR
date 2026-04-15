@@ -118,7 +118,7 @@ fail_closed_alert() {
             invariant_label="H14 — approval rate >=90% over last 20 decisions"
             ;;
         overloaded)
-            invariant_label="H13 — pending approval queue exceeded cap"
+            invariant_label="H13 — pending approval queue at capacity (advisory)"
             ;;
         capacity_exceeded)
             invariant_label="H6 — daily decision cap reached"
@@ -132,8 +132,15 @@ fail_closed_alert() {
     esac
 
     local text
-    text=$(printf '🚨 ZLAR Gate Fail-Closed\n─────────────────────\nReason: %s\nInvariant: %s\nTime: %s\nHost: %s\n\nThe gate is refusing to route new asks until the invariant clears. This alert is sent at most once per %s seconds.' \
-        "${reason}" "${invariant_label}" "${timestamp_iso}" "${hostname_s}" "${ZLAR_ALERT_INTERVAL_S}")
+    if [ "${reason}" = "overloaded" ]; then
+        # H13 advisory: queue at capacity but gate is still routing (v2.8.1).
+        # The human decides if they're overwhelmed — do not lock them out.
+        text=$(printf '⚠️ ZLAR Queue Advisory\n─────────────────────\nApproval queue is at capacity.\nInvariant: %s\nTime: %s\nHost: %s\n\nNew asks are still routing to you. Approve or deny pending items to clear the queue.' \
+            "${invariant_label}" "${timestamp_iso}" "${hostname_s}")
+    else
+        text=$(printf '🚨 ZLAR Gate Fail-Closed\n─────────────────────\nReason: %s\nInvariant: %s\nTime: %s\nHost: %s\n\nThe gate is refusing to route new asks until the invariant clears. This alert is sent at most once per %s seconds.' \
+            "${reason}" "${invariant_label}" "${timestamp_iso}" "${hostname_s}" "${ZLAR_ALERT_INTERVAL_S}")
+    fi
 
     # Send via curl directly. --config - reads token from stdin so it never
     # appears in the process table. Same pattern as bin/zlar-gate's
