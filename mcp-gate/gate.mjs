@@ -57,6 +57,11 @@ import {
   validateConstitution,
 } from './constitution.mjs';
 
+// Runtime manifest-authority enforcement (parity with bash gate 2175-2246)
+import {
+  enforceManifestAuthority,
+} from './manifest-enforcement.mjs';
+
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 const CONFIG = {
@@ -834,10 +839,42 @@ async function handleRequest(msg) {
     };
   }
 
+  // Runtime manifest-authority enforcement (parity with bin/zlar-gate lines 2175-2234)
+  // Classifies the tool call into a capability category and consults the
+  // manifest's deny/allow/unmatched_action. Deny always wins; unmatched actions
+  // either deny outright or flag for ask-override after policy evaluation.
+  // The manifest narrows policy, never widens.
+  const manifestDecision = enforceManifestAuthority(toolName, MANIFEST);
+  if (manifestDecision.action === 'deny') {
+    emitEvent('mcp', toolName, 'deny',
+      { tool: toolName, cap: manifestDecision.cap, args_preview: JSON.stringify(args).substring(0, 200) },
+      manifestDecision.rule, manifestDecision.severity, manifestDecision.riskScore, manifestDecision.authorizer);
+    return {
+      action: 'deny',
+      response: {
+        jsonrpc: '2.0',
+        id: msg.id,
+        error: {
+          code: -32600,
+          message: `[manifest] Blocked by rule ${manifestDecision.rule}: Action denied by capability manifest (category: ${manifestDecision.cap})`,
+        },
+      },
+    };
+  }
+  const manifestForcesAsk = manifestDecision.action === 'force_ask';
+
   // Evaluate policy (JSON, Cedar, or both — depending on CONFIG.policyEngine)
   const evaluation = evaluatePolicyDual(toolName, args);
   console.log(`[gate] Policy: ${evaluation.rule} → ${evaluation.action} (risk ${evaluation.riskScore})`);
 
+  // Manifest escalation override (parity with bin/zlar-gate lines 2240-2246).
+  // If manifest flagged the capability as unmatched-with-escalate and policy
+  // would have allowed or logged, force the final action to "ask". Manifest
+  // narrows policy, never widens — deny stays deny, ask stays ask.
+  if (manifestForcesAsk && (evaluation.action === 'allow' || evaluation.action === 'log')) {
+    console.log(`[gate] MANIFEST: Overriding policy ${evaluation.action} → ask (${manifestDecision.cap} not in manifest allow list)`);
+    evaluation.action = 'ask';
+  }
 
   switch (evaluation.action) {
     case 'allow': {
