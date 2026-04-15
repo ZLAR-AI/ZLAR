@@ -123,6 +123,47 @@ console.log('\n── Manifest load: hard-deny reasons ────────�
   assert('unsigned manifest: ok=true (policy-only fallback)', true, r.ok);
 }
 
+// ─── Strict audit signing default ───────────────────────────────────────────
+console.log('\n── Strict audit signing (startup refusal) ─────────────────────');
+
+// Spawn gate.mjs with a scratch HOME so no signing key exists. With
+// strict mode (the default), startup should exit non-zero BEFORE
+// opening a listen port.
+{
+  const { spawnSync } = await import('child_process');
+  const emptyHome = join(SCRATCH, 'empty-home');
+  mkdirSync(emptyHome, { recursive: true });
+  const result = spawnSync(
+    process.execPath,
+    [join(process.cwd(), 'mcp-gate', 'gate.mjs'), '--upstream', '127.0.0.1:1', '--port', '0'],
+    { env: { ...process.env, HOME: emptyHome }, encoding: 'utf8', timeout: 5000 }
+  );
+  assert('strict default: exits non-zero with no key', true, result.status !== 0);
+  assert('strict default: FATAL message visible',
+    true, /ZLAR_REQUIRE_SIGNED_AUDIT is true/.test(result.stderr || ''));
+}
+
+// With ZLAR_REQUIRE_SIGNED_AUDIT=false, same no-key invocation should
+// proceed past startup. We don't actually want to leave a listener, so
+// we only assert the strict-mode FATAL message is absent from stderr
+// early. Give the process a tight timeout and kill it.
+{
+  const { spawn } = await import('child_process');
+  const emptyHome = join(SCRATCH, 'empty-home-2');
+  mkdirSync(emptyHome, { recursive: true });
+  const child = spawn(
+    process.execPath,
+    [join(process.cwd(), 'mcp-gate', 'gate.mjs'), '--upstream', '127.0.0.1:1', '--port', '0'],
+    { env: { ...process.env, HOME: emptyHome, ZLAR_REQUIRE_SIGNED_AUDIT: 'false' } }
+  );
+  let stderr = '';
+  child.stderr.on('data', d => { stderr += d.toString(); });
+  await new Promise(r => setTimeout(r, 500));
+  child.kill('SIGTERM');
+  await new Promise(r => child.on('exit', r));
+  assert('opt-out: strict FATAL absent', true, !/ZLAR_REQUIRE_SIGNED_AUDIT is true/.test(stderr));
+}
+
 // ─── Cleanup ────────────────────────────────────────────────────────────────
 rmSync(SCRATCH, { recursive: true, force: true });
 

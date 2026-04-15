@@ -147,7 +147,11 @@ if (!CONFIG.telegramChatId) {
       CONFIG.telegramChatId = gateConfig?.telegram?.chat_id;
       if (gateConfig?.telegram?.timeout_s) CONFIG.telegramTimeoutS = gateConfig.telegram.timeout_s;
       if (gateConfig?.emit_receipts === true) CONFIG.emitReceipts = true;
-    } catch {}
+    } catch (e) {
+      // Can't call auditInternalError here — emitEvent isn't defined yet at
+      // module load time. Log to stderr so operators see config corruption.
+      console.error(`[gate] WARN: gate.json parse failed: ${e.message}`);
+    }
   }
 }
 
@@ -167,6 +171,12 @@ let POLICY = null;
 let POLICY_VERSION = 'unknown';
 let POLICY_MTIME_MS = 0;
 let STANDING_APPROVALS_MTIME_MS = 0;
+
+// Session-scoped novelty tracker. See novelty-escalation comment below in
+// handleRequest. Reset implicitly on process restart (new session = new
+// paranoia). In-memory only by design — we don't want an attacker who
+// compromised a past session to grant future sessions a free pass.
+const SEEN_TOOLS = new Set();
 
 // Reload policy and standing approvals if the underlying files changed on
 // disk since the last load. Bash-gate parity: bash re-reads per hook
@@ -513,7 +523,9 @@ function loadManifestAndValidateConstitution(emitOnChange = true) {
         emitEvent('mcp', 'constitution.invalid', 'deny',
           { reason: result.reason, manifest_load: MANIFEST_LOAD_REASON },
           'constitution.invalid', 'critical', 100, 'gate');
-      } catch {}
+      } catch (e) {
+        auditInternalError('constitution_invalid_emit', e, { transition: 'ok_to_fail' });
+      }
     }
   }
   return result;
@@ -587,7 +599,12 @@ function checkStandingApproval(ruleId, toolName, args) {
         if (new RegExp(matcher.regex).test(commandText)) {
           return { match: true, approvalId: sa.id };
         }
-      } catch {} // Invalid regex → skip
+      } catch (e) {
+        // Invalid regex in a standing approval is an authoring bug worth
+        // surfacing in the chain — otherwise a broken SA silently never
+        // matches and the operator doesn't know why.
+        auditInternalError('sa_regex_parse', e, { approval_id: sa.id, pattern: matcher.regex });
+      }
     }
   }
 
@@ -605,8 +622,25 @@ let PREV_RECEIPT_HASH = null;
 let SIGNING_KEY_PEM = null;
 let SIGNING_KEY_ID = null;
 
+// Audit-signing policy.
+//
+// The MCP gate defaults to STRICT signed audit: if the signing key is
+// missing or signing fails, the gate refuses to write an audit entry
+// rather than silently falling back to an unsigned one. This is the
+// Jidoka inversion — easy to stop, hard to go. The audit chain is the
+// only evidence that survives after everyone involved is dead; an
+// unsigned entry is functionally equivalent to no entry for forensic
+// purposes, so the right default is "no signature, no write."
+//
+// Bash gate defaults to advisory (ZLAR_REQUIRE_SIGNED_AUDIT=false) for
+// historical parity; MCP flips it because the daemon shape of the MCP
+// gate makes a silent signing failure much harder to notice in ops.
+//
+// To explicitly opt out (e.g., during testing without a signing key in
+// place), set ZLAR_REQUIRE_SIGNED_AUDIT=false in the environment.
+const REQUIRE_SIGNED_AUDIT = (process.env.ZLAR_REQUIRE_SIGNED_AUDIT || 'true').toLowerCase() !== 'false';
+
 // Load signing key — used for both per-entry audit signing and receipt generation.
-// Audit signing is unconditional when a key exists. Receipts are opt-in.
 if (existsSync(CONFIG.signingKey)) {
   try {
     SIGNING_KEY_PEM = readFileSync(CONFIG.signingKey, 'utf8');
@@ -616,6 +650,53 @@ if (existsSync(CONFIG.signingKey)) {
     console.log(`[gate] Signing key loaded (key_id: ${SIGNING_KEY_ID || 'unknown'})`);
   } catch (e) {
     console.error(`[gate] WARN: Cannot load signing key: ${e.message}`);
+  }
+}
+
+// Startup fail-closed when strict mode is on and no key is available.
+// Emitting events without a key would produce "unsigned" entries that
+// pollute the chain; refusing to start is the only honest response.
+if (REQUIRE_SIGNED_AUDIT && !SIGNING_KEY_PEM) {
+  console.error('[gate] FATAL: ZLAR_REQUIRE_SIGNED_AUDIT is true (default) but no signing key is available at ' + CONFIG.signingKey);
+  console.error('[gate] FATAL: Refusing to start — unsigned audit entries cannot be used as governance evidence.');
+  console.error('[gate] FATAL: Either install a signing key, or set ZLAR_REQUIRE_SIGNED_AUDIT=false explicitly.');
+  process.exit(1);
+}
+
+// Re-entry guard for auditInternalError. If the audit write path is the
+// thing that threw, trying to emit another audit event from inside the
+// catch would recurse. When this flag is set, auditInternalError falls
+// back to stderr only.
+let _AUDITING_INTERNAL_ERROR = false;
+
+// Turn every caught exception into a signed audit event. The audit
+// chain becomes the single source of truth for everything that
+// happened in the gate, INCLUDING its own failures. An attacker who
+// intentionally induces errors to muddy the record leaves MORE
+// evidence behind, not less.
+//
+// Call sites replace bare `catch {}` and `catch (e) { console.error(e) }`.
+// The `phase` argument names the code region so forensic analysts can
+// cluster events (e.g., "policy_load", "sa_load", "hash_chain_read").
+function auditInternalError(phase, err, detail) {
+  const msg = err?.message || String(err);
+  const stack = (err?.stack || '').substring(0, 500);
+  console.error(`[gate] internal_error at ${phase}: ${msg}`);
+  if (_AUDITING_INTERNAL_ERROR) {
+    // Already in the middle of auditing an error — abort to avoid
+    // recursion. Stderr is our only remaining channel.
+    console.error(`[gate] internal_error recursion guard hit at ${phase}`);
+    return;
+  }
+  _AUDITING_INTERNAL_ERROR = true;
+  try {
+    emitEvent('mcp', 'gate.internal_error', 'logged',
+      { phase, error: msg, stack, ...(detail && typeof detail === 'object' ? detail : {}) },
+      'gate.internal_error', 'warn', 0, 'gate:internal_error');
+  } catch (e2) {
+    console.error(`[gate] FATAL: auditInternalError write failed: ${e2.message}`);
+  } finally {
+    _AUDITING_INTERNAL_ERROR = false;
   }
 }
 
@@ -647,7 +728,12 @@ function emitEvent(domain, action, outcome, detail, rule, severity, riskScore, a
         const lastLine = lines[lines.length - 1];
         prevHash = createHash('sha256').update(lastLine).digest('hex');
       }
-    } catch {}
+    } catch (e) {
+      // If we can't compute prev_hash the chain continuity is broken —
+      // worth logging loudly. Don't call auditInternalError from inside
+      // emitEvent (recursion); guard catches this but stderr is cleaner.
+      console.error(`[gate] WARN: prev_hash computation failed: ${e.message}`);
+    }
   }
 
   const event = {
@@ -676,22 +762,40 @@ function emitEvent(domain, action, outcome, detail, rule, severity, riskScore, a
 
   // Per-entry Ed25519 signing (SP 800-53 AU-10 non-repudiation).
   // Matches bash gate: canonical → SHA-256 hex → sign hex bytes → base64.
+  //
+  // Strict mode (default): if signing is configured but fails at
+  // runtime, REFUSE to write the entry. An unsigned row in the chain
+  // is worse than no row — it looks like evidence but isn't.
   let signature = 'unsigned';
+  let signingFailed = false;
   if (SIGNING_KEY_PEM) {
     try {
       const hashHex = sha256hex(canonicalize(event));
       const sig = cryptoSign(null, Buffer.from(hashHex, 'utf8'), SIGNING_KEY_PEM);
       signature = sig.toString('base64');
     } catch (e) {
-      console.error(`[gate] WARN: Audit entry signing failed: ${e.message}`);
+      signingFailed = true;
+      console.error(`[gate] CRITICAL: Audit entry signing failed: ${e.message}`);
     }
   }
+
+  if (REQUIRE_SIGNED_AUDIT && (signature === 'unsigned' || signingFailed)) {
+    // In strict mode we bail rather than pollute the chain with an
+    // entry a forensic analyst cannot verify. The recursion guard in
+    // auditInternalError means we can safely throw here without
+    // re-entering emitEvent.
+    const reason = signingFailed ? 'runtime-signing-failed' : 'no-signing-key';
+    console.error(`[gate] CRITICAL: Refusing to write unsigned audit entry (ZLAR_REQUIRE_SIGNED_AUDIT=true, reason=${reason})`);
+    throw new Error(`audit-write-refused: ${reason}`);
+  }
+
   event.signature = signature;
 
   try {
     appendFileSync(CONFIG.auditFile, JSON.stringify(event) + '\n');
   } catch (e) {
     console.error(`[gate] CRITICAL: Failed to write audit event: ${e.message}`);
+    if (REQUIRE_SIGNED_AUDIT) throw e;
   }
 
   // Generate receipt only for schema-valid outcomes. Audit-only events
@@ -777,7 +881,7 @@ function getConsequenceLine(toolName, rule, riskScore) {
   return '⚠️ *If wrong:* unreviewed action';
 }
 
-async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, verifyHint = '') {
+async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, verifyHint = '', flags = {}) {
   if (!CONFIG.telegramToken || !CONFIG.telegramChatId) {
     console.error('[gate] No Telegram token or chat ID — cannot ask human');
     return 'error';
@@ -794,9 +898,17 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
   // Verify hint: policy-authored check prompt for this rule.
   const verifyLine = verifyHint ? `\n🔍 *Verify:* ${verifyHint}` : '';
 
+  // Novelty banner: first use of this tool this session.
+  const noveltyLine = flags.novelty ? `\n🆕 *First use this session* — extra care.` : '';
+
+  // Advisory banner: human invariants flagged this ask but we're asking anyway.
+  const advisoryLine = flags.advisory
+    ? `\n⚠️ *Advisory:* ${flags.advisory} (routed anyway — you decide)`
+    : '';
+
   // Message layout mirrors bash gate v2.8.1: consequence first, intent (if present),
   // verify hint (if present), action for context, rule+risk as compact metadata at bottom.
-  const text = `${emoji} 🔷 *${rule}*\n\n${consequenceLine}${intentLine}${verifyLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${riskScore}/100`;
+  const text = `${emoji} 🔷 *${rule}*\n\n${consequenceLine}${intentLine}${verifyLine}${noveltyLine}${advisoryLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${riskScore}/100`;
   const escapedText = text.replace(/[_\[\]()~>#+=|{}.!-]/g, '\\$&').replace(/\\`/g, '`').replace(/\\\*/g, '*');
 
   const keyboard = {
@@ -860,9 +972,17 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
             console.log(`[gate] Telegram: DENIED by human (user_id=${cbFrom})`);
             return 'deny';
           }
-        } catch { unlinkSync(filePath); }
+        } catch (e) {
+          // Malformed inbox file — delete and move on, but record the
+          // fact. A poisoned inbox could otherwise be a silent denial-of-
+          // service on callback processing.
+          try { unlinkSync(filePath); } catch {}
+          auditInternalError('inbox_file_parse', e, { file });
+        }
       }
-    } catch {}
+    } catch (e) {
+      auditInternalError('inbox_loop_read', e);
+    }
 
     await new Promise(r => setTimeout(r, 1000));
   }
@@ -986,6 +1106,24 @@ async function handleRequest(msg) {
     evaluation.action = 'ask';
   }
 
+  // Novelty escalation (parity with bin/zlar-gate lines 244-276).
+  // First occurrence of a given tool this session escalates allow → ask.
+  // Threat model: a fresh injection attempt typically targets a fresh-shaped
+  // capability — by asking on first use, we catch that window. Subsequent
+  // calls of the same tool proceed under normal policy. Session-scoped on
+  // purpose: across sessions the alarm resets so a previously-compromised
+  // session can't grant future sessions a free pass.
+  const noveltyKey = toolName;
+  const isNovel = !SEEN_TOOLS.has(noveltyKey);
+  if (isNovel) {
+    SEEN_TOOLS.add(noveltyKey);
+    if (evaluation.action === 'allow' || evaluation.action === 'log') {
+      console.log(`[gate] NOVELTY: First use of "${noveltyKey}" this session — escalating to ask`);
+      evaluation.action = 'ask';
+      evaluation.noveltyEscalated = true;
+    }
+  }
+
   switch (evaluation.action) {
     case 'allow': {
       emitEvent('mcp', toolName, 'allow', { tool: toolName, args_preview: JSON.stringify(args).substring(0, 200) },
@@ -1016,27 +1154,33 @@ async function handleRequest(msg) {
         return { action: 'passthrough', msg };
       }
 
-      // Human invariant pre-ask checks (H6, H13, H14)
+      // Human invariant pre-ask checks (H6, H13, H14).
+      //
+      // Advisory semantics (bash-gate parity): if a pre-check trips, we
+      // LOG the condition and emit a warning audit event, but we still
+      // route the ask to the human. Denying here would silence the
+      // human's own channel — an attacker who can provoke rapid failing
+      // asks could use that as a denial-of-service on legitimate work.
+      // The human is the authority; surface the condition to them and
+      // let them judge.
       const humanId = CONFIG.telegramChatId || 'unknown';
       const hiPre = preAskCheck(humanId);
       if (!hiPre.ok) {
-        console.log(`[gate] Human invariant: ${hiPre.reason} — not routing to human`);
-        emitEvent('mcp', toolName, 'deny', { tool: toolName, reason: `human_${hiPre.reason}`, detail: hiPre.detail },
-          evaluation.rule, evaluation.severity, evaluation.riskScore, `gate:human_${hiPre.reason}`);
-        return {
-          action: 'deny',
-          response: {
-            jsonrpc: '2.0', id: msg.id,
-            error: { code: -32600, message: `[gate] Human decision-maker unavailable (${hiPre.reason}). System is protecting human judgment.` },
-          },
-        };
+        console.log(`[gate] Human invariant ADVISORY: ${hiPre.reason} (${hiPre.detail}) — routing anyway`);
+        emitEvent('mcp', toolName, 'logged',
+          { tool: toolName, reason: `human_${hiPre.reason}`, detail: hiPre.detail, advisory: true },
+          'human_invariant.advisory', 'warn', 0, `gate:human_${hiPre.reason}`);
       }
 
       // H15: Record ask time for deliberation floor check
       recordAskTime(humanId);
 
       const actionId = genId();
-      const decision = await telegramAsk(actionId, toolName, args, evaluation.rule, evaluation.riskScore, evaluation.severity, evaluation.verifyHint || '');
+      const askFlags = {
+        novelty: !!evaluation.noveltyEscalated,
+        advisory: hiPre.ok ? null : `${hiPre.reason} — ${hiPre.detail}`,
+      };
+      const decision = await telegramAsk(actionId, toolName, args, evaluation.rule, evaluation.riskScore, evaluation.severity, evaluation.verifyHint || '', askFlags);
 
       switch (decision) {
         case 'allow': {
@@ -1172,14 +1316,16 @@ function startTcpProxy() {
     upstream.on('error', (e) => {
       console.error(`[gate] Upstream error: ${e.message} — fail-closed`);
       emitEvent('mcp', 'upstream.error', 'deny', { error: e.message },
-        '', 'critical', 100, 'gate');
+        'upstream.error', 'critical', 100, 'gate');
       // Send JSON-RPC error for any pending requests, then close
       try {
         clientSocket.write(JSON.stringify({
           jsonrpc: '2.0', id: null,
           error: { code: -32603, message: '[gate] Upstream unavailable — denied (fail-closed)' }
         }) + '\n');
-      } catch {}
+      } catch (we) {
+        auditInternalError('upstream_error_reply_write', we);
+      }
       clientSocket.end();
     });
 
@@ -1201,12 +1347,32 @@ function startTcpProxy() {
     console.log(`[gate] PQC: ${SIGNATURE_ALGORITHM} / ${HASH_ALGORITHM} / ${PUBLIC_KEY_ID}`);
     console.log(`[gate] Policy engine: ${CONFIG.policyEngine}${CEDAR_LOADED ? ` (Cedar ${cedarVersion()})` : ''}`);
 
-    emitEvent('mcp', 'gate.start', 'allow', { port: CONFIG.port, upstream: `${CONFIG.upstreamHost}:${CONFIG.upstreamPort}` },
-      '', 'info', 0, 'gate');
+    emitEvent('mcp', 'gate.start', 'allow', { port: CONFIG.port, upstream: `${CONFIG.upstreamHost}:${CONFIG.upstreamPort}`, session_id: CONFIG.sessionId },
+      'gate.start', 'info', 0, 'gate');
   });
 
+  // End-of-session anchor. On clean shutdown we emit one last signed
+  // event carrying the session id and the current prev_hash. Any later
+  // entry claiming to belong to this session is provably forged: the
+  // chain is sealed. Pair with the gate.start event to bound the
+  // session from both sides. Kept synchronous so the signature lands
+  // before process.exit returns.
+  function sealSession(signal) {
+    try {
+      emitEvent('mcp', 'gate.session_sealed', 'allow',
+        { session_id: CONFIG.sessionId, signal, seq_final: SEQ + 1 },
+        'gate.session_sealed', 'info', 0, 'gate');
+    } catch (e) {
+      console.error(`[gate] WARN: session_sealed event failed: ${e.message}`);
+    }
+  }
+
   process.on('SIGINT', () => {
-    emitEvent('mcp', 'gate.stop', 'allow', {}, 'gate.stop', 'info', 0, 'gate');
+    sealSession('SIGINT');
+    process.exit(0);
+  });
+  process.on('SIGTERM', () => {
+    sealSession('SIGTERM');
     process.exit(0);
   });
 }
