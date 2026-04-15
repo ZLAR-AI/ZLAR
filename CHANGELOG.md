@@ -2,23 +2,23 @@
 
 ## 3.0.4 — 2026-04-12
 
-Structural fixes from first production data and 12-agent simulation.
+Structural fixes from false-positive analysis and simulation testing.
 Two detectors caused false escalation to at_risk during normal human-
 agent interaction, making ZLAR feel slow instead of fast. Three
 structural changes prevent the cascade pattern from recurring.
 
 Structural:
-- Naveed's convergence rule: a single high-scoring detector can only
-  push trust state to degraded, never to at_risk or suspended. at_risk
-  and suspended now require 2+ detectors with signals above the
-  convergence floor (degraded threshold). Previously: action_silence
-  alone at score 1.0 could push straight to at_risk. This was the root
-  cause of the false positive cascade.
+- Convergence rule: a single high-scoring detector can only push trust
+  state to degraded, never to at_risk or suspended. at_risk and
+  suspended now require 2+ detectors with signals above the convergence
+  floor (degraded threshold). Previously: action_silence alone at score
+  1.0 could push straight to at_risk. This was the root cause of the
+  false positive cascade.
 - Degraded is now visible: Telegram notification sent on degraded
   transition with informational headline ("watching, not slowing down").
   Previously: degraded only escalated to "log" which the human never
   sees. Now the human knows something is off without being interrupted.
-- Cassandra's clock fix: action-silence detector now segments the trace
+- Activity window fix: action-silence detector now segments the trace
   into contiguous activity windows (split at 15-minute gaps). Only gaps
   WITHIN a window are analyzed. Gaps BETWEEN windows are human-absence
   (cleaning house, eating, meetings), not agent-silence. Previously:
@@ -57,7 +57,7 @@ latency fix, key permissions, naming cleanup.
 
 Security:
 - HMAC key files restricted to 0600, keys directory to 0700. Previously
-  world-readable (0644). adversarial reviewer's audit finding.
+  world-readable (0644). Caught in security audit.
 - Shell injection fix in zlar-restore CLI: session_id and reset reason now
   passed via environment variables instead of string interpolation into
   Node -e strings. Defense-in-depth (CLI is operator-facing).
