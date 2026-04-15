@@ -15,10 +15,14 @@
 
 import { writeFileSync, mkdirSync, existsSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { generateKeyPairSync, sign as cryptoSign, createPublicKey } from 'crypto';
 import { loadManifest } from './constitution.mjs';
 import { canonicalize, sha256hex } from '../lib/receipt.mjs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const GATE_MJS = join(__dirname, 'gate.mjs');
 
 let PASS = 0, FAIL = 0, TOTAL = 0;
 function assert(label, expected, actual) {
@@ -135,7 +139,7 @@ console.log('\n── Strict audit signing (startup refusal) ──────�
   mkdirSync(emptyHome, { recursive: true });
   const result = spawnSync(
     process.execPath,
-    [join(process.cwd(), 'mcp-gate', 'gate.mjs'), '--upstream', '127.0.0.1:1', '--port', '0'],
+    [GATE_MJS, '--upstream', '127.0.0.1:1', '--port', '0'],
     { env: { ...process.env, HOME: emptyHome }, encoding: 'utf8', timeout: 5000 }
   );
   assert('strict default: exits non-zero with no key', true, result.status !== 0);
@@ -153,7 +157,7 @@ console.log('\n── Strict audit signing (startup refusal) ──────�
   mkdirSync(emptyHome, { recursive: true });
   const child = spawn(
     process.execPath,
-    [join(process.cwd(), 'mcp-gate', 'gate.mjs'), '--upstream', '127.0.0.1:1', '--port', '0'],
+    [GATE_MJS, '--upstream', '127.0.0.1:1', '--port', '0'],
     { env: { ...process.env, HOME: emptyHome, ZLAR_REQUIRE_SIGNED_AUDIT: 'false' } }
   );
   let stderr = '';
