@@ -10,7 +10,6 @@
 //
 // Usage:
 //   node gate.mjs --port 3100 --upstream localhost:3200
-//   node gate.mjs --stdio --upstream-cmd "npx @modelcontextprotocol/server-filesystem /tmp"
 
 import { createServer, createConnection } from 'net';
 import { readFileSync, appendFileSync, existsSync, statSync } from 'fs';
@@ -68,7 +67,6 @@ const CONFIG = {
   port: 3100,
   upstreamHost: null,
   upstreamPort: null,
-  upstreamCmd: null,
   auditFile: join(PROJECT_DIR, 'var/log/audit.jsonl'),
   policyFile: join(PROJECT_DIR, 'etc/policies/active.policy.json'),
   policyPubkey: join(PROJECT_DIR, 'etc/keys/policy-signing.pub'),
@@ -103,7 +101,6 @@ for (let i = 0; i < args.length; i++) {
       CONFIG.upstreamPort = parseInt(port);
       break;
     }
-    case '--upstream-cmd': CONFIG.upstreamCmd = args[++i]; break;
     case '--audit-file': CONFIG.auditFile = args[++i]; break;
     case '--policy-file': CONFIG.policyFile = args[++i]; break;
     case '--agent-id': CONFIG.agentId = args[++i]; break;
@@ -114,12 +111,11 @@ for (let i = 0; i < args.length; i++) {
 
 Usage:
   node gate.mjs --port 3100 --upstream localhost:3200
-  node gate.mjs --port 3100 --upstream-cmd "command to start MCP server"
 
 Options:
   --port <port>            Listen port (default: 3100)
-  --upstream <host:port>   Upstream MCP server address
-  --upstream-cmd <cmd>     Start MCP server as subprocess (stdio mode)
+  --upstream <host:port>   Upstream MCP server address (required)
+  --policy-engine <kind>   Policy engine: json (default), cedar, or both
   --audit-file <path>      Audit trail path
   --policy-file <path>     Policy file path
   --agent-id <id>          Agent identifier for audit trail
@@ -169,6 +165,43 @@ if (existsSync(CONFIG.policyPubkey)) {
 
 let POLICY = null;
 let POLICY_VERSION = 'unknown';
+let POLICY_MTIME_MS = 0;
+let STANDING_APPROVALS_MTIME_MS = 0;
+
+// Reload policy and standing approvals if the underlying files changed on
+// disk since the last load. Bash-gate parity: bash re-reads per hook
+// invocation; the MCP gate is long-running, so the operator-rotate path
+// needs an explicit re-read. Called at the start of every request.
+function maybeReloadPolicyAndSA() {
+  try {
+    if (existsSync(CONFIG.policyFile)) {
+      const m = statSync(CONFIG.policyFile).mtimeMs;
+      if (m !== POLICY_MTIME_MS) {
+        loadPolicy();
+        POLICY_MTIME_MS = m;
+      }
+    }
+  } catch (e) {
+    console.error(`[gate] WARN: policy mtime check failed: ${e.message}`);
+  }
+  const saFile = join(PROJECT_DIR, 'etc/standing-approvals.json');
+  try {
+    if (existsSync(saFile)) {
+      const m = statSync(saFile).mtimeMs;
+      if (m !== STANDING_APPROVALS_MTIME_MS) {
+        loadStandingApprovals();
+        STANDING_APPROVALS_MTIME_MS = m;
+      }
+    } else if (STANDING_APPROVALS_MTIME_MS !== 0) {
+      // File deleted since last load — clear approvals.
+      STANDING_APPROVALS = [];
+      STANDING_APPROVALS_LOADED = false;
+      STANDING_APPROVALS_MTIME_MS = 0;
+    }
+  } catch (e) {
+    console.error(`[gate] WARN: standing-approvals mtime check failed: ${e.message}`);
+  }
+}
 
 // ─── Signature Verification ──────────────────────────────────────────────────
 // Shared by policy and standing approval verification. Matches bash gate approach:
@@ -207,18 +240,28 @@ function loadPolicy() {
   try {
     const raw = JSON.parse(readFileSync(CONFIG.policyFile, 'utf8'));
 
-    // Ed25519 policy signature verification (Phase B).
-    // Fail-closed: unsigned or tampered policy → deny-all.
-    if (raw.signature?.value && existsSync(CONFIG.policyPubkey)) {
-      const result = verifyJsonSignature(raw, CONFIG.policyPubkey);
-      if (!result.ok) {
-        console.error(`[gate] CRITICAL: Policy signature INVALID (${result.reason}) — fail-closed`);
-        POLICY = { rules: [], default_action: 'deny', version: 'fail-closed-sig' };
-        POLICY_VERSION = 'fail-closed-sig';
-        return;
-      }
-      console.log('[gate] Policy signature verified');
+    // Ed25519 policy signature verification (parity with bash gate: required).
+    // Fail-closed on missing pubkey, missing signature, or invalid signature.
+    if (!existsSync(CONFIG.policyPubkey)) {
+      console.error('[gate] FATAL: Policy public key not found — fail-closed');
+      POLICY = { rules: [], default_action: 'deny', version: 'fail-closed-nopub' };
+      POLICY_VERSION = 'fail-closed-nopub';
+      return;
     }
+    if (!raw.signature?.value) {
+      console.error('[gate] FATAL: Policy is unsigned — fail-closed');
+      POLICY = { rules: [], default_action: 'deny', version: 'fail-closed-unsigned' };
+      POLICY_VERSION = 'fail-closed-unsigned';
+      return;
+    }
+    const result = verifyJsonSignature(raw, CONFIG.policyPubkey);
+    if (!result.ok) {
+      console.error(`[gate] CRITICAL: Policy signature INVALID (${result.reason}) — fail-closed`);
+      POLICY = { rules: [], default_action: 'deny', version: 'fail-closed-sig' };
+      POLICY_VERSION = 'fail-closed-sig';
+      return;
+    }
+    console.log('[gate] Policy signature verified');
 
     POLICY = raw;
     POLICY_VERSION = POLICY.version || 'unknown';
@@ -419,6 +462,7 @@ function evaluatePolicyDual(toolName, args) {
 
 let MANIFEST = null;
 let MANIFEST_LOAD_REASON = null;
+let MANIFEST_HARD_DENY_REASON = null;
 let CONSTITUTION_VALID = true;
 let CONSTITUTION_FAIL_REASON = null;
 let CONSTITUTION_LAST_OK = true;
@@ -431,14 +475,17 @@ function loadManifestAndValidateConstitution(emitOnChange = true) {
   if (m.ok) {
     MANIFEST = m.manifest;
     MANIFEST_LOAD_REASON = null;
+    MANIFEST_HARD_DENY_REASON = null;
   } else {
-    // Manifest failed to load (missing / tampered / expired). Bash gate
-    // behavior: leave MANIFEST_LOADED=false and skip the PC-05b sub-check.
-    // We match that. Manifest-load failure is surfaced separately in logs
-    // and is enforced by the bash gate's own manifest-load path; the MCP
-    // gate's job here is constitutional parity, not manifest enforcement.
     MANIFEST = null;
     MANIFEST_LOAD_REASON = m.reason;
+    // Bash-gate parity (invariant #8): tampered / expired / parse-corrupt /
+    // signed-but-unverifiable manifests are hard-deny. A missing manifest
+    // file is the only no-manifest state that falls back to policy-only
+    // (invariant #7). Anything that looks like active tampering denies.
+    const reason = m.reason || '';
+    const isMissing = reason === 'manifest file not found';
+    MANIFEST_HARD_DENY_REASON = isMissing ? null : reason;
   }
 
   const result = validateConstitution({
@@ -465,7 +512,7 @@ function loadManifestAndValidateConstitution(emitOnChange = true) {
       try {
         emitEvent('mcp', 'constitution.invalid', 'deny',
           { reason: result.reason, manifest_load: MANIFEST_LOAD_REASON },
-          '', 'critical', 100, 'gate');
+          'constitution.invalid', 'critical', 100, 'gate');
       } catch {}
     }
   }
@@ -486,8 +533,13 @@ function loadStandingApprovals() {
   try {
     const raw = JSON.parse(readFileSync(saFile, 'utf8'));
 
-    // Verify signature if pubkey available
-    if (raw.signature?.value && existsSync(CONFIG.policyPubkey)) {
+    // Signature required whenever the policy pubkey exists (parity with bash gate).
+    // Unsigned / missing-signature standing approvals are refused — approvals disabled.
+    if (existsSync(CONFIG.policyPubkey)) {
+      if (!raw.signature?.value) {
+        console.error('[gate] WARN: Standing approvals unsigned — approvals disabled');
+        return;
+      }
       const result = verifyJsonSignature(raw, CONFIG.policyPubkey);
       if (!result.ok) {
         console.error(`[gate] WARN: Standing approvals signature invalid (${result.reason}) — approvals disabled`);
@@ -642,8 +694,11 @@ function emitEvent(domain, action, outcome, detail, rule, severity, riskScore, a
     console.error(`[gate] CRITICAL: Failed to write audit event: ${e.message}`);
   }
 
-  // Generate receipt if enabled and signing key available
-  if (CONFIG.emitReceipts && SIGNING_KEY_PEM && SIGNING_KEY_ID) {
+  // Generate receipt only for schema-valid outcomes. Audit-only events
+  // ("pending", "logged", diagnostic system events) are not minted as
+  // receipts — receipts carry governance decisions, not observability.
+  const RECEIPT_OUTCOMES = new Set(['allow', 'deny', 'authorized', 'denied', 'timeout']);
+  if (CONFIG.emitReceipts && SIGNING_KEY_PEM && SIGNING_KEY_ID && RECEIPT_OUTCOMES.has(outcome) && event.rule) {
     try {
       const receipt = createReceiptFromEvent(event, {
         prev_receipt_hash: PREV_RECEIPT_HASH,
@@ -848,6 +903,11 @@ async function handleRequest(msg) {
 
   console.log(`[gate] Intercepted tools/call: ${toolName}`);
 
+  // Reload policy / standing approvals if the files changed since last read.
+  // The MCP gate is long-running; bash-gate parity requires that an operator
+  // rotating policy without restarting the gate takes effect immediately.
+  maybeReloadPolicyAndSA();
+
   // Second Authority Law: re-validate constitution + manifest before every
   // tool call. Cheap in the happy path (hash cache hit); catches mid-run
   // tamper (constitution deleted, manifest replaced, etc.).
@@ -855,7 +915,7 @@ async function handleRequest(msg) {
   if (!CONSTITUTION_VALID) {
     emitEvent('mcp', toolName, 'deny',
       { tool: toolName, reason: 'constitution_invalid', detail: CONSTITUTION_FAIL_REASON },
-      '', 'critical', 100, 'gate');
+      'constitution.invalid', 'critical', 100, 'gate');
     return {
       action: 'deny',
       response: {
@@ -864,6 +924,26 @@ async function handleRequest(msg) {
         error: {
           code: -32600,
           message: `[gate] Constitutional validation failed (${CONSTITUTION_FAIL_REASON}) — denied (fail-closed)`,
+        },
+      },
+    };
+  }
+
+  // Manifest hard-deny (invariant #8): tamper / expiry / corrupt-parse /
+  // signed-but-unverifiable manifests deny every tool call until resolved.
+  // A missing manifest (invariant #7) falls through to policy-only.
+  if (MANIFEST_HARD_DENY_REASON) {
+    emitEvent('mcp', toolName, 'deny',
+      { tool: toolName, reason: 'manifest_hard_deny', detail: MANIFEST_HARD_DENY_REASON },
+      'manifest:tampered', 'critical', 100, 'manifest');
+    return {
+      action: 'deny',
+      response: {
+        jsonrpc: '2.0',
+        id: msg.id,
+        error: {
+          code: -32600,
+          message: `[gate] Manifest invalid (${MANIFEST_HARD_DENY_REASON}) — denied (fail-closed per invariant 8)`,
         },
       },
     };
@@ -1038,7 +1118,14 @@ function startTcpProxy() {
   }
 
   loadPolicy();
+  try {
+    if (existsSync(CONFIG.policyFile)) POLICY_MTIME_MS = statSync(CONFIG.policyFile).mtimeMs;
+  } catch {}
   loadStandingApprovals();
+  try {
+    const saFile = join(PROJECT_DIR, 'etc/standing-approvals.json');
+    if (existsSync(saFile)) STANDING_APPROVALS_MTIME_MS = statSync(saFile).mtimeMs;
+  } catch {}
   loadCedar();
   // Second Authority Law: validate constitution + manifest after policy is loaded.
   // Fails-closed at startup if a deployed constitution is tampered / deleted.
@@ -1119,7 +1206,7 @@ function startTcpProxy() {
   });
 
   process.on('SIGINT', () => {
-    emitEvent('mcp', 'gate.stop', 'allow', {}, '', 'info', 0, 'gate');
+    emitEvent('mcp', 'gate.stop', 'allow', {}, 'gate.stop', 'info', 0, 'gate');
     process.exit(0);
   });
 }
@@ -1131,7 +1218,7 @@ process.on('uncaughtException', (err) => {
   console.error(`[gate] CRITICAL: Uncaught exception — gate will deny all: ${err.message}`);
   try {
     emitEvent('mcp', 'gate.crash', 'deny', { error: err.message, stack: (err.stack || '').substring(0, 500) },
-      '', 'critical', 100, 'gate');
+      'gate.crash', 'critical', 100, 'gate');
   } catch {}
   process.exit(1);
 });
@@ -1140,15 +1227,15 @@ process.on('unhandledRejection', (reason) => {
   console.error(`[gate] CRITICAL: Unhandled rejection — gate will deny all: ${reason}`);
   try {
     emitEvent('mcp', 'gate.crash', 'deny', { error: String(reason) },
-      '', 'critical', 100, 'gate');
+      'gate.crash', 'critical', 100, 'gate');
   } catch {}
   process.exit(1);
 });
 
 // ─── Entry Point ─────────────────────────────────────────────────────────────
 
-if (!CONFIG.upstreamHost && !CONFIG.upstreamCmd) {
-  console.error('[gate] Specify --upstream host:port or --upstream-cmd "command"');
+if (!CONFIG.upstreamHost) {
+  console.error('[gate] Specify --upstream host:port');
   process.exit(1);
 }
 
