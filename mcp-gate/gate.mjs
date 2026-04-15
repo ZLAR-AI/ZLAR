@@ -260,6 +260,26 @@ function evaluatePolicy(toolName, args) {
       if (matcher.contains && !argStr.includes(matcher.contains)) continue;
     }
 
+    // compound_guard (bash gate lines 1380-1398): secondary AND condition.
+    // Must pass AFTER detail matches. If it fails, skip this rule and continue.
+    // Found via cross-gate differential test: R012BR has a compound_guard that
+    // restricts "audit file read" to safe read commands only (cat/head/tail/etc).
+    // Without this check, any command touching audit.jsonl would match R012BR
+    // (allow) instead of falling through to R012B (deny). Both conditions must
+    // hold: the file pattern AND the safe-command guard.
+    if (rule.match?.compound_guard) {
+      const cg = rule.match.compound_guard;
+      let guardPassed = true;
+      for (const [key, matcher] of Object.entries(cg)) {
+        const actual = String(args?.[key] ?? '');
+        if (matcher.regex    && !new RegExp(matcher.regex).test(actual))    { guardPassed = false; break; }
+        if (matcher.eq       && matcher.eq !== actual)                      { guardPassed = false; break; }
+        if (matcher.contains && !actual.includes(matcher.contains))         { guardPassed = false; break; }
+        if (matcher.not_regex && new RegExp(matcher.not_regex).test(actual)) { guardPassed = false; break; }
+      }
+      if (!guardPassed) continue;
+    }
+
     // Rule matched
     const rs = rule.risk_score || {};
     const riskScore = Math.max(rs.irreversibility || 0, rs.consequence || 0, rs.blast_radius || 0);
