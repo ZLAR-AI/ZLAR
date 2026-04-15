@@ -177,9 +177,29 @@ The full principle is documented in [`signal/DOCTRINE.md`](signal/DOCTRINE.md). 
 
 - **Compromised signing key** — an attacker with the key can sign a permissive policy. Mitigation: key never lives on the agent's machine. Rotation invalidates prior signatures.
 - **Compromised gate binary** — if replaced, all enforcement is lost. Mitigation: R012 blocks agents from modifying their own governance. Host-level IDS is the defense layer below the gate.
-- **Actions the gate cannot see** — channels that bypass the hook or proxy. The gate governs tool calls. OS-level containment governs everything else.
+- **Actions the gate cannot see** — see the coverage model below.
 
 A security tool should state its own boundaries, not just its competitors' failures.
+
+## Coverage Model — Intercepted Actions
+
+ZLAR governs by intercepting. Every guarantee in this repository — cryptographic evidence, human authority, fail-closed, deterministic decision, constitutional constraint — applies to actions that flow through an interception surface. The guarantees do not extend past the surface.
+
+**Interception surfaces in the reference implementation:**
+
+- Bash gate — Claude Code tool invocations routed through the PreToolUse hook in `~/.claude/hooks.json`.
+- MCP gate — MCP `tools/call` requests routed through the gate proxy between client and server.
+- Sub-agent spawns — SubagentStart hook on the same surface as tool invocations.
+
+**Not an interception surface:**
+
+- Shell commands from a sub-process the hook does not see.
+- Direct network calls through libraries that do not route through the MCP proxy.
+- Any capability that reaches effect through a path the deployment did not wire to the gate.
+
+**Deployment closes the model.** The practical mission of a ZLAR deployment is to make intercepted equal to all: run the agent in an environment where every consequential capability is exposed only through intercepted surfaces, block the rest at the sandbox, OS, and network layers. ZLAR is the deterministic layer other layers depend on for human authority. It is not the only layer a serious deployment needs.
+
+This is stated here so that no reader mistakes the code's scope for a total claim. See [ADR-010: Interception Coverage Model](docs/adr/ADR-010-interception-coverage.md) for the full treatment.
 
 ## OSFI E-23 — Canadian Model Risk Management
 
