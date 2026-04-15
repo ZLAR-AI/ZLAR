@@ -19,10 +19,9 @@
 //   rule "manifest:deny"       severity warn  risk_score 80  authorizer manifest
 //   rule "manifest:unmatched"  severity warn  risk_score 60  authorizer manifest
 //
-// Known latent issue (present in both gates, filed as follow-up):
-//   If authority.unmatched_action is a value other than "deny" or "escalate"
-//   (e.g., misconfigured to "log" or "ask"), the check silently passes.
-//   Bash gate's dispatch at line 2222/2227 has the same behavior.
+// unmatched_action safety: any value other than "deny" or "escalate" fails closed
+// (deny). Silently passing on unrecognized values was a latent bypass — fixed in
+// both gates simultaneously.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -116,8 +115,17 @@ export function enforceManifestAuthority(toolName, manifest) {
         cap,
       };
     }
-    // Unknown unmatched_action value → silent pass (bash line 2227 only explicit
-    // for "escalate", 2222 for "deny"). Known latent issue in both gates.
+    // Unknown unmatched_action value → fail closed (deny). Any value other than
+    // "deny" or "escalate" is a misconfiguration. Silently passing would be a
+    // security bypass. Fixed in both gates simultaneously.
+    return {
+      action: 'deny',
+      rule: 'manifest:unmatched_invalid',
+      severity: 'warn',
+      riskScore: 60,
+      authorizer: 'manifest',
+      cap,
+    };
   }
 
   return { action: 'pass', cap };

@@ -16,8 +16,16 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlink to find real script location (handles /usr/local/bin/zlar -> repo)
+_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "${_SOURCE}" ]; do
+    _DIR="$(cd -P "$(dirname "${_SOURCE}")" && pwd)"
+    _SOURCE="$(readlink "${_SOURCE}")"
+    [[ "${_SOURCE}" != /* ]] && _SOURCE="${_DIR}/${_SOURCE}"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "${_SOURCE}")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+unset _SOURCE _DIR
 
 # Colors
 if [ -t 1 ]; then

@@ -163,11 +163,14 @@ console.log('\n── Edge cases ───────────────�
   assert('both empty → force_ask', 'force_ask', r.action);
 }
 
-// Unknown unmatched_action value → silent pass (BASH PARITY — known latent)
+// Unknown unmatched_action value → fail closed (deny). Any value other than
+// "deny" or "escalate" is a misconfiguration — silently passing would be a bypass.
+// Fixed in both gates simultaneously (was previously a known latent issue).
 {
   const m = { authority: { deny: [], allow: ['file.read'], unmatched_action: 'log' } };
   const r = enforceManifestAuthority('anything', m);
-  assert('unknown unmatched_action → silent pass', 'pass', r.action);
+  assert('unknown unmatched_action → fail closed (deny)', 'deny', r.action);
+  assert('unknown unmatched_action → rule is manifest:unmatched_invalid', 'manifest:unmatched_invalid', r.rule);
 }
 
 // Non-string deny entry → ignored by typeof check; valid string still matches

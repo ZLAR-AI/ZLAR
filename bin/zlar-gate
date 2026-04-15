@@ -1619,14 +1619,20 @@ agent_sa_allowed() {
 #   2. Human taps approve/deny on phone → dispatcher writes to inbox
 #   3. Retry invocation: gate checks inbox for pending action's callback
 #
-# Pending file format: ${APPROVAL_DIR}/${rule}-${SESSION_ID}.pending
+# Pending file format: ${APPROVAL_DIR}/${rule}-${SESSION_ID}-${hash_prefix}.pending
+# hash_prefix = first 16 chars of action_hash (prevents collision when two distinct
+# actions match the same rule in the same session — e.g., two file edits under R012).
 # Contains: action_id (used to match Telegram callback)
 #
 # Returns: 0 = approved, 1 = denied, 2 = still pending (no response yet)
 check_pending_approval() {
     local rule="$1"
     local expected_action_hash="${2:-}"
-    local pending_file="${APPROVAL_DIR}/${rule}-${SESSION_ID}.pending"
+    # Include hash prefix in filename to prevent same-rule same-session collisions.
+    # Falls back to no-suffix for callers that don't supply a hash (defensive).
+    local _hash_suffix=""
+    [ -n "${expected_action_hash}" ] && _hash_suffix="-${expected_action_hash:0:16}"
+    local pending_file="${APPROVAL_DIR}/${rule}-${SESSION_ID}${_hash_suffix}.pending"
 
     if [ ! -f "${pending_file}" ]; then
         return 2  # No pending request
@@ -1872,8 +1878,11 @@ ${consequence_line}${authority_type}
 
     log "Telegram ask sent (async): msg_id=${msg_id}, action_id=${action_id}, rule=${rule}"
 
-    # Write pending file for retry check (action_id + action_hash for binding)
-    printf '%s\n%s\n' "${action_id}" "${action_hash}" > "${APPROVAL_DIR}/${rule}-${SESSION_ID}.pending" 2>/dev/null
+    # Write pending file for retry check (action_id + action_hash for binding).
+    # Filename includes hash prefix to prevent collision with concurrent actions under same rule.
+    local _write_hash_suffix=""
+    [ -n "${action_hash}" ] && _write_hash_suffix="-${action_hash:0:16}"
+    printf '%s\n%s\n' "${action_id}" "${action_hash}" > "${APPROVAL_DIR}/${rule}-${SESSION_ID}${_write_hash_suffix}.pending" 2>/dev/null
 
     return 0
 }
@@ -2248,6 +2257,14 @@ main() {
                 log "MANIFEST: Category ${_cap_category} not in allow list — escalating"
                 # We'll let policy evaluation run, but force the action to "ask" later
                 MANIFEST_FORCES_ASK="true"
+            else
+                # Unrecognized unmatched_action value — fail closed.
+                # Any value other than "deny" or "escalate" is a misconfiguration.
+                # Silently passing would be a security bypass. Deny and log.
+                log "MANIFEST: unmatched_action='${_m_unmatched}' is unrecognized — failing closed (deny)"
+                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "manifest:unmatched_invalid" "warn" 60 "manifest"
+                respond_deny "Action not authorized by capability manifest (unrecognized unmatched_action: ${_m_unmatched})" "manifest"
+                return
             fi
         fi
     fi
