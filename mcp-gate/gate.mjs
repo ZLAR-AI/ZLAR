@@ -728,10 +728,12 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity) 
   }
 
   const emoji = severity === 'critical' ? '🔴' : severity === 'warn' ? '🟡' : '⚡';
-  const argsPreview = JSON.stringify(args).substring(0, 100);
+  const argsPreview = JSON.stringify(args).substring(0, 80) + (JSON.stringify(args).length > 80 ? '…' : '');
   const consequenceLine = getConsequenceLine(toolName, rule, riskScore);
 
-  const text = `${emoji} 🔷 *MCP Gate*\n\n*Tool:* \`${toolName}\`\n*Args:* \`${argsPreview}\`\n*Risk:* ${riskScore}/100\n*Rule:* ${rule}\n${consequenceLine}`;
+  // Message layout mirrors bash gate v2.8.1: consequence first, action for context,
+  // rule+risk as compact metadata at bottom.
+  const text = `${emoji} 🔷 *${rule}*\n\n${consequenceLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${riskScore}/100`;
   const escapedText = text.replace(/[_\[\]()~>#+=|{}.!-]/g, '\\$&').replace(/\\`/g, '`').replace(/\\\*/g, '*');
 
   const keyboard = {

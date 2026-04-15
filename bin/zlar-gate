@@ -1805,8 +1805,7 @@ telegram_ask_async() {
     local fatigue_banner=""
     if [ "${CANARY_LOADED}" = "true" ] && canary_is_fatigued "${SESSION_ID:-unknown}" 2>/dev/null; then
         fatigue_banner="
-⚠️ *Governance fatigue detected — please review carefully*
-"
+⚠️ *Governance fatigue detected — please review carefully*"
     fi
 
     # Consequence line — what happens if the human approves the wrong thing
@@ -1817,31 +1816,58 @@ telegram_ask_async() {
     local authority_type=""
     if [ "${tool_name}" = "SubagentStart" ]; then
         authority_type="
-🔷 *Approval type:* Authority envelope (not a single action)"
+🔷 *Authority envelope* — downstream actions not individually foreseeable"
     fi
 
     # Novelty banner — first time this domain/server has been used this session
     local novelty_banner=""
     if [ "${NOVELTY_DETECTED}" = "true" ]; then
         novelty_banner="
-🆕 *First time this session* — one-time review, will not ask again for this"
+🆕 *First time this session*"
     fi
 
     # Restore escalation banner — policy said allow, but Agent Health escalated
     local restore_banner=""
     if [ "${RESTORE_ESCALATED}" = "true" ]; then
         restore_banner="
-🩺 *Escalated by Agent Health* (trust state: ${RESTORE_TRUST_STATE:-unknown}) — policy allowed this, health monitor overrode"
+🩺 *Agent Health escalated* — trust state: ${RESTORE_TRUST_STATE:-unknown}"
     fi
 
-    local text="${emoji} 🖥️ *ZLAR Gate*
-${fatigue_banner}${novelty_banner}${restore_banner}
-*Tool:* \`${tool_name}\`
-*Action:* \`${display}\`
-*Risk:* ${risk_score}/100
-*Rule:* ${rule}
-${consequence_line}${authority_type}
-*Session:* \`${SESSION_ID:-unknown}\`"
+    # Action label: domain-prefixed, command trimmed to 80 chars for readability.
+    # Bash commands shown raw but short — the consequence line provides context.
+    local short_display
+    short_display=$(echo "${display}" | head -c 80)
+    [ ${#display} -gt 80 ] && short_display="${short_display}…"
+
+    local action_label
+    case "${tool_name}" in
+        Bash)         action_label="Bash" ;;
+        Write)        action_label="Write" ;;
+        Edit)         action_label="Edit" ;;
+        Read)         action_label="Read" ;;
+        Glob)         action_label="Glob" ;;
+        Grep)         action_label="Grep" ;;
+        WebFetch)     action_label="Fetch" ;;
+        WebSearch)    action_label="Search" ;;
+        SubagentStart|Task|Agent) action_label="Agent" ;;
+        mcp__*)       action_label="MCP" ;;
+        *)            action_label="${tool_name}" ;;
+    esac
+
+    # Session ID: first 8 chars sufficient for identification
+    local short_session="${SESSION_ID:-unknown}"
+    short_session="${short_session:0:8}"
+
+    # Message layout: consequence first (what you're deciding), then action for
+    # context, rule+risk as compact metadata at bottom. v2.8.1 restructure —
+    # the old layout buried the consequence below the raw command, making the
+    # message unreadable at a glance on mobile.
+    local text="${emoji} 🖥️ *${rule}*${fatigue_banner}${novelty_banner}${restore_banner}${authority_type}
+
+${consequence_line}
+
+*${action_label}:* \`${short_display}\`
+Risk ${risk_score}/100 · Session \`${short_session}\`"
 
     # Escape MarkdownV2 special characters. POSIX bracket expression rules:
     # - ] must be FIRST to be literal (right after [)
