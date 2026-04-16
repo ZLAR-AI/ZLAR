@@ -6,7 +6,7 @@
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "d5aYJH21di6vOa5GvY4QRP8i1c8Z1f5lp53xx7MyvJQxFWsHtLp61CUZcBvxyfhGMUiWCEVSOEZTyUKYZoBiCg=="
+    "value": "giHqzcXOjufUkdwq5j3T8UTE/QvCgPyfp/cT/004W6+SVUO4o2/1/863OnRS+xX6Xqvu4cm+6h20vF9/2blLCA=="
   },
   "default_action": "deny",
   "scoring_thresholds": {

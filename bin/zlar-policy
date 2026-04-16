@@ -298,8 +298,6 @@ cmd_verify() {
         fail "Signature is INVALID (tried spec and bash-pretty canonical forms)"
     fi
 
-    rm -f "${canon_file}" "${hash_file}" "${sig_file}"
-
     # Show policy metadata
     local version author
     version=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "${input}" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')

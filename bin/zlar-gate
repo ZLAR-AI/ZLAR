@@ -2641,24 +2641,16 @@ main() {
                                 fail_closed_alert "capacity_exceeded" 2>/dev/null || true
                                 # Fall through to H15 and Telegram ask below.
                             elif [ "${_hi_pre_result}" != "ok" ]; then
-                                # H14 (rubber_stamping) — still block.
-                                # Protects decision quality: a suspicious approval pattern
-                                # means asks stop until the cooldown expires.
-                                log "HUMAN INVARIANT: ${_hi_pre_result} — not routing to human"
-                                # Out-of-band alert: notify the human that the gate is fail-closed.
-                                # This is a direct curl to Telegram, dedupe-throttled, and never
-                                # subject to the invariant that fired. Best-effort: it logs but
-                                # never blocks the deny path. v2.7.3 — addresses the April 9 2026
-                                # incident where the gate could block the notification that would
-                                # have announced the gate was blocking.
+                                # H14 advisory path (aligned with MCP gate 2d9b6dd).
+                                # All human invariant pre-checks are advisory: the
+                                # human is the authority, not the counter. Denying
+                                # here would silence the human's own channel — an
+                                # attacker who provokes rapid failing asks could
+                                # weaponize the deny as a DoS on legitimate work.
+                                # Surface the condition; let the human judge.
+                                log "HUMAN INVARIANT ADVISORY: ${_hi_pre_result} — routing ask anyway per human authority"
                                 fail_closed_alert "${_hi_pre_result}" 2>/dev/null || true
-                                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:human_${_hi_pre_result}"
-                                respond_deny "Human decision-maker unavailable (${_hi_pre_result}). System is protecting human judgment. To recover: run 'zlar off' from your terminal." "gate:human_capacity"
-                                # Path B: seal before early return (audit event emitted above)
-                                if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ -n "${LAST_EMITTED_EVENT_ID}" ] && [ -n "${SESSION_STATE_FILE}" ]; then
-                                    _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
-                                fi
-                                return  # exit main() after responding
+                                # Fall through to H15 and Telegram ask below.
                             fi
 
                             # H15: Record ask time for deliberation floor check on response
