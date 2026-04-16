@@ -200,20 +200,30 @@ export function validateConstitution(opts) {
   }
 
   // ── 4. PC-06: key separation ──────────────────────────────────────────
+  // Math-6 finding: missing policy pubkey silently passed (short-circuit
+  // on null). If we can't verify key separation, we can't prove it holds.
+  // Both keys must exist and must differ.
   let constFp, policyFp;
   try {
     constFp = pubkeyFingerprint(constitutionPubkey);
   } catch (e) {
     return { ok: false, reason: `constitution pubkey fingerprint error: ${e.message}` };
   }
-  if (existsSync(policyPubkey)) {
-    try {
-      policyFp = pubkeyFingerprint(policyPubkey);
-    } catch {
-      policyFp = null;
-    }
+  if (!existsSync(policyPubkey)) {
+    return {
+      ok: false,
+      reason: 'PC-06 VIOLATED — policy public key not found (cannot verify key separation)',
+    };
   }
-  if (constFp && policyFp && constFp === policyFp) {
+  try {
+    policyFp = pubkeyFingerprint(policyPubkey);
+  } catch (e) {
+    return {
+      ok: false,
+      reason: `PC-06 VIOLATED — policy pubkey fingerprint error: ${e.message}`,
+    };
+  }
+  if (constFp === policyFp) {
     return {
       ok: false,
       reason: 'PC-06 VIOLATED — constitutional key fingerprint matches policy key',
@@ -253,14 +263,49 @@ export function validateConstitution(opts) {
     }
   }
 
-  // ── 7. PC-02: At least one ask rule ───────────────────────────────────
-  const askCount = Array.isArray(policy?.rules)
-    ? policy.rules.filter(r => r.action === 'ask').length
-    : 0;
-  if (askCount === 0) {
+  // ── 7. PC-02: Human contestability must cover the consequential surface ─
+  // Math-6 formal verification found: a single ask rule on an unreachable
+  // pattern satisfies an existence check while allowing every consequential
+  // action through without human review. The fix: ask rules must cover at
+  // least one domain that also has consequential allow/log rules. This
+  // proves the human review path intersects with the real action surface.
+  if (Array.isArray(policy?.rules)) {
+    const enabledRules = policy.rules.filter(r => r.enabled !== false);
+
+    const askDomains = new Set(enabledRules
+      .filter(r => r.action === 'ask')
+      .map(r => r.domain || r.match?.domain || '*'));
+
+    const consequentialAllowDomains = new Set(enabledRules
+      .filter(r => (r.action === 'allow' || r.action === 'log') &&
+        ((r.risk_score?.irreversibility || 0) > 0 ||
+         (r.risk_score?.consequence || 0) > 0 ||
+         (r.risk_score?.blast_radius || 0) > 0))
+      .map(r => r.domain || r.match?.domain || '*'));
+
+    if (askDomains.size === 0) {
+      return {
+        ok: false,
+        reason: 'PC-02 VIOLATED — no ask rules in policy (no human contestability path)',
+      };
+    }
+
+    // Ask domains must intersect with consequential-allow domains.
+    // Wildcard '*' intersects with everything.
+    if (consequentialAllowDomains.size > 0) {
+      const intersects = [...askDomains].some(d =>
+        d === '*' || consequentialAllowDomains.has(d) || consequentialAllowDomains.has('*'));
+      if (!intersects) {
+        return {
+          ok: false,
+          reason: `PC-02 VIOLATED — ask rules cover domains {${[...askDomains].join(', ')}} but consequential allow rules cover {${[...consequentialAllowDomains].join(', ')}} — no overlap (human review does not reach the consequential surface)`,
+        };
+      }
+    }
+  } else {
     return {
       ok: false,
-      reason: 'PC-02 VIOLATED — no ask rules in policy (no human contestability path)',
+      reason: 'PC-02 VIOLATED — policy has no rules array',
     };
   }
 
@@ -275,9 +320,14 @@ export function validateConstitution(opts) {
           reason: `PC-04 VIOLATED — suspended escalation is '${escSuspended}', must be 'deny'`,
         };
       }
-    } catch {
-      // Malformed restore-config: bash gate is silent, we match. The config-integrity
-      // subsystem is responsible for detecting tamper here.
+    } catch (e) {
+      // Math-6 finding: corrupt JSON silently passed. A corrupted restore-config
+      // could mask a PC-04 violation. Fail-closed: if we can't read the config,
+      // we can't prove suspended escalation is deny.
+      return {
+        ok: false,
+        reason: `PC-04 VIOLATED — restore-config exists but cannot be parsed: ${e.message}`,
+      };
     }
   }
 
@@ -318,15 +368,23 @@ export function validateConstitution(opts) {
   // is skipped — bash MANIFEST_LOADED=false behavior). A manifest that IS
   // loaded but omits authority or authority.deny must fail, because bash's
   // grep over an empty deny-set reports every required class as missing.
-  if (manifest) {
-    const manifestDenies = new Set(manifest.authority?.deny || []);
-    const missing = requiredClasses.filter(c => !manifestDenies.has(c));
-    if (missing.length > 0) {
-      return {
-        ok: false,
-        reason: `PC-05 VIOLATED — manifest missing required deny classes: ${missing.join(', ')}`,
-      };
-    }
+  // Math-6 finding: null manifest silently skipped PC-05b. A missing or
+  // failed manifest means we cannot verify the six governance-critical
+  // capabilities are denied. Fail-closed: if the constitution declares
+  // required deny classes, the manifest must be present to prove them.
+  if (!manifest) {
+    return {
+      ok: false,
+      reason: `PC-05 VIOLATED — constitution requires manifest deny classes [${requiredClasses.join(', ')}] but no manifest is loaded (cannot verify agent capability restrictions)`,
+    };
+  }
+  const manifestDenies = new Set(manifest.authority?.deny || []);
+  const missing = requiredClasses.filter(c => !manifestDenies.has(c));
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason: `PC-05 VIOLATED — manifest missing required deny classes: ${missing.join(', ')}`,
+    };
   }
 
   // ── 11. Success ───────────────────────────────────────────────────────

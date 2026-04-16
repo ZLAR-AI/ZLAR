@@ -602,8 +602,11 @@ console.log('\n── PC-05b: manifest denies governance classes ─────
   writeRestoreConfig('deny');
   const good = signConstitution(buildConstitution(), CONST_PRIV_PEM);
   deployConstitution(good);
+  // Math-6 fix: null manifest now fails PC-05b (cannot verify required
+  // deny classes without a manifest). Previously this was a silent skip.
   const r = validateConstitution(baseOpts({ manifest: null }));
-  assert('PC-05b skipped when no manifest', true, r.ok);
+  assert('PC-05b fails when no manifest (Math-6 fix)', false, r.ok);
+  assert('PC-05b reason mentions manifest', true, (r.reason || '').includes('no manifest'));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
