@@ -167,6 +167,14 @@ TELEGRAM_TOKEN=""
 TELEGRAM_CHAT_ID=""
 _CONSTITUTION_VALIDATED=""
 
+# Stub functions that validate_constitution and _dp03_check depend on
+# but which are defined elsewhere in the gate. Without these, the eval'd
+# code crashes under set -u or on missing commands.
+log() { echo "[test-stub] $*" >&2; }
+warn() { echo "[test-stub-warn] $*" >&2; }
+emit_event() { :; }  # no-op in test context
+event=""              # referenced by some code paths
+
 # Source the validate_constitution function from the gate.
 # awk range extraction rather than fixed line numbers — robust against
 # the function growing when new PC checks are added.

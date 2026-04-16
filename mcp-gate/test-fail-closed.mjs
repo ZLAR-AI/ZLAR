@@ -216,7 +216,8 @@ console.log('\n── Deployed artifact verification ─────────
   const { readFileSync } = await import('fs');
   const repoRoot = join(__dirname, '..');
   const policyPath = join(repoRoot, 'etc/policies/active.policy.json');
-  if (existsSync(policyPath)) {
+  const policyPubPath = join(repoRoot, 'etc/keys/policy-signing.pub');
+  if (existsSync(policyPath) && existsSync(policyPubPath)) {
     const raw = JSON.parse(readFileSync(policyPath, 'utf8'));
     const cleared = JSON.parse(JSON.stringify(raw));
     cleared.rules = [];  // TAMPER: remove all rules

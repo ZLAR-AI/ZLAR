@@ -1126,11 +1126,16 @@ async function handleRequest(msg) {
   // calls of the same tool proceed under normal policy. Session-scoped on
   // purpose: across sessions the alarm resets so a previously-compromised
   // session can't grant future sessions a free pass.
+  // Novelty only fires when a human is reachable (Telegram configured).
+  // Without a human to show the "first use" banner, escalating allow→ask
+  // would turn every first tool call into an error. In CI or headless
+  // deployments, novelty is a no-op.
   const noveltyKey = toolName;
   const isNovel = !SEEN_TOOLS.has(noveltyKey);
   if (isNovel) {
     SEEN_TOOLS.add(noveltyKey);
-    if (evaluation.action === 'allow' || evaluation.action === 'log') {
+    if (CONFIG.telegramToken && CONFIG.telegramChatId &&
+        (evaluation.action === 'allow' || evaluation.action === 'log')) {
       console.log(`[gate] NOVELTY: First use of "${noveltyKey}" this session — escalating to ask`);
       evaluation.action = 'ask';
       evaluation.noveltyEscalated = true;
