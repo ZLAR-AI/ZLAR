@@ -6,7 +6,7 @@
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "LOxNhp8FLgTy/SKpYC7XTo2DKnKGRTB4R0HI4trGzmU7rIP0Hy54qmhNZBZf3STP3XE17IFxW+KWZJymwfChCA=="
+    "value": "lanQ6+oP2num/0M8N9tHdSElnb2MlEnGaudNW9XQBoxQPLUsY8AU12ZMcFfmNj4LEdF3Om6k7K7OdI1t61hIBw=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -47,7 +47,7 @@
       "match": {
         "detail": {
           "command": {
-            "regex": "\\b(sudo|visudo|dscl)\\b"
+            "regex": "\\b(sudo|su|visudo|dscl|pkexec|doas)\\b"
           }
         }
       },
