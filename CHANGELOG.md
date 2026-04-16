@@ -1,5 +1,77 @@
 # Changelog
 
+## 3.1.0 — 2026-04-15 — CODE-COMPLETE
+
+Red-team hardened. Adversarial audit, same-day fixes, canonical-form
+migration, and the honest coverage model. This is the build the
+presentation layer, regulatory documents, and website are written against.
+
+Security (from red-team audit):
+- Unsigned policy / standing approvals now fail-closed (was: silently loaded)
+- Tampered / expired manifest now hard-denies per invariant 8 (was: silently
+  downgraded to policy-only)
+- Policy and standing approvals reload on mtime change (was: startup-only in
+  the long-running MCP daemon — governance drift window)
+- Phantom --stdio / --upstream-cmd docs removed (were: documented but
+  unimplemented — documentation lied about supported modes)
+
+Cryptographic evidence:
+- Strict audit signing by default (ZLAR_REQUIRE_SIGNED_AUDIT=true on MCP).
+  Gate refuses to start without a signing key. Unsigned audit entries are
+  not written. The Jidoka inversion: easy to stop, hard to go.
+- Every caught exception becomes a signed gate.internal_error audit event.
+  Errors are evidence, not noise. An attacker who induces errors leaves
+  more records behind, not fewer.
+- End-of-session anchor: gate.session_sealed event on clean SIGINT/SIGTERM
+  with session_id and final sequence number. Any later entry claiming that
+  session is provably forged.
+- Receipt schema and semantic validator accept prefixed authorizers
+  (standing:<id>, gate:<reason>, human:<chat_id>) that the gate actually
+  emits. Internal consistency restored.
+- Receipts only minted for schema-valid outcomes. Audit-only events
+  (pending, logged, diagnostics) stay in the chain but do not become
+  receipts.
+
+Canonical form migration (ADR-011):
+- Three canonical forms identified and named (spec, bash-pipeline,
+  bash-pretty). Spec declared authoritative.
+- lib/sig-verify.mjs: multi-form Ed25519 verifier accepts all three
+  forms during migration. Logs LEGACY warnings when non-spec form matches.
+- bin/zlar-policy sign and bin/zlar-constitution sign now emit spec form.
+- Both bash gate and MCP gate verify under spec + legacy forms.
+- All four deployed artifacts (policy, standing approvals, manifest,
+  constitution) re-signed under spec form. Zero LEGACY warnings at startup.
+
+Human invariants:
+- H14 (rubber_stamping) aligned to advisory on both gates. All human
+  invariant pre-checks now route to the human with a warning rather than
+  silencing the channel. Prevents DoS via invariant-triggered lockout.
+- Novelty escalation ported to MCP gate. First use of any tool per session
+  escalates allow to ask. Telegram message shows "First use this session"
+  banner.
+
+Coverage model (ADR-010):
+- Interception coverage model stated in README and ADR. Every guarantee
+  applies to intercepted actions. The project names its own boundary before
+  anyone else frames it as a gotcha.
+
+Test fixtures:
+- mcp-gate/test.mjs signs TEST_ALLOW_POLICY under spec form at runtime
+  with an ephemeral Ed25519 keypair. No dependency on machine-specific
+  signing keys.
+- mcp-gate/test-fail-closed.mjs: 21 assertions covering unsigned policy,
+  unsigned SA, tampered manifest, strict audit signing, deployed-artifact
+  verification, and test-fixture signing path.
+- --policy-pubkey CLI flag added so tests can point the gate at a
+  test-specific pubkey without mutating etc/keys/.
+
+Operational:
+- ~/.zlar-signing.pub regenerated (was missing; SIGNING_KEY_ID showed
+  'unknown' in audit entries).
+- docs/phase-b-gate-hunks.md: hand-apply guide for the four bash gate
+  verification hunks (R041 correctly blocks agent modification of the
+  enforcement layer).
+
 ## 3.0.7 — 2026-04-15
 
 zlar lock — intentional fail-closed before stepping away.
