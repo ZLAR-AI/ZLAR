@@ -90,13 +90,14 @@ cmd_keygen() {
 # ─── Sign ────────────────────────────────────────────────────────────────────
 
 cmd_sign() {
-    local input="" key="" output=""
+    local input="" key="" output="" use_yubikey="false"
 
     while [ $# -gt 0 ]; do
         case "$1" in
-            --input)  shift; input="$1"; shift ;;
-            --key)    shift; key="$1"; shift ;;
-            --output) shift; output="$1"; shift ;;
+            --input)    shift; input="$1"; shift ;;
+            --key)      shift; key="$1"; shift ;;
+            --output)   shift; output="$1"; shift ;;
+            --yubikey)  use_yubikey="true"; shift ;;
             *) shift ;;
         esac
     done
@@ -104,7 +105,9 @@ cmd_sign() {
     if [ -z "${input}" ]; then
         fail "Missing --input <policy.json>"
     fi
-    if [ -z "${key}" ]; then
+    if [ "${use_yubikey}" = "true" ]; then
+        info "Signing with YubiKey (PIV slot 9c — policy)"
+    elif [ -z "${key}" ]; then
         key="${HOME}/.zlar-signing.key"
         if [ ! -f "${key}" ]; then
             fail "No --key specified and default key not found at ${key}"
@@ -118,7 +121,7 @@ cmd_sign() {
     if [ ! -f "${input}" ]; then
         fail "Policy file not found: ${input}"
     fi
-    if [ ! -f "${key}" ]; then
+    if [ "${use_yubikey}" != "true" ] && [ ! -f "${key}" ]; then
         fail "Private key not found: ${key}"
     fi
 
@@ -149,9 +152,21 @@ cmd_sign() {
     algo_label=$(zlar_crypto_label)
     info "Signing algorithm: ${algo_label}"
 
-    # Extract public key from private key for embedding
+    # Extract public key for embedding in the signature block.
     local pubkey_b64
-    pubkey_b64=$(zlar_crypto_pubkey_b64 "${key}")
+    if [ "${use_yubikey}" = "true" ]; then
+        # Export from YubiKey PIV slot 9c → DER → base64
+        local _yk_pub_tmp
+        _yk_pub_tmp=$(mktemp /tmp/zlar-yk-pub.XXXXXX)
+        ykman piv keys export 9c "${_yk_pub_tmp}" --format DER 2>/dev/null || {
+            rm -f "${_yk_pub_tmp}"
+            fail "Failed to export public key from YubiKey slot 9c"
+        }
+        pubkey_b64=$(base64 < "${_yk_pub_tmp}" | tr -d '\n')
+        rm -f "${_yk_pub_tmp}"
+    else
+        pubkey_b64=$(zlar_crypto_pubkey_b64 "${key}")
+    fi
 
     # Create canonical form (with empty signature) for signing.
     # Phase B of ADR-011 — write spec form: recursively sorted keys, compact,
@@ -177,12 +192,19 @@ cmd_sign() {
     hash_file=$(mktemp /tmp/zlar-hash.XXXXXX)
     zlar_crypto_hash "${canon_file}" "${hash_file}"
 
-    # Sign via abstraction layer
+    # Sign — YubiKey hardware path or disk-based key
     local sig_file
     sig_file=$(mktemp /tmp/zlar-sig.XXXXXX)
-    if ! zlar_crypto_sign "${key}" "${hash_file}" "${sig_file}"; then
-        rm -f "${canon_file}" "${hash_file}" "${sig_file}"
-        fail "Signing failed"
+    if [ "${use_yubikey}" = "true" ]; then
+        if ! zlar_crypto_sign_yubikey_policy "${hash_file}" "${sig_file}"; then
+            rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+            fail "YubiKey signing failed (check PIN and touch)"
+        fi
+    else
+        if ! zlar_crypto_sign "${key}" "${hash_file}" "${sig_file}"; then
+            rm -f "${canon_file}" "${hash_file}" "${sig_file}"
+            fail "Signing failed"
+        fi
     fi
 
     local sig_b64

@@ -194,6 +194,55 @@ _sign_ed25519() {
     ${_OPENSSL} pkeyutl -sign -inkey "${key}" -rawin -in "${input}" -out "${output}" 2>/dev/null
 }
 
+# ─── YubiKey PKCS#11 Signing ────────────────────────────────────────────────
+# Hardware-rooted Ed25519 signing via YubiKey PIV applet.
+# Used by zlar-policy sign --yubikey and zlar-constitution sign --yubikey.
+# NOT used for audit/receipt signing (too slow for per-tool-call frequency).
+#
+# PIV slot → PKCS#11 key ID mapping:
+#   9c (Digital Signature) → ID 02 → policy signing key
+#   9d (Key Management)    → ID 03 → constitution signing key
+#
+# Requires: ykman, pkcs11-tool (OpenSC), YubiKey with Ed25519 keys imported.
+# PIN is prompted interactively — the human is always present for this path.
+
+_PKCS11_MODULE="/opt/homebrew/lib/opensc-pkcs11.so"
+
+_sign_ed25519_yubikey() {
+    local pkcs11_id="$1" input="$2" output="$3"
+
+    if [ ! -f "${_PKCS11_MODULE}" ]; then
+        echo "ERROR: PKCS#11 module not found at ${_PKCS11_MODULE}" >&2
+        echo "Install OpenSC: brew install opensc" >&2
+        return 1
+    fi
+
+    if ! command -v pkcs11-tool &>/dev/null; then
+        echo "ERROR: pkcs11-tool not found. Install OpenSC: brew install opensc" >&2
+        return 1
+    fi
+
+    # Interactive PIN prompt — touch required after PIN entry.
+    echo "  🔑 YubiKey signing — enter PIN when prompted, then touch the key." >&2
+    pkcs11-tool --module "${_PKCS11_MODULE}" \
+        --sign --mechanism EDDSA \
+        --slot 0 --id "${pkcs11_id}" \
+        --input-file "${input}" \
+        --output-file "${output}" \
+        --login
+}
+
+# Convenience wrappers for the two ceremony key slots.
+zlar_crypto_sign_yubikey_policy() {
+    local input="$1" output="$2"
+    _sign_ed25519_yubikey "02" "${input}" "${output}"
+}
+
+zlar_crypto_sign_yubikey_constitution() {
+    local input="$1" output="$2"
+    _sign_ed25519_yubikey "03" "${input}" "${output}"
+}
+
 _sign_ml_dsa_44() {
     local key="$1" input="$2" output="$3"
     ${_OPENSSL} pkeyutl -sign -inkey "${key}" -rawin -in "${input}" -out "${output}" 2>/dev/null
