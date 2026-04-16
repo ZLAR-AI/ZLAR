@@ -173,7 +173,12 @@ _CONSTITUTION_VALIDATED=""
 log() { echo "[test-stub] $*" >&2; }
 warn() { echo "[test-stub-warn] $*" >&2; }
 emit_event() { :; }  # no-op in test context
-event=""              # referenced by some code paths
+
+# The extracted functions reference many gate-context variables that are
+# set during the gate's main flow (event, detail, action_hash, etc.).
+# Rather than stubbing each one, relax set -u for the eval'd code.
+# The test assertions themselves check return values, not variable state.
+set +u
 
 # Source the validate_constitution function from the gate.
 # awk range extraction rather than fixed line numbers — robust against
@@ -182,6 +187,8 @@ eval "$(awk '/^validate_constitution\(\) \{/,/^}$/' "${REAL_PROJECT_DIR}/bin/zla
 
 # Source _dp03_check from the constitution CLI for direct testing.
 eval "$(sed -n '692,780p' "${REAL_PROJECT_DIR}/bin/zlar-constitution")"
+
+set -u
 
 # ── Run setup ──────────────────────────────────────────────────────────────
 
