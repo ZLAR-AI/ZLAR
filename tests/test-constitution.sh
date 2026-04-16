@@ -186,7 +186,9 @@ set +u
 eval "$(awk '/^validate_constitution\(\) \{/,/^}$/' "${REAL_PROJECT_DIR}/bin/zlar-gate")"
 
 # Source _dp03_check from the constitution CLI for direct testing.
-eval "$(sed -n '692,780p' "${REAL_PROJECT_DIR}/bin/zlar-constitution")"
+# Use awk range extraction (not hardcoded line numbers) so this survives
+# edits to the constitution CLI that shift function positions.
+eval "$(awk '/^_dp03_check\(\) \{/,/^}$/' "${REAL_PROJECT_DIR}/bin/zlar-constitution")"
 
 set -u
 
