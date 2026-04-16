@@ -297,16 +297,31 @@ if [ -f "${STANDING_APPROVALS_FILE}" ] && command -v jq &>/dev/null; then
         if [ -z "${_sa_sig_value}" ] || [ "${_sa_sig_value}" = "" ]; then
             _sa_sig_ok="false"
         else
-            _sa_canon=$(mktemp "${GATE_TMP}/sa-canon.XXXXXX")
-            _sa_hash=$(mktemp "${GATE_TMP}/sa-hash.XXXXXX")
+            # Phase B of ADR-011 — dual canonical form verification.
+            _sa_canon_spec=$(mktemp "${GATE_TMP}/sa-canon-spec.XXXXXX")
+            _sa_canon_pretty=$(mktemp "${GATE_TMP}/sa-canon-pretty.XXXXXX")
+            _sa_hash_spec=$(mktemp "${GATE_TMP}/sa-hash-spec.XXXXXX")
+            _sa_hash_pretty=$(mktemp "${GATE_TMP}/sa-hash-pretty.XXXXXX")
             _sa_sig_bin=$(mktemp "${GATE_TMP}/sa-sig.XXXXXX")
-            jq '.signature.value = ""' "${STANDING_APPROVALS_FILE}" > "${_sa_canon}" 2>/dev/null
-            zlar_crypto_hash "${_sa_canon}" "${_sa_hash}"
+
+            jq -S -c '.signature.value = ""' "${STANDING_APPROVALS_FILE}" | tr -d '\n' > "${_sa_canon_spec}" 2>/dev/null
+            zlar_crypto_hash "${_sa_canon_spec}" "${_sa_hash_spec}"
+
+            jq '.signature.value = ""' "${STANDING_APPROVALS_FILE}" > "${_sa_canon_pretty}" 2>/dev/null
+            zlar_crypto_hash "${_sa_canon_pretty}" "${_sa_hash_pretty}"
+
             echo "${_sa_sig_value}" | base64 -d > "${_sa_sig_bin}" 2>/dev/null
-            if ! zlar_crypto_verify "${POLICY_PUBKEY}" "${_sa_hash}" "${_sa_sig_bin}" "ed25519"; then
+
+            if zlar_crypto_verify "${POLICY_PUBKEY}" "${_sa_hash_spec}" "${_sa_sig_bin}" "ed25519"; then
+                _sa_sig_ok="true"
+            elif zlar_crypto_verify "${POLICY_PUBKEY}" "${_sa_hash_pretty}" "${_sa_sig_bin}" "ed25519"; then
+                _sa_sig_ok="true"
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARN: Standing approvals verified under LEGACY canonical form bash-pretty (ADR-011)" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+            else
                 _sa_sig_ok="false"
             fi
-            rm -f "${_sa_canon}" "${_sa_hash}" "${_sa_sig_bin}"
+
+            rm -f "${_sa_canon_spec}" "${_sa_canon_pretty}" "${_sa_hash_spec}" "${_sa_hash_pretty}" "${_sa_sig_bin}"
         fi
     fi
     if [ "${_sa_sig_ok}" = "true" ]; then
@@ -383,18 +398,36 @@ if [ -f "${MANIFEST_FILE}" ] && command -v jq &>/dev/null; then
     _manifest_sig=$(jq -r '.signature.value // ""' "${MANIFEST_FILE}" 2>/dev/null)
     _manifest_ok="true"
     if [ -n "${_manifest_sig}" ] && [ -f "${POLICY_PUBKEY}" ]; then
-        _m_canon=$(mktemp "${GATE_TMP}/m-canon.XXXXXX")
-        _m_hash=$(mktemp "${GATE_TMP}/m-hash.XXXXXX")
+        # Phase B of ADR-011 — dual canonical form verification.
+        _m_canon_spec=$(mktemp "${GATE_TMP}/m-canon-spec.XXXXXX")
+        _m_canon_pipe=$(mktemp "${GATE_TMP}/m-canon-pipe.XXXXXX")
+        _m_hash_spec=$(mktemp "${GATE_TMP}/m-hash-spec.XXXXXX")
+        _m_hash_pipe=$(mktemp "${GATE_TMP}/m-hash-pipe.XXXXXX")
         _m_sig_bin=$(mktemp "${GATE_TMP}/m-sig.XXXXXX")
-        jq -S -c '.signature = {algorithm:"",value:"",key_id:""}' "${MANIFEST_FILE}" > "${_m_canon}" 2>/dev/null
-        zlar_crypto_hash "${_m_canon}" "${_m_hash}"
+
+        jq -S -c '.signature = {algorithm:"",value:"",key_id:""}' "${MANIFEST_FILE}" | tr -d '\n' > "${_m_canon_spec}" 2>/dev/null
+        zlar_crypto_hash "${_m_canon_spec}" "${_m_hash_spec}"
+
+        jq -S -c '.signature = {algorithm:"",value:"",key_id:""}' "${MANIFEST_FILE}" > "${_m_canon_pipe}" 2>/dev/null
+        zlar_crypto_hash "${_m_canon_pipe}" "${_m_hash_pipe}"
+
         echo "${_manifest_sig}" | base64 -d > "${_m_sig_bin}" 2>/dev/null
-        if ! zlar_crypto_verify "${POLICY_PUBKEY}" "${_m_hash}" "${_m_sig_bin}" "ed25519"; then
+
+        _m_verified=""
+        if zlar_crypto_verify "${POLICY_PUBKEY}" "${_m_hash_spec}" "${_m_sig_bin}" "ed25519"; then
+            _m_verified="spec"
+        elif zlar_crypto_verify "${POLICY_PUBKEY}" "${_m_hash_pipe}" "${_m_sig_bin}" "ed25519"; then
+            _m_verified="bash-pipeline"
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARN: Manifest verified under LEGACY canonical form bash-pipeline (ADR-011)" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+        fi
+
+        rm -f "${_m_canon_spec}" "${_m_canon_pipe}" "${_m_hash_spec}" "${_m_hash_pipe}" "${_m_sig_bin}"
+
+        if [ -z "${_m_verified}" ]; then
             _manifest_ok="false"
             echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest signature INVALID — manifest rejected" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
             MANIFEST_HARD_DENY_REASON="manifest:tampered|Manifest signature INVALID — hard deny per invariant 8"
         fi
-        rm -f "${_m_canon}" "${_m_hash}" "${_m_sig_bin}"
     elif [ -z "${_manifest_sig}" ]; then
         # Unsigned manifest — fall back to policy-only (invariant #7)
         _manifest_ok="false"
@@ -1087,19 +1120,36 @@ validate_constitution() {
         return 1
     fi
 
-    local _c_canon _c_hash _c_sig
-    _c_canon=$(mktemp "${GATE_TMP}/c-canon.XXXXXX")
-    _c_hash=$(mktemp "${GATE_TMP}/c-hash.XXXXXX")
+    # Phase B of ADR-011 — dual canonical form verification.
+    local _c_canon_spec _c_canon_pretty _c_hash_spec _c_hash_pretty _c_sig
+    _c_canon_spec=$(mktemp "${GATE_TMP}/c-canon-spec.XXXXXX")
+    _c_canon_pretty=$(mktemp "${GATE_TMP}/c-canon-pretty.XXXXXX")
+    _c_hash_spec=$(mktemp "${GATE_TMP}/c-hash-spec.XXXXXX")
+    _c_hash_pretty=$(mktemp "${GATE_TMP}/c-hash-pretty.XXXXXX")
     _c_sig=$(mktemp "${GATE_TMP}/c-sig.XXXXXX")
-    jq '.signature.value = ""' "${CONSTITUTION_FILE}" > "${_c_canon}" 2>/dev/null
-    zlar_crypto_hash "${_c_canon}" "${_c_hash}"
+
+    jq -S -c '.signature.value = ""' "${CONSTITUTION_FILE}" | tr -d '\n' > "${_c_canon_spec}" 2>/dev/null
+    zlar_crypto_hash "${_c_canon_spec}" "${_c_hash_spec}"
+
+    jq '.signature.value = ""' "${CONSTITUTION_FILE}" > "${_c_canon_pretty}" 2>/dev/null
+    zlar_crypto_hash "${_c_canon_pretty}" "${_c_hash_pretty}"
+
     echo "${_c_sig_value}" | base64 -d > "${_c_sig}" 2>/dev/null
-    if ! zlar_crypto_verify "${CONSTITUTION_PUBKEY}" "${_c_hash}" "${_c_sig}" "${_c_sig_algo}"; then
-        rm -f "${_c_canon}" "${_c_hash}" "${_c_sig}"
-        log "FATAL: Constitution signature INVALID"
+
+    local _c_verified=""
+    if zlar_crypto_verify "${CONSTITUTION_PUBKEY}" "${_c_hash_spec}" "${_c_sig}" "${_c_sig_algo}"; then
+        _c_verified="spec"
+    elif zlar_crypto_verify "${CONSTITUTION_PUBKEY}" "${_c_hash_pretty}" "${_c_sig}" "${_c_sig_algo}"; then
+        _c_verified="bash-pretty"
+        log "WARN: Constitution signature verified under LEGACY canonical form bash-pretty (ADR-011)"
+    fi
+
+    rm -f "${_c_canon_spec}" "${_c_canon_pretty}" "${_c_hash_spec}" "${_c_hash_pretty}" "${_c_sig}"
+
+    if [ -z "${_c_verified}" ]; then
+        log "FATAL: Constitution signature INVALID (tried spec and bash-pretty canonical forms)"
         return 1
     fi
-    rm -f "${_c_canon}" "${_c_hash}" "${_c_sig}"
 
     # 6. PC-01: No rule exercising consequential power with audit: false
     local _silent_rules
@@ -1222,23 +1272,36 @@ load_policy() {
             return 1
         fi
 
-        # Private temp files (not world-readable /tmp)
-        local canon_file hash_file sig_file
-        canon_file=$(mktemp "${GATE_TMP}/canon.XXXXXX")
-        hash_file=$(mktemp "${GATE_TMP}/hash.XXXXXX")
+        # Phase B of ADR-011 — dual canonical form verification.
+        local canon_spec canon_pretty hash_spec hash_pretty sig_file
+        canon_spec=$(mktemp "${GATE_TMP}/canon-spec.XXXXXX")
+        canon_pretty=$(mktemp "${GATE_TMP}/canon-pretty.XXXXXX")
+        hash_spec=$(mktemp "${GATE_TMP}/hash-spec.XXXXXX")
+        hash_pretty=$(mktemp "${GATE_TMP}/hash-pretty.XXXXXX")
         sig_file=$(mktemp "${GATE_TMP}/sig.XXXXXX")
 
-        jq '.signature.value = ""' "${POLICY_FILE}" > "${canon_file}" 2>/dev/null
-        zlar_crypto_hash "${canon_file}" "${hash_file}"
+        jq -S -c '.signature.value = ""' "${POLICY_FILE}" | tr -d '\n' > "${canon_spec}" 2>/dev/null
+        zlar_crypto_hash "${canon_spec}" "${hash_spec}"
+
+        jq '.signature.value = ""' "${POLICY_FILE}" > "${canon_pretty}" 2>/dev/null
+        zlar_crypto_hash "${canon_pretty}" "${hash_pretty}"
+
         echo "${sig_value}" | base64 -d > "${sig_file}" 2>/dev/null
 
-        # Verify using the algorithm declared in the policy file
-        if ! zlar_crypto_verify "${POLICY_PUBKEY}" "${hash_file}" "${sig_file}" "${sig_algo}"; then
-            rm -f "${canon_file}" "${hash_file}" "${sig_file}"
-            log "FATAL: Policy signature INVALID"
+        local _policy_verified=""
+        if zlar_crypto_verify "${POLICY_PUBKEY}" "${hash_spec}" "${sig_file}" "${sig_algo}"; then
+            _policy_verified="spec"
+        elif zlar_crypto_verify "${POLICY_PUBKEY}" "${hash_pretty}" "${sig_file}" "${sig_algo}"; then
+            _policy_verified="bash-pretty"
+            log "WARN: Policy signature verified under LEGACY canonical form bash-pretty (ADR-011)"
+        fi
+
+        rm -f "${canon_spec}" "${canon_pretty}" "${hash_spec}" "${hash_pretty}" "${sig_file}"
+
+        if [ -z "${_policy_verified}" ]; then
+            log "FATAL: Policy signature INVALID (tried spec and bash-pretty canonical forms)"
             return 1
         fi
-        rm -f "${canon_file}" "${hash_file}" "${sig_file}"
     }
 
     # ── Second Authority Law: Constitutional validation ──
