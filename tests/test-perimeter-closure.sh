@@ -65,17 +65,17 @@ echo "  ZLAR Perimeter Closure Tests (v2.6.0 rule set)"
 echo "═══════════════════════════════════════════════════════"
 echo
 
-# Verify policy exists. Version check is loose: any 2.x.x is accepted.
+# Verify policy exists. Version check is loose: any semver is accepted.
 # The rule set was introduced in 2.6.0 and the rules themselves are preserved
-# unchanged in later versions (2.7.x bumped the version field for repo
+# unchanged in later versions (2.7.x / 3.x bumped the version field for repo
 # consistency without touching rule content — see active.policy.json description).
 echo "── Policy verification ──"
 version=$(jq -r '.version' "${POLICY_FILE}")
-if echo "${version}" | grep -qE '^2\.[0-9]+\.[0-9]+$'; then
+if echo "${version}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     echo "  ✓ Policy version is ${version}"
     passed=$((passed + 1))
 else
-    echo "  ✗ Policy version is ${version}, expected 2.x.x"
+    echo "  ✗ Policy version is ${version}, expected semver"
     failed=$((failed + 1))
 fi
 

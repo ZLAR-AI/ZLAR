@@ -47,11 +47,13 @@ function signPolicyUnderSpec(policyObj) {
 
 // Self-contained signed test policy.
 // Structure satisfies PC-02 (at least one ask rule for human contestability)
-// via a narrow dummy rule that cannot match test inputs, so R095's allow
-// behavior remains the observable outcome for MCP tool calls under test.
+// via a narrow dummy rule that cannot match test inputs, and PC-05a
+// (default_action must be 'deny') by making R095 the explicit catch-all
+// allow for the MCP domain. R095 fires before default_action ever matters,
+// so the observable allow behavior for MCP tool calls is preserved.
 const TEST_POLICY_OBJ = {
   version: 'test-allow',
-  default_action: 'allow',
+  default_action: 'deny',
   rules: [
     {
       id: 'R095',
@@ -98,7 +100,10 @@ function startMockServer(port) {
         }
       });
     });
-    server.listen(port, () => resolve(server));
+    // Bind loopback-only. 0.0.0.0 triggers the macOS application firewall
+    // for unsigned node binaries; 127.0.0.1 is sufficient for this in-process
+    // test (the gate and client connect via 'localhost').
+    server.listen(port, '127.0.0.1', () => resolve(server));
   });
 }
 

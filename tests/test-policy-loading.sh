@@ -67,7 +67,9 @@ GATE_TMP="${TEST_TMP}/gate-tmp"
 mkdir -p "${GATE_TMP}"
 
 # ── load_policy inline ────────────────────────────────────────────────────────
-# Mirrors bin/zlar-gate load_policy() (lines ~617-670). Keep in sync.
+# Mirrors bin/zlar-gate load_policy() dual-form verification (lines ~1275-1305).
+# Phase B of ADR-011 — accept spec (jq -S -c | tr -d '\n') or legacy
+# bash-pretty (jq default) canonical form. Keep in sync with the gate.
 # POLICY_FILE and POLICY_PUBKEY are set per-test below.
 
 load_policy() {
@@ -90,21 +92,34 @@ load_policy() {
             return 1
         fi
 
-        local canon_file hash_file sig_file
-        canon_file=$(mktemp "${GATE_TMP}/canon.XXXXXX")
-        hash_file=$(mktemp  "${GATE_TMP}/hash.XXXXXX")
-        sig_file=$(mktemp   "${GATE_TMP}/sig.XXXXXX")
+        local canon_spec canon_pretty hash_spec hash_pretty sig_file
+        canon_spec=$(mktemp   "${GATE_TMP}/canon-spec.XXXXXX")
+        canon_pretty=$(mktemp "${GATE_TMP}/canon-pretty.XXXXXX")
+        hash_spec=$(mktemp    "${GATE_TMP}/hash-spec.XXXXXX")
+        hash_pretty=$(mktemp  "${GATE_TMP}/hash-pretty.XXXXXX")
+        sig_file=$(mktemp     "${GATE_TMP}/sig.XXXXXX")
 
-        jq '.signature.value = ""' "${POLICY_FILE}" > "${canon_file}" 2>/dev/null
-        zlar_crypto_hash "${canon_file}" "${hash_file}"
+        jq -S -c '.signature.value = ""' "${POLICY_FILE}" | tr -d '\n' > "${canon_spec}" 2>/dev/null
+        zlar_crypto_hash "${canon_spec}" "${hash_spec}"
+
+        jq '.signature.value = ""' "${POLICY_FILE}" > "${canon_pretty}" 2>/dev/null
+        zlar_crypto_hash "${canon_pretty}" "${hash_pretty}"
+
         echo "${sig_value}" | base64 -d > "${sig_file}" 2>/dev/null
 
-        if ! zlar_crypto_verify "${POLICY_PUBKEY}" "${hash_file}" "${sig_file}" "${sig_algo}"; then
-            rm -f "${canon_file}" "${hash_file}" "${sig_file}"
-            log "FATAL: Policy signature INVALID"
+        local _policy_verified=""
+        if zlar_crypto_verify "${POLICY_PUBKEY}" "${hash_spec}" "${sig_file}" "${sig_algo}"; then
+            _policy_verified="spec"
+        elif zlar_crypto_verify "${POLICY_PUBKEY}" "${hash_pretty}" "${sig_file}" "${sig_algo}"; then
+            _policy_verified="bash-pretty"
+        fi
+
+        rm -f "${canon_spec}" "${canon_pretty}" "${hash_spec}" "${hash_pretty}" "${sig_file}"
+
+        if [ -z "${_policy_verified}" ]; then
+            log "FATAL: Policy signature INVALID (tried spec and bash-pretty canonical forms)"
             return 1
         fi
-        rm -f "${canon_file}" "${hash_file}" "${sig_file}"
     }
 
     POLICY_VERSION=$(jq -r '.version // "unknown"' "${POLICY_FILE}" 2>/dev/null)
