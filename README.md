@@ -136,14 +136,14 @@ Every gate decision writes a hash-chained, Ed25519-signed audit entry:
   "action": "git push origin main",
   "outcome": "denied",
   "rule": "R014",
-  "authorizer": "human:7662799203",
+  "authorizer": "human:<operator-id>",
   "prev_hash": "a1b2c3...",
   "signature_algorithm": "Ed25519",
   "signature": "mOiZF8E3MKFeyuRw..."
 }
 ```
 
-- **`authorizer: "human:7662799203"`** — a specific human made this decision. Non-repudiable.
+- **`authorizer: "human:<operator-id>"`** — a specific human made this decision. Non-repudiable.
 - **`prev_hash`** — SHA-256 of the previous entry. Tamper with any record and every subsequent hash breaks.
 - **`signature`** — Ed25519 over SHA-256 of the canonical entry. Every entry is individually signed.
 

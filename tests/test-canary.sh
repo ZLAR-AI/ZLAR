@@ -23,7 +23,7 @@ mkdir -p "${ZLAR_CANARY_STATE_DIR}"
 # Mock gate dependencies
 log() { :; }
 gen_id() { echo "test-$(date +%s)-$$-${RANDOM}"; }
-TELEGRAM_CHAT_ID="7662799203"
+TELEGRAM_CHAT_ID="9999999999"
 TELEGRAM_TIMEOUT_S=900
 SESSION_ID="test-session-canary"
 
@@ -136,7 +136,7 @@ FAKE_INBOX="${TEST_DIR}/inbox"
 mkdir -p "${FAKE_INBOX}"
 jq -n -c \
     --arg data "cc:canary:approve:${canary_id}" \
-    --arg from_id "7662799203" \
+    --arg from_id "9999999999" \
     --arg cb_id "test-cb-1" \
     --arg hmac "test-hmac" \
     '{data: $data, from_id: $from_id, callback_query_id: $cb_id, hmac: $hmac}' \

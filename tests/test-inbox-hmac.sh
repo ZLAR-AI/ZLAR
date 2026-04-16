@@ -33,7 +33,7 @@ else
 fi
 
 # ── Test 2: Compute produces non-empty output ──
-hmac=$(zlar_hmac_compute "cc:approve:abc123" "7662799203" "cb_999")
+hmac=$(zlar_hmac_compute "cc:approve:abc123" "1000000001" "cb_999")
 if [ -n "${hmac}" ]; then
     pass "Compute produces non-empty HMAC: ${hmac:0:20}..."
 else
@@ -41,14 +41,14 @@ else
 fi
 
 # ── Test 3: Verify accepts matching HMAC ──
-if zlar_hmac_verify "cc:approve:abc123" "7662799203" "cb_999" "${hmac}"; then
+if zlar_hmac_verify "cc:approve:abc123" "1000000001" "cb_999" "${hmac}"; then
     pass "Verify accepts valid HMAC"
 else
     fail "Verify rejected valid HMAC"
 fi
 
 # ── Test 4: Verify rejects tampered data ──
-if ! zlar_hmac_verify "cc:DENY:abc123" "7662799203" "cb_999" "${hmac}"; then
+if ! zlar_hmac_verify "cc:DENY:abc123" "1000000001" "cb_999" "${hmac}"; then
     pass "Verify rejects tampered data"
 else
     fail "Verify accepted tampered data"
@@ -62,14 +62,14 @@ else
 fi
 
 # ── Test 6: Verify rejects tampered callback_id ──
-if ! zlar_hmac_verify "cc:approve:abc123" "7662799203" "cb_FAKE" "${hmac}"; then
+if ! zlar_hmac_verify "cc:approve:abc123" "1000000001" "cb_FAKE" "${hmac}"; then
     pass "Verify rejects tampered callback_id"
 else
     fail "Verify accepted tampered callback_id"
 fi
 
 # ── Test 7: Verify rejects empty HMAC field ──
-if ! zlar_hmac_verify "cc:approve:abc123" "7662799203" "cb_999" ""; then
+if ! zlar_hmac_verify "cc:approve:abc123" "1000000001" "cb_999" ""; then
     pass "Verify rejects empty HMAC (unsigned file)"
 else
     fail "Verify accepted empty HMAC"
@@ -78,7 +78,7 @@ fi
 # ── Test 8: Missing secret → deny (no legacy mode downgrade) ──
 saved_secret="${ZLAR_INBOX_HMAC_SECRET}"
 ZLAR_INBOX_HMAC_SECRET=""
-if ! zlar_hmac_verify "cc:approve:abc123" "7662799203" "cb_999" "${hmac}"; then
+if ! zlar_hmac_verify "cc:approve:abc123" "1000000001" "cb_999" "${hmac}"; then
     pass "Missing secret denies (no downgrade attack)"
 else
     fail "Missing secret allowed verification (downgrade attack possible!)"
@@ -98,8 +98,8 @@ else
 fi
 
 # ── Test 10: OC gate callback format ──
-oc_hmac=$(zlar_hmac_compute "oc:approve:evt_789" "7662799203" "cb_oc_111")
-if zlar_hmac_verify "oc:approve:evt_789" "7662799203" "cb_oc_111" "${oc_hmac}"; then
+oc_hmac=$(zlar_hmac_compute "oc:approve:evt_789" "1000000001" "cb_oc_111")
+if zlar_hmac_verify "oc:approve:evt_789" "1000000001" "cb_oc_111" "${oc_hmac}"; then
     pass "OC gate callback format works"
 else
     fail "OC gate callback format failed"

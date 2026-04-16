@@ -60,7 +60,7 @@ TELEGRAM_BOT_TOKEN=$(cat "${TOKEN_FILE}" | tr -d '[:space:]')
 zlar_hmac_load_secret
 [ -n "${ZLAR_INBOX_HMAC_SECRET}" ] || die "HMAC secret not loaded (check ${ZLAR_HMAC_SECRET_FILE})"
 
-TELEGRAM_CHAT_ID="${ZLAR_TELEGRAM_CHAT_ID:-7662799203}"
+TELEGRAM_CHAT_ID="${ZLAR_TELEGRAM_CHAT_ID:?ZLAR_TELEGRAM_CHAT_ID must be set — see etc/gate.json configuration}"
 
 mkdir -p "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" "${INBOX_DIR}/mcp" 2>/dev/null || true
 chmod 700 "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" "${INBOX_DIR}/mcp" 2>/dev/null || true
