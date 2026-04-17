@@ -972,7 +972,12 @@ case "${COMMAND}" in
             fi
         else
             rm -f "$HOME/.claude/.gate-disabled"
-            sudo -n rm -f /etc/zlar/off-flag 2>/dev/null || true
+            if [ -f /etc/zlar/off-flag ]; then
+                sudo -n rm -f /etc/zlar/off-flag 2>/dev/null || true
+                if [ -f /etc/zlar/off-flag ]; then
+                    echo "  (warn: /etc/zlar/off-flag still present; gate structurally OFF until root removes it)"
+                fi
+            fi
             rm -f "$HOME/.claude/.gate-locked" 2>/dev/null || true
             [ "${_GU_LOADED}" = "1" ] && gu_record_enable 2>/dev/null || true
             echo "Gate ON — policy enforced"
