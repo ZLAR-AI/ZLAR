@@ -5,7 +5,8 @@
 // correctly against policy. No real MCP server needed.
 
 import { createServer, createConnection } from 'net';
-import { readFileSync, existsSync, unlinkSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, unlinkSync, writeFileSync, mkdirSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { generateKeyPairSync, sign as cryptoSign } from 'crypto';
@@ -13,9 +14,29 @@ import { canonicalize, sha256hex } from '../lib/receipt.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = join(__dirname, '..');
-const TEST_AUDIT = join(__dirname, 'test-audit.jsonl');
-const TEST_ALLOW_POLICY = join(__dirname, 'test-allow-policy.json');
-const TEST_POLICY_PUBKEY = join(__dirname, 'test-policy-signing.pub');
+
+// Route all test artifacts through the system temp dir to avoid EPERM on
+// mounted or read-only working directories, and to isolate the test run
+// from live repo state (manifest, constitution, restore-config). Each path
+// is test-scoped and cleaned up below.
+const TEST_SCRATCH = join(tmpdir(), `zlar-mcp-gate-test-${process.pid}`);
+if (existsSync(TEST_SCRATCH)) rmSync(TEST_SCRATCH, { recursive: true, force: true });
+mkdirSync(TEST_SCRATCH, { recursive: true });
+
+const TEST_AUDIT = join(TEST_SCRATCH, 'test-audit.jsonl');
+const TEST_ALLOW_POLICY = join(TEST_SCRATCH, 'test-allow-policy.json');
+const TEST_POLICY_PUBKEY = join(TEST_SCRATCH, 'test-policy-signing.pub');
+
+// Nonexistent paths passed to the spawned gate. Because they do not exist,
+// the gate enters graceful defaults:
+//   - missing manifest        → policy-only enforcement (bash gate invariant #7)
+//   - missing presence-file   → pre-constitutional mode
+//   - missing restore-config  → restore disabled
+// Without these flags the gate would read live etc/* and reject the test
+// fixtures because they are signed under a different key.
+const TEST_MANIFEST_FILE = join(TEST_SCRATCH, 'no-manifest.json');
+const TEST_CONSTITUTION_PRESENCE = join(TEST_SCRATCH, 'no-presence');
+const TEST_RESTORE_CONFIG = join(TEST_SCRATCH, 'no-restore-config.json');
 
 // Clean up test files
 if (existsSync(TEST_AUDIT)) unlinkSync(TEST_AUDIT);
@@ -152,6 +173,10 @@ async function runTests() {
     '--audit-file', TEST_AUDIT,
     '--policy-file', TEST_ALLOW_POLICY,
     '--policy-pubkey', TEST_POLICY_PUBKEY,
+    '--manifest-file', TEST_MANIFEST_FILE,
+    '--constitution-presence-file', TEST_CONSTITUTION_PRESENCE,
+    '--restore-config-file', TEST_RESTORE_CONFIG,
+    '--no-telegram',
     '--agent-id', 'test-agent',
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
@@ -234,7 +259,7 @@ async function runTests() {
   // ephemeral key as the allow policy so the gate's strict-signature check
   // passes and the DENY path is exercised cleanly. PC-02 is satisfied by
   // R999_PC02_SATISFIER even though this policy's intent is deny-all.
-  const denyPolicyPath = join(__dirname, 'test-deny-policy.json');
+  const denyPolicyPath = join(TEST_SCRATCH, 'test-deny-policy.json');
   writeFileSync(denyPolicyPath, JSON.stringify(signPolicyUnderSpec({
     version: 'test-deny',
     default_action: 'deny',
@@ -271,6 +296,10 @@ async function runTests() {
     '--audit-file', TEST_AUDIT,
     '--policy-file', denyPolicyPath,
     '--policy-pubkey', TEST_POLICY_PUBKEY,
+    '--manifest-file', TEST_MANIFEST_FILE,
+    '--constitution-presence-file', TEST_CONSTITUTION_PRESENCE,
+    '--restore-config-file', TEST_RESTORE_CONFIG,
+    '--no-telegram',
     '--agent-id', 'test-deny-agent',
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
@@ -324,6 +353,10 @@ async function runTests() {
     '--upstream', `localhost:${MOCK_PORT}`,
     '--audit-file', TEST_AUDIT,
     '--policy-file', '/nonexistent/policy.json',
+    '--manifest-file', TEST_MANIFEST_FILE,
+    '--constitution-presence-file', TEST_CONSTITUTION_PRESENCE,
+    '--restore-config-file', TEST_RESTORE_CONFIG,
+    '--no-telegram',
     '--agent-id', 'test-failclosed-agent',
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
 

@@ -886,6 +886,84 @@ cmd_stats() {
     echo ""
 }
 
+# ─── IDENTITY ────────────────────────────────────────────────────────────────
+# Report distinct agent identities observed in the audit trail.
+#
+# Distinct from cmd_fingerprint (which is a BEHAVIORAL signature). This is
+# the CRYPTOGRAPHIC identity layer added in Receipt v1:
+#
+#   agent_config_hash    — SHA-256 of the primary governing artifact
+#                          (project CLAUDE.md > user CLAUDE.md > soul.md > should.md)
+#   agent_config_source  — which precedence tier produced the hash
+#   agent_fingerprint    — short 16-hex handle = SHA-256('claude-code:hash:policy_version')[:16]
+#
+# This command groups audit entries by fingerprint and reports first/last
+# seen timestamps, event counts, config source, and a truncated config hash.
+# Pure read. Never modifies the trail.
+
+cmd_identity() {
+    local since="7d"
+    local format="text"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since)  shift; since="$1"; shift ;;
+            --format) shift; format="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+    require_audit
+
+    local since_ts
+    since_ts=$(since_to_filter "${since}")
+
+    # Group by agent_fingerprint. Entries without identity fields bucket as "null".
+    local grouped
+    grouped=$(jq -s --arg since "${since_ts}" '
+        [.[] | select(.ts >= $since)]
+        | group_by(.agent_fingerprint // "null")
+        | map({
+            fingerprint: (.[0].agent_fingerprint // null),
+            config_source: (.[0].agent_config_source // null),
+            config_hash: (.[0].agent_config_hash // null),
+            first_seen: (map(.ts) | min),
+            last_seen: (map(.ts) | max),
+            event_count: length
+          })
+        | sort_by(-.event_count)
+    ' "${AUDIT_FILE}" 2>/dev/null)
+
+    if [ "${format}" = "json" ]; then
+        echo "${grouped}" | jq '.'
+        return
+    fi
+
+    local total_groups
+    total_groups=$(echo "${grouped}" | jq 'length')
+    local null_count
+    null_count=$(echo "${grouped}" | jq '[.[] | select(.fingerprint == null)] | length')
+    local identified_count=$(( total_groups - null_count ))
+
+    echo ""
+    echo "  Agent identity report (last ${since}):"
+    echo "  ─────────────────────────────────────────────────"
+    echo "  Distinct fingerprints: ${identified_count}"
+    if [ "${null_count}" -gt 0 ]; then
+        echo "  Entries without identity: present (pre-v1 or config-less)"
+    fi
+    echo ""
+
+    echo "${grouped}" | jq -r '.[] |
+        if .fingerprint == null then
+            "  [no-identity]  events=\(.event_count)  first=\(.first_seen)  last=\(.last_seen)"
+        else
+            "  \(.fingerprint)  source=\(.config_source)  events=\(.event_count)\n    hash=\(.config_hash[0:16])...\(.config_hash[-8:])\n    first=\(.first_seen)\n    last=\(.last_seen)"
+        end'
+    echo ""
+}
+
 # ─── EVOLVE ──────────────────────────────────────────────────────────────────
 # The policy evolution engine. Watches the audit trail and proposes rule changes.
 #
@@ -1551,6 +1629,7 @@ case "${COMMAND}" in
     heatmap)      cmd_heatmap "$@" ;;
     verdict)      cmd_verdict "$@" ;;
     stats)        cmd_stats "$@" ;;
+    identity)     cmd_identity "$@" ;;
     evolve)       cmd_evolve "$@" ;;
     verify-chain) cmd_verify_chain "$@" ;;
     attest)       cmd_attest "$@" ;;
@@ -1566,6 +1645,7 @@ case "${COMMAND}" in
         echo "  timeline     Human-readable chronological narrative"
         echo "  heatmap      Activity density by hour and domain"
         echo "  verdict      One-page session assessment (CLEAN/NOTABLE/ANOMALOUS/CRITICAL)"
+        echo "  identity     Report distinct agent identities (fingerprint + config source) observed"
         echo "  evolve       Propose policy rule changes from observation data"
         echo "  verify-chain Walk the hash chain and report any breaks or tampering"
         echo "  stats        Quick statistics overview"

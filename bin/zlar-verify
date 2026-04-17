@@ -36,6 +36,7 @@ let receiptPath = null;
 let pubkeyPath = null;
 let jsonOutput = false;
 let verbose = false;
+let allowV0 = false;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--pubkey' && i + 1 < args.length) {
@@ -44,6 +45,8 @@ for (let i = 0; i < args.length; i++) {
     jsonOutput = true;
   } else if (args[i] === '--verbose' || args[i] === '-v') {
     verbose = true;
+  } else if (args[i] === '--allow-v0') {
+    allowV0 = true;
   } else if (args[i] === '--help' || args[i] === '-h') {
     printUsage();
     process.exit(0);
@@ -64,6 +67,7 @@ OPTIONS
   --pubkey <path>   Path to Ed25519 public key (PEM format)
   --json            Output result as JSON
   --verbose, -v     Show receipt details alongside verdict
+  --allow-v0        Accept legacy v0 receipts (off by default at Published v1.0)
   --help, -h        Show this help
 
 EXIT CODES
@@ -132,7 +136,7 @@ try {
 
 // ─── Verification ────────────────────────────────────────────────────────────
 
-const result = verifyReceiptAny(receipt, publicKeyPem);
+const result = verifyReceiptAny(receipt, publicKeyPem, { allowV0 });
 
 // Extract display fields (works for both v0 and v1)
 const isV1 = result.version === 'v1';

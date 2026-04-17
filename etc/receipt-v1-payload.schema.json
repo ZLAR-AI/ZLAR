@@ -48,11 +48,28 @@
     },
     "manifest_agent_id": {
       "type": ["string", "null"],
-      "description": "Agent identity from the manifest, or null."
+      "description": "Agent identity from the manifest, or null. Declared identity: what the agent claims to be under its signed manifest."
     },
     "manifest_principal": {
       "type": ["string", "null"],
-      "description": "Human principal accountable for the agent, or null."
+      "description": "Human principal accountable for the agent, or null. Declared identity: from the signed manifest."
+    },
+    "agent_config_hash": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 (hex, lowercase) of the primary governing configuration artifact actually in effect at decision time. Hashes the raw file bytes as loaded by the gate — no line-ending normalization, no encoding conversion. Null when no governing artifact is present in the resolution set. Proves the identity of the primary governing artifact, not the full transitive instruction/context surface. Resolution order (first match wins): project CLAUDE.md, user CLAUDE.md (~/.claude/CLAUDE.md), project soul.md, project should.md."
+    },
+    "agent_config_source": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "enum": ["project_claude_md", "user_claude_md", "project_soul_md", "project_should_md"] }
+      ],
+      "description": "Which precedence tier produced agent_config_hash. Null iff agent_config_hash is null. Enables verifiers to distinguish same-content hashes across different source tiers."
+    },
+    "agent_fingerprint": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{16}$",
+      "description": "Short identity handle — first 16 hex chars of SHA-256('agent_type:agent_config_hash:policy_version'). Convenience index for correlation across receipts; not normative evidence. Null when agent_config_hash is null."
     },
     "delegation_chain": {
       "type": "array",

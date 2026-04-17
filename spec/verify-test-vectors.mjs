@@ -156,26 +156,26 @@ for (const r of results) {
   }
 }
 
-// Expected outcomes (from spec):
-// V1: sig valid, semantic valid (positive: minimal allow)
-// V2: sig valid, semantic valid (positive: human authorized)
-// V3: sig valid, semantic valid (positive: delegation chain depth 2)
-// V4: sig valid, semantic INVALID with RULE_OUTCOME_CONTRADICTION (negative: R003+allow)
-// V5: sig valid, semantic INVALID with AUTHORIZER_OUTCOME_MISMATCH (negative: policy+authorized)
+// Expected outcomes (from spec Annex A):
+const expected = [
+  { sig: true, sem: true,  code: 'OK' },                              // V1 positive
+  { sig: true, sem: true,  code: 'OK' },                              // V2 positive
+  { sig: true, sem: true,  code: 'OK' },                              // V3 positive
+  { sig: true, sem: false, code: 'RULE_OUTCOME_CONTRADICTION' },      // V4 negative
+  { sig: true, sem: false, code: 'AUTHORIZER_OUTCOME_MISMATCH' },     // V5 negative
+  { sig: true, sem: true,  code: 'OK' },                              // V6 positive policy-deny
+  { sig: true, sem: true,  code: 'OK' },                              // V7 positive timeout-denied
+  { sig: true, sem: false, code: 'AUTHORIZER_OUTCOME_MISMATCH' },     // V8 negative timeout+authorized
+  { sig: true, sem: false, code: 'DELEGATION_MISSING_ROOT' },         // V9 negative depth≠0
+];
 
-console.log('\nExpected per spec:');
-console.log('Vector 1: sig valid, semantic valid');
-console.log('Vector 2: sig valid, semantic valid');
-console.log('Vector 3: sig valid, semantic valid');
-console.log('Vector 4: sig valid, semantic INVALID (RULE_OUTCOME_CONTRADICTION)');
-console.log('Vector 5: sig valid, semantic INVALID (AUTHORIZER_OUTCOME_MISMATCH)');
+console.log('\nExpected per spec: V1-V3 valid; V4 RULE_OUTCOME_CONTRADICTION; V5 AUTHORIZER_OUTCOME_MISMATCH;');
+console.log('V6-V7 valid; V8 AUTHORIZER_OUTCOME_MISMATCH; V9 DELEGATION_MISSING_ROOT.');
 
-const allMatch =
-  results[0]?.sigOk && results[0]?.semanticOk &&
-  results[1]?.sigOk && results[1]?.semanticOk &&
-  results[2]?.sigOk && results[2]?.semanticOk &&
-  results[3]?.sigOk && !results[3]?.semanticOk && results[3]?.code === 'RULE_OUTCOME_CONTRADICTION' &&
-  results[4]?.sigOk && !results[4]?.semanticOk && results[4]?.code === 'AUTHORIZER_OUTCOME_MISMATCH';
+const allMatch = expected.length === results.length && expected.every((e, i) => {
+  const r = results[i];
+  return r && r.sigOk === e.sig && r.semanticOk === e.sem && r.code === e.code;
+});
 
 console.log(`\n${allMatch ? '✓ ALL VECTORS MATCH SPEC EXPECTATIONS' : '✗ MISMATCH — vectors do not match spec'}`);
 process.exit(allMatch ? 0 : 1);

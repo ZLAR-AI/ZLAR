@@ -626,6 +626,62 @@ gen_id() {
     echo "${hex_ts}-${rand}"
 }
 
+# ─── Agent Identity (Governed Action Receipt v1) ───────────────────────────
+# Every audit entry carries cryptographic identity of the governing config
+# artifact actually in effect at decision time. Complementary to the manifest
+# identity layer (manifest_agent_id / manifest_principal): manifest is
+# declarative, config_hash is observational.
+#
+# Resolution order (first match wins — single-file v1.0 definition; v1.1+
+# may add a composed multi-file digest as an additive field):
+#   1. ./CLAUDE.md                   → project_claude_md
+#   2. ~/.claude/CLAUDE.md           → user_claude_md
+#   3. ./soul.md                     → project_soul_md
+#   4. ./should.md                   → project_should_md
+#
+# Hashing: SHA-256 of the raw file bytes as loaded, no normalization.
+# Fingerprint: first 16 hex chars of SHA-256 of
+#   "claude-code:${agent_config_hash}:${policy_version}"
+# All three vars are "null" (the literal string) when no governing
+# artifact is present — the audit entry jq uses --argjson to emit real
+# JSON null.
+AGENT_CONFIG_HASH="null"
+AGENT_CONFIG_SOURCE="null"
+AGENT_FINGERPRINT="null"
+
+_compute_agent_identity() {
+    local config_file="" config_source=""
+
+    if [ -f "${PWD}/CLAUDE.md" ]; then
+        config_file="${PWD}/CLAUDE.md"
+        config_source="project_claude_md"
+    elif [ -f "${HOME}/.claude/CLAUDE.md" ]; then
+        config_file="${HOME}/.claude/CLAUDE.md"
+        config_source="user_claude_md"
+    elif [ -f "${PWD}/soul.md" ]; then
+        config_file="${PWD}/soul.md"
+        config_source="project_soul_md"
+    elif [ -f "${PWD}/should.md" ]; then
+        config_file="${PWD}/should.md"
+        config_source="project_should_md"
+    fi
+
+    if [ -n "${config_file}" ] && [ -r "${config_file}" ]; then
+        local _hash
+        _hash=$(shasum -a 256 "${config_file}" 2>/dev/null | awk '{print $1}')
+        if [ -n "${_hash}" ] && [ "${#_hash}" = "64" ]; then
+            AGENT_CONFIG_HASH="\"${_hash}\""
+            AGENT_CONFIG_SOURCE="\"${config_source}\""
+            local _fp
+            _fp=$(printf 'claude-code:%s:%s' "${_hash}" "${POLICY_VERSION:-unknown}" \
+                  | shasum -a 256 | awk '{print substr($1,1,16)}')
+            if [ -n "${_fp}" ] && [ "${#_fp}" = "16" ]; then
+                AGENT_FINGERPRINT="\"${_fp}\""
+            fi
+        fi
+    fi
+}
+
 # ─── Audit File Rotation ────────────────────────────────────────────────────
 
 rotate_audit_if_needed() {
@@ -634,9 +690,34 @@ rotate_audit_if_needed() {
         size=$(stat -f%z "${AUDIT_FILE}" 2>/dev/null || stat -c%s "${AUDIT_FILE}" 2>/dev/null || echo 0)
         # Rotate at 10MB
         if [ "${size}" -gt 10485760 ]; then
+            # Capture aggregate hash and chain tail BEFORE moving — these
+            # pin the rotated file to its pre-rotation content.
+            local rotated_hash chain_tail
+            rotated_hash=$(shasum -a 256 "${AUDIT_FILE}" 2>/dev/null | awk '{print $1}')
+            chain_tail=$(tail -1 "${AUDIT_FILE}" 2>/dev/null | shasum -a 256 | awk '{print $1}')
+
             local rotated="${AUDIT_FILE}.$(date +%Y%m%d%H%M%S)"
             mv "${AUDIT_FILE}" "${rotated}" 2>/dev/null || true
-            log "Audit file rotated: ${rotated} (${size} bytes)"
+
+            # Emit a cross-file anchor to a sidecar. Records:
+            #   - aggregate hash of the rotated file
+            #   - chain-tail hash (last-line sha256) at rotation time
+            # A verifier can now detect silent deletion of the archive
+            # (anchor present, file absent) and substitution (file present
+            # but hash mismatch). Closes Property 5a in the v3.1.0 spec.
+            local anchor_file="${AUDIT_FILE}.anchors.jsonl"
+            local anchor_entry
+            anchor_entry=$(jq -n -c \
+                --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --arg rotated_file "$(basename "${rotated}")" \
+                --arg rotated_hash "sha256:${rotated_hash}" \
+                --arg chain_tail "${chain_tail}" \
+                --arg rotated_size "${size}" \
+                '{ts:$ts,rotated_file:$rotated_file,rotated_hash:$rotated_hash,chain_tail:$chain_tail,rotated_size:($rotated_size|tonumber)}' 2>/dev/null)
+            if [ -n "${anchor_entry}" ]; then
+                printf '%s\n' "${anchor_entry}" >> "${anchor_file}" 2>/dev/null || true
+            fi
+            log "Audit file rotated: ${rotated} (${size} bytes) anchor=${rotated_hash:0:16}"
         fi
     fi
 }
@@ -787,6 +868,9 @@ emit_event() {
         --arg user "$(whoami)" \
         --arg agent_id "${AGENT_ID:-claude-code}" \
         --arg session_id "${SESSION_ID:-unknown}" \
+        --argjson agent_config_hash "${AGENT_CONFIG_HASH}" \
+        --argjson agent_config_source "${AGENT_CONFIG_SOURCE}" \
+        --argjson agent_fingerprint "${AGENT_FINGERPRINT}" \
         --arg domain "${domain}" \
         --arg action "${action}" \
         --arg outcome "${outcome}" \
@@ -801,7 +885,11 @@ emit_event() {
         --arg hash_alg "${HASH_ALGORITHM}" \
         --arg pubkey_id "${PUBLIC_KEY_ID}" \
         '{id:$id,ts:$ts,seq:$seq,source:$source,host:$host,user:$user,
-          agent_id:$agent_id,session_id:$session_id,domain:$domain,
+          agent_id:$agent_id,session_id:$session_id,
+          agent_config_hash:$agent_config_hash,
+          agent_config_source:$agent_config_source,
+          agent_fingerprint:$agent_fingerprint,
+          domain:$domain,
           action:$action,outcome:$outcome,risk_score:$risk_score,
           detail:$detail,rule:$rule,policy_version:$policy_version,
           severity:$severity,prev_hash:$prev_hash,authorizer:$authorizer,
@@ -2313,6 +2401,11 @@ main() {
         fi
         return
     fi
+
+    # 6a. Compute agent identity (governed config artifact hash + fingerprint).
+    # Called after POLICY_VERSION is set so the fingerprint binds it. Never
+    # fails — falls back to null fields if no governing artifact is readable.
+    _compute_agent_identity
 
     # 6b. Build C: Policy version sync — check AFTER policy is loaded
     if [ "${AGENT_BINDINGS_LOADED}" = "true" ]; then

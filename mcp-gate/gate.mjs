@@ -67,6 +67,13 @@ import {
   enforceManifestAuthority,
 } from './manifest-enforcement.mjs';
 
+// Agent Health / Restore (parity with bin/zlar-gate lines 2455-2474)
+import {
+  initRestore,
+  checkEscalation as restoreCheckEscalation,
+  getRestoreState,
+} from './restore.mjs';
+
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 const CONFIG = {
@@ -110,8 +117,20 @@ for (let i = 0; i < args.length; i++) {
     case '--audit-file': CONFIG.auditFile = args[++i]; break;
     case '--policy-file': CONFIG.policyFile = args[++i]; break;
     case '--policy-pubkey': CONFIG.policyPubkey = args[++i]; break;
+    case '--manifest-file': CONFIG.manifestFile = args[++i]; break;
+    case '--constitution-file': CONFIG.constitutionFile = args[++i]; break;
+    case '--constitution-presence-file': CONFIG.constitutionPresenceFile = args[++i]; break;
+    case '--restore-config-file': CONFIG.restoreConfigFile = args[++i]; break;
     case '--agent-id': CONFIG.agentId = args[++i]; break;
     case '--telegram-chat-id': CONFIG.telegramChatId = args[++i]; break;
+    case '--no-telegram':
+      // Test-only. Disables every Telegram-dependent path (novelty
+      // escalation, ask routing) by clearing both token and chat id and
+      // suppressing the gate.json fallback. Leaves policy enforcement intact.
+      CONFIG.telegramToken = '';
+      CONFIG.telegramChatId = '';
+      CONFIG.noTelegram = true;
+      break;
     case '--policy-engine': CONFIG.policyEngine = args[++i]; break;
     case '--help':
       console.log(`ZLAR MCP Gate — vendor-agnostic governance proxy
@@ -145,8 +164,10 @@ function loadTelegramToken() {
   return null;
 }
 
-CONFIG.telegramToken = process.env.ZLAR_TELEGRAM_TOKEN || loadTelegramToken();
-if (!CONFIG.telegramChatId) {
+if (!CONFIG.noTelegram) {
+  CONFIG.telegramToken = process.env.ZLAR_TELEGRAM_TOKEN || loadTelegramToken();
+}
+if (!CONFIG.telegramChatId && !CONFIG.noTelegram) {
   // Try loading from gate.json
   const gateConfigPath = join(PROJECT_DIR, 'etc/gate.json');
   if (existsSync(gateConfigPath)) {
@@ -1142,6 +1163,30 @@ async function handleRequest(msg) {
     }
   }
 
+  // Agent Health / Restore escalation (parity with bin/zlar-gate lines 2455-2474).
+  // Only consulted for matched allow/log with non-zero risk. INV-04: any
+  // failure inside restoreCheckEscalation returns the input action unchanged,
+  // so the gate cannot be crashed by the advisory layer.
+  if ((evaluation.action === 'allow' || evaluation.action === 'log') &&
+      (evaluation.riskScore || 0) > 0) {
+    try {
+      const r = restoreCheckEscalation(evaluation.action);
+      if (r.escalated && r.action !== evaluation.action) {
+        console.log(`[gate] RESTORE: Trust state=${r.trustState} — escalating ${evaluation.action} → ${r.action}`);
+        try {
+          emitEvent('mcp', toolName, 'restore_escalation',
+            { tool: toolName, trust_state: r.trustState, from: evaluation.action, to: r.action },
+            evaluation.rule, 'warn', evaluation.riskScore, 'gate:restore');
+        } catch {}
+        evaluation.action = r.action;
+        evaluation.restoreEscalated = true;
+        evaluation.restoreTrustState = r.trustState;
+      }
+    } catch {
+      // INV-04: restore advisory failure must not change the gate path.
+    }
+  }
+
   switch (evaluation.action) {
     case 'allow': {
       emitEvent('mcp', toolName, 'allow', { tool: toolName, args_preview: JSON.stringify(args).substring(0, 200) },
@@ -1294,6 +1339,29 @@ function startTcpProxy() {
   loadManifestAndValidateConstitution(false);
   if (!CONSTITUTION_VALID) {
     console.error(`[gate] CRITICAL: Constitutional validation failed at startup — fail-closed: ${CONSTITUTION_FAIL_REASON}`);
+  }
+
+  // Agent Health / Restore initialization (parity with bin/zlar-gate line 235).
+  // INV-04: any failure yields enabled=false — the gate proceeds unchanged.
+  try {
+    const r = initRestore({
+      projectDir: PROJECT_DIR,
+      configFile: CONFIG.restoreConfigFile,
+      onForceClosed: ({ reason }) => {
+        console.error(`[gate] RESTORE CRITICAL: config integrity failure (${reason}) — forcing fail-closed. All escalations set to deny.`);
+        try {
+          emitEvent('mcp', 'restore.config_integrity', 'deny',
+            { reason }, 'restore.config_integrity', 'critical', 100, 'gate:restore');
+        } catch {}
+      },
+    });
+    if (r.enabled && !r.forcedClosed) {
+      console.log('[gate] Restore: enabled');
+    } else if (r.forcedClosed) {
+      console.log(`[gate] Restore: FORCED CLOSED (${r.reason})`);
+    }
+  } catch (e) {
+    console.error(`[gate] Restore init failed (non-fatal): ${e.message}`);
   }
 
   const server = createServer(async (clientSocket) => {

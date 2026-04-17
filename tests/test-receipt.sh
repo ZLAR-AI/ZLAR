@@ -233,7 +233,7 @@ echo
 
 # The critical test: can the Node verifier verify a bash-generated receipt?
 if command -v node &>/dev/null; then
-    NODE_VERIFY=$(node "${PROJECT_DIR}/bin/zlar-verify" "${RECEIPT_FILE}" --pubkey "${PUBKEY}" --json 2>/dev/null || true)
+    NODE_VERIFY=$(node "${PROJECT_DIR}/bin/zlar-verify" "${RECEIPT_FILE}" --pubkey "${PUBKEY}" --allow-v0 --json 2>/dev/null || true)
     if [ -n "${NODE_VERIFY}" ]; then
         NODE_VERDICT=$(echo "${NODE_VERIFY}" | jq -r '.verdict')
         assert "bash receipt verified by Node" "VALID" "${NODE_VERDICT}"

@@ -1,9 +1,10 @@
 # Governed Action Receipt Specification — v1
 
-**Status**: Draft (staging)
+**Status**: Published v1.0
 **Version**: 1
-**Date**: 2026-04-09
+**Date**: 2026-04-16
 **License**: Apache 2.0
+**Pinned signing key**: `spec/test-key.pub` (fingerprint `72735da8aebb8106`, Ed25519)
 
 ---
 
@@ -251,7 +252,7 @@ Applications that need additional privacy (e.g., hiding tool names or rule ident
 
 ## Annex A — Test Vectors
 
-The test vectors below were produced with a fixed Ed25519 key pair pinned to this specification. The public component is at `spec/test-key.pub` in this repository, with fingerprint `42ba3e47c439f06c`. The private component is held by the spec maintainer and is not published. The vectors are immutable for v1.
+The test vectors below were produced with a fixed Ed25519 key pair pinned to this specification. The public component is at `spec/test-key.pub` in this repository, with fingerprint `72735da8aebb8106`. The private component is held by the spec maintainer in a hardware security module and is not published. The vectors are immutable for v1.
 
 A conforming implementation verifies these vectors by loading the public key from `spec/test-key.pub`, decoding each receipt's `payload` field via base64url, hashing the result with SHA-256, and verifying the Ed25519 signature against the UTF-8 bytes of the lowercase hex hash. The reference verifier at `spec/verify-test-vectors.mjs` does this with no dependencies on the rest of the ZLAR codebase.
 
@@ -262,19 +263,19 @@ A conforming implementation verifies these vectors by loading the public key fro
 **Input payload** (JSON, before canonicalization):
 ```json
 {
-  "tool": "Bash",
-  "domain": "bash",
-  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "outcome": "allow",
-  "rule": "R001",
+  "audit_event_id": "018fa1d03b7c4a3c8e9f1b2d6e5a7c9f",
+  "audit_prev_hash": "genesis",
   "authorizer": "policy",
-  "ts": "2026-04-09T14:17:19.000Z",
-  "policy_version": "2.7.2",
+  "delegation_chain": [],
+  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "domain": "bash",
   "manifest_agent_id": "claude-code",
   "manifest_principal": "vincent@zlar.ai",
-  "delegation_chain": [],
-  "audit_event_id": "018fa1d03b7c4a3c8e9f1b2d6e5a7c9f",
-  "audit_prev_hash": "genesis"
+  "outcome": "allow",
+  "policy_version": "2.7.2",
+  "rule": "R001",
+  "tool": "Bash",
+  "ts": "2026-04-09T14:17:19.000Z"
 }
 ```
 
@@ -295,7 +296,7 @@ eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwM2I3YzRhM2M4ZTlmMWIyZDZlNWE3YzlmIiwiYXVkaXRf
 
 **Signature (base64url, no padding)**:
 ```
-cH-Mp-LPut0rb3dxmdt1dCV0VzRsT6K6czsyWDNK1e5udorcKRoD70zbTK8mEyxMIhhJ69gjbK69fGO5iZ7fDw
+yM7HxD2DVr5VZA2O9RDgie4NmYL2C2DygF--0Cvg2Caqr_6lErsRHRUqoDIWk8AHYleTx-iiHwI35csIL7OZAg
 ```
 
 **Complete signed envelope**:
@@ -303,11 +304,11 @@ cH-Mp-LPut0rb3dxmdt1dCV0VzRsT6K6czsyWDNK1e5udorcKRoD70zbTK8mEyxMIhhJ69gjbK69fGO5
 {
   "v": 1,
   "id": "000069d7b4efff834d877dce56badf9aee2dfcfd8f33",
-  "kid": "42ba3e47c439f06c",
+  "kid": "72735da8aebb8106",
   "iat": 1775744239,
   "type": "governed-action",
   "payload": "eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwM2I3YzRhM2M4ZTlmMWIyZDZlNWE3YzlmIiwiYXVkaXRfcHJldl9oYXNoIjoiZ2VuZXNpcyIsImF1dGhvcml6ZXIiOiJwb2xpY3kiLCJkZWxlZ2F0aW9uX2NoYWluIjpbXSwiZGV0YWlsX2hhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZG9tYWluIjoiYmFzaCIsIm1hbmlmZXN0X2FnZW50X2lkIjoiY2xhdWRlLWNvZGUiLCJtYW5pZmVzdF9wcmluY2lwYWwiOiJ2aW5jZW50QHpsYXIuYWkiLCJvdXRjb21lIjoiYWxsb3ciLCJwb2xpY3lfdmVyc2lvbiI6IjIuNy4yIiwicnVsZSI6IlIwMDEiLCJ0b29sIjoiQmFzaCIsInRzIjoiMjAyNi0wNC0wOVQxNDoxNzoxOS4wMDBaIn0",
-  "sig": "cH-Mp-LPut0rb3dxmdt1dCV0VzRsT6K6czsyWDNK1e5udorcKRoD70zbTK8mEyxMIhhJ69gjbK69fGO5iZ7fDw",
+  "sig": "yM7HxD2DVr5VZA2O9RDgie4NmYL2C2DygF--0Cvg2Caqr_6lErsRHRUqoDIWk8AHYleTx-iiHwI35csIL7OZAg",
   "prev": null
 }
 ```
@@ -319,19 +320,19 @@ cH-Mp-LPut0rb3dxmdt1dCV0VzRsT6K6czsyWDNK1e5udorcKRoD70zbTK8mEyxMIhhJ69gjbK69fGO5
 **Input payload** (JSON, before canonicalization):
 ```json
 {
-  "tool": "Bash",
-  "domain": "bash",
-  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "outcome": "authorized",
-  "rule": "R014",
+  "audit_event_id": "018fa1d040a08c4a3c8e9f1b2d6e5a7c",
+  "audit_prev_hash": "862157a24a5690f87212dcf1b14d3dfd0babcc4b92e7661e55b1c8c11db9c7a7",
   "authorizer": "human",
-  "ts": "2026-04-09T14:18:30.000Z",
-  "policy_version": "2.7.2",
+  "delegation_chain": [],
+  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "domain": "bash",
   "manifest_agent_id": "claude-code",
   "manifest_principal": "vincent@zlar.ai",
-  "delegation_chain": [],
-  "audit_event_id": "018fa1d040a08c4a3c8e9f1b2d6e5a7c",
-  "audit_prev_hash": "862157a24a5690f87212dcf1b14d3dfd0babcc4b92e7661e55b1c8c11db9c7a7"
+  "outcome": "authorized",
+  "policy_version": "2.7.2",
+  "rule": "R014",
+  "tool": "Bash",
+  "ts": "2026-04-09T14:18:30.000Z"
 }
 ```
 
@@ -352,7 +353,7 @@ eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNDBhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRf
 
 **Signature (base64url, no padding)**:
 ```
-AjpboIPisHAfKRg6Ho_5eFHp3yTX-4znWIHwvRbK9K-XnjPhHkVEO_bt87DBBTeAyvASFah7_AmNMD36vuZFAA
+BNg38FC0OhZutgnpY4b8HolpLldRRr7PC3XCyyvYpyBlr31kAmkZDV5mYvl6xijBTgY5LCeqhc_k1IxF6zIaAQ
 ```
 
 **Complete signed envelope**:
@@ -360,12 +361,12 @@ AjpboIPisHAfKRg6Ho_5eFHp3yTX-4znWIHwvRbK9K-XnjPhHkVEO_bt87DBBTeAyvASFah7_AmNMD36
 {
   "v": 1,
   "id": "000069d7b5366f7df144bbacd4aa885851d767d688b0",
-  "kid": "42ba3e47c439f06c",
+  "kid": "72735da8aebb8106",
   "iat": 1775744310,
   "type": "governed-action",
   "payload": "eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNDBhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRfcHJldl9oYXNoIjoiODYyMTU3YTI0YTU2OTBmODcyMTJkY2YxYjE0ZDNkZmQwYmFiY2M0YjkyZTc2NjFlNTViMWM4YzExZGI5YzdhNyIsImF1dGhvcml6ZXIiOiJodW1hbiIsImRlbGVnYXRpb25fY2hhaW4iOltdLCJkZXRhaWxfaGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJkb21haW4iOiJiYXNoIiwibWFuaWZlc3RfYWdlbnRfaWQiOiJjbGF1ZGUtY29kZSIsIm1hbmlmZXN0X3ByaW5jaXBhbCI6InZpbmNlbnRAemxhci5haSIsIm91dGNvbWUiOiJhdXRob3JpemVkIiwicG9saWN5X3ZlcnNpb24iOiIyLjcuMiIsInJ1bGUiOiJSMDE0IiwidG9vbCI6IkJhc2giLCJ0cyI6IjIwMjYtMDQtMDlUMTQ6MTg6MzAuMDAwWiJ9",
-  "sig": "AjpboIPisHAfKRg6Ho_5eFHp3yTX-4znWIHwvRbK9K-XnjPhHkVEO_bt87DBBTeAyvASFah7_AmNMD36vuZFAA",
-  "prev": "1e46bf0ea325304ac30a35e6f4ed75b3fe00f2c96adbe6e61233355561e3c37b"
+  "sig": "BNg38FC0OhZutgnpY4b8HolpLldRRr7PC3XCyyvYpyBlr31kAmkZDV5mYvl6xijBTgY5LCeqhc_k1IxF6zIaAQ",
+  "prev": "48133e92432a87a0bbeab6651fe38df1c2a54acbe23617937ff98e2d1471a8a8"
 }
 ```
 
@@ -376,42 +377,42 @@ AjpboIPisHAfKRg6Ho_5eFHp3yTX-4znWIHwvRbK9K-XnjPhHkVEO_bt87DBBTeAyvASFah7_AmNMD36
 **Input payload** (JSON, before canonicalization):
 ```json
 {
-  "tool": "Bash",
-  "domain": "bash",
-  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "outcome": "allow",
-  "rule": "R001",
+  "audit_event_id": "018fa1d04ad08c4a3c8e9f1b2d6e5a7c",
+  "audit_prev_hash": "44122fa452f90df9757563d5aa8dc3ea33d60ef12d213cf3d40fafac20d6deb6",
   "authorizer": "policy",
-  "ts": "2026-04-09T14:19:00.000Z",
-  "policy_version": "2.7.2",
-  "manifest_agent_id": "claude-code",
-  "manifest_principal": "vincent@zlar.ai",
   "delegation_chain": [
     {
-      "v": 1,
-      "jti": "root-token-id",
-      "sub": "orchestrator-agent",
-      "pub": "AAAA",
       "depth": 0,
       "iat": 1775744239,
+      "jti": "root-token-id",
       "parent_jti": null,
+      "pub": "AAAA",
+      "sig": "sig-root",
       "sig_alg": "ed25519",
-      "sig": "sig-root"
+      "sub": "orchestrator-agent",
+      "v": 1
     },
     {
-      "v": 1,
-      "jti": "child-token-id",
-      "sub": "worker-agent",
-      "pub": "BBBB",
       "depth": 1,
       "iat": 1775744249,
+      "jti": "child-token-id",
       "parent_jti": "root-token-id",
+      "pub": "BBBB",
+      "sig": "sig-child",
       "sig_alg": "ed25519",
-      "sig": "sig-child"
+      "sub": "worker-agent",
+      "v": 1
     }
   ],
-  "audit_event_id": "018fa1d04ad08c4a3c8e9f1b2d6e5a7c",
-  "audit_prev_hash": "44122fa452f90df9757563d5aa8dc3ea33d60ef12d213cf3d40fafac20d6deb6"
+  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "domain": "bash",
+  "manifest_agent_id": "claude-code",
+  "manifest_principal": "vincent@zlar.ai",
+  "outcome": "allow",
+  "policy_version": "2.7.2",
+  "rule": "R001",
+  "tool": "Bash",
+  "ts": "2026-04-09T14:19:00.000Z"
 }
 ```
 
@@ -432,7 +433,7 @@ eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNGFkMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRf
 
 **Signature (base64url, no padding)**:
 ```
-k8KrbbSQ76ZZ7ffzZ2wzZll3MHWMO6GDCwYa35dFk5m4ngoIsdvDMfpG1FpcIcS0yaP75y3RjNPdtMk2WTH6Dw
+ePyb0BlBOPqi-J1WHKj4ECqhWhctILmKnRKMsBoOG8jmdLtWEBjFdI_FP6T3XwGP8wqKAqqWfVSS6nlSI12DAQ
 ```
 
 **Complete signed envelope**:
@@ -440,11 +441,11 @@ k8KrbbSQ76ZZ7ffzZ2wzZll3MHWMO6GDCwYa35dFk5m4ngoIsdvDMfpG1FpcIcS0yaP75y3RjNPdtMk2
 {
   "v": 1,
   "id": "000069d7b554f8ee1198f1bfc84470dc291c6d4ede08",
-  "kid": "42ba3e47c439f06c",
+  "kid": "72735da8aebb8106",
   "iat": 1775744340,
   "type": "governed-action",
   "payload": "eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNGFkMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRfcHJldl9oYXNoIjoiNDQxMjJmYTQ1MmY5MGRmOTc1NzU2M2Q1YWE4ZGMzZWEzM2Q2MGVmMTJkMjEzY2YzZDQwZmFmYWMyMGQ2ZGViNiIsImF1dGhvcml6ZXIiOiJwb2xpY3kiLCJkZWxlZ2F0aW9uX2NoYWluIjpbeyJkZXB0aCI6MCwiaWF0IjoxNzc1NzQ0MjM5LCJqdGkiOiJyb290LXRva2VuLWlkIiwicGFyZW50X2p0aSI6bnVsbCwicHViIjoiQUFBQSIsInNpZyI6InNpZy1yb290Iiwic2lnX2FsZyI6ImVkMjU1MTkiLCJzdWIiOiJvcmNoZXN0cmF0b3ItYWdlbnQiLCJ2IjoxfSx7ImRlcHRoIjoxLCJpYXQiOjE3NzU3NDQyNDksImp0aSI6ImNoaWxkLXRva2VuLWlkIiwicGFyZW50X2p0aSI6InJvb3QtdG9rZW4taWQiLCJwdWIiOiJCQkJCIiwic2lnIjoic2lnLWNoaWxkIiwic2lnX2FsZyI6ImVkMjU1MTkiLCJzdWIiOiJ3b3JrZXItYWdlbnQiLCJ2IjoxfV0sImRldGFpbF9oYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImRvbWFpbiI6ImJhc2giLCJtYW5pZmVzdF9hZ2VudF9pZCI6ImNsYXVkZS1jb2RlIiwibWFuaWZlc3RfcHJpbmNpcGFsIjoidmluY2VudEB6bGFyLmFpIiwib3V0Y29tZSI6ImFsbG93IiwicG9saWN5X3ZlcnNpb24iOiIyLjcuMiIsInJ1bGUiOiJSMDAxIiwidG9vbCI6IkJhc2giLCJ0cyI6IjIwMjYtMDQtMDlUMTQ6MTk6MDAuMDAwWiJ9",
-  "sig": "k8KrbbSQ76ZZ7ffzZ2wzZll3MHWMO6GDCwYa35dFk5m4ngoIsdvDMfpG1FpcIcS0yaP75y3RjNPdtMk2WTH6Dw",
+  "sig": "ePyb0BlBOPqi-J1WHKj4ECqhWhctILmKnRKMsBoOG8jmdLtWEBjFdI_FP6T3XwGP8wqKAqqWfVSS6nlSI12DAQ",
   "prev": null
 }
 ```
@@ -456,19 +457,19 @@ k8KrbbSQ76ZZ7ffzZ2wzZll3MHWMO6GDCwYa35dFk5m4ngoIsdvDMfpG1FpcIcS0yaP75y3RjNPdtMk2
 **Input payload** (JSON, before canonicalization):
 ```json
 {
-  "tool": "Bash",
-  "domain": "bash",
-  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "outcome": "allow",
-  "rule": "R003",
+  "audit_event_id": "018fa1d055a08c4a3c8e9f1b2d6e5a7c",
+  "audit_prev_hash": "108a7fd999930349a5ff774f86d1a36b21d39380f90bfc0c23d309de64385480",
   "authorizer": "policy",
-  "ts": "2026-04-09T14:20:00.000Z",
-  "policy_version": "2.7.2",
+  "delegation_chain": [],
+  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "domain": "bash",
   "manifest_agent_id": "claude-code",
   "manifest_principal": "vincent@zlar.ai",
-  "delegation_chain": [],
-  "audit_event_id": "018fa1d055a08c4a3c8e9f1b2d6e5a7c",
-  "audit_prev_hash": "108a7fd999930349a5ff774f86d1a36b21d39380f90bfc0c23d309de64385480"
+  "outcome": "allow",
+  "policy_version": "2.7.2",
+  "rule": "R003",
+  "tool": "Bash",
+  "ts": "2026-04-09T14:20:00.000Z"
 }
 ```
 
@@ -489,7 +490,7 @@ eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNTVhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRf
 
 **Signature (base64url, no padding)**:
 ```
-vXUHU0W5OXhOv1BNGPzb77cOe0wi-N-O0RWQlbyh8vhzT0IODgEvt6Bz0IU33q9c2dmPZStrSCyrqipyqwr3DA
+l59NvxIv9CSXhDVBXN2vNLNA-2okeDkM8EXz6K4hzGqma_tefFu1IEOrbXetPll1iRphB2ZfAeNQ9qj4a84bDA
 ```
 
 **Complete signed envelope**:
@@ -497,15 +498,14 @@ vXUHU0W5OXhOv1BNGPzb77cOe0wi-N-O0RWQlbyh8vhzT0IODgEvt6Bz0IU33q9c2dmPZStrSCyrqipy
 {
   "v": 1,
   "id": "000069d7b59044ea3c4693c50bec8caeb24f1c77161e",
-  "kid": "42ba3e47c439f06c",
+  "kid": "72735da8aebb8106",
   "iat": 1775744400,
   "type": "governed-action",
   "payload": "eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNTVhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRfcHJldl9oYXNoIjoiMTA4YTdmZDk5OTkzMDM0OWE1ZmY3NzRmODZkMWEzNmIyMWQzOTM4MGY5MGJmYzBjMjNkMzA5ZGU2NDM4NTQ4MCIsImF1dGhvcml6ZXIiOiJwb2xpY3kiLCJkZWxlZ2F0aW9uX2NoYWluIjpbXSwiZGV0YWlsX2hhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZG9tYWluIjoiYmFzaCIsIm1hbmlmZXN0X2FnZW50X2lkIjoiY2xhdWRlLWNvZGUiLCJtYW5pZmVzdF9wcmluY2lwYWwiOiJ2aW5jZW50QHpsYXIuYWkiLCJvdXRjb21lIjoiYWxsb3ciLCJwb2xpY3lfdmVyc2lvbiI6IjIuNy4yIiwicnVsZSI6IlIwMDMiLCJ0b29sIjoiQmFzaCIsInRzIjoiMjAyNi0wNC0wOVQxNDoyMDowMC4wMDBaIn0",
-  "sig": "vXUHU0W5OXhOv1BNGPzb77cOe0wi-N-O0RWQlbyh8vhzT0IODgEvt6Bz0IU33q9c2dmPZStrSCyrqipyqwr3DA",
+  "sig": "l59NvxIv9CSXhDVBXN2vNLNA-2okeDkM8EXz6K4hzGqma_tefFu1IEOrbXetPll1iRphB2ZfAeNQ9qj4a84bDA",
   "prev": null
 }
 ```
-
 
 **Expected verifier outcome**: signature verifies as valid, semantic validation FAILS with code `RULE_OUTCOME_CONTRADICTION`. A conforming verifier MUST reject this receipt.
 
@@ -516,19 +516,19 @@ vXUHU0W5OXhOv1BNGPzb77cOe0wi-N-O0RWQlbyh8vhzT0IODgEvt6Bz0IU33q9c2dmPZStrSCyrqipy
 **Input payload** (JSON, before canonicalization):
 ```json
 {
-  "tool": "Bash",
-  "domain": "bash",
-  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "outcome": "authorized",
-  "rule": "R001",
+  "audit_event_id": "018fa1d060a08c4a3c8e9f1b2d6e5a7c",
+  "audit_prev_hash": "876e10b7eea243f987665902e5244b6a06ab7f4bbec695f65d440237e8a5317f",
   "authorizer": "policy",
-  "ts": "2026-04-09T14:21:00.000Z",
-  "policy_version": "2.7.2",
+  "delegation_chain": [],
+  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "domain": "bash",
   "manifest_agent_id": "claude-code",
   "manifest_principal": "vincent@zlar.ai",
-  "delegation_chain": [],
-  "audit_event_id": "018fa1d060a08c4a3c8e9f1b2d6e5a7c",
-  "audit_prev_hash": "876e10b7eea243f987665902e5244b6a06ab7f4bbec695f65d440237e8a5317f"
+  "outcome": "authorized",
+  "policy_version": "2.7.2",
+  "rule": "R001",
+  "tool": "Bash",
+  "ts": "2026-04-09T14:21:00.000Z"
 }
 ```
 
@@ -549,7 +549,7 @@ eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNjBhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRf
 
 **Signature (base64url, no padding)**:
 ```
-NXsDbH2tg-OAiJks6ZpB_dWsx1pT9O8ihSQAjzyZNsM9Ggrraarm6UodF5C2KNvtu7Pka9F4L312nal0B2lVBQ
+9Rhrasz8uMkodCvRpyiXIXM8Df2A1tZWbzSiLaCB5RhnnK3fursSi8Pg2jzjpH1Uii7AuIpoiXQrArgtmoxeBw
 ```
 
 **Complete signed envelope**:
@@ -557,19 +557,267 @@ NXsDbH2tg-OAiJks6ZpB_dWsx1pT9O8ihSQAjzyZNsM9Ggrraarm6UodF5C2KNvtu7Pka9F4L312nal0
 {
   "v": 1,
   "id": "000069d7b5cc935ec8e9744a8f05a77e615835e5c358",
-  "kid": "42ba3e47c439f06c",
+  "kid": "72735da8aebb8106",
   "iat": 1775744460,
   "type": "governed-action",
   "payload": "eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNjBhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRfcHJldl9oYXNoIjoiODc2ZTEwYjdlZWEyNDNmOTg3NjY1OTAyZTUyNDRiNmEwNmFiN2Y0YmJlYzY5NWY2NWQ0NDAyMzdlOGE1MzE3ZiIsImF1dGhvcml6ZXIiOiJwb2xpY3kiLCJkZWxlZ2F0aW9uX2NoYWluIjpbXSwiZGV0YWlsX2hhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZG9tYWluIjoiYmFzaCIsIm1hbmlmZXN0X2FnZW50X2lkIjoiY2xhdWRlLWNvZGUiLCJtYW5pZmVzdF9wcmluY2lwYWwiOiJ2aW5jZW50QHpsYXIuYWkiLCJvdXRjb21lIjoiYXV0aG9yaXplZCIsInBvbGljeV92ZXJzaW9uIjoiMi43LjIiLCJydWxlIjoiUjAwMSIsInRvb2wiOiJCYXNoIiwidHMiOiIyMDI2LTA0LTA5VDE0OjIxOjAwLjAwMFoifQ",
-  "sig": "NXsDbH2tg-OAiJks6ZpB_dWsx1pT9O8ihSQAjzyZNsM9Ggrraarm6UodF5C2KNvtu7Pka9F4L312nal0B2lVBQ",
+  "sig": "9Rhrasz8uMkodCvRpyiXIXM8Df2A1tZWbzSiLaCB5RhnnK3fursSi8Pg2jzjpH1Uii7AuIpoiXQrArgtmoxeBw",
   "prev": null
 }
 ```
 
-
 **Expected verifier outcome**: signature verifies as valid, semantic validation FAILS with code `AUTHORIZER_OUTCOME_MISMATCH`. A conforming verifier MUST reject this receipt.
 
 ---
+
+### Test Vector 6 — POSITIVE — policy-deny outcome (R002 + deny)
+
+**Input payload** (JSON, before canonicalization):
+```json
+{
+  "audit_event_id": "018fa1d06ba08c4a3c8e9f1b2d6e5a7c",
+  "audit_prev_hash": "7af16c064d86cc2d8a8592fede5631e5c6a647ee3543587333bac2442172c8c5",
+  "authorizer": "policy",
+  "delegation_chain": [],
+  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "domain": "bash",
+  "manifest_agent_id": "claude-code",
+  "manifest_principal": "vincent@zlar.ai",
+  "outcome": "deny",
+  "policy_version": "2.7.2",
+  "rule": "R002",
+  "tool": "Bash",
+  "ts": "2026-04-09T14:22:00.000Z"
+}
+```
+
+**Canonical JSON form** (sorted keys, compact, UTF-8):
+```
+{"audit_event_id":"018fa1d06ba08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"7af16c064d86cc2d8a8592fede5631e5c6a647ee3543587333bac2442172c8c5","authorizer":"policy","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"deny","policy_version":"2.7.2","rule":"R002","tool":"Bash","ts":"2026-04-09T14:22:00.000Z"}
+```
+
+**SHA-256 of canonical bytes (lowercase hex)**:
+```
+07cb279d3dd7ae8d377327ee3913c4a6fa7851fc4afe6b6bec70cd76934b8358
+```
+
+**Base64url-encoded payload (no padding)**:
+```
+eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNmJhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRfcHJldl9oYXNoIjoiN2FmMTZjMDY0ZDg2Y2MyZDhhODU5MmZlZGU1NjMxZTVjNmE2NDdlZTM1NDM1ODczMzNiYWMyNDQyMTcyYzhjNSIsImF1dGhvcml6ZXIiOiJwb2xpY3kiLCJkZWxlZ2F0aW9uX2NoYWluIjpbXSwiZGV0YWlsX2hhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZG9tYWluIjoiYmFzaCIsIm1hbmlmZXN0X2FnZW50X2lkIjoiY2xhdWRlLWNvZGUiLCJtYW5pZmVzdF9wcmluY2lwYWwiOiJ2aW5jZW50QHpsYXIuYWkiLCJvdXRjb21lIjoiZGVueSIsInBvbGljeV92ZXJzaW9uIjoiMi43LjIiLCJydWxlIjoiUjAwMiIsInRvb2wiOiJCYXNoIiwidHMiOiIyMDI2LTA0LTA5VDE0OjIyOjAwLjAwMFoifQ
+```
+
+**Signature (base64url, no padding)**:
+```
+UCOqDRlpowx3RPIi7z2sXCiJ0CnKmTTgwjfmXvkGff3xIU6v27AAVCUL4lR5lxlPJFKg7th2YcKdKWVTatnIDg
+```
+
+**Complete signed envelope**:
+```json
+{
+  "v": 1,
+  "id": "000069d7b608a5c3f21d4ba5c01e68b3c927a41e7b2c",
+  "kid": "72735da8aebb8106",
+  "iat": 1775744520,
+  "type": "governed-action",
+  "payload": "eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNmJhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRfcHJldl9oYXNoIjoiN2FmMTZjMDY0ZDg2Y2MyZDhhODU5MmZlZGU1NjMxZTVjNmE2NDdlZTM1NDM1ODczMzNiYWMyNDQyMTcyYzhjNSIsImF1dGhvcml6ZXIiOiJwb2xpY3kiLCJkZWxlZ2F0aW9uX2NoYWluIjpbXSwiZGV0YWlsX2hhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZG9tYWluIjoiYmFzaCIsIm1hbmlmZXN0X2FnZW50X2lkIjoiY2xhdWRlLWNvZGUiLCJtYW5pZmVzdF9wcmluY2lwYWwiOiJ2aW5jZW50QHpsYXIuYWkiLCJvdXRjb21lIjoiZGVueSIsInBvbGljeV92ZXJzaW9uIjoiMi43LjIiLCJydWxlIjoiUjAwMiIsInRvb2wiOiJCYXNoIiwidHMiOiIyMDI2LTA0LTA5VDE0OjIyOjAwLjAwMFoifQ",
+  "sig": "UCOqDRlpowx3RPIi7z2sXCiJ0CnKmTTgwjfmXvkGff3xIU6v27AAVCUL4lR5lxlPJFKg7th2YcKdKWVTatnIDg",
+  "prev": null
+}
+```
+
+**Expected verifier outcome**: signature verifies, semantic validation PASSES. Demonstrates a deny-only rule correctly emitting a deny outcome via policy authorization.
+
+---
+
+### Test Vector 7 — POSITIVE — timeout with denied outcome (fail-closed on no-response)
+
+**Input payload** (JSON, before canonicalization):
+```json
+{
+  "audit_event_id": "018fa1d076a08c4a3c8e9f1b2d6e5a7c",
+  "audit_prev_hash": "07cb279d3dd7ae8d377327ee3913c4a6fa7851fc4afe6b6bec70cd76934b8358",
+  "authorizer": "timeout",
+  "delegation_chain": [],
+  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "domain": "bash",
+  "manifest_agent_id": "claude-code",
+  "manifest_principal": "vincent@zlar.ai",
+  "outcome": "denied",
+  "policy_version": "2.7.2",
+  "rule": "R014",
+  "tool": "Bash",
+  "ts": "2026-04-09T14:23:00.000Z"
+}
+```
+
+**Canonical JSON form** (sorted keys, compact, UTF-8):
+```
+{"audit_event_id":"018fa1d076a08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"07cb279d3dd7ae8d377327ee3913c4a6fa7851fc4afe6b6bec70cd76934b8358","authorizer":"timeout","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"denied","policy_version":"2.7.2","rule":"R014","tool":"Bash","ts":"2026-04-09T14:23:00.000Z"}
+```
+
+**SHA-256 of canonical bytes (lowercase hex)**:
+```
+93bb5fa8f35c1655b0bffa183c89e320a1ef3bde4b67daa57421c7b6732919bb
+```
+
+**Base64url-encoded payload (no padding)**:
+```
+eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNzZhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRfcHJldl9oYXNoIjoiMDdjYjI3OWQzZGQ3YWU4ZDM3NzMyN2VlMzkxM2M0YTZmYTc4NTFmYzRhZmU2YjZiZWM3MGNkNzY5MzRiODM1OCIsImF1dGhvcml6ZXIiOiJ0aW1lb3V0IiwiZGVsZWdhdGlvbl9jaGFpbiI6W10sImRldGFpbF9oYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImRvbWFpbiI6ImJhc2giLCJtYW5pZmVzdF9hZ2VudF9pZCI6ImNsYXVkZS1jb2RlIiwibWFuaWZlc3RfcHJpbmNpcGFsIjoidmluY2VudEB6bGFyLmFpIiwib3V0Y29tZSI6ImRlbmllZCIsInBvbGljeV92ZXJzaW9uIjoiMi43LjIiLCJydWxlIjoiUjAxNCIsInRvb2wiOiJCYXNoIiwidHMiOiIyMDI2LTA0LTA5VDE0OjIzOjAwLjAwMFoifQ
+```
+
+**Signature (base64url, no padding)**:
+```
+s-231hfbYugNSaQ9oPuZiBgUEt5SDENLeQ-1jcnEYNDLhN3VtdJY-A4v7qLOWYem6tuDxBZ6GrowMKkm6s6XDA
+```
+
+**Complete signed envelope**:
+```json
+{
+  "v": 1,
+  "id": "000069d7b644b7f806517cb6d432898cde38b52f8c3d",
+  "kid": "72735da8aebb8106",
+  "iat": 1775744580,
+  "type": "governed-action",
+  "payload": "eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNzZhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRfcHJldl9oYXNoIjoiMDdjYjI3OWQzZGQ3YWU4ZDM3NzMyN2VlMzkxM2M0YTZmYTc4NTFmYzRhZmU2YjZiZWM3MGNkNzY5MzRiODM1OCIsImF1dGhvcml6ZXIiOiJ0aW1lb3V0IiwiZGVsZWdhdGlvbl9jaGFpbiI6W10sImRldGFpbF9oYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImRvbWFpbiI6ImJhc2giLCJtYW5pZmVzdF9hZ2VudF9pZCI6ImNsYXVkZS1jb2RlIiwibWFuaWZlc3RfcHJpbmNpcGFsIjoidmluY2VudEB6bGFyLmFpIiwib3V0Y29tZSI6ImRlbmllZCIsInBvbGljeV92ZXJzaW9uIjoiMi43LjIiLCJydWxlIjoiUjAxNCIsInRvb2wiOiJCYXNoIiwidHMiOiIyMDI2LTA0LTA5VDE0OjIzOjAwLjAwMFoifQ",
+  "sig": "s-231hfbYugNSaQ9oPuZiBgUEt5SDENLeQ-1jcnEYNDLhN3VtdJY-A4v7qLOWYem6tuDxBZ6GrowMKkm6s6XDA",
+  "prev": null
+}
+```
+
+**Expected verifier outcome**: signature verifies, semantic validation PASSES. Demonstrates the timeout authorizer emitting `denied` when the human does not respond within the decision window. Establishes fail-closed as a first-class outcome.
+
+---
+
+### Test Vector 8 — NEGATIVE — timeout with authorized outcome (AUTHORIZER_OUTCOME_MISMATCH)
+
+**Input payload** (JSON, before canonicalization):
+```json
+{
+  "audit_event_id": "018fa1d081a08c4a3c8e9f1b2d6e5a7c",
+  "audit_prev_hash": "93bb5fa8f35c1655b0bffa183c89e320a1ef3bde4b67daa57421c7b6732919bb",
+  "authorizer": "timeout",
+  "delegation_chain": [],
+  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "domain": "bash",
+  "manifest_agent_id": "claude-code",
+  "manifest_principal": "vincent@zlar.ai",
+  "outcome": "authorized",
+  "policy_version": "2.7.2",
+  "rule": "R014",
+  "tool": "Bash",
+  "ts": "2026-04-09T14:24:00.000Z"
+}
+```
+
+**Canonical JSON form** (sorted keys, compact, UTF-8):
+```
+{"audit_event_id":"018fa1d081a08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"93bb5fa8f35c1655b0bffa183c89e320a1ef3bde4b67daa57421c7b6732919bb","authorizer":"timeout","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"authorized","policy_version":"2.7.2","rule":"R014","tool":"Bash","ts":"2026-04-09T14:24:00.000Z"}
+```
+
+**SHA-256 of canonical bytes (lowercase hex)**:
+```
+08f21db787578e9a81a149536b209bff6f0473ec871169eb51c19f828df8e2a1
+```
+
+**Base64url-encoded payload (no padding)**:
+```
+eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwODFhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRfcHJldl9oYXNoIjoiOTNiYjVmYThmMzVjMTY1NWIwYmZmYTE4M2M4OWUzMjBhMWVmM2JkZTRiNjdkYWE1NzQyMWM3YjY3MzI5MTliYiIsImF1dGhvcml6ZXIiOiJ0aW1lb3V0IiwiZGVsZWdhdGlvbl9jaGFpbiI6W10sImRldGFpbF9oYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImRvbWFpbiI6ImJhc2giLCJtYW5pZmVzdF9hZ2VudF9pZCI6ImNsYXVkZS1jb2RlIiwibWFuaWZlc3RfcHJpbmNpcGFsIjoidmluY2VudEB6bGFyLmFpIiwib3V0Y29tZSI6ImF1dGhvcml6ZWQiLCJwb2xpY3lfdmVyc2lvbiI6IjIuNy4yIiwicnVsZSI6IlIwMTQiLCJ0b29sIjoiQmFzaCIsInRzIjoiMjAyNi0wNC0wOVQxNDoyNDowMC4wMDBaIn0
+```
+
+**Signature (base64url, no padding)**:
+```
+l7wLUK28zeAJ31CGqLv4T_pqbKOfOX9yK5eKhO-Vuaq_pi-lYK1rcnyfmT52sxI4wIdyInCFa_ug_xUkgxJeBA
+```
+
+**Complete signed envelope**:
+```json
+{
+  "v": 1,
+  "id": "000069d7b680c9f9ca856edcf8467ba9ea49c640ad4e",
+  "kid": "72735da8aebb8106",
+  "iat": 1775744640,
+  "type": "governed-action",
+  "payload": "eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwODFhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRfcHJldl9oYXNoIjoiOTNiYjVmYThmMzVjMTY1NWIwYmZmYTE4M2M4OWUzMjBhMWVmM2JkZTRiNjdkYWE1NzQyMWM3YjY3MzI5MTliYiIsImF1dGhvcml6ZXIiOiJ0aW1lb3V0IiwiZGVsZWdhdGlvbl9jaGFpbiI6W10sImRldGFpbF9oYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImRvbWFpbiI6ImJhc2giLCJtYW5pZmVzdF9hZ2VudF9pZCI6ImNsYXVkZS1jb2RlIiwibWFuaWZlc3RfcHJpbmNpcGFsIjoidmluY2VudEB6bGFyLmFpIiwib3V0Y29tZSI6ImF1dGhvcml6ZWQiLCJwb2xpY3lfdmVyc2lvbiI6IjIuNy4yIiwicnVsZSI6IlIwMTQiLCJ0b29sIjoiQmFzaCIsInRzIjoiMjAyNi0wNC0wOVQxNDoyNDowMC4wMDBaIn0",
+  "sig": "l7wLUK28zeAJ31CGqLv4T_pqbKOfOX9yK5eKhO-Vuaq_pi-lYK1rcnyfmT52sxI4wIdyInCFa_ug_xUkgxJeBA",
+  "prev": null
+}
+```
+
+**Expected verifier outcome**: signature verifies, semantic validation FAILS with code `AUTHORIZER_OUTCOME_MISMATCH`. The (timeout, authorized) pair is not in the §5.1 coherence table. A conforming verifier MUST reject this receipt.
+
+---
+
+### Test Vector 9 — NEGATIVE — delegation chain first depth != 0 (DELEGATION_MISSING_ROOT)
+
+**Input payload** (JSON, before canonicalization):
+```json
+{
+  "audit_event_id": "018fa1d08ca08c4a3c8e9f1b2d6e5a7c",
+  "audit_prev_hash": "08f21db787578e9a81a149536b209bff6f0473ec871169eb51c19f828df8e2a1",
+  "authorizer": "policy",
+  "delegation_chain": [
+    {
+      "depth": 3,
+      "iat": 1775744239,
+      "jti": "forged-token-id",
+      "parent_jti": null,
+      "pub": "CCCC",
+      "sig": "sig-forged",
+      "sig_alg": "ed25519",
+      "sub": "worker-agent",
+      "v": 1
+    }
+  ],
+  "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "domain": "bash",
+  "manifest_agent_id": "claude-code",
+  "manifest_principal": "vincent@zlar.ai",
+  "outcome": "allow",
+  "policy_version": "2.7.2",
+  "rule": "R001",
+  "tool": "Bash",
+  "ts": "2026-04-09T14:25:00.000Z"
+}
+```
+
+**Canonical JSON form** (sorted keys, compact, UTF-8):
+```
+{"audit_event_id":"018fa1d08ca08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"08f21db787578e9a81a149536b209bff6f0473ec871169eb51c19f828df8e2a1","authorizer":"policy","delegation_chain":[{"depth":3,"iat":1775744239,"jti":"forged-token-id","parent_jti":null,"pub":"CCCC","sig":"sig-forged","sig_alg":"ed25519","sub":"worker-agent","v":1}],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"allow","policy_version":"2.7.2","rule":"R001","tool":"Bash","ts":"2026-04-09T14:25:00.000Z"}
+```
+
+**SHA-256 of canonical bytes (lowercase hex)**:
+```
+3d8fa9362190cd6c238c50d4e29511bda5537573f96d1a21ca86b0f6efe14c75
+```
+
+**Base64url-encoded payload (no padding)**:
+```
+eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwOGNhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRfcHJldl9oYXNoIjoiMDhmMjFkYjc4NzU3OGU5YTgxYTE0OTUzNmIyMDliZmY2ZjA0NzNlYzg3MTE2OWViNTFjMTlmODI4ZGY4ZTJhMSIsImF1dGhvcml6ZXIiOiJwb2xpY3kiLCJkZWxlZ2F0aW9uX2NoYWluIjpbeyJkZXB0aCI6MywiaWF0IjoxNzc1NzQ0MjM5LCJqdGkiOiJmb3JnZWQtdG9rZW4taWQiLCJwYXJlbnRfanRpIjpudWxsLCJwdWIiOiJDQ0NDIiwic2lnIjoic2lnLWZvcmdlZCIsInNpZ19hbGciOiJlZDI1NTE5Iiwic3ViIjoid29ya2VyLWFnZW50IiwidiI6MX1dLCJkZXRhaWxfaGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJkb21haW4iOiJiYXNoIiwibWFuaWZlc3RfYWdlbnRfaWQiOiJjbGF1ZGUtY29kZSIsIm1hbmlmZXN0X3ByaW5jaXBhbCI6InZpbmNlbnRAemxhci5haSIsIm91dGNvbWUiOiJhbGxvdyIsInBvbGljeV92ZXJzaW9uIjoiMi43LjIiLCJydWxlIjoiUjAwMSIsInRvb2wiOiJCYXNoIiwidHMiOiIyMDI2LTA0LTA5VDE0OjI1OjAwLjAwMFoifQ
+```
+
+**Signature (base64url, no padding)**:
+```
+Xtus7kYOaxwmDzbYPW2_NXyaox4pdjos-3QzdWzwqjxUwaSbMIt30ZDo2RyanUYpMcO9HC0e-mJHgcyvq9HoBw
+```
+
+**Complete signed envelope**:
+```json
+{
+  "v": 1,
+  "id": "000069d7b6bcdbebbcb980ede26c8d95f65adb51be5f",
+  "kid": "72735da8aebb8106",
+  "iat": 1775744700,
+  "type": "governed-action",
+  "payload": "eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwOGNhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRfcHJldl9oYXNoIjoiMDhmMjFkYjc4NzU3OGU5YTgxYTE0OTUzNmIyMDliZmY2ZjA0NzNlYzg3MTE2OWViNTFjMTlmODI4ZGY4ZTJhMSIsImF1dGhvcml6ZXIiOiJwb2xpY3kiLCJkZWxlZ2F0aW9uX2NoYWluIjpbeyJkZXB0aCI6MywiaWF0IjoxNzc1NzQ0MjM5LCJqdGkiOiJmb3JnZWQtdG9rZW4taWQiLCJwYXJlbnRfanRpIjpudWxsLCJwdWIiOiJDQ0NDIiwic2lnIjoic2lnLWZvcmdlZCIsInNpZ19hbGciOiJlZDI1NTE5Iiwic3ViIjoid29ya2VyLWFnZW50IiwidiI6MX1dLCJkZXRhaWxfaGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJkb21haW4iOiJiYXNoIiwibWFuaWZlc3RfYWdlbnRfaWQiOiJjbGF1ZGUtY29kZSIsIm1hbmlmZXN0X3ByaW5jaXBhbCI6InZpbmNlbnRAemxhci5haSIsIm91dGNvbWUiOiJhbGxvdyIsInBvbGljeV92ZXJzaW9uIjoiMi43LjIiLCJydWxlIjoiUjAwMSIsInRvb2wiOiJCYXNoIiwidHMiOiIyMDI2LTA0LTA5VDE0OjI1OjAwLjAwMFoifQ",
+  "sig": "Xtus7kYOaxwmDzbYPW2_NXyaox4pdjos-3QzdWzwqjxUwaSbMIt30ZDo2RyanUYpMcO9HC0e-mJHgcyvq9HoBw",
+  "prev": null
+}
+```
+
+**Expected verifier outcome**: signature verifies, semantic validation FAILS with code `DELEGATION_MISSING_ROOT`. Delegation chains MUST begin at depth 0 (§8.4). A forged token claiming depth 3 without a chain to depth 0 MUST be rejected.
+
+---
+
 ## Annex B — The Coupling Theorem
 
 The Governed Action Receipt has legal and economic value only to the extent that the invariants it asserts were enforced at the time of issuance. This is a structural coupling, not a contractual convention.

@@ -204,8 +204,14 @@ const v0Receipt = createReceipt({
   audit_event_id: 'v0-test', audit_prev_hash: 'genesis'
 });
 const v0Signed = signReceipt(v0Receipt, privPem, keyId);
-const anyV0 = verifyReceiptAny(v0Signed, pubPem);
-assert('universal: v0 valid', true, anyV0.valid);
+
+// v0 is OFF by default at Published v1.0. Caller must opt in.
+const anyV0Default = verifyReceiptAny(v0Signed, pubPem);
+assert('universal: v0 rejected without allowV0', false, anyV0Default.valid);
+assert('universal: v0 version reported even when rejected', 'v0', anyV0Default.version);
+
+const anyV0 = verifyReceiptAny(v0Signed, pubPem, { allowV0: true });
+assert('universal: v0 valid with allowV0', true, anyV0.valid);
 assert('universal: v0 version detected', 'v0', anyV0.version);
 
 // unknown version
@@ -236,6 +242,69 @@ assert('manifest_agent_id present', 'zlar:agent:claude-code', payloadManifest.ma
 assert('manifest_principal present', 'zlar:human:vince-nijjar', payloadManifest.manifest_principal);
 assert('delegation_chain has 1 entry', 1, payloadManifest.delegation_chain.length);
 assert('delegation depth 0', 0, payloadManifest.delegation_chain[0].depth);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+console.log('=== v1 with Agent Config Identity (cryptographic layer) ===');
+console.log();
+
+// The three fields added for Governed Action Receipt v1 (per-receipt
+// cryptographic identity of the governing config artifact).
+
+// Null pathway — when no governing artifact is present, all three fields
+// default to null. Receipts remain valid.
+const receiptNoIdentity = createReceiptV1FromEvent(testEvent, {});
+const payloadNoIdentity = decodePayloadV1(receiptNoIdentity);
+assert('no-identity: agent_config_hash is null', null, payloadNoIdentity.agent_config_hash);
+assert('no-identity: agent_config_source is null', null, payloadNoIdentity.agent_config_source);
+assert('no-identity: agent_fingerprint is null', null, payloadNoIdentity.agent_fingerprint);
+
+// Populated pathway via opts
+const hashFull = 'a'.repeat(64);
+const receiptWithIdentity = createReceiptV1FromEvent(testEvent, {
+  agent_config_hash: hashFull,
+  agent_config_source: 'project_claude_md',
+  agent_fingerprint: '0123456789abcdef'
+});
+const payloadWithIdentity = decodePayloadV1(receiptWithIdentity);
+assert('opts: agent_config_hash flows through', hashFull, payloadWithIdentity.agent_config_hash);
+assert('opts: agent_config_source flows through', 'project_claude_md', payloadWithIdentity.agent_config_source);
+assert('opts: agent_fingerprint flows through', '0123456789abcdef', payloadWithIdentity.agent_fingerprint);
+
+// Event-field pathway — identity fields come from the audit event directly
+// (this is the bash gate and MCP gate flow: gate computes identity, writes
+// it onto the audit entry, receipt builder inherits from event).
+const eventWithIdentity = {
+  ...testEvent,
+  id: 'test-event-identity-from-event',
+  agent_config_hash: 'b'.repeat(64),
+  agent_config_source: 'user_claude_md',
+  agent_fingerprint: 'fedcba9876543210'
+};
+const receiptFromEvent = createReceiptV1FromEvent(eventWithIdentity);
+const payloadFromEvent = decodePayloadV1(receiptFromEvent);
+assert('event: agent_config_hash from event', 'b'.repeat(64), payloadFromEvent.agent_config_hash);
+assert('event: agent_config_source from event', 'user_claude_md', payloadFromEvent.agent_config_source);
+assert('event: agent_fingerprint from event', 'fedcba9876543210', payloadFromEvent.agent_fingerprint);
+
+// opts override event — explicit opts take precedence over event fields
+const receiptOverride = createReceiptV1FromEvent(eventWithIdentity, {
+  agent_config_hash: 'c'.repeat(64),
+  agent_config_source: 'project_soul_md',
+  agent_fingerprint: '1111222233334444'
+});
+const payloadOverride = decodePayloadV1(receiptOverride);
+assert('override: opts.agent_config_hash wins', 'c'.repeat(64), payloadOverride.agent_config_hash);
+assert('override: opts.agent_config_source wins', 'project_soul_md', payloadOverride.agent_config_source);
+assert('override: opts.agent_fingerprint wins', '1111222233334444', payloadOverride.agent_fingerprint);
+
+// Round-trip with signing — identity fields survive canonicalization + signing
+const signedIdentity = signReceiptV1(receiptWithIdentity, privPem, keyId);
+const verifiedIdentity = verifyReceiptV1(signedIdentity, pubPem);
+assert('signed+verified: identity round-trip valid', true, verifiedIdentity.valid);
+const payloadVerified = decodePayloadV1(signedIdentity);
+assert('signed: agent_config_hash preserved', hashFull, payloadVerified.agent_config_hash);
+assert('signed: agent_config_source preserved', 'project_claude_md', payloadVerified.agent_config_source);
+assert('signed: agent_fingerprint preserved', '0123456789abcdef', payloadVerified.agent_fingerprint);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Cleanup
