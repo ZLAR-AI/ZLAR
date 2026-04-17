@@ -88,11 +88,18 @@ _audit_cat() {
 
 # Read all events in a time window
 # Usage: audit_events_since <seconds_ago>
+# Honors ZLAR_AUDIT_NOW_EPOCH for deterministic time-windowed tests.
 audit_events_since() {
     local seconds_ago="${1:?Usage: audit_events_since <seconds>}"
     local cutoff
-    cutoff=$(date -u -v-"${seconds_ago}"S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
-             date -u -d "${seconds_ago} seconds ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+    if [[ -n "${ZLAR_AUDIT_NOW_EPOCH:-}" ]]; then
+        local cutoff_epoch=$(( ZLAR_AUDIT_NOW_EPOCH - seconds_ago ))
+        cutoff=$(date -u -r "${cutoff_epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+                 date -u -d "@${cutoff_epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+    else
+        cutoff=$(date -u -v-"${seconds_ago}"S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+                 date -u -d "${seconds_ago} seconds ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+    fi
 
     _audit_cat | jq -c --arg cutoff "${cutoff}" \
         'select(.ts >= $cutoff)'

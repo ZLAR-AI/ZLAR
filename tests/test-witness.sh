@@ -8,6 +8,11 @@ FIXTURES_DIR="${SCRIPT_DIR}/fixtures"
 
 export ZLAR_AUDIT_FILE="${FIXTURES_DIR}/sample-events.jsonl"
 
+# Pin "now" to just after the fixture's latest event so time-windowed
+# queries stay deterministic as the calendar rolls forward.
+# Fixture latest event: 2026-04-06T00:04:29Z (epoch 1775433869).
+export ZLAR_AUDIT_NOW_EPOCH=1775437469
+
 PASS=0
 FAIL=0
 
