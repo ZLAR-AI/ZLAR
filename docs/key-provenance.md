@@ -1,12 +1,28 @@
 Key Provenance — ZLAR Pinned Keys
 
+Correction on signing provenance (2026-04-17)
+
+Operational signing of policy, manifest, and constitution artifacts is
+software-rooted. Hardware-backed ceremony keys referenced in prior
+documentation were provisioned but have not been used for signing these
+artifacts.
+
+The hardware-backed path for specification test-vector signing is in use
+as documented.
+
+Signed artifacts remain verifiable against the public keys pinned in the
+repository.
+
+Migration of policy, manifest, and constitution signing to a
+hardware-backed path is under review.
+
 For the CURRENT state of every signing key (what is on disk, what is on each YubiKey slot, what the manifest and active policy claim), run bin/zlar-key-state. That tool is the one source of truth for live alignment. This file is provenance HISTORY — how each key was generated and when — not a status dashboard. Anyone about to run a signing ceremony should check bin/zlar-key-state first. See docs/key-state.md for the one-page discipline.
 
 Purpose. Every pinned key used by ZLAR governance carries a provenance entry in this file, recorded at the moment of generation. This closes the process gap surfaced by docs/incidents/2026-04-16-spec-key-recovery.md: a key whose generation ceremony is not written down can be lost without an audit trail.
 
 What this file publishes and what it does not. This file publishes the category of storage (e.g. "YubiKey PIV slot 9A"), the ceremony used to generate the key, the algorithm, and the public fingerprint. It does not publish serial numbers, locations, PINs, management keys, or anything that weakens the security of the stored private material. Secrecy of the private half remains the design; this file documents the ceremony around it.
 
-Separation rule. Three concerns, three physical devices. Policy Signing on the primary YubiKey (slot 9C). Constitution Signing on the primary YubiKey (slot 9D). Spec test-vector signing on a separate spare YubiKey (slot 9A). Keys do not cross concerns. A new concern requires a new device.
+Separation rule. Three concerns, three physical devices. Policy Signing mapped to the primary YubiKey (slot 9C). Constitution Signing mapped to the primary YubiKey (slot 9D). Spec test-vector signing on a separate spare YubiKey (slot 9A). Keys do not cross concerns. A new concern requires a new device.
 
 Provenance entries
 
@@ -30,6 +46,7 @@ Policy Signing
 - Private half: PIV slot 9C on the primary YubiKey.
 - Scope: signs operational policy bundles loaded by ZLAR gates.
 - Provenance note: predates this provenance discipline; generation ceremony was not recorded at the time. This is a known gap. No action until next rotation; at that point a fresh entry gets recorded here.
+- Correction (2026-04-17): Provisioned for this role, not used operationally to date. Migration under review.
 
 Constitution Signing
 
@@ -38,6 +55,7 @@ Constitution Signing
 - Private half: PIV slot 9D on the primary YubiKey.
 - Scope: signs the ZLAR constitution (Second Authority Law meta-policy).
 - Provenance note: predates this provenance discipline; generation ceremony was not recorded at the time. This is a known gap. No action until next rotation; at that point a fresh entry gets recorded here.
+- Correction (2026-04-17): Provisioned for this role, not used operationally to date. Migration under review.
 
 Process for future keys
 
