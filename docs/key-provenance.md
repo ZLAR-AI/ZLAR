@@ -1,5 +1,7 @@
 Key Provenance — ZLAR Pinned Keys
 
+For the CURRENT state of every signing key (what is on disk, what is on each YubiKey slot, what the manifest and active policy claim), run bin/zlar-key-state. That tool is the one source of truth for live alignment. This file is provenance HISTORY — how each key was generated and when — not a status dashboard. Anyone about to run a signing ceremony should check bin/zlar-key-state first. See docs/key-state.md for the one-page discipline.
+
 Purpose. Every pinned key used by ZLAR governance carries a provenance entry in this file, recorded at the moment of generation. This closes the process gap surfaced by docs/incidents/2026-04-16-spec-key-recovery.md: a key whose generation ceremony is not written down can be lost without an audit trail.
 
 What this file publishes and what it does not. This file publishes the category of storage (e.g. "YubiKey PIV slot 9A"), the ceremony used to generate the key, the algorithm, and the public fingerprint. It does not publish serial numbers, locations, PINs, management keys, or anything that weakens the security of the stored private material. Secrecy of the private half remains the design; this file documents the ceremony around it.

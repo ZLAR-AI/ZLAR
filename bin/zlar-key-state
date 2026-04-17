@@ -1,0 +1,232 @@
+#!/bin/bash
+# zlar-key-state — print the current state of all ZLAR governance keys.
+#
+# Read-only. No PINs. No signing. No private material touched. Just truth.
+#
+# Run this at the start of any session that might involve signing or key
+# material. If fingerprints align, ceremonies will work. If they mismatch,
+# the alignment gap must be resolved before any ceremony.
+#
+# This exists because AI sessions have no cross-session memory and the repo
+# previously did not describe its own key state. Every session rediscovered
+# the key layout from scratch. That ends with this tool: one command, one
+# snapshot, full truth — no reasoning required.
+#
+# Fingerprint convention: first 16 hex of SHA-256 of the PEM public-key
+# bytes (including trailing newline), matching docs/key-provenance.md.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+GREEN=$'\033[32m'
+RED=$'\033[31m'
+YELLOW=$'\033[33m'
+NC=$'\033[0m'
+
+# ── Helpers ──
+
+# SHA-256 fingerprint (first 16 hex) of a PEM pubkey FILE.
+fp_of_pem_file() {
+    local file="$1"
+    if [[ ! -f "$file" ]]; then
+        echo "(missing)"
+        return
+    fi
+    shasum -a 256 "$file" 2>/dev/null | awk '{print substr($1,1,16)}'
+}
+
+# SHA-256 fingerprint of a base64-encoded DER SPKI pubkey (the form
+# stored in .signature.public_key inside policy/constitution JSON).
+# Reconstructs the PEM form so the fingerprint matches the PEM convention.
+fp_of_embedded_b64() {
+    local b64="$1"
+    if [[ -z "$b64" || "$b64" == "null" ]]; then
+        echo "(none)"
+        return
+    fi
+    local tmp
+    tmp=$(mktemp)
+    printf -- "-----BEGIN PUBLIC KEY-----\n%s\n-----END PUBLIC KEY-----\n" "$b64" > "$tmp"
+    shasum -a 256 "$tmp" 2>/dev/null | awk '{print substr($1,1,16)}'
+    rm -f "$tmp"
+}
+
+# Fingerprint of a YubiKey PIV slot for a given device serial.
+# Exports DER, converts to PEM, hashes. Returns "(empty)" if the slot has
+# no key, "(no openssl)" if openssl is missing.
+fp_of_yubikey_slot() {
+    local serial="$1" slot="$2"
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo "(no openssl)"
+        return
+    fi
+    local der_tmp pem_tmp
+    der_tmp=$(mktemp)
+    pem_tmp=$(mktemp)
+    if ! ykman --device "$serial" piv keys export "$slot" "$der_tmp" --format DER >/dev/null 2>&1; then
+        rm -f "$der_tmp" "$pem_tmp"
+        echo "(empty)"
+        return
+    fi
+    if ! openssl pkey -pubin -inform DER -in "$der_tmp" -outform PEM > "$pem_tmp" 2>/dev/null; then
+        rm -f "$der_tmp" "$pem_tmp"
+        echo "(format err)"
+        return
+    fi
+    shasum -a 256 "$pem_tmp" 2>/dev/null | awk '{print substr($1,1,16)}'
+    rm -f "$der_tmp" "$pem_tmp"
+}
+
+# Pretty-print a row with fixed-width left column.
+row() {
+    printf "  %-52s %s\n" "$1" "$2"
+}
+
+check_mark() {
+    local expected="$1" actual="$2"
+    if [[ "$expected" == "$actual" && -n "$expected" && "$expected" != "(none)" && "$expected" != "(missing)" && "$expected" != "(empty)" ]]; then
+        printf "${GREEN}✓${NC}"
+    else
+        printf "${RED}✗${NC}"
+    fi
+}
+
+# ── Header ──
+
+echo "${BOLD}═══════════════════════════════════════════════════════════════${NC}"
+echo "${BOLD}  ZLAR KEY STATE — $(date -u +%Y-%m-%dT%H:%M:%SZ)${NC}"
+echo "${BOLD}═══════════════════════════════════════════════════════════════${NC}"
+echo "  ${DIM}Fingerprint = first 16 hex of SHA-256(PEM including trailing newline).${NC}"
+echo
+
+# ── Pubkey files on disk ──
+
+echo "${BOLD}── Pubkey files on disk ──${NC}"
+disk_policy=$(fp_of_pem_file "$PROJECT_DIR/etc/keys/policy-signing.pub")
+disk_constitution=$(fp_of_pem_file "$PROJECT_DIR/etc/keys/constitution-signing.pub")
+disk_policy_oc=$(fp_of_pem_file "$PROJECT_DIR/etc/keys/policy-signing-oc.pub")
+disk_spec=$(fp_of_pem_file "$PROJECT_DIR/spec/test-key.pub")
+disk_home_pub=$(fp_of_pem_file "$HOME/.zlar-signing.pub")
+
+row "etc/keys/policy-signing.pub"       "$disk_policy"
+row "etc/keys/constitution-signing.pub" "$disk_constitution"
+row "etc/keys/policy-signing-oc.pub"    "$disk_policy_oc"
+row "spec/test-key.pub"                 "$disk_spec"
+row "~/.zlar-signing.pub (legacy software)" "$disk_home_pub"
+echo
+
+# Also flag software private key presence — not the bytes, just whether
+# it exists. If present, it can still sign outside the YubiKey path.
+home_priv_status="${DIM}(absent)${NC}"
+if [[ -f "$HOME/.zlar-signing.key" ]]; then
+    home_priv_status="${YELLOW}PRESENT${NC} — can sign without YubiKey"
+fi
+row "~/.zlar-signing.key (legacy software priv)" "$home_priv_status"
+echo
+
+# ── YubiKey slots ──
+
+echo "${BOLD}── YubiKeys connected ──${NC}"
+yk_policy_fp="(no device)"
+yk_constitution_fp="(no device)"
+yk_spec_fp="(no device)"
+yk_primary_serial=""
+
+if ! command -v ykman >/dev/null 2>&1; then
+    echo "  ${YELLOW}ykman not installed${NC} — install via: brew install ykman"
+else
+    yk_output=$(ykman list 2>/dev/null || true)
+    if [[ -z "$yk_output" ]]; then
+        echo "  (no YubiKeys detected)"
+    else
+        echo "$yk_output" | sed 's/^/  /'
+        echo
+        # For each device, enumerate 9a, 9c, 9d. First device is treated
+        # as "primary" for cross-check purposes; others are listed as spares.
+        local_idx=0
+        while IFS= read -r line; do
+            serial=$(echo "$line" | sed -n 's/.*Serial: \([0-9]*\).*/\1/p')
+            [[ -z "$serial" ]] && continue
+            echo "  ${DIM}Device serial ${serial}:${NC}"
+            for slot in 9a 9c 9d; do
+                fp=$(fp_of_yubikey_slot "$serial" "$slot")
+                printf "    slot %-4s %s\n" "$slot" "$fp"
+                if [[ $local_idx -eq 0 ]]; then
+                    [[ "$slot" == "9c" ]] && yk_policy_fp="$fp" && yk_primary_serial="$serial"
+                    [[ "$slot" == "9d" ]] && yk_constitution_fp="$fp"
+                fi
+                if [[ $local_idx -eq 1 && "$slot" == "9a" ]]; then
+                    yk_spec_fp="$fp"
+                fi
+            done
+            local_idx=$((local_idx + 1))
+        done <<< "$yk_output"
+    fi
+fi
+echo
+
+# ── Operational pins ──
+
+echo "${BOLD}── Operational pins (what the gate/manifest claim is signing) ──${NC}"
+
+manifest_key_id=$(jq -r '.signature.key_id // "(unpinned)"' "$PROJECT_DIR/etc/manifest.json" 2>/dev/null || echo "(manifest missing)")
+row "etc/manifest.json signature.key_id" "$manifest_key_id"
+
+active_policy_b64=$(jq -r '.signature.public_key // ""' "$PROJECT_DIR/etc/policies/active.policy.json" 2>/dev/null || echo "")
+active_policy_fp=$(fp_of_embedded_b64 "$active_policy_b64")
+row "etc/policies/active.policy.json embedded pubkey (fp)" "$active_policy_fp"
+
+constitution_b64=$(jq -r '.signature.public_key // ""' "$PROJECT_DIR/etc/constitution.json" 2>/dev/null || echo "")
+constitution_fp=$(fp_of_embedded_b64 "$constitution_b64")
+row "etc/constitution.json embedded pubkey (fp)" "$constitution_fp"
+
+echo
+
+# ── Alignment check ──
+
+echo "${BOLD}── Alignment (what must match for ceremonies to succeed) ──${NC}"
+echo
+echo "  ${BOLD}Policy signing${NC} (YubiKey #1 slot 9C → etc/keys/policy-signing.pub → manifest → active policy)"
+printf "    on-disk verifier:         %s\n" "$disk_policy"
+printf "    YubiKey 9C:               %s\n" "$yk_policy_fp"
+printf "    manifest.json key_id:     %s\n" "$manifest_key_id"
+printf "    active.policy.json (fp):  %s\n" "$active_policy_fp"
+if [[ "$disk_policy" == "$yk_policy_fp" && "$disk_policy" == "$manifest_key_id" && "$disk_policy" == "$active_policy_fp" && -n "$disk_policy" && "$disk_policy" != "(missing)" ]]; then
+    echo "    ${GREEN}✓ aligned — policy signing will verify cleanly${NC}"
+else
+    echo "    ${RED}✗ MISALIGNED — signing/verifying will fail until aligned${NC}"
+    echo "    ${DIM}(resolution: pick the key that should be authoritative and update the others to match)${NC}"
+fi
+echo
+
+echo "  ${BOLD}Constitution signing${NC} (YubiKey #1 slot 9D → etc/keys/constitution-signing.pub → etc/constitution.json)"
+printf "    on-disk verifier:         %s\n" "$disk_constitution"
+printf "    YubiKey 9D:               %s\n" "$yk_constitution_fp"
+printf "    constitution.json (fp):   %s\n" "$constitution_fp"
+if [[ "$disk_constitution" == "$yk_constitution_fp" && "$disk_constitution" == "$constitution_fp" && -n "$disk_constitution" && "$disk_constitution" != "(missing)" ]]; then
+    echo "    ${GREEN}✓ aligned${NC}"
+else
+    echo "    ${RED}✗ MISALIGNED${NC}"
+fi
+echo
+
+echo "  ${BOLD}Spec test-vector signing${NC} (YubiKey #2 slot 9A → spec/test-key.pub)"
+printf "    on-disk verifier:         %s\n" "$disk_spec"
+printf "    YubiKey #2 9A:            %s\n" "$yk_spec_fp"
+if [[ "$disk_spec" == "$yk_spec_fp" && -n "$disk_spec" && "$disk_spec" != "(missing)" ]]; then
+    echo "    ${GREEN}✓ aligned${NC}"
+elif [[ "$yk_spec_fp" == "(no device)" ]]; then
+    echo "    ${DIM}(YubiKey #2 not plugged in — alignment check skipped)${NC}"
+else
+    echo "    ${RED}✗ MISALIGNED${NC}"
+fi
+echo
+
+echo "${BOLD}═══════════════════════════════════════════════════════════════${NC}"
+echo "  ${DIM}See docs/key-state.md for the one-page discipline.${NC}"
+echo "  ${DIM}See docs/key-provenance.md for historical provenance entries.${NC}"
+echo "${BOLD}═══════════════════════════════════════════════════════════════${NC}"
