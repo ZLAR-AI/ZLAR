@@ -80,11 +80,12 @@ else
 fi
 
 rule_count=$(jq '.rules | length' "${POLICY_FILE}")
-if [ "${rule_count}" -eq 80 ]; then
-    echo "  ✓ Policy has 80 rules"
+# v3.1.1 (harness-tools fix): R100 added, 80 → 81.
+if [ "${rule_count}" -eq 81 ]; then
+    echo "  ✓ Policy has 81 rules"
     passed=$((passed + 1))
 else
-    echo "  ✗ Policy has ${rule_count} rules, expected 80"
+    echo "  ✗ Policy has ${rule_count} rules, expected 81"
     failed=$((failed + 1))
 fi
 

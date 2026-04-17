@@ -416,6 +416,54 @@ assert "decisions_today persisted" "3" "${count}"
 response_len=$(jq -r '.response_times | length' "${state_file}" 2>/dev/null)
 assert "response_times length" "3" "${response_len}"
 
+echo
+echo "=== v3.1.3: Human-State HMAC Tamper Detection ==="
+echo
+
+# Install an HMAC key so sealed writes actually seal. Without a key the module
+# runs unauthenticated (backward-compat path) and tamper tests are no-ops.
+_TEST_HMAC_KEY_DIR="${TEMP_DIR}/etc/keys"
+mkdir -p "${_TEST_HMAC_KEY_DIR}"
+_HI_HMAC_KEY_FILE="${_TEST_HMAC_KEY_DIR}/human-state-hmac.key"
+openssl rand -hex 32 > "${_HI_HMAC_KEY_FILE}"
+chmod 600 "${_HI_HMAC_KEY_FILE}"
+_HI_HMAC_KEY=$(cat "${_HI_HMAC_KEY_FILE}")
+
+# Seal a fresh state by exercising a write path.
+HUMAN="test-hmac"
+hi_record_decision "${HUMAN}" "approve" 0 "info" 100
+state_file="${TEMP_DIR}/var/human-state/${HUMAN}.json"
+
+# 1. Seal-after-write: _hmac field present.
+hmac_present=$(jq -r 'has("_hmac")' "${state_file}" 2>/dev/null)
+assert "write adds _hmac field" "true" "${hmac_present}"
+
+# 2. Clean read passes verification (no rebuild).
+decisions_before=$(jq -r '.decisions_today' "${state_file}" 2>/dev/null)
+_=$(hi_check_capacity "${HUMAN}" 2>/dev/null)
+decisions_after=$(jq -r '.decisions_today' "${state_file}" 2>/dev/null)
+assert "clean read preserves state" "${decisions_before}" "${decisions_after}"
+
+# 3. Tamper: inflate decisions_today without updating _hmac. Next read must
+#    detect the mismatch and rebuild with safe defaults (decisions_today = 0).
+jq '.decisions_today = 999' "${state_file}" > "${state_file}.attacker" && \
+    mv "${state_file}.attacker" "${state_file}"
+_=$(hi_check_capacity "${HUMAN}" 2>/dev/null)  # triggers _hi_ensure_state
+rebuilt=$(jq -r '.decisions_today' "${state_file}" 2>/dev/null)
+assert "tampered state rebuilt to safe default" "0" "${rebuilt}"
+
+# 4. Missing _hmac on an existing file is also tampering.
+hi_record_decision "${HUMAN}" "approve" 0 "info" 100
+jq 'del(._hmac)' "${state_file}" > "${state_file}.stripped" && \
+    mv "${state_file}.stripped" "${state_file}"
+_=$(hi_check_capacity "${HUMAN}" 2>/dev/null)
+after_strip=$(jq -r '.decisions_today' "${state_file}" 2>/dev/null)
+assert "stripped _hmac rebuilt to safe default" "0" "${after_strip}"
+
+# 5. After rebuild, the new state is itself sealed — not left unkeyed.
+hmac_after_rebuild=$(jq -r 'has("_hmac")' "${state_file}" 2>/dev/null)
+assert "rebuild re-seals with _hmac" "true" "${hmac_after_rebuild}"
+
 # ─── Results ──────────────────────────────────────────────────────────────────
 
 echo

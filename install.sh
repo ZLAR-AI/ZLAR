@@ -326,6 +326,22 @@ else
     info "Public key:  ${INSTALL_DIR}/etc/keys/policy-signing.pub"
 fi
 
+# v3.1.3: HMAC key for human-state protection. Seals var/human-state/*.json
+# against an agent with filesystem access poisoning H6/H13/H14 counters.
+# 32-byte random key in hex. Generate once; rotation requires resealing every
+# existing state file and is an explicit ceremony, not an install-time action.
+_HUMAN_STATE_KEY="${INSTALL_DIR}/etc/keys/human-state-hmac.key"
+if [ ! -f "${_HUMAN_STATE_KEY}" ]; then
+    if openssl rand -hex 32 > "${_HUMAN_STATE_KEY}" 2>/dev/null; then
+        chmod 600 "${_HUMAN_STATE_KEY}"
+        ok "Human-state HMAC key generated: ${_HUMAN_STATE_KEY}"
+    else
+        warn "Could not generate human-state HMAC key — H6/H13/H14 counters will run unauthenticated"
+    fi
+else
+    ok "Human-state HMAC key already present"
+fi
+
 # Copy default policy → active policy
 cp "${INSTALL_DIR}/etc/policies/lt-default.policy.json" "${INSTALL_DIR}/etc/policies/active.policy.json"
 

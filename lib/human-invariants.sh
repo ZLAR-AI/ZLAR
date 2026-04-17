@@ -63,11 +63,104 @@ HI_DELIBERATION_FLOOR_INFO="${ZLAR_DELIBERATION_INFO:-3}"
 # H17: Minimum response time in seconds for any action. Below this = suspicious.
 HI_MIN_RESPONSE_TIME="${ZLAR_MIN_RESPONSE_TIME:-2}"
 
+# ─── HMAC Protection (v3.1.3) ────────────────────────────────────────────────
+# State files at var/human-state/{human_id}.json carry H6/H13/H14 counters that
+# an agent with filesystem access could poison (inflate decisions_today to
+# exceed cap and gate the human out, or deflate to suppress advisory). HMAC
+# seals each write; on read, a failed verification is logged and the state is
+# rebuilt with safe defaults. Rebuild (not fail-closed) preserves availability
+# of the one human in the loop while the log preserves the security signal.
+#
+# Canonical form: jq -cS 'del(._hmac)' — sorted keys, compact, excluding the
+# _hmac field itself. Matches the Node serializer in human-invariants.mjs so
+# states written by either gate verify under the other.
+#
+# No key = unauthenticated mode (backward compat for deployments that haven't
+# re-run install.sh). Install generates the key automatically.
+
+_HI_HMAC_KEY_FILE="${_HI_PROJECT_DIR}/etc/keys/human-state-hmac.key"
+_HI_HMAC_KEY=""
+if [ -f "${_HI_HMAC_KEY_FILE}" ]; then
+    _HI_HMAC_KEY=$(cat "${_HI_HMAC_KEY_FILE}" 2>/dev/null || true)
+fi
+
 # ─── State Management ─────────────────────────────────────────────────────────
 
 _hi_log() {
     local msg="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [human-invariants] $*"
     echo "${msg}" >> "${_HI_LOG}" 2>/dev/null || true
+}
+
+# Compute HMAC over canonical (sorted-keys, compact) form of payload-without-hmac.
+# Input: state file path. Output: hex HMAC on stdout (empty if no key).
+_hi_compute_hmac() {
+    local state_file="$1"
+    [ -z "${_HI_HMAC_KEY}" ] && return 0
+    jq -cS 'del(._hmac)' "${state_file}" 2>/dev/null | \
+        openssl dgst -sha256 -hmac "${_HI_HMAC_KEY}" 2>/dev/null | \
+        awk '{print $NF}'
+}
+
+# Compute HMAC over a raw JSON payload passed via stdin (no file). Used by
+# _hi_sealed_write to seal before first store. Payload must not contain _hmac.
+_hi_compute_hmac_from_payload() {
+    [ -z "${_HI_HMAC_KEY}" ] && return 0
+    jq -cS '.' 2>/dev/null | \
+        openssl dgst -sha256 -hmac "${_HI_HMAC_KEY}" 2>/dev/null | \
+        awk '{print $NF}'
+}
+
+# Verify HMAC on a state file. Returns "ok" | "tampered" | "unkeyed".
+# "unkeyed" means no key is configured — treat as ok (backward compat).
+_hi_verify_hmac() {
+    local state_file="$1"
+    [ -z "${_HI_HMAC_KEY}" ] && { echo "unkeyed"; return 0; }
+    [ ! -f "${state_file}" ] && { echo "tampered"; return 1; }
+
+    local stored
+    stored=$(jq -r '._hmac // ""' "${state_file}" 2>/dev/null)
+    if [ -z "${stored}" ]; then
+        echo "tampered"
+        return 1
+    fi
+
+    local computed
+    computed=$(_hi_compute_hmac "${state_file}")
+    if [ "${computed}" = "${stored}" ]; then
+        echo "ok"
+        return 0
+    fi
+    echo "tampered"
+    return 1
+}
+
+# Atomic sealed write. Reads payload JSON (without _hmac) from stdin, computes
+# HMAC if a key is configured, writes <state>.tmp with _hmac field appended,
+# then atomically renames into place. Preserves the existing temp+rename
+# atomicity pattern; HMAC is additive.
+_hi_sealed_write() {
+    local state_file="$1"
+    local tmp="${state_file}.tmp"
+    local payload
+    payload=$(cat)
+    [ -z "${payload}" ] && return 1
+
+    if [ -n "${_HI_HMAC_KEY}" ]; then
+        local hmac
+        hmac=$(printf '%s' "${payload}" | _hi_compute_hmac_from_payload)
+        if [ -z "${hmac}" ]; then
+            # HMAC computation failed — write unsealed rather than lose state.
+            printf '%s' "${payload}" > "${tmp}" 2>/dev/null
+        else
+            printf '%s' "${payload}" | jq -c --arg h "${hmac}" '. + {_hmac: $h}' > "${tmp}" 2>/dev/null || {
+                rm -f "${tmp}" 2>/dev/null
+                return 1
+            }
+        fi
+    else
+        printf '%s' "${payload}" > "${tmp}" 2>/dev/null
+    fi
+    mv "${tmp}" "${state_file}" 2>/dev/null
 }
 
 _hi_ensure_state() {
@@ -82,7 +175,24 @@ _hi_ensure_state() {
             --arg hid "${human_id}" \
             --arg today "${today}" \
             '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0}' \
-            > "${state_file}" 2>/dev/null
+            | _hi_sealed_write "${state_file}"
+    else
+        # Verify HMAC. On tamper: log + rebuild safe defaults. Rebuild, not
+        # fail-closed, because locking the human out helps the attacker more
+        # than the human — the attacker's goal is exactly to lock the human
+        # out, and the log already preserves the security signal.
+        local verify
+        verify=$(_hi_verify_hmac "${state_file}")
+        if [ "${verify}" = "tampered" ]; then
+            _hi_log "SECURITY: ${human_id} state HMAC verification FAILED — rebuilding with safe defaults"
+            local today
+            today=$(date -u +%Y-%m-%d)
+            jq -n \
+                --arg hid "${human_id}" \
+                --arg today "${today}" \
+                '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0}' \
+                | _hi_sealed_write "${state_file}"
+        fi
     fi
 
     # Reset daily counter if date has changed
@@ -102,9 +212,8 @@ _hi_ensure_state() {
         # TTL array. Rollover drops the dead pending_count field and resets
         # the pending array to empty.
         jq --arg today "${today}" \
-            '.date = $today | .decisions_today = 0 | .pending = [] | .response_times = [] | del(.approvals_recent) | del(.pending_count)' \
-            "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
-            mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
+            'del(._hmac) | .date = $today | .decisions_today = 0 | .pending = [] | .response_times = [] | del(.approvals_recent) | del(.pending_count)' \
+            "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
     # v2.8.0 schema migration: any state file still carrying the deprecated
@@ -114,9 +223,8 @@ _hi_ensure_state() {
     # the scalar dies here, the array starts empty, and the next ask finds
     # capacity again.
     if jq -e 'has("pending_count") or (has("pending") | not)' "${state_file}" >/dev/null 2>&1; then
-        jq 'del(.pending_count) | .pending = (.pending // [])' \
-            "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
-            mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
+        jq 'del(._hmac) | del(.pending_count) | .pending = (.pending // [])' \
+            "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
     echo "${state_file}"
@@ -234,9 +342,8 @@ hi_increment_pending() {
         return 0
     fi
 
-    # Write the new state back atomically.
-    echo "${jq_out}" | jq -c '.state' > "${state_file}.tmp" 2>/dev/null && \
-        mv "${state_file}.tmp" "${state_file}" 2>/dev/null || {
+    # Write the new state back atomically, sealed with HMAC.
+    echo "${jq_out}" | jq -c '.state | del(._hmac)' 2>/dev/null | _hi_sealed_write "${state_file}" || {
         _hi_log "ERROR: hi_increment_pending write failed for ${human_id} — failing open"
         rm -f "${state_file}.tmp" 2>/dev/null
         echo "ok"
@@ -272,6 +379,7 @@ hi_decrement_pending() {
         --argjson now "${now_epoch}" \
         --argjson ttl "${HI_PENDING_TTL}" \
         --arg hash "${action_hash}" '
+        del(._hmac) |
         .pending = (
             ((.pending // []) | map(select($now - .ts < $ttl))) as $filtered |
             if $hash != "" then
@@ -280,8 +388,7 @@ hi_decrement_pending() {
                 ($filtered | sort_by(.ts) | .[1:])
             end
         )
-    ' "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
-        mv "${state_file}.tmp" "${state_file}" 2>/dev/null || {
+    ' "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}" || {
         _hi_log "ERROR: hi_decrement_pending failed for ${human_id}"
         rm -f "${state_file}.tmp" 2>/dev/null
         return 1
@@ -302,9 +409,8 @@ hi_record_ask_time() {
 
     local epoch_now
     epoch_now=$(date +%s)
-    jq --argjson t "${epoch_now}" '.last_ask_epoch = $t' \
-        "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
-        mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
+    jq --argjson t "${epoch_now}" 'del(._hmac) | .last_ask_epoch = $t' \
+        "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
 }
 
 hi_check_deliberation() {
@@ -398,11 +504,11 @@ hi_record_decision() {
        --arg sev "${severity}" \
        --argjson risk "${risk_score}" \
        --argjson window "${HI_VARIANCE_WINDOW}" \
-       '([$risk, 10] | max | . / 100) as $cost |
+       'del(._hmac) |
+        ([$risk, 10] | max | . / 100) as $cost |
         .decisions_today = ((.decisions_today // 0) + $cost) |
         .response_times = (.response_times + [{elapsed:$elapsed,severity:$sev}] | .[-$window:])' \
-        "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
-        mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
+        "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
 }
 
 hi_check_response_variance() {
@@ -423,8 +529,7 @@ hi_check_response_variance() {
             return 1
         fi
         # Cooldown expired — clear flag
-        jq '.h14_lockout_until = 0' "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
-            mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
+        jq 'del(._hmac) | .h14_lockout_until = 0' "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
     # Variance check on non-critical decisions only.
@@ -464,9 +569,8 @@ hi_check_response_variance() {
         local _lockout_until
         _lockout_until=$(( $(date +%s) + 300 ))  # 5-minute cooldown
         jq --argjson lockout "${_lockout_until}" \
-           '.response_times = [] | .h14_lockout_until = $lockout' \
-           "${state_file}" > "${state_file}.tmp" 2>/dev/null && \
-           mv "${state_file}.tmp" "${state_file}" 2>/dev/null || true
+           'del(._hmac) | .response_times = [] | .h14_lockout_until = $lockout' \
+           "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
         _hi_log "H14: response_times cleared, 5-minute cooldown set (until $(date -u -r "${_lockout_until}" +%H:%M:%S 2>/dev/null || echo "${_lockout_until}"))"
         echo "rubber_stamping"
         return 1
