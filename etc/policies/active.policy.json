@@ -6,7 +6,7 @@
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "cwbknYk7q8OuSPC/VXPt8GYCUYfPWjaXUCbu5MvNNSR8o9NHE8NKEIXjxxJhYI5xz/IzcYfNMa9AlRPx5MSiDA=="
+    "value": "CyarbPxkx558Nfl/GSdp9IXn3LrBUT0ljgCTzlRZbH/yFnSSFSOEv0VFIRYV+lRwNlLCxnVcOwASyiyuSd8lDQ=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -963,9 +963,9 @@
     {
       "id": "R032F",
       "enabled": true,
-      "description": "Write to CLAUDE.md in ZLAR project — blocked (prompt injection vector)",
+      "description": "Write to CLAUDE.md in ZLAR project — ask human (changes project session instructions)",
       "domain": "write",
-      "action": "deny",
+      "action": "ask",
       "severity": "critical",
       "audit": true,
       "match": {
@@ -979,14 +979,15 @@
         "irreversibility": 90,
         "consequence": 100,
         "blast_radius": 95
-      }
+      },
+      "verify_hint": "Claude wants to modify this project's CLAUDE.md instructions file. This changes how future sessions behave in this repository. Approve?"
     },
     {
       "id": "R032F2",
       "enabled": true,
-      "description": "Write to global ~/.claude/CLAUDE.md — blocked (prompt injection across all sessions)",
+      "description": "Write to global ~/.claude/CLAUDE.md — ask human (changes session instructions across projects)",
       "domain": "write",
-      "action": "deny",
+      "action": "ask",
       "severity": "critical",
       "audit": true,
       "match": {
@@ -1000,7 +1001,8 @@
         "irreversibility": 90,
         "consequence": 100,
         "blast_radius": 100
-      }
+      },
+      "verify_hint": "Claude wants to modify your global CLAUDE.md instructions file. This changes how future sessions behave across projects. Approve?"
     },
     {
       "id": "R032G",
@@ -1230,9 +1232,9 @@
     {
       "id": "R041F",
       "enabled": true,
-      "description": "Edit CLAUDE.md in ZLAR project — blocked (prompt injection vector)",
+      "description": "Edit CLAUDE.md in ZLAR project — ask human (changes project session instructions)",
       "domain": "edit",
-      "action": "deny",
+      "action": "ask",
       "severity": "critical",
       "audit": true,
       "match": {
@@ -1246,14 +1248,15 @@
         "irreversibility": 90,
         "consequence": 100,
         "blast_radius": 95
-      }
+      },
+      "verify_hint": "Claude wants to modify this project's CLAUDE.md instructions file. This changes how future sessions behave in this repository. Approve?"
     },
     {
       "id": "R041F2",
       "enabled": true,
-      "description": "Edit global ~/.claude/CLAUDE.md — blocked (prompt injection across all sessions)",
+      "description": "Edit global ~/.claude/CLAUDE.md — ask human (changes session instructions across projects)",
       "domain": "edit",
-      "action": "deny",
+      "action": "ask",
       "severity": "critical",
       "audit": true,
       "match": {
@@ -1267,7 +1270,8 @@
         "irreversibility": 90,
         "consequence": 100,
         "blast_radius": 100
-      }
+      },
+      "verify_hint": "Claude wants to modify your global CLAUDE.md instructions file. This changes how future sessions behave across projects. Approve?"
     },
     {
       "id": "R041G",
