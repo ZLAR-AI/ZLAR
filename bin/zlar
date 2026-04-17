@@ -951,11 +951,35 @@ case "${COMMAND}" in
         echo "Gate OFF — Claude unblocked"
         ;;
     on)
-        rm -f "$HOME/.claude/.gate-disabled"
-        sudo -n rm -f /etc/zlar/off-flag 2>/dev/null || true
-        rm -f "$HOME/.claude/.gate-locked" 2>/dev/null || true
-        _ensure_gu && gu_record_enable 2>/dev/null || true
-        echo "Gate ON — policy enforced"
+        _ensure_gu
+        _gu_on_now=$(date +%s)
+        _gu_on_state="off"
+        _gu_on_streak_start=0
+        _gu_on_lifetime=0
+        if [ "${_GU_LOADED}" = "1" ] && [ -f "${_GU_STATE_FILE}" ]; then
+            _gu_on_snap=$(jq -c 'del(._hmac)' "${_GU_STATE_FILE}" 2>/dev/null || echo '{}')
+            _gu_on_state=$(printf '%s' "${_gu_on_snap}" | jq -r '.state // "off"')
+            _gu_on_streak_start=$(printf '%s' "${_gu_on_snap}" | jq -r '.current_streak_start_epoch // 0')
+            _gu_on_lifetime=$(printf '%s' "${_gu_on_snap}" | jq -r '.lifetime_on_seconds // 0')
+        fi
+        if [ "${_gu_on_state}" = "on" ]; then
+            _gu_on_streak_sec=0
+            [ "${_gu_on_streak_start:-0}" -gt 0 ] && _gu_on_streak_sec=$(( _gu_on_now - _gu_on_streak_start ))
+            if [ "${_GU_LOADED}" = "1" ]; then
+                echo "Gate already ON — streak: $(gu_format_duration "${_gu_on_streak_sec}"). Nothing changed."
+            else
+                echo "Gate already ON. Nothing changed."
+            fi
+        else
+            rm -f "$HOME/.claude/.gate-disabled"
+            sudo -n rm -f /etc/zlar/off-flag 2>/dev/null || true
+            rm -f "$HOME/.claude/.gate-locked" 2>/dev/null || true
+            [ "${_GU_LOADED}" = "1" ] && gu_record_enable 2>/dev/null || true
+            echo "Gate ON — policy enforced"
+            if [ "${_GU_LOADED}" = "1" ] && [ "${_gu_on_lifetime:-0}" -gt 0 ]; then
+                echo "  Previous streak committed to lifetime. Lifetime total: $(gu_format_duration "${_gu_on_lifetime}")."
+            fi
+        fi
         ;;
     lock)
         LOCK_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
