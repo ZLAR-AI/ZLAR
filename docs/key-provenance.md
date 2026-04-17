@@ -45,6 +45,15 @@ Process for future keys
 4. Update the stub in this file with the fingerprint (first 16 hex of SHA-256 of the public PEM) and the generation date. Close the PR.
 5. If rotation is required later, retire the old fingerprint here with a one-line note pointing at the relevant incident doc, and add a fresh entry below it. Do not delete retired entries; they are the audit trail.
 
+Device hygiene
+
+2026-04-16 — Both YubiKeys (primary holding Policy 9C + Constitution 9D;
+spare holding Spec Signing 9A) moved off factory defaults: PIN retry count
+set to 8, PUK retry count set to 3, PUK rotated to a recorded value, and
+Management Key regenerated with `--protect --generate` so the random
+Management Key is stored PIN-protected on the device itself. No signing
+key was touched; existing signatures and verifiers remain unaffected.
+
 Retired entries
 
 - 42ba3e47c439f06c — Ed25519, spec test-vector signing (Draft only, never reached Published v1.0). Private half unrecoverable as of 2026-04-16. See docs/incidents/2026-04-16-spec-key-recovery.md. A verifier that encounters this kid in a receipt MUST reject the receipt: no valid Published receipt has ever been signed under this key.
