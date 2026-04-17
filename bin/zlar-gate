@@ -506,6 +506,11 @@ fi
 TELEGRAM_TOKEN="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-7662799203}"
 TELEGRAM_TIMEOUT_S="${TELEGRAM_TIMEOUT_S:-300}"
+# R012 retry dedup: how long an approval is cached per (rule, session, command
+# fingerprint) after the human confirms. Retries within this window replay the
+# prior approval without re-asking. Bounded so stale approvals expire even if
+# the command keeps retrying. Default 300s matches TELEGRAM_TIMEOUT_S.
+ZLAR_APPROVED_TTL_S="${ZLAR_APPROVED_TTL_S:-300}"
 
 # Source shared HMAC library for inbox integrity verification
 # shellcheck source=../lib/hmac.sh
@@ -1820,7 +1825,13 @@ agent_sa_allowed() {
 # actions match the same rule in the same session — e.g., two file edits under R012).
 # Contains: action_id (used to match Telegram callback)
 #
-# Returns: 0 = approved, 1 = denied, 2 = still pending (no response yet)
+# Returns:
+#   0 = approved (cache hit or newly confirmed this invocation)
+#   1 = denied
+#   2 = no pending / expired / corrupt — caller SHOULD send a fresh ask
+#   3 = still pending, no human response yet — caller MUST NOT send a new ask
+#       (prevents R012 retry approval race where each retry orphaned the prior
+#        callback by generating a new action_id)
 check_pending_approval() {
     local rule="$1"
     local expected_action_hash="${2:-}"
@@ -1829,6 +1840,21 @@ check_pending_approval() {
     local _hash_suffix=""
     [ -n "${expected_action_hash}" ] && _hash_suffix="-${expected_action_hash:0:16}"
     local pending_file="${APPROVAL_DIR}/${rule}-${SESSION_ID}${_hash_suffix}.pending"
+    local approved_file="${APPROVAL_DIR}/${rule}-${SESSION_ID}${_hash_suffix}.approved"
+
+    # Approved-cache hit: a prior invocation for this exact (rule, session,
+    # command fingerprint) already got human approval within the TTL. Replay
+    # that decision without bothering the human. Handles idempotency retries
+    # that happen after the tool already ran.
+    if [ -f "${approved_file}" ]; then
+        local approved_age
+        approved_age=$(( $(date +%s) - $(stat -c %Y "${approved_file}" 2>/dev/null || stat -f %m "${approved_file}" 2>/dev/null || echo 0) ))
+        if [ "${approved_age}" -lt "${ZLAR_APPROVED_TTL_S}" ]; then
+            log "Pending approval CACHE HIT: ${rule} (age=${approved_age}s < TTL=${ZLAR_APPROVED_TTL_S}s)"
+            return 0
+        fi
+        rm -f "${approved_file}"
+    fi
 
     if [ ! -f "${pending_file}" ]; then
         return 2  # No pending request
@@ -1901,6 +1927,9 @@ check_pending_approval() {
         if [ "${cb_data}" = "cc:approve:${pending_action_id}" ]; then
             echo "${cb_basename}" >> "${consumed_file}" 2>/dev/null || true
             rm -f "${pending_file}"
+            # Seed approved cache so same-fingerprint retries within TTL
+            # replay this decision without re-asking. See R012 race notes.
+            touch "${approved_file}" 2>/dev/null || true
             log "Pending approval FOUND: ${rule} approved by human"
             return 0
         elif [ "${cb_data}" = "cc:deny:${pending_action_id}" ]; then
@@ -1923,7 +1952,7 @@ check_pending_approval() {
         return 2  # Expired — will trigger fresh ask
     fi
 
-    return 2  # Still waiting
+    return 3  # Still waiting — caller MUST NOT send a new ask (R012 race fix)
 }
 
 # Generate consequence line for Telegram escalation messages.
@@ -2271,6 +2300,13 @@ handle_subagent_start() {
             emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "human:${TELEGRAM_CHAT_ID}"
             log "SubagentStart: DENIED by human"
             respond_subagent_deny "Subagent launch denied by human" "human"
+            ;;
+        3)
+            # Ask already in flight — do NOT send a new Telegram message.
+            # Retry will check again. R012 race fix.
+            emit_event "subagent" "${agent_type}" "ask_pending_retry" "${DETAIL}" "subagent-launch" "warn" 50 "gate"
+            log "SubagentStart: ask still in flight — suppressing re-ask"
+            respond_subagent_deny "⏳ Still awaiting Telegram approval for subagent ${agent_type}. Approve on phone, then retry." "pending"
             ;;
         *)
             # No approval yet — send Telegram ask and deny immediately
@@ -2723,6 +2759,16 @@ main() {
                             emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "human:${TELEGRAM_CHAT_ID}"
                             log "Deny-then-retry: ${MATCHED_RULE} DENIED by human"
                             respond_deny "Denied by human (rule ${MATCHED_RULE})" "human"
+                            ;;
+                        3)
+                            # Ask already in flight for this exact (rule, session,
+                            # command fingerprint). Do NOT send a new Telegram
+                            # message — that would orphan the prior callback_id
+                            # and burn another human interruption. Retry will
+                            # check the inbox again. R012 race fix.
+                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "ask_pending_retry" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate"
+                            log "Deny-then-retry: ${MATCHED_RULE} ask still in flight — suppressing re-ask"
+                            respond_deny "⏳ Still awaiting Telegram approval (rule ${MATCHED_RULE}). Approve on phone, then retry." "pending"
                             ;;
                         *)
                             # No approval yet — check human invariants, then send Telegram ask
