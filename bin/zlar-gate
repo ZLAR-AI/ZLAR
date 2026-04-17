@@ -1097,6 +1097,16 @@ translate_tool() {
             DETAIL=$(jq -n -c --arg t "${tool_name}" '{tool: $t}')
             TOOL_DISPLAY="${tool_name}"
             ;;
+        ToolSearch|ScheduleWakeup|CronCreate|CronDelete|CronList|Monitor|PushNotification|RemoteTrigger)
+            # Harness-layer tools: ToolSearch loads deferred tool schemas;
+            # ScheduleWakeup/Cron* schedule future wake-ups; Monitor streams
+            # process events; PushNotification/RemoteTrigger signal the harness.
+            # None reach the world — they are orchestration signals to the
+            # Claude Code runtime. Classified as internal.
+            DOMAIN="internal"
+            DETAIL=$(jq -n -c --arg t "${tool_name}" '{tool: $t}')
+            TOOL_DISPLAY="${tool_name}"
+            ;;
 
         # ── MCP tools (third-party, potentially dangerous) ──────────────────
         mcp__*)

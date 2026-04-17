@@ -6,7 +6,7 @@
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "lanQ6+oP2num/0M8N9tHdSElnb2MlEnGaudNW9XQBoxQPLUsY8AU12ZMcFfmNj4LEdF3Om6k7K7OdI1t61hIBw=="
+    "value": "cwbknYk7q8OuSPC/VXPt8GYCUYfPWjaXUCbu5MvNNSR8o9NHE8NKEIXjxxJhYI5xz/IzcYfNMa9AlRPx5MSiDA=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -1647,6 +1647,23 @@
         "irreversibility": 50,
         "consequence": 60,
         "blast_radius": 70
+      }
+    },
+    {
+      "id": "R100",
+      "enabled": true,
+      "description": "Internal Claude Code harness tools — allow (no world effect). TodoWrite, AskUserQuestion, ToolSearch, EnterPlanMode/ExitPlanMode, Enter/ExitWorktree, Skill, ScheduleWakeup, Cron*, Monitor, PushNotification, RemoteTrigger, TaskOutput/TaskStop. These are orchestration signals to the Claude Code runtime, not agent actions on the world. The 'unknown' domain remains unruled (default deny) — new tools must be explicitly classified.",
+      "domain": "internal",
+      "action": "allow",
+      "severity": "info",
+      "audit": false,
+      "match": {
+        "domain": "internal"
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 0,
+        "blast_radius": 0
       }
     }
   ]
