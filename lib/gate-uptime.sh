@@ -45,57 +45,17 @@ _GU_STALE_THRESHOLD_SECONDS="${_GU_STALE_THRESHOLD_SECONDS:-600}"   # 10 minutes
 # path.
 _GU_HEARTBEAT_BATCH_SECONDS="${_GU_HEARTBEAT_BATCH_SECONDS:-30}"
 
-# ─── HMAC helpers (match human-invariants pattern) ───────────────────────────
+# ─── HMAC helpers (shared with lib/human-invariants.sh) ──────────────────────
+# HMAC mechanics live in lib/state-hmac.sh. Thin wrappers here bind the shared
+# helpers to _GU_HMAC_KEY and _GU_STATE_FILE so call sites stay readable.
 
-_gu_compute_hmac_from_payload() {
-    [ -z "${_GU_HMAC_KEY}" ] && return 0
-    # Defensive: strip any incoming _hmac before hashing. Callers that pipe
-    # the result of a prior load back for update would otherwise hash with
-    # the stale _hmac still present, producing a signature the verify path
-    # (which uses `jq -cS 'del(._hmac)'`) would reject as tampered.
-    jq -cS 'del(._hmac)' 2>/dev/null | \
-        openssl dgst -sha256 -hmac "${_GU_HMAC_KEY}" 2>/dev/null | \
-        awk '{print $NF}'
-}
+# Source the shared helper from this file's own directory — not _GU_PROJECT_DIR,
+# which tests override to a tmp dir for state isolation.
+# shellcheck source=./state-hmac.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state-hmac.sh"
 
-_gu_verify_hmac() {
-    [ -z "${_GU_HMAC_KEY}" ] && { echo "unkeyed"; return 0; }
-    [ ! -f "${_GU_STATE_FILE}" ] && { echo "tampered"; return 1; }
-    local stored computed
-    stored=$(jq -r '._hmac // ""' "${_GU_STATE_FILE}" 2>/dev/null)
-    [ -z "${stored}" ] && { echo "tampered"; return 1; }
-    computed=$(jq -cS 'del(._hmac)' "${_GU_STATE_FILE}" 2>/dev/null | \
-        openssl dgst -sha256 -hmac "${_GU_HMAC_KEY}" 2>/dev/null | \
-        awk '{print $NF}')
-    if [ "${computed}" = "${stored}" ]; then echo "ok"; return 0; fi
-    echo "tampered"
-    return 1
-}
-
-# Atomic sealed write. Reads payload JSON (without _hmac) from stdin.
-_gu_sealed_write() {
-    local tmp="${_GU_STATE_FILE}.tmp"
-    local payload
-    payload=$(cat)
-    [ -z "${payload}" ] && return 1
-    mkdir -p "$(dirname "${_GU_STATE_FILE}")" 2>/dev/null || true
-
-    if [ -n "${_GU_HMAC_KEY}" ]; then
-        local hmac
-        hmac=$(printf '%s' "${payload}" | _gu_compute_hmac_from_payload)
-        if [ -z "${hmac}" ]; then
-            printf '%s' "${payload}" > "${tmp}" 2>/dev/null
-        else
-            printf '%s' "${payload}" | jq -c --arg h "${hmac}" '. + {_hmac: $h}' > "${tmp}" 2>/dev/null || {
-                rm -f "${tmp}" 2>/dev/null
-                return 1
-            }
-        fi
-    else
-        printf '%s' "${payload}" > "${tmp}" 2>/dev/null
-    fi
-    mv "${tmp}" "${_GU_STATE_FILE}" 2>/dev/null
-}
+_gu_verify_hmac()  { _state_hmac_verify       "${_GU_HMAC_KEY}" "${_GU_STATE_FILE}"; }
+_gu_sealed_write() { _state_hmac_sealed_write "${_GU_HMAC_KEY}" "${_GU_STATE_FILE}"; }
 
 # ─── State shape ──────────────────────────────────────────────────────────────
 # {

@@ -63,20 +63,22 @@ HI_DELIBERATION_FLOOR_INFO="${ZLAR_DELIBERATION_INFO:-3}"
 # H17: Minimum response time in seconds for any action. Below this = suspicious.
 HI_MIN_RESPONSE_TIME="${ZLAR_MIN_RESPONSE_TIME:-2}"
 
-# ─── HMAC Protection (v3.1.3) ────────────────────────────────────────────────
-# State files at var/human-state/{human_id}.json carry H6/H13/H14 counters that
-# an agent with filesystem access could poison (inflate decisions_today to
-# exceed cap and gate the human out, or deflate to suppress advisory). HMAC
-# seals each write; on read, a failed verification is logged and the state is
-# rebuilt with safe defaults. Rebuild (not fail-closed) preserves availability
-# of the one human in the loop while the log preserves the security signal.
+# ─── HMAC Protection (v3.1.3; refactored v3.1.4+) ────────────────────────────
+# State files at var/human-state/{human_id}.json carry H6/H13/H14 counters
+# that an agent with filesystem access could poison (inflate decisions_today
+# to gate the human out, or deflate to suppress advisory). HMAC seals each
+# write; on read, a failed verification is logged and the state rebuilt with
+# safe defaults. Rebuild (not fail-closed) preserves the one human in the
+# loop while the log preserves the security signal.
 #
-# Canonical form: jq -cS 'del(._hmac)' — sorted keys, compact, excluding the
-# _hmac field itself. Matches the Node serializer in human-invariants.mjs so
-# states written by either gate verify under the other.
-#
-# No key = unauthenticated mode (backward compat for deployments that haven't
-# re-run install.sh). Install generates the key automatically.
+# The HMAC mechanics moved to lib/state-hmac.sh (canonical form, sealed write,
+# verification) so gate-uptime and other state stores share one implementation.
+# This file keeps thin wrappers that bind the shared helpers to _HI_HMAC_KEY.
+
+# Source the shared helper from this file's own directory — not _HI_PROJECT_DIR,
+# which tests override to a tmp dir for state isolation.
+# shellcheck source=./state-hmac.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state-hmac.sh"
 
 _HI_HMAC_KEY_FILE="${_HI_PROJECT_DIR}/etc/keys/human-state-hmac.key"
 _HI_HMAC_KEY=""
@@ -84,84 +86,15 @@ if [ -f "${_HI_HMAC_KEY_FILE}" ]; then
     _HI_HMAC_KEY=$(cat "${_HI_HMAC_KEY_FILE}" 2>/dev/null || true)
 fi
 
+# Thin wrappers preserving the _hi_ prefix used at call sites below.
+_hi_verify_hmac()   { _state_hmac_verify       "${_HI_HMAC_KEY}" "$1"; }
+_hi_sealed_write()  { _state_hmac_sealed_write "${_HI_HMAC_KEY}" "$1"; }
+
 # ─── State Management ─────────────────────────────────────────────────────────
 
 _hi_log() {
     local msg="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [human-invariants] $*"
     echo "${msg}" >> "${_HI_LOG}" 2>/dev/null || true
-}
-
-# Compute HMAC over canonical (sorted-keys, compact) form of payload-without-hmac.
-# Input: state file path. Output: hex HMAC on stdout (empty if no key).
-_hi_compute_hmac() {
-    local state_file="$1"
-    [ -z "${_HI_HMAC_KEY}" ] && return 0
-    jq -cS 'del(._hmac)' "${state_file}" 2>/dev/null | \
-        openssl dgst -sha256 -hmac "${_HI_HMAC_KEY}" 2>/dev/null | \
-        awk '{print $NF}'
-}
-
-# Compute HMAC over a raw JSON payload passed via stdin (no file). Used by
-# _hi_sealed_write to seal before first store. Defensive: strips any incoming
-# _hmac before hashing so callers don't have to remember.
-_hi_compute_hmac_from_payload() {
-    [ -z "${_HI_HMAC_KEY}" ] && return 0
-    jq -cS 'del(._hmac)' 2>/dev/null | \
-        openssl dgst -sha256 -hmac "${_HI_HMAC_KEY}" 2>/dev/null | \
-        awk '{print $NF}'
-}
-
-# Verify HMAC on a state file. Returns "ok" | "tampered" | "unkeyed".
-# "unkeyed" means no key is configured — treat as ok (backward compat).
-_hi_verify_hmac() {
-    local state_file="$1"
-    [ -z "${_HI_HMAC_KEY}" ] && { echo "unkeyed"; return 0; }
-    [ ! -f "${state_file}" ] && { echo "tampered"; return 1; }
-
-    local stored
-    stored=$(jq -r '._hmac // ""' "${state_file}" 2>/dev/null)
-    if [ -z "${stored}" ]; then
-        echo "tampered"
-        return 1
-    fi
-
-    local computed
-    computed=$(_hi_compute_hmac "${state_file}")
-    if [ "${computed}" = "${stored}" ]; then
-        echo "ok"
-        return 0
-    fi
-    echo "tampered"
-    return 1
-}
-
-# Atomic sealed write. Reads payload JSON (without _hmac) from stdin, computes
-# HMAC if a key is configured, writes <state>.tmp with _hmac field appended,
-# then atomically renames into place. Preserves the existing temp+rename
-# atomicity pattern; HMAC is additive.
-_hi_sealed_write() {
-    local state_file="$1"
-    local tmp="${state_file}.tmp"
-    local payload
-    payload=$(cat)
-    [ -z "${payload}" ] && return 1
-
-    if [ -n "${_HI_HMAC_KEY}" ]; then
-        local hmac
-        hmac=$(printf '%s' "${payload}" | _hi_compute_hmac_from_payload)
-        if [ -z "${hmac}" ]; then
-            # HMAC computation failed — write unsealed rather than lose state.
-            printf '%s' "${payload}" > "${tmp}" 2>/dev/null
-        else
-            printf '%s' "${payload}" | jq -c --arg h "${hmac}" '. + {_hmac: $h}' > "${tmp}" 2>/dev/null || {
-                rm -f "${tmp}" 2>/dev/null
-                return 1
-            }
-        fi
-    else
-        printf '%s' "${payload}" > "${tmp}" 2>/dev/null
-    fi
-    mv "${tmp}" "${state_file}" 2>/dev/null
 }
 
 _hi_ensure_state() {
