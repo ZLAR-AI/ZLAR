@@ -110,6 +110,15 @@ export _HI_PROJECT_DIR="${PROJECT_DIR}"
 # shellcheck source=../lib/human-invariants.sh
 source "${PROJECT_DIR}/lib/human-invariants.sh"
 
+# Source gate uptime tracking (v3.1.4). Heartbeat runs on every gate
+# invocation while the gate is ON — writes batched to avoid hot-path cost.
+# Off-flag / lock paths have already exited above; reaching this point
+# means the gate is effectively on.
+export _GU_PROJECT_DIR="${PROJECT_DIR}"
+# shellcheck source=../lib/gate-uptime.sh
+source "${PROJECT_DIR}/lib/gate-uptime.sh"
+gu_record_heartbeat 2>/dev/null || true
+
 # Source fail-closed alert library — out-of-band notification path that
 # fires when a human invariant blocks an ask. Independent of the gate's
 # normal ask flow, so it cannot be blocked by the same invariant it is

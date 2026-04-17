@@ -42,6 +42,19 @@ if [ -f "${PROJECT_DIR}/VERSION" ]; then
     VERSION=$(cat "${PROJECT_DIR}/VERSION" 2>/dev/null || echo "unknown")
 fi
 
+# ─── Gate uptime helper (v3.1.4) ─────────────────────────────────────────────
+# Sourced on demand by commands that record transitions or display streak.
+_GU_LOADED=0
+_ensure_gu() {
+    [ "${_GU_LOADED}" = "1" ] && return 0
+    export _GU_PROJECT_DIR="${PROJECT_DIR}"
+    # shellcheck source=../lib/gate-uptime.sh
+    if [ -f "${PROJECT_DIR}/lib/gate-uptime.sh" ]; then
+        source "${PROJECT_DIR}/lib/gate-uptime.sh"
+        _GU_LOADED=1
+    fi
+}
+
 # ─── Commands ────────────────────────────────────────────────────────────────
 
 cmd_version() {
@@ -134,6 +147,16 @@ cmd_status() {
     if [ -f "${SETTINGS_JSON}" ] && command -v jq >/dev/null 2>&1; then
         HOOK_CMD=$(jq -r '.hooks.PreToolUse[0].hooks[0].command // "(none)"' "${SETTINGS_JSON}" 2>/dev/null || echo "(error)")
         printf "    Hook target (PreToolUse):                    ${HOOK_CMD}\n"
+    fi
+
+    # ─── Uptime / Streak (v3.1.4) ─────────────────────────────────────────
+    # Visible cost of disabling: how long has the gate been on, what is the
+    # longest stretch on record, what is the lifetime total. The numbers do
+    # the work — no coaching text.
+    if _ensure_gu; then
+        printf "\n"
+        printf "  ${BOLD}Uptime:${NC}\n"
+        gu_status_lines
     fi
 
     printf "\n"
@@ -924,12 +947,14 @@ case "${COMMAND}" in
     off)
         touch "$HOME/.claude/.gate-disabled"
         sudo -n touch /etc/zlar/off-flag 2>/dev/null || echo "  (warn: /etc/zlar/off-flag not writable; wrapper path still active)"
+        _ensure_gu && gu_record_disable 2>/dev/null || true
         echo "Gate OFF — Claude unblocked"
         ;;
     on)
         rm -f "$HOME/.claude/.gate-disabled"
         sudo -n rm -f /etc/zlar/off-flag 2>/dev/null || true
         rm -f "$HOME/.claude/.gate-locked" 2>/dev/null || true
+        _ensure_gu && gu_record_enable 2>/dev/null || true
         echo "Gate ON — policy enforced"
         ;;
     lock)

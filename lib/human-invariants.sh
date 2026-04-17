@@ -102,10 +102,11 @@ _hi_compute_hmac() {
 }
 
 # Compute HMAC over a raw JSON payload passed via stdin (no file). Used by
-# _hi_sealed_write to seal before first store. Payload must not contain _hmac.
+# _hi_sealed_write to seal before first store. Defensive: strips any incoming
+# _hmac before hashing so callers don't have to remember.
 _hi_compute_hmac_from_payload() {
     [ -z "${_HI_HMAC_KEY}" ] && return 0
-    jq -cS '.' 2>/dev/null | \
+    jq -cS 'del(._hmac)' 2>/dev/null | \
         openssl dgst -sha256 -hmac "${_HI_HMAC_KEY}" 2>/dev/null | \
         awk '{print $NF}'
 }

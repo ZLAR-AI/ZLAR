@@ -342,6 +342,22 @@ else
     ok "Human-state HMAC key already present"
 fi
 
+# v3.1.4: HMAC key for gate-uptime state. Seals var/gate-uptime.json so the
+# streak counter shown in `zlar status` cannot be silently inflated. Same
+# tamper-detection model as human-state-hmac.key; separate key for separation
+# of concerns.
+_GATE_UPTIME_KEY="${INSTALL_DIR}/etc/keys/gate-uptime-hmac.key"
+if [ ! -f "${_GATE_UPTIME_KEY}" ]; then
+    if openssl rand -hex 32 > "${_GATE_UPTIME_KEY}" 2>/dev/null; then
+        chmod 600 "${_GATE_UPTIME_KEY}"
+        ok "Gate-uptime HMAC key generated: ${_GATE_UPTIME_KEY}"
+    else
+        warn "Could not generate gate-uptime HMAC key — streak counter will run unauthenticated"
+    fi
+else
+    ok "Gate-uptime HMAC key already present"
+fi
+
 # Copy default policy → active policy
 cp "${INSTALL_DIR}/etc/policies/lt-default.policy.json" "${INSTALL_DIR}/etc/policies/active.policy.json"
 
