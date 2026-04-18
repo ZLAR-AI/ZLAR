@@ -6,7 +6,7 @@
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "CyarbPxkx558Nfl/GSdp9IXn3LrBUT0ljgCTzlRZbH/yFnSSFSOEv0VFIRYV+lRwNlLCxnVcOwASyiyuSd8lDQ=="
+    "value": "oUwVYF/dgKO/RmWCtf0uJExTLtDWJ5fcg9xpE4CevoxC3pt76YBE+rv/Rbpz2MKjSPizSCYoLb14PBfRKwZmDg=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -980,7 +980,7 @@
         "consequence": 100,
         "blast_radius": 95
       },
-      "verify_hint": "Claude wants to modify this project's CLAUDE.md instructions file. This changes how future sessions behave in this repository. Approve?"
+      "verify_hint": "This session is about to modify this project's CLAUDE.md instructions file. This changes how future sessions behave in this repository. Approve?"
     },
     {
       "id": "R032F2",
@@ -1002,7 +1002,7 @@
         "consequence": 100,
         "blast_radius": 100
       },
-      "verify_hint": "Claude wants to modify your global CLAUDE.md instructions file. This changes how future sessions behave across projects. Approve?"
+      "verify_hint": "This session is about to modify your global CLAUDE.md instructions file. This changes how future sessions behave across projects. Approve?"
     },
     {
       "id": "R032G",
@@ -1249,7 +1249,7 @@
         "consequence": 100,
         "blast_radius": 95
       },
-      "verify_hint": "Claude wants to modify this project's CLAUDE.md instructions file. This changes how future sessions behave in this repository. Approve?"
+      "verify_hint": "This session is about to modify this project's CLAUDE.md instructions file. This changes how future sessions behave in this repository. Approve?"
     },
     {
       "id": "R041F2",
@@ -1271,7 +1271,7 @@
         "consequence": 100,
         "blast_radius": 100
       },
-      "verify_hint": "Claude wants to modify your global CLAUDE.md instructions file. This changes how future sessions behave across projects. Approve?"
+      "verify_hint": "This session is about to modify your global CLAUDE.md instructions file. This changes how future sessions behave across projects. Approve?"
     },
     {
       "id": "R041G",
