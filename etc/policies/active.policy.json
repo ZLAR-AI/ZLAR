@@ -6,7 +6,7 @@
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "1xwMhj0/WDkmi9/4Il5hp9Hzm5zGjvlFii9NkOpQHLviw4Aidton8/u7f8ILMI0mf29Gs3r6Dsc1I43vIepLBA=="
+    "value": "udgzMGtz5l39cK/jdnoEYr59XYzqfDTzs98ftHbZ7ROmzh64/SbBF+8WM+ocUVk4x3moE0bnu3fJvqfsNUM7BA=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -789,28 +789,6 @@
       }
     },
     {
-      "id": "R032B",
-      "enabled": true,
-      "description": "Write to ZLAR project .claude/settings*.json — ask human (gate hook registration; edits can change or disable enforcement)",
-      "domain": "write",
-      "action": "ask",
-      "severity": "critical",
-      "audit": true,
-      "match": {
-        "detail": {
-          "path": {
-            "regex": "ZLAR.*\\.claude/settings[^/]*\\.json$"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 100,
-        "consequence": 100,
-        "blast_radius": 95
-      },
-      "verify_hint": "This session is about to modify the ZLAR project's .claude/settings*.json. This file registers the gate hook — edits can change or disable enforcement for this repo. Approve?"
-    },
-    {
       "id": "R032C",
       "enabled": true,
       "description": "Write to ZLAR var/log/ — blocked",
@@ -851,6 +829,49 @@
         "consequence": 100,
         "blast_radius": 100
       }
+    },
+    {
+      "id": "R035A",
+      "enabled": true,
+      "description": "Write to .ssh/ — blocked (authorized_keys, config, private keys)",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "contains": ".ssh"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 95,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R032B",
+      "enabled": true,
+      "description": "Write to ZLAR project .claude/settings*.json — ask human (gate hook registration; edits can change or disable enforcement)",
+      "domain": "write",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*\\.claude/settings[^/]*\\.json$"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 95
+      },
+      "verify_hint": "This session is about to modify the ZLAR project's .claude/settings*.json. This file registers the gate hook — edits can change or disable enforcement for this repo. Approve?"
     },
     {
       "id": "R032D",
@@ -1027,27 +1048,6 @@
         "blast_radius": 95
       },
       "verify_hint": "This session is about to modify .mcp.json. This file controls which MCP servers load — edits can add new tool surfaces or remove existing ones. Approve?"
-    },
-    {
-      "id": "R035A",
-      "enabled": true,
-      "description": "Write to .ssh/ — blocked (authorized_keys, config, private keys)",
-      "domain": "write",
-      "action": "deny",
-      "severity": "critical",
-      "audit": true,
-      "match": {
-        "detail": {
-          "path": {
-            "contains": ".ssh"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 95,
-        "consequence": 100,
-        "blast_radius": 95
-      }
     },
     {
       "id": "R035",
