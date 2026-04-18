@@ -116,7 +116,7 @@ fail_closed_alert() {
 
     case "${reason}" in
         rubber_stamping)
-            invariant_label="H14 — approval rate >=90% over last 20 decisions"
+            invariant_label="H14 — response-time stddev below floor over last 20 non-critical decisions"
             ;;
         overloaded)
             invariant_label="H13 — pending approval queue at capacity (advisory)"
