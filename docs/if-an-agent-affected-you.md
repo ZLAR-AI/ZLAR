@@ -7,7 +7,7 @@ This document is for you if an AI agent did something on your behalf, or to you,
 You may be reading this because:
 
 - An AI agent made a decision that affected your work, your money, your health care, your housing, your case file, your benefits, or something else important to you.
-- You were told you were the person responsible for approving or denying actions an agent wanted to take, but the request was unclear, you felt pressured to approve, or you did not have time to think.
+- You were told you were the person responsible for approving or denying actions an agent attempted to take, but the request was unclear, you felt pressured to approve, or you did not have time to think.
 - You denied a request from an AI agent, and the system or someone using the system overrode your decision.
 - You think you should have been asked about an action that affected you, and nobody asked you.
 - You were told that "the system approved it" or "the policy allowed it" and you want to know what that means and whether it is true.
