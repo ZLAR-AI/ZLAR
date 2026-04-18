@@ -6,7 +6,7 @@
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "oUwVYF/dgKO/RmWCtf0uJExTLtDWJ5fcg9xpE4CevoxC3pt76YBE+rv/Rbpz2MKjSPizSCYoLb14PBfRKwZmDg=="
+    "value": "1xwMhj0/WDkmi9/4Il5hp9Hzm5zGjvlFii9NkOpQHLviw4Aidton8/u7f8ILMI0mf29Gs3r6Dsc1I43vIepLBA=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -791,9 +791,9 @@
     {
       "id": "R032B",
       "enabled": true,
-      "description": "Write to ZLAR .claude/settings*.json (gate hook TCB) — blocked. Narrowed v2.8.0: was .claude/** which blocked non-TCB files like launch.json.",
+      "description": "Write to ZLAR project .claude/settings*.json — ask human (gate hook registration; edits can change or disable enforcement)",
       "domain": "write",
-      "action": "deny",
+      "action": "ask",
       "severity": "critical",
       "audit": true,
       "match": {
@@ -807,7 +807,8 @@
         "irreversibility": 100,
         "consequence": 100,
         "blast_radius": 95
-      }
+      },
+      "verify_hint": "This session is about to modify the ZLAR project's .claude/settings*.json. This file registers the gate hook — edits can change or disable enforcement for this repo. Approve?"
     },
     {
       "id": "R032C",
@@ -898,9 +899,9 @@
     {
       "id": "R033",
       "enabled": true,
-      "description": "Write to system config — blocked",
+      "description": "Write to /etc/ — ask human (system-wide config; affects all users and services)",
       "domain": "write",
-      "action": "deny",
+      "action": "ask",
       "severity": "critical",
       "audit": true,
       "match": {
@@ -914,7 +915,8 @@
         "irreversibility": 85,
         "consequence": 90,
         "blast_radius": 70
-      }
+      },
+      "verify_hint": "This session is about to modify a file under /etc/. This is system-wide configuration — changes affect all users and services on this machine. Approve?"
     },
     {
       "id": "R031",
@@ -1007,9 +1009,9 @@
     {
       "id": "R032G",
       "enabled": true,
-      "description": "Write to .mcp.json — blocked (MCP server injection)",
+      "description": "Write to .mcp.json — ask human (adds/removes MCP servers and their tool surfaces)",
       "domain": "write",
-      "action": "deny",
+      "action": "ask",
       "severity": "critical",
       "audit": true,
       "match": {
@@ -1023,7 +1025,8 @@
         "irreversibility": 90,
         "consequence": 100,
         "blast_radius": 95
-      }
+      },
+      "verify_hint": "This session is about to modify .mcp.json. This file controls which MCP servers load — edits can add new tool surfaces or remove existing ones. Approve?"
     },
     {
       "id": "R035A",
@@ -1125,9 +1128,9 @@
     {
       "id": "R041B",
       "enabled": true,
-      "description": "Edit ZLAR .claude/ — blocked",
+      "description": "Edit ZLAR project .claude/ — ask human (files here can change or disable enforcement for this repo)",
       "domain": "edit",
-      "action": "deny",
+      "action": "ask",
       "severity": "critical",
       "audit": true,
       "match": {
@@ -1141,7 +1144,8 @@
         "irreversibility": 100,
         "consequence": 100,
         "blast_radius": 95
-      }
+      },
+      "verify_hint": "This session is about to modify a file under the ZLAR project's .claude/ directory. Files here can change or disable enforcement for this repo. Approve?"
     },
     {
       "id": "R041C",
@@ -1276,9 +1280,9 @@
     {
       "id": "R041G",
       "enabled": true,
-      "description": "Edit .mcp.json — blocked (MCP server injection)",
+      "description": "Edit .mcp.json — ask human (adds/removes MCP servers and their tool surfaces)",
       "domain": "edit",
-      "action": "deny",
+      "action": "ask",
       "severity": "critical",
       "audit": true,
       "match": {
@@ -1292,14 +1296,15 @@
         "irreversibility": 90,
         "consequence": 100,
         "blast_radius": 95
-      }
+      },
+      "verify_hint": "This session is about to modify .mcp.json. This file controls which MCP servers load — edits can add new tool surfaces or remove existing ones. Approve?"
     },
     {
       "id": "R033E",
       "enabled": true,
-      "description": "Edit to system config (/etc/) — blocked",
+      "description": "Edit /etc/ — ask human (system-wide config; affects all users and services)",
       "domain": "edit",
-      "action": "deny",
+      "action": "ask",
       "severity": "critical",
       "audit": true,
       "match": {
@@ -1313,7 +1318,8 @@
         "irreversibility": 85,
         "consequence": 90,
         "blast_radius": 70
-      }
+      },
+      "verify_hint": "This session is about to modify a file under /etc/. This is system-wide configuration — changes affect all users and services on this machine. Approve?"
     },
     {
       "id": "R041H",
