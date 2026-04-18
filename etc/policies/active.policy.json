@@ -6,7 +6,7 @@
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "ZMIYJqBeid6dqglZu/4YenJGjwZ2DiHUDh3QOjV4r3lSbDhXE1hvKVaokRZt8GTKqvN28DIfV00xPuee4FW9DA=="
+    "value": "zcfJ04IuOxEmacPdwglaNzSappsVZzEuXssemf9ZZ1v7OI7Mc6oWNiMVN6DdxCH4OTRHPgGP+2cCF78BrNvGAQ=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -205,6 +205,153 @@
       }
     },
     {
+      "id": "R015",
+      "enabled": true,
+      "description": "Git push --force / -f (bare) — blocked. Use --force-with-lease for approval.",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\bgit\\s+push\\s+.*(-f\\b|--force(?!-with-lease))"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 80,
+        "blast_radius": 75
+      }
+    },
+    {
+      "id": "R099",
+      "enabled": true,
+      "description": "Canary — gate liveness test. Must be denied to prove enforcement.",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "contains": "ZLAR_CANARY_PROBE"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 0,
+        "blast_radius": 0
+      }
+    },
+    {
+      "id": "R005B",
+      "enabled": true,
+      "description": "Claude process spawning — blocked (governance escape)",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\bclaude\\b.*\\s(-p\\b|--pipe|--print|--bare|--dangerously|--agent)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      }
+    },
+    {
+      "id": "R005D",
+      "enabled": true,
+      "description": "Base64 decode piped — blocked (encoding bypass)",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "base64\\s+(-d|--decode).*\\|"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 95,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R005D2",
+      "enabled": true,
+      "description": "Pipe to shell (incl. absolute paths) — blocked",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\|\\s*(/usr/bin/env\\s+)?(/?\\w*/)*?(bash|sh|zsh|dash)(\\s|$)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 95,
+        "blast_radius": 90
+      }
+    },
+    {
+      "id": "R005F",
+      "enabled": true,
+      "description": "MCP config manipulation via bash — blocked",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "contains": ".mcp.json"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 90,
+        "consequence": 100,
+        "blast_radius": 95
+      }
+    },
+    {
+      "id": "R005H",
+      "enabled": true,
+      "description": "Library injection — blocked (LD_PRELOAD/DYLD_INSERT)",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "LD_PRELOAD|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 85,
+        "consequence": 95,
+        "blast_radius": 90
+      }
+    },
+    {
       "id": "R012R",
       "enabled": true,
       "description": "Read-only access to ZLAR paths — allowed with audit",
@@ -300,69 +447,6 @@
       }
     },
     {
-      "id": "R015",
-      "enabled": true,
-      "description": "Git push --force / -f (bare) — blocked. Use --force-with-lease for approval.",
-      "domain": "bash",
-      "action": "deny",
-      "severity": "critical",
-      "audit": true,
-      "match": {
-        "detail": {
-          "command": {
-            "regex": "\\bgit\\s+push\\s+.*(-f\\b|--force(?!-with-lease))"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 90,
-        "consequence": 80,
-        "blast_radius": 75
-      }
-    },
-    {
-      "id": "R099",
-      "enabled": true,
-      "description": "Canary — gate liveness test. Must be denied to prove enforcement.",
-      "domain": "bash",
-      "action": "deny",
-      "severity": "info",
-      "audit": true,
-      "match": {
-        "detail": {
-          "command": {
-            "contains": "ZLAR_CANARY_PROBE"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 0,
-        "consequence": 0,
-        "blast_radius": 0
-      }
-    },
-    {
-      "id": "R005B",
-      "enabled": true,
-      "description": "Claude process spawning — blocked (governance escape)",
-      "domain": "bash",
-      "action": "deny",
-      "severity": "critical",
-      "audit": true,
-      "match": {
-        "detail": {
-          "command": {
-            "regex": "\\bclaude\\b.*\\s(-p\\b|--pipe|--print|--bare|--dangerously|--agent)"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 100,
-        "consequence": 100,
-        "blast_radius": 100
-      }
-    },
-    {
       "id": "R005C",
       "enabled": true,
       "description": "Interpreter one-liner escape — ask (opaque payload, Claude uses python3 -c legitimately)",
@@ -383,48 +467,6 @@
         "blast_radius": 85
       },
       "verify_hint": "Is the interpreter payload bounded and readable, or opaque/dynamic input from an external source?"
-    },
-    {
-      "id": "R005D",
-      "enabled": true,
-      "description": "Base64 decode piped — blocked (encoding bypass)",
-      "domain": "bash",
-      "action": "deny",
-      "severity": "critical",
-      "audit": true,
-      "match": {
-        "detail": {
-          "command": {
-            "regex": "base64\\s+(-d|--decode).*\\|"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 90,
-        "consequence": 95,
-        "blast_radius": 90
-      }
-    },
-    {
-      "id": "R005D2",
-      "enabled": true,
-      "description": "Pipe to shell (incl. absolute paths) — blocked",
-      "domain": "bash",
-      "action": "deny",
-      "severity": "critical",
-      "audit": true,
-      "match": {
-        "detail": {
-          "command": {
-            "regex": "\\|\\s*(/usr/bin/env\\s+)?(/?\\w*/)*?(bash|sh|zsh|dash)(\\s|$)"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 90,
-        "consequence": 95,
-        "blast_radius": 90
-      }
     },
     {
       "id": "R005E",
@@ -449,27 +491,6 @@
       "verify_hint": "Is this eval/exec operating on a bounded local variable, or on untrusted external input?"
     },
     {
-      "id": "R005F",
-      "enabled": true,
-      "description": "MCP config manipulation via bash — blocked",
-      "domain": "bash",
-      "action": "deny",
-      "severity": "critical",
-      "audit": true,
-      "match": {
-        "detail": {
-          "command": {
-            "contains": ".mcp.json"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 90,
-        "consequence": 100,
-        "blast_radius": 95
-      }
-    },
-    {
       "id": "R005G",
       "enabled": true,
       "description": "Docker socket + dangerous ops — ask (container escape risk)",
@@ -490,27 +511,6 @@
         "blast_radius": 95
       },
       "verify_hint": "Is this container operation scoped to a safe, isolated container — or could it affect the host?"
-    },
-    {
-      "id": "R005H",
-      "enabled": true,
-      "description": "Library injection — blocked (LD_PRELOAD/DYLD_INSERT)",
-      "domain": "bash",
-      "action": "deny",
-      "severity": "critical",
-      "audit": true,
-      "match": {
-        "detail": {
-          "command": {
-            "regex": "LD_PRELOAD|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 85,
-        "consequence": 95,
-        "blast_radius": 90
-      }
     },
     {
       "id": "R001B",
