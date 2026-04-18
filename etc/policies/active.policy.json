@@ -6,7 +6,7 @@
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "udgzMGtz5l39cK/jdnoEYr59XYzqfDTzs98ftHbZ7ROmzh64/SbBF+8WM+ocUVk4x3moE0bnu3fJvqfsNUM7BA=="
+    "value": "ZMIYJqBeid6dqglZu/4YenJGjwZ2DiHUDh3QOjV4r3lSbDhXE1hvKVaokRZt8GTKqvN28DIfV00xPuee4FW9DA=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -1126,28 +1126,6 @@
       }
     },
     {
-      "id": "R041B",
-      "enabled": true,
-      "description": "Edit ZLAR project .claude/ — ask human (files here can change or disable enforcement for this repo)",
-      "domain": "edit",
-      "action": "ask",
-      "severity": "critical",
-      "audit": true,
-      "match": {
-        "detail": {
-          "path": {
-            "regex": "ZLAR.*\\.claude/"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 100,
-        "consequence": 100,
-        "blast_radius": 95
-      },
-      "verify_hint": "This session is about to modify a file under the ZLAR project's .claude/ directory. Files here can change or disable enforcement for this repo. Approve?"
-    },
-    {
       "id": "R041C",
       "enabled": true,
       "description": "Edit ZLAR var/log/ — blocked",
@@ -1188,6 +1166,28 @@
         "consequence": 100,
         "blast_radius": 100
       }
+    },
+    {
+      "id": "R041B",
+      "enabled": true,
+      "description": "Edit ZLAR project .claude/ — ask human (files here can change or disable enforcement for this repo)",
+      "domain": "edit",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "ZLAR.*\\.claude/"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 95
+      },
+      "verify_hint": "This session is about to modify a file under the ZLAR project's .claude/ directory. Files here can change or disable enforcement for this repo. Approve?"
     },
     {
       "id": "R041D",
