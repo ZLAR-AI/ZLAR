@@ -386,6 +386,9 @@ cedar-poc/     Cedar formal policy — base ruleset and per-regulation mappings
 
 ## Further reading
 
+- [doctrine/ZLAR-DNA.md](doctrine/ZLAR-DNA.md) — the canon: invariants, architecture, category, strategic positioning
+- [doctrine/FRAMINGS.md](doctrine/FRAMINGS.md) — conceptual vocabulary around the canon
+- [doctrine/IMPLEMENTATION-TERMS.md](doctrine/IMPLEMENTATION-TERMS.md) — engineering-near vocabulary and live mechanisms
 - [GOVERNANCE.md](GOVERNANCE.md) — how decisions are made, how invariants are amended
 - [SECURITY.md](SECURITY.md) — vulnerability disclosure, security principles
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
