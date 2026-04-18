@@ -10,16 +10,16 @@ If this file and the live repo disagree, the repo wins. Implementation terms dri
 —
 
 zlar-gate
-The bash implementation of the gate. Runs as a Claude Code PreToolUse hook. Lives at the operator workstation and is invoked on every tool call. Shares state with the MCP gate implementation.
+The bash implementation of the gate. Runs as a Claude Code PreToolUse hook. Lives at the operator workstation and is invoked on every tool call. Shares state with the MCP gate implementation. Source at bin/zlar-gate; the operator-facing variant deployed by the Claude Code adapter is adapters/claude-code/zlar-gate.sh.
 
 gate.mjs
-The MCP-side implementation of the gate. Same policy evaluation, same receipt chain, same state store as zlar-gate. Exists to govern MCP-surfaced tools the Claude Code hook cannot reach directly.
+The MCP-side implementation of the gate. Lives at mcp-gate/gate.mjs. Same policy evaluation, same receipt chain, same state store as zlar-gate. Exists to govern MCP-surfaced tools the Claude Code hook cannot reach directly.
 
 Rule IDs (R012, R032C, R041, and so on)
 Named rules in the active policy. Conventions: R0## is a base rule, R0##C a companion narrowing rule, R0##R a repair or retry carve-out. Rule IDs appear in Telegram ask cards, receipts, and audit logs. The signed policy file is the source of truth for what each rule does.
 
 Governed Action Receipt (GAR v1)
-The current receipt schema, version 1. Defined at etc/receipt.schema.json, implemented in lib/receipt.mjs, verifiable with bin/zlar-verify. GAR v0 is the pre-v1 format retained for backwards-compatible verification.
+The current receipt schema, version 1. Split into envelope and payload: etc/receipt-v1.schema.json defines the envelope (version, id, key id, timestamp, type, payload reference, signature); etc/receipt-v1-payload.schema.json defines the governed-event payload. Implemented in lib/receipt.mjs, verifiable with bin/zlar-verify. etc/receipt.schema.json is retained as a v0 deprecation stub pointing at the v1 successor files; GAR v0 is the pre-v1 format retained for backwards-compatible verification.
 
 bin/zlar-verify
 Standalone CLI that verifies receipt chains without requiring the rest of ZLAR. Inputs: a receipt or receipt stream plus public keys. Output: pass or fail with specific failure reasons. Written so that anyone can audit a receipt stream independently of ZLAR.
@@ -34,13 +34,13 @@ Active policy and constitution
 etc/policies/active.policy.json is the live signed operational policy. The constitution is the meta-policy, signed with a separate key, verified before policy load. Both files are the source of truth for rule behavior.
 
 etc/keys/
-Directory holding public keys for signature verification. Private keys are not in the repo by design — see docs/key-provenance.md for where they live and how they are provisioned.
+Directory holding public verification keys (policy signing, constitution signing) and HMAC state-integrity keys used at runtime. Private signing keys (Ed25519) are not stored in the repo by design — see docs/key-provenance.md for where they live and how they are provisioned.
 
 var/gate-uptime.json
 Runtime state for the gate. Tracks on or off, current streak, lifetime-on seconds, last heartbeat. HMAC-signed for integrity. Authoritative for "is ZLAR on?" — takes precedence over any text file claiming gate state.
 
 var/receipts/
-Local receipt storage. The receipt chain. Each file is a receipt; filenames sort chronologically. Chain integrity verifiable with bin/zlar-verify.
+Runtime receipt storage on the operator workstation. Not tracked in the repo. Each file is a receipt; filenames sort chronologically. Chain integrity verifiable with bin/zlar-verify.
 
 PreToolUse hook
 The Claude Code extension point where zlar-gate runs. Configured in the operator's Claude Code settings. The hook is called before every tool call and can block, allow, or ask.

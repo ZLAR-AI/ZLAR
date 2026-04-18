@@ -35,8 +35,8 @@ ZLAR's public framing against the industry default: governance is the fast path,
 Zero-Terminal, as a framing device
 Canonical in DNA section 7. Noted here as a deliberate reduction of surface area: every additional knob surfaced to the human at decision time is a surface for erosion of human authority.
 
-Horizon-Reading (whetstone-seeing)
-A maintainer-use frame for a particular kind of attention: sensitivity to the gradient of where work is becoming, as distinct from analysis of where work is now. Not for public copy. Useful for maintainers trying to reproduce the quality of judgment that shaped early ZLAR architectural choices.
+Horizon-Reading (whetstone-seeing) — MAINTAINER-INTERNAL
+Not for public copy, external briefings, or reader-facing writing. A maintainer-use frame for a particular kind of attention: sensitivity to the gradient of where work is becoming, as distinct from analysis of where work is now. Retained here because maintainers trying to reproduce the quality of judgment that shaped early ZLAR architectural choices need a name for it. May later move to a private maintainer file.
 
 Contact, not Execution
 A usage note. Prefer "contact" over "execution" in new ZLAR writing. Contact is closer to what actually happens at the boundary; execution carries mechanistic baggage from batch-processing-era computing that is not the right mental model for consequential agent action.
