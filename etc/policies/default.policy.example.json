@@ -1,8 +1,8 @@
 {
-  "version": "2.11.1",
+  "version": "3.1.0",
   "created_at": "2026-03-29T00:00:00Z",
   "author": "vincentnijjar",
-  "description": "ZLAR v2.11.1 default policy — 80 rules. Deny-first with human escalation. Covers: bash perimeter (deletion, privilege, network, interpreters, ZLAR self-protection), write/edit domain (system config, shell config, .env, credentials, dotfiles, CLAUDE.md, .mcp.json), read domain (signing keys, .ssh, .env), MCP/web (third-party tools, web fetch), agent domain (sub-agent spawns). Example only — sign with your own key before use.",
+  "description": "ZLAR v3.1.0 default policy — 81 rules. Deny-first with human escalation. Covers: bash perimeter (deletion, privilege, network, interpreters, ZLAR self-protection), write/edit domain (system config, shell config, .env, credentials, dotfiles, CLAUDE.md, .mcp.json), read domain (signing keys, .ssh, .env), MCP/web (third-party tools, web fetch), agent domain (sub-agent spawns), internal domain (Claude Code harness tools — allow). Example only — sign with your own key before use.",
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
@@ -1624,6 +1624,23 @@
         "irreversibility": 50,
         "consequence": 60,
         "blast_radius": 70
+      }
+    },
+    {
+      "id": "R100",
+      "enabled": true,
+      "description": "Internal Claude Code harness tools — allow (no world effect). TodoWrite, AskUserQuestion, ToolSearch, EnterPlanMode/ExitPlanMode, Enter/ExitWorktree, Skill, ScheduleWakeup, Cron*, Monitor, PushNotification, RemoteTrigger, TaskOutput/TaskStop. These are orchestration signals to the Claude Code runtime, not agent actions on the world. The 'unknown' domain remains unruled (default deny) — new tools must be explicitly classified.",
+      "domain": "internal",
+      "action": "allow",
+      "severity": "info",
+      "audit": false,
+      "match": {
+        "domain": "internal"
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 0,
+        "blast_radius": 0
       }
     }
   ]
