@@ -23,20 +23,8 @@ Perception without an imposed schema. Used as a discipline at the start of new Z
 Execution Boundary (superseded)
 Earlier ZLAR writing used "execution boundary" for the moment an agent's intent becomes a world-changing action. Superseded by Contact Boundary in DNA section 3. Retained here for historical continuity and for readers of older material.
 
-The Invariant, as a framing device
-The Invariant is canonical in DNA. This entry notes it has a second life as a rhetorical pattern: ZLAR writing regularly subordinates mechanism to invariant, and that ordering is deliberate. Mechanism serves the invariant, not the other way around. A mechanism described without reference to the invariant it serves is probably missing the point.
-
-Deny-First Governance Kernel, as a framing device
-Canonical in DNA section 6 as a technical term. The framing work it does: calling the deny default a "kernel" positions it as foundational, which moves it away from absence-of-permission and toward positive architectural choice. Rhetoric that is also accurate.
-
 Acceleration, not Restriction
 ZLAR's public framing against the industry default: governance is the fast path, not the speed bump. Ungoverned agents are fragile — the first incident becomes the last deployment. Governed agents are durable. The market's default assumption runs the opposite way, which is why this framing appears often in ZLAR copy.
-
-Zero-Terminal, as a framing device
-Canonical in DNA section 7. Noted here as a deliberate reduction of surface area: every additional knob surfaced to the human at decision time is a surface for erosion of human authority.
-
-Horizon-Reading (whetstone-seeing) — MAINTAINER-INTERNAL
-Not for public copy, external briefings, or reader-facing writing. A maintainer-use frame for a particular kind of attention: sensitivity to the gradient of where work is becoming, as distinct from analysis of where work is now. Retained here because maintainers trying to reproduce the quality of judgment that shaped early ZLAR architectural choices need a name for it. May later move to a private maintainer file.
 
 Contact, not Execution
 A usage note. Prefer "contact" over "execution" in new ZLAR writing. Contact is closer to what actually happens at the boundary; execution carries mechanistic baggage from batch-processing-era computing that is not the right mental model for consequential agent action.
@@ -49,9 +37,6 @@ Contact Boundary was not a rename of Execution Boundary. It was a reframe: the i
 
 Smart Gate Trap, Inside-the-Model Trap, Trust Quantification Category Mistake, Trust Farming, Verified Liar, Voluntary Compliance Error
 Anti-pattern names canonicalized in DNA section 9. Listed here because each carries a specific piece of category rhetoric that does framing work beyond its literal claim. Using the names in conversation deliberately activates the frame.
-
-Cassandra's Gap (framing note)
-Canonical in DNA section 6 as a technical structure. The framing work it does: the Cassandra reference tells the reader that detection without authority is a classical tragedy, not a modern software problem. The myth is load-bearing.
 
 —
 
