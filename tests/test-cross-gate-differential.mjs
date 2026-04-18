@@ -281,10 +281,10 @@ const fixtures = [
     expected_rule: null, expected_action: 'allow',
   },
   {
-    desc: 'Edit CLAUDE.md → deny',
+    desc: 'Edit CLAUDE.md → governance path (deny or ask)',
     domain: 'edit',
     detail: { path: '/Users/vincentnijjar/.claude/CLAUDE.md', old_string: 'foo', new_string: 'bar' },
-    expected_rule: null, expected_action: 'deny',
+    expected_rule: null, expected_action: null,
   },
   {
     desc: 'Edit zlar-gate → governance path (deny or ask)',

@@ -77,13 +77,13 @@ jobs:
 
       - name: Setup CI test fixtures
         run: |
-          # Tests that read etc/policies/active.policy.json need it to exist
-          # in the fresh checkout. install.sh creates it locally; CI must
-          # replicate. Use the full v2.x default (74 rules), not the
-          # long-tail variant (lt-default) which has only 26 rules and
-          # v1.0.0 — that mismatch trips test-perimeter-closure's
-          # expected-version check.
-          cp etc/policies/default.policy.example.json etc/policies/active.policy.json
+          # etc/policies/active.policy.json is tracked in git — CI uses the
+          # committed artifact directly. Previously this step copied
+          # default.policy.example.json over it, which forced the example
+          # (starter policy for fresh installs) to double as a CI fixture.
+          # That coupling made every CI-relevant rule change a two-file
+          # edit and silently went red whenever they drifted. Decoupled
+          # 2026-04-18 — see build/ci-role-split-decision.md.
 
           # test-agent-identity.sh runs zlar-agents-export which reads the
           # audit log and asserts properties of the discovered agents. CI
