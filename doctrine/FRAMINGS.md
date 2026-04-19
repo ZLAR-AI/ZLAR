@@ -38,6 +38,12 @@ Contact Boundary was not a rename of Execution Boundary. It was a reframe: the i
 Smart Gate Trap, Inside-the-Model Trap, Trust Quantification Category Mistake, Trust Farming, Verified Liar, Voluntary Compliance Error
 Anti-pattern names canonicalized in DNA section 9. Listed here because each carries a specific piece of category rhetoric that does framing work beyond its literal claim. Using the names in conversation deliberately activates the frame.
 
+Legitimacy Layer, Not Safety Layer
+Human-in-the-loop is a legitimacy layer with known cognitive limits, not a safety layer. The human is a source of consent for consequential action; the human is not a reliable detector of technically accurate but cognitively misleading asks under load or over time. Minimum read times, fast-approval rejection, and structural voice discipline reduce the surface but do not eliminate operator cognition as an attack vector. ZLAR's design does not rely on the human as the first line of control — the first line is deterministic policy. The human exists where legitimacy matters more than speed. Any framing that implies human approval makes governance "safe" inherits the wrong mental model and the wrong failure modes.
+
+Scope Boundary Copy Discipline
+In ZLAR writing, scope is described with mechanical precision. Preferred phrasings: "ZLAR governs actions that cross the contact boundary through the gate." "Interception completeness is not a code property." "Bypass is made visible as a deployment responsibility." Avoid phrasings that imply the gate governs everything an agent can do, or that ZLAR alone constitutes complete governance. Scope honesty is a credibility move: a reader who finds a limit stated plainly trusts the surrounding claims more, not less. The opposite pattern — implying broader coverage than the architecture provides — is the most common form of governance theater in this category.
+
 —
 
 End of FRAMINGS. More entries added as concepts surface.

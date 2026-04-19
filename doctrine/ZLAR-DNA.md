@@ -163,6 +163,9 @@ When the gate denies, the agent is not just blocked — it is routed to a restor
 Authority Branching, Authority Envelope, Future Authority Writes (terms under consideration)
 Candidates for formalizing authority scoping across agent sessions. Not yet canon; surfaced here so the terminology can be evaluated before it ships.
 
+The Semantic-Gap Frontier (named, not solved)
+ZLAR governs routed execution. It does not yet govern meaning across sequences, reformulations, and indirect effect. A chain of individually low-risk actions can produce a consequential result without any single decision crossing the threshold. A technically accurate ask can be cognitively misleading to the human. An effect can be reached through paths the rule set does not recognize. Digest and witness detect; they do not enforce. Sequence-aware enforcement is the next maturity layer, not a shipped capability. The layer is named here so it is not absorbed silently into the constitutional or policy layers, which are structurally different problems.
+
 —
 
 11. Category Definition
@@ -179,9 +182,15 @@ Governance: the structural constraint on what the agent can do. Monitoring: the 
 Governance is not compliance
 Compliance is the checkbox that the system met a standard on the day it was audited. Governance is the continuous structural property that the system cannot violate the standard. A system that is compliant today but can be silently non-compliant tomorrow was never governed.
 
+Scope boundary
+ZLAR governs actions that cross the contact boundary through the gate. It does not claim software alone can make governance complete. Interception completeness is a deployment property, not a code property: the guarantees attach to routed execution, and the deployment owner is responsible for making the governed surfaces authoritative with sandbox, OS, and network controls. Bypass is not eliminated by declaration; it is made visible as a deployment responsibility. Any vendor in this category that implies otherwise is selling something smaller than what the word governance should mean.
+
 —
 
 12. Strategic Positioning
+
+The compressed position
+ZLAR is strongest where the deployment owner can make the governed surfaces authoritative. Within that boundary, it gives deterministic, signed, fail-closed governance of routed execution plus independently verifiable evidence. The unsolved frontier is not signatures or deny logic; it is the semantic gap across sequences, framing, and indirect effect. The position is honest about what it is not as a way of being credible about what it is.
 
 The doctrine is the moat
 ZLAR's position is not the codebase — any vendor can write a gate in a quarter. The position is the doctrine: the Three Authority Laws, the Contact Boundary, the deny-first kernel, the refusal to put AI in the enforcement path. The doctrine is what makes the codebase structurally correct. Copying the code without the doctrine produces a system that looks like ZLAR but fails under adversarial conditions.
