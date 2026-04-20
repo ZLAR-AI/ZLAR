@@ -239,7 +239,7 @@ The dual-layer receipt architecture (chain-linkable outer, personal-data-bearing
 Category adjacencies (pointers, not equivalences)
 Forrester three-plane model (Build / Orchestration / Control): ZLAR sits in Control.
 Gartner Guardian Agent category (Feb 2026): ZLAR fits, with the caveat that Gartner's definition admits AI-in-enforcement systems that ZLAR rejects on architectural grounds.
-Portable Agent Identity Descriptor (Forrester agent control plane research, Forrester): maps to the ZLAR manifest.
+Portable Agent Identity Descriptor (Forrester agent control plane research): maps to the ZLAR manifest.
 
 —
 
