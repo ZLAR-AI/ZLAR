@@ -58,7 +58,7 @@ Positive:
 Negative:
 - Detector thresholds are conservative defaults. They need tuning with real session data before they produce reliable signals.
 - The background trigger adds a Node.js process per deny/novelty/high-risk event. In high-throughput sessions this could be significant.
-- Trust state files add a new state surface that must be protected from tampering (not yet addressed — see adversarial reviewer's adversarial scenarios).
+- Trust state files add a new state surface that must be protected from tampering (not yet addressed — see adversarial review notes).
 
 ## References
 

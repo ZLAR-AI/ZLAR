@@ -1078,7 +1078,7 @@ cmd_ratify() {
         ok "Proposal signature verified"
     fi
 
-    # Check cooling-off period using SIGNED proposal timestamp (adversarial reviewer's requirement)
+    # Check cooling-off period using SIGNED proposal timestamp (external adversarial review requirement)
     local proposed_at deadline
     proposed_at=$(jq -r '.proposed_at' "${proposal_file}" 2>/dev/null)
     deadline=$(jq -r '.cooling_off_deadline' "${proposal_file}" 2>/dev/null)

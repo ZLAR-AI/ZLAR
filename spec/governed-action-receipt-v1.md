@@ -270,7 +270,7 @@ A conforming implementation verifies these vectors by loading the public key fro
   "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "domain": "bash",
   "manifest_agent_id": "claude-code",
-  "manifest_principal": "vincent@zlar.ai",
+  "manifest_principal": "principal@example.com",
   "outcome": "allow",
   "policy_version": "2.7.2",
   "rule": "R001",
@@ -281,7 +281,7 @@ A conforming implementation verifies these vectors by loading the public key fro
 
 **Canonical JSON form** (sorted keys, compact, UTF-8):
 ```
-{"audit_event_id":"018fa1d03b7c4a3c8e9f1b2d6e5a7c9f","audit_prev_hash":"genesis","authorizer":"policy","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"allow","policy_version":"2.7.2","rule":"R001","tool":"Bash","ts":"2026-04-09T14:17:19.000Z"}
+{"audit_event_id":"018fa1d03b7c4a3c8e9f1b2d6e5a7c9f","audit_prev_hash":"genesis","authorizer":"policy","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"principal@example.com","outcome":"allow","policy_version":"2.7.2","rule":"R001","tool":"Bash","ts":"2026-04-09T14:17:19.000Z"}
 ```
 
 **SHA-256 of canonical bytes (lowercase hex)**:
@@ -327,7 +327,7 @@ yM7HxD2DVr5VZA2O9RDgie4NmYL2C2DygF--0Cvg2Caqr_6lErsRHRUqoDIWk8AHYleTx-iiHwI35csI
   "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "domain": "bash",
   "manifest_agent_id": "claude-code",
-  "manifest_principal": "vincent@zlar.ai",
+  "manifest_principal": "principal@example.com",
   "outcome": "authorized",
   "policy_version": "2.7.2",
   "rule": "R014",
@@ -338,7 +338,7 @@ yM7HxD2DVr5VZA2O9RDgie4NmYL2C2DygF--0Cvg2Caqr_6lErsRHRUqoDIWk8AHYleTx-iiHwI35csI
 
 **Canonical JSON form** (sorted keys, compact, UTF-8):
 ```
-{"audit_event_id":"018fa1d040a08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"862157a24a5690f87212dcf1b14d3dfd0babcc4b92e7661e55b1c8c11db9c7a7","authorizer":"human","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"authorized","policy_version":"2.7.2","rule":"R014","tool":"Bash","ts":"2026-04-09T14:18:30.000Z"}
+{"audit_event_id":"018fa1d040a08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"862157a24a5690f87212dcf1b14d3dfd0babcc4b92e7661e55b1c8c11db9c7a7","authorizer":"human","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"principal@example.com","outcome":"authorized","policy_version":"2.7.2","rule":"R014","tool":"Bash","ts":"2026-04-09T14:18:30.000Z"}
 ```
 
 **SHA-256 of canonical bytes (lowercase hex)**:
@@ -407,7 +407,7 @@ BNg38FC0OhZutgnpY4b8HolpLldRRr7PC3XCyyvYpyBlr31kAmkZDV5mYvl6xijBTgY5LCeqhc_k1IxF
   "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "domain": "bash",
   "manifest_agent_id": "claude-code",
-  "manifest_principal": "vincent@zlar.ai",
+  "manifest_principal": "principal@example.com",
   "outcome": "allow",
   "policy_version": "2.7.2",
   "rule": "R001",
@@ -418,7 +418,7 @@ BNg38FC0OhZutgnpY4b8HolpLldRRr7PC3XCyyvYpyBlr31kAmkZDV5mYvl6xijBTgY5LCeqhc_k1IxF
 
 **Canonical JSON form** (sorted keys, compact, UTF-8):
 ```
-{"audit_event_id":"018fa1d04ad08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"44122fa452f90df9757563d5aa8dc3ea33d60ef12d213cf3d40fafac20d6deb6","authorizer":"policy","delegation_chain":[{"depth":0,"iat":1775744239,"jti":"root-token-id","parent_jti":null,"pub":"AAAA","sig":"sig-root","sig_alg":"ed25519","sub":"orchestrator-agent","v":1},{"depth":1,"iat":1775744249,"jti":"child-token-id","parent_jti":"root-token-id","pub":"BBBB","sig":"sig-child","sig_alg":"ed25519","sub":"worker-agent","v":1}],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"allow","policy_version":"2.7.2","rule":"R001","tool":"Bash","ts":"2026-04-09T14:19:00.000Z"}
+{"audit_event_id":"018fa1d04ad08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"44122fa452f90df9757563d5aa8dc3ea33d60ef12d213cf3d40fafac20d6deb6","authorizer":"policy","delegation_chain":[{"depth":0,"iat":1775744239,"jti":"root-token-id","parent_jti":null,"pub":"AAAA","sig":"sig-root","sig_alg":"ed25519","sub":"orchestrator-agent","v":1},{"depth":1,"iat":1775744249,"jti":"child-token-id","parent_jti":"root-token-id","pub":"BBBB","sig":"sig-child","sig_alg":"ed25519","sub":"worker-agent","v":1}],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"principal@example.com","outcome":"allow","policy_version":"2.7.2","rule":"R001","tool":"Bash","ts":"2026-04-09T14:19:00.000Z"}
 ```
 
 **SHA-256 of canonical bytes (lowercase hex)**:
@@ -464,7 +464,7 @@ ePyb0BlBOPqi-J1WHKj4ECqhWhctILmKnRKMsBoOG8jmdLtWEBjFdI_FP6T3XwGP8wqKAqqWfVSS6nlS
   "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "domain": "bash",
   "manifest_agent_id": "claude-code",
-  "manifest_principal": "vincent@zlar.ai",
+  "manifest_principal": "principal@example.com",
   "outcome": "allow",
   "policy_version": "2.7.2",
   "rule": "R003",
@@ -475,7 +475,7 @@ ePyb0BlBOPqi-J1WHKj4ECqhWhctILmKnRKMsBoOG8jmdLtWEBjFdI_FP6T3XwGP8wqKAqqWfVSS6nlS
 
 **Canonical JSON form** (sorted keys, compact, UTF-8):
 ```
-{"audit_event_id":"018fa1d055a08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"108a7fd999930349a5ff774f86d1a36b21d39380f90bfc0c23d309de64385480","authorizer":"policy","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"allow","policy_version":"2.7.2","rule":"R003","tool":"Bash","ts":"2026-04-09T14:20:00.000Z"}
+{"audit_event_id":"018fa1d055a08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"108a7fd999930349a5ff774f86d1a36b21d39380f90bfc0c23d309de64385480","authorizer":"policy","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"principal@example.com","outcome":"allow","policy_version":"2.7.2","rule":"R003","tool":"Bash","ts":"2026-04-09T14:20:00.000Z"}
 ```
 
 **SHA-256 of canonical bytes (lowercase hex)**:
@@ -523,7 +523,7 @@ l59NvxIv9CSXhDVBXN2vNLNA-2okeDkM8EXz6K4hzGqma_tefFu1IEOrbXetPll1iRphB2ZfAeNQ9qj4
   "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "domain": "bash",
   "manifest_agent_id": "claude-code",
-  "manifest_principal": "vincent@zlar.ai",
+  "manifest_principal": "principal@example.com",
   "outcome": "authorized",
   "policy_version": "2.7.2",
   "rule": "R001",
@@ -534,7 +534,7 @@ l59NvxIv9CSXhDVBXN2vNLNA-2okeDkM8EXz6K4hzGqma_tefFu1IEOrbXetPll1iRphB2ZfAeNQ9qj4
 
 **Canonical JSON form** (sorted keys, compact, UTF-8):
 ```
-{"audit_event_id":"018fa1d060a08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"876e10b7eea243f987665902e5244b6a06ab7f4bbec695f65d440237e8a5317f","authorizer":"policy","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"authorized","policy_version":"2.7.2","rule":"R001","tool":"Bash","ts":"2026-04-09T14:21:00.000Z"}
+{"audit_event_id":"018fa1d060a08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"876e10b7eea243f987665902e5244b6a06ab7f4bbec695f65d440237e8a5317f","authorizer":"policy","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"principal@example.com","outcome":"authorized","policy_version":"2.7.2","rule":"R001","tool":"Bash","ts":"2026-04-09T14:21:00.000Z"}
 ```
 
 **SHA-256 of canonical bytes (lowercase hex)**:
@@ -582,7 +582,7 @@ eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNjBhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRf
   "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "domain": "bash",
   "manifest_agent_id": "claude-code",
-  "manifest_principal": "vincent@zlar.ai",
+  "manifest_principal": "principal@example.com",
   "outcome": "deny",
   "policy_version": "2.7.2",
   "rule": "R002",
@@ -593,7 +593,7 @@ eyJhdWRpdF9ldmVudF9pZCI6IjAxOGZhMWQwNjBhMDhjNGEzYzhlOWYxYjJkNmU1YTdjIiwiYXVkaXRf
 
 **Canonical JSON form** (sorted keys, compact, UTF-8):
 ```
-{"audit_event_id":"018fa1d06ba08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"7af16c064d86cc2d8a8592fede5631e5c6a647ee3543587333bac2442172c8c5","authorizer":"policy","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"deny","policy_version":"2.7.2","rule":"R002","tool":"Bash","ts":"2026-04-09T14:22:00.000Z"}
+{"audit_event_id":"018fa1d06ba08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"7af16c064d86cc2d8a8592fede5631e5c6a647ee3543587333bac2442172c8c5","authorizer":"policy","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"principal@example.com","outcome":"deny","policy_version":"2.7.2","rule":"R002","tool":"Bash","ts":"2026-04-09T14:22:00.000Z"}
 ```
 
 **SHA-256 of canonical bytes (lowercase hex)**:
@@ -641,7 +641,7 @@ UCOqDRlpowx3RPIi7z2sXCiJ0CnKmTTgwjfmXvkGff3xIU6v27AAVCUL4lR5lxlPJFKg7th2YcKdKWVT
   "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "domain": "bash",
   "manifest_agent_id": "claude-code",
-  "manifest_principal": "vincent@zlar.ai",
+  "manifest_principal": "principal@example.com",
   "outcome": "denied",
   "policy_version": "2.7.2",
   "rule": "R014",
@@ -652,7 +652,7 @@ UCOqDRlpowx3RPIi7z2sXCiJ0CnKmTTgwjfmXvkGff3xIU6v27AAVCUL4lR5lxlPJFKg7th2YcKdKWVT
 
 **Canonical JSON form** (sorted keys, compact, UTF-8):
 ```
-{"audit_event_id":"018fa1d076a08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"07cb279d3dd7ae8d377327ee3913c4a6fa7851fc4afe6b6bec70cd76934b8358","authorizer":"timeout","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"denied","policy_version":"2.7.2","rule":"R014","tool":"Bash","ts":"2026-04-09T14:23:00.000Z"}
+{"audit_event_id":"018fa1d076a08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"07cb279d3dd7ae8d377327ee3913c4a6fa7851fc4afe6b6bec70cd76934b8358","authorizer":"timeout","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"principal@example.com","outcome":"denied","policy_version":"2.7.2","rule":"R014","tool":"Bash","ts":"2026-04-09T14:23:00.000Z"}
 ```
 
 **SHA-256 of canonical bytes (lowercase hex)**:
@@ -700,7 +700,7 @@ s-231hfbYugNSaQ9oPuZiBgUEt5SDENLeQ-1jcnEYNDLhN3VtdJY-A4v7qLOWYem6tuDxBZ6GrowMKkm
   "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "domain": "bash",
   "manifest_agent_id": "claude-code",
-  "manifest_principal": "vincent@zlar.ai",
+  "manifest_principal": "principal@example.com",
   "outcome": "authorized",
   "policy_version": "2.7.2",
   "rule": "R014",
@@ -711,7 +711,7 @@ s-231hfbYugNSaQ9oPuZiBgUEt5SDENLeQ-1jcnEYNDLhN3VtdJY-A4v7qLOWYem6tuDxBZ6GrowMKkm
 
 **Canonical JSON form** (sorted keys, compact, UTF-8):
 ```
-{"audit_event_id":"018fa1d081a08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"93bb5fa8f35c1655b0bffa183c89e320a1ef3bde4b67daa57421c7b6732919bb","authorizer":"timeout","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"authorized","policy_version":"2.7.2","rule":"R014","tool":"Bash","ts":"2026-04-09T14:24:00.000Z"}
+{"audit_event_id":"018fa1d081a08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"93bb5fa8f35c1655b0bffa183c89e320a1ef3bde4b67daa57421c7b6732919bb","authorizer":"timeout","delegation_chain":[],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"principal@example.com","outcome":"authorized","policy_version":"2.7.2","rule":"R014","tool":"Bash","ts":"2026-04-09T14:24:00.000Z"}
 ```
 
 **SHA-256 of canonical bytes (lowercase hex)**:
@@ -771,7 +771,7 @@ l7wLUK28zeAJ31CGqLv4T_pqbKOfOX9yK5eKhO-Vuaq_pi-lYK1rcnyfmT52sxI4wIdyInCFa_ug_xUk
   "detail_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "domain": "bash",
   "manifest_agent_id": "claude-code",
-  "manifest_principal": "vincent@zlar.ai",
+  "manifest_principal": "principal@example.com",
   "outcome": "allow",
   "policy_version": "2.7.2",
   "rule": "R001",
@@ -782,7 +782,7 @@ l7wLUK28zeAJ31CGqLv4T_pqbKOfOX9yK5eKhO-Vuaq_pi-lYK1rcnyfmT52sxI4wIdyInCFa_ug_xUk
 
 **Canonical JSON form** (sorted keys, compact, UTF-8):
 ```
-{"audit_event_id":"018fa1d08ca08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"08f21db787578e9a81a149536b209bff6f0473ec871169eb51c19f828df8e2a1","authorizer":"policy","delegation_chain":[{"depth":3,"iat":1775744239,"jti":"forged-token-id","parent_jti":null,"pub":"CCCC","sig":"sig-forged","sig_alg":"ed25519","sub":"worker-agent","v":1}],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"vincent@zlar.ai","outcome":"allow","policy_version":"2.7.2","rule":"R001","tool":"Bash","ts":"2026-04-09T14:25:00.000Z"}
+{"audit_event_id":"018fa1d08ca08c4a3c8e9f1b2d6e5a7c","audit_prev_hash":"08f21db787578e9a81a149536b209bff6f0473ec871169eb51c19f828df8e2a1","authorizer":"policy","delegation_chain":[{"depth":3,"iat":1775744239,"jti":"forged-token-id","parent_jti":null,"pub":"CCCC","sig":"sig-forged","sig_alg":"ed25519","sub":"worker-agent","v":1}],"detail_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"bash","manifest_agent_id":"claude-code","manifest_principal":"principal@example.com","outcome":"allow","policy_version":"2.7.2","rule":"R001","tool":"Bash","ts":"2026-04-09T14:25:00.000Z"}
 ```
 
 **SHA-256 of canonical bytes (lowercase hex)**:

@@ -200,27 +200,27 @@ echo
 echo "── R032F/R041F: CLAUDE.md protection (ZLAR-scoped) ──"
 P_CLAUDE='ZLAR.*CLAUDE(\.local)?\.md$'
 
-assert_matches "Write ZLAR CLAUDE.md blocked" "${P_CLAUDE}" '/Users/vincentnijjar/Desktop/ZLAR/CLAUDE.md'
-assert_matches "Write ZLAR CLAUDE.local.md blocked" "${P_CLAUDE}" '/Users/vincentnijjar/Desktop/ZLAR/CLAUDE.local.md'
-assert_no_match "CLAUDE.md outside ZLAR NOT blocked" "${P_CLAUDE}" '/Users/vincentnijjar/projects/app/CLAUDE.md'
-assert_no_match "CLAUDIA.md NOT blocked" "${P_CLAUDE}" '/Users/vincentnijjar/Desktop/ZLAR/CLAUDIA.md'
+assert_matches "Write ZLAR CLAUDE.md blocked" "${P_CLAUDE}" '/Users/testuser/Desktop/ZLAR/CLAUDE.md'
+assert_matches "Write ZLAR CLAUDE.local.md blocked" "${P_CLAUDE}" '/Users/testuser/Desktop/ZLAR/CLAUDE.local.md'
+assert_no_match "CLAUDE.md outside ZLAR NOT blocked" "${P_CLAUDE}" '/Users/testuser/projects/app/CLAUDE.md'
+assert_no_match "CLAUDIA.md NOT blocked" "${P_CLAUDE}" '/Users/testuser/Desktop/ZLAR/CLAUDIA.md'
 
 # ── R032F2: Global ~/.claude/CLAUDE.md protection ──
 echo
 echo "── R032F2/R041F2: Global CLAUDE.md protection ──"
 P_GLOBAL_CLAUDE='\.claude/CLAUDE(\.local)?\.md$'
 
-assert_matches "Write ~/.claude/CLAUDE.md blocked" "${P_GLOBAL_CLAUDE}" '/Users/vincentnijjar/.claude/CLAUDE.md'
-assert_matches "Write ~/.claude/CLAUDE.local.md blocked" "${P_GLOBAL_CLAUDE}" '/Users/vincentnijjar/.claude/CLAUDE.local.md'
-assert_no_match "Random CLAUDE.md NOT blocked by global rule" "${P_GLOBAL_CLAUDE}" '/Users/vincentnijjar/projects/CLAUDE.md'
+assert_matches "Write ~/.claude/CLAUDE.md blocked" "${P_GLOBAL_CLAUDE}" '/Users/testuser/.claude/CLAUDE.md'
+assert_matches "Write ~/.claude/CLAUDE.local.md blocked" "${P_GLOBAL_CLAUDE}" '/Users/testuser/.claude/CLAUDE.local.md'
+assert_no_match "Random CLAUDE.md NOT blocked by global rule" "${P_GLOBAL_CLAUDE}" '/Users/testuser/projects/CLAUDE.md'
 
 # ── R032G/R041G: .mcp.json write/edit ──
 echo
 echo "── R032G/R041G: .mcp.json protection ──"
 P_MCP='\.mcp\.json$'
 
-assert_matches ".mcp.json write blocked" "${P_MCP}" '/Users/vincentnijjar/.mcp.json'
-assert_matches "project .mcp.json blocked" "${P_MCP}" '/Users/vincentnijjar/project/.mcp.json'
+assert_matches ".mcp.json write blocked" "${P_MCP}" '/Users/testuser/.mcp.json'
+assert_matches "project .mcp.json blocked" "${P_MCP}" '/Users/testuser/project/.mcp.json'
 assert_no_match "mcp-config.json NOT blocked" "${P_MCP}" '/path/to/mcp-config.json'
 
 # ── R051: .env reads upgraded to ask ──
@@ -256,7 +256,7 @@ echo "── Phase B: sanitize_path (newline + symlink) ──"
 eval "$(sed -n '/^sanitize_path()/,/^}/p' "${PROJECT_DIR}/bin/zlar-gate")"
 
 # B1: Newline injection
-newline_path=$(printf '/Users/vince/.ssh\n/harmless.txt')
+newline_path=$(printf '/Users/testuser/.ssh\n/harmless.txt')
 sanitized=$(sanitize_path "${newline_path}")
 if echo "${sanitized}" | grep -q '.ssh'; then
     echo "  ✓ Newline in path preserved .ssh for matching"

@@ -269,7 +269,7 @@ const fixtures = [
   {
     desc: 'Write .ssh/ → R030 deny (R030 comes before R035)',
     domain: 'write',
-    detail: { path: '/Users/vincentnijjar/.ssh/authorized_keys', content_length: 50, content_sha256: 'abc' },
+    detail: { path: '/Users/testuser/.ssh/authorized_keys', content_length: 50, content_sha256: 'abc' },
     expected_rule: 'R030', expected_action: 'deny',
   },
 
@@ -283,19 +283,19 @@ const fixtures = [
   {
     desc: 'Edit CLAUDE.md → governance path (deny or ask)',
     domain: 'edit',
-    detail: { path: '/Users/vincentnijjar/.claude/CLAUDE.md', old_string: 'foo', new_string: 'bar' },
+    detail: { path: '/Users/testuser/.claude/CLAUDE.md', old_string: 'foo', new_string: 'bar' },
     expected_rule: null, expected_action: null,
   },
   {
     desc: 'Edit zlar-gate → governance path (deny or ask)',
     domain: 'edit',
-    detail: { path: '/Users/vincentnijjar/Desktop/ZLAR/ZLAR_Repo/bin/zlar-gate', old_string: 'foo', new_string: 'bar' },
+    detail: { path: '/Users/testuser/Desktop/ZLAR/ZLAR_Repo/bin/zlar-gate', old_string: 'foo', new_string: 'bar' },
     expected_rule: null, expected_action: null,
   },
   {
     desc: 'Edit active.policy.json → governance path (deny or ask)',
     domain: 'edit',
-    detail: { path: '/Users/vincentnijjar/Desktop/ZLAR/ZLAR_Repo/etc/policies/active.policy.json', old_string: 'foo', new_string: 'bar' },
+    detail: { path: '/Users/testuser/Desktop/ZLAR/ZLAR_Repo/etc/policies/active.policy.json', old_string: 'foo', new_string: 'bar' },
     expected_rule: null, expected_action: null,
   },
 
