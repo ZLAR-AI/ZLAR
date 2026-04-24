@@ -16,11 +16,13 @@ When these sources disagree, use this order:
    - `var/gate-uptime.json`
 2. **`doctrine/ZLAR-DNA.md`**
    - the architectural and doctrinal canon of ZLAR
-3. **`doctrine/FRAMINGS.md`**
+3. **`doctrine/SCOPE.md`**
+   - the public boundary of ZLAR's governance claim — what is governed, what is not, and the rules for any claim made about it
+4. **`doctrine/FRAMINGS.md`**
    - conceptual vocabulary, superseded terms, framing discipline, copy doctrine
-4. **`doctrine/IMPLEMENTATION-TERMS.md`**
+5. **`doctrine/IMPLEMENTATION-TERMS.md`**
    - engineering-near vocabulary and live mechanism names
-5. **Maintainer session-entry notes (not shipped in this repo)** route to canon above and update themselves on conflict.
+6. **Maintainer session-entry notes (not shipped in this repo)** route to canon above and update themselves on conflict.
 
 ## File roles
 
@@ -33,6 +35,16 @@ Use for:
 - what must remain consistent across public and internal surfaces
 
 DNA decides canon.
+
+### SCOPE.md
+
+Use for:
+- what ZLAR governs and what it does not
+- how any public claim about ZLAR must be framed
+- the deployment owner's responsibility for interception completeness
+- the shipping status of scope-related capabilities
+
+SCOPE elaborates DNA §11. It does not overrule DNA; it operationalizes it for public claims.
 
 ### FRAMINGS.md
 
