@@ -81,11 +81,12 @@ fi
 
 rule_count=$(jq '.rules | length' "${POLICY_FILE}")
 # v3.1.1 (harness-tools fix): R100 added, 80 → 81.
-if [ "${rule_count}" -eq 81 ]; then
-    echo "  ✓ Policy has 81 rules"
+# 2026-04-24: R005J added alongside R002 tightening, 81 → 82.
+if [ "${rule_count}" -eq 82 ]; then
+    echo "  ✓ Policy has 82 rules"
     passed=$((passed + 1))
 else
-    echo "  ✗ Policy has ${rule_count} rules, expected 81"
+    echo "  ✗ Policy has ${rule_count} rules, expected 82"
     failed=$((failed + 1))
 fi
 
@@ -194,6 +195,52 @@ P_R005H='LD_PRELOAD|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH'
 assert_matches "LD_PRELOAD blocked" "${P_R005H}" 'LD_PRELOAD=evil.so /usr/bin/ls'
 assert_matches "DYLD_INSERT_LIBRARIES blocked" "${P_R005H}" 'DYLD_INSERT_LIBRARIES=evil.dylib cmd'
 assert_matches "DYLD_LIBRARY_PATH blocked" "${P_R005H}" 'DYLD_LIBRARY_PATH=/evil /usr/bin/ls'
+
+# ── R005J: Shell -c invocation ──
+echo
+echo "── R005J: Shell -c invocation ──"
+P_R005J='\b(bash|sh|zsh|dash|ash|ksh)\s+-c\b'
+
+assert_matches "bash -c blocked" "${P_R005J}" 'bash -c "echo hi"'
+assert_matches "sh -c blocked" "${P_R005J}" 'sh -c "ls /"'
+assert_matches "zsh -c blocked" "${P_R005J}" 'zsh -c "echo"'
+assert_matches "dash -c blocked" "${P_R005J}" 'dash -c "true"'
+assert_matches "ash -c blocked" "${P_R005J}" 'ash -c "true"'
+assert_matches "ksh -c blocked" "${P_R005J}" 'ksh -c "true"'
+# R005J is the rule that catches the bash -c escape hatch that the tightened
+# R002 regex no longer incidentally covers.
+assert_matches "bash -c with dangerous payload still caught" "${P_R005J}" 'bash -c "rm -rf /important"'
+
+assert_no_match "plain bash NOT blocked" "${P_R005J}" 'bash script.sh'
+assert_no_match "sh script NOT blocked" "${P_R005J}" 'sh deploy.sh'
+assert_no_match "node -c NOT in R005J family" "${P_R005J}" 'node -c expr.js'
+# -ic (interactive shell) should not match -c alone due to word boundaries
+assert_no_match "bash -ic NOT matched by -c\\b" "${P_R005J}" 'bash -ic "echo"'
+
+# ── R002: Recursive deletion (structural-start matching) ──
+echo
+echo "── R002: Recursive deletion (structural-start) ──"
+# Post-tightening regex: matches rm -rf at command start or after a shell
+# operator, NOT inside quoted data. Prevents false positives on legitimate
+# data-passing (jq, echo, printf) that mentions "rm -rf" as content.
+P_R002='(^|[;&|]\s*|\$\(\s*|`\s*)rm\s+.*(-rf|-fr|--recursive)'
+
+# Positive: structural-start matching still catches real executions.
+assert_matches "plain rm -rf blocked" "${P_R002}" 'rm -rf /foo'
+assert_matches "rm -rf after && blocked" "${P_R002}" 'cd /tmp && rm -rf /foo'
+assert_matches "rm -rf after ; blocked" "${P_R002}" 'true ; rm -rf /foo'
+assert_matches "rm -rf after | blocked" "${P_R002}" 'echo x | rm -rf /foo'
+assert_matches "rm -rf inside \$() blocked" "${P_R002}" 'x=$(rm -rf /foo)'
+assert_matches "rm --recursive blocked" "${P_R002}" 'rm --recursive /foo'
+
+# Negative: data-passing and quoted strings must NOT match.
+assert_no_match "rm -rf inside echo string NOT blocked" "${P_R002}" 'echo "rm -rf /foo"'
+assert_no_match "rm -rf inside printf string NOT blocked" "${P_R002}" 'printf "rm -rf foo"'
+assert_no_match "rm -rf inside jq JSON NOT blocked" "${P_R002}" 'jq -n '"'"'{"command":"rm -rf /foo"}'"'"''
+# The bash -c escape is now R005J's responsibility, not R002's. R002 intentionally
+# does not match rm -rf inside bash -c quoted string — R005J catches the outer
+# bash -c invocation.
+assert_no_match "rm -rf inside bash -c NOT matched by R002" "${P_R002}" 'bash -c "rm -rf /foo"'
 
 # ── R032F: CLAUDE.md write (ZLAR-scoped) ──
 echo

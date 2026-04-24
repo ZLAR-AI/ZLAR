@@ -10,6 +10,11 @@ etc/jq.sha256
 # content is hostname/activity-bound via downstream receipt evidence.
 etc/policies/archive/
 
+# Policy ceremony scratch — drafts live here between edit and sign/deploy.
+# Never commit; the signed result is deployed to active.policy.json.
+etc/policies/draft.json
+etc/policies/draft-*.json
+
 # Per-install HMAC tags — bound to local HMAC key, not distributable.
 etc/*.hmac
 

@@ -6,7 +6,7 @@
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "zcfJ04IuOxEmacPdwglaNzSappsVZzEuXssemf9ZZ1v7OI7Mc6oWNiMVN6DdxCH4OTRHPgGP+2cCF78BrNvGAQ=="
+    "value": "hKx9wHOMdbmw35SjxXU0Mg6YITUVjiHWRT1vH8ICHhOgOIjzFiBnRxP88XFo1kEnz7puZemcC78r/ORR8UaeAw=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -26,7 +26,7 @@
       "match": {
         "detail": {
           "command": {
-            "regex": "\\brm\\s+.*(-rf|-fr|--recursive)"
+            "regex": "(^|[;&|]\\s*|\\$\\(\\s*|`\\s*)rm\\s+.*(-rf|-fr|--recursive)"
           }
         }
       },
@@ -511,6 +511,28 @@
         "blast_radius": 95
       },
       "verify_hint": "Is this container operation scoped to a safe, isolated container — or could it affect the host?"
+    },
+    {
+      "id": "R005J",
+      "enabled": true,
+      "description": "Shell -c invocation — ask (opaque payload in shell)",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(bash|sh|zsh|dash|ash|ksh)\\s+-c\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 80,
+        "consequence": 90,
+        "blast_radius": 85
+      },
+      "verify_hint": "What shell command is being invoked via -c? Is the payload bounded and readable, or opaque/dynamic?"
     },
     {
       "id": "R001B",

@@ -114,7 +114,7 @@
       "match": {
         "detail": {
           "command": {
-            "regex": "\\brm\\s+.*(-r\\b|-rf|-fr|-R\\b|--recursive)"
+            "regex": "(^|[;&|]\\s*|\\$\\(\\s*|`\\s*)rm\\s+.*(-r\\b|-rf|-fr|-R\\b|--recursive)"
           }
         }
       },
@@ -166,6 +166,28 @@
         "irreversibility": 85,
         "consequence": 90,
         "blast_radius": 80
+      }
+    },
+    {
+      "id": "R005J",
+      "enabled": true,
+      "description": "Shell -c invocation — blocked (opaque payload in shell)",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "deny_reason": "ZLAR blocks invoking a shell with -c. The argument is an opaque command string that bypasses rule matching on the outer command. Rewrite as direct invocations, or add an explicit allowlist rule if a specific bash -c pattern is required.",
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\b(bash|sh|zsh|dash|ash|ksh)\\s+-c\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 80,
+        "consequence": 90,
+        "blast_radius": 85
       }
     },
     {
