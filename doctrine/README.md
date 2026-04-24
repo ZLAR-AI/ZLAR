@@ -81,11 +81,25 @@ IMPLEMENTATION-TERMS explains how doctrine becomes code. It does not overrule th
   - then FRAMINGS
   - then IMPLEMENTATION-TERMS
 
+## The roadmap/ subdirectory
+
+`doctrine/roadmap/` holds design-not-shipped doctrine: the named plans for capabilities that have an approved architectural shape but no running code. A roadmap file states:
+
+- the gap being addressed
+- the architectural shape of the fix
+- how the capability, once shipped, will change what DNA and SCOPE describe
+
+Roadmap files are doctrine, not capability claims. They make unshipped work public so readers do not mistake absence-of-claim for absence-of-gap. A roadmap file is retired to canon (DNA or SCOPE) when the capability it describes ships.
+
+The roadmap/ directory ranks below live canon in authority order — if a roadmap file and DNA (or SCOPE, or the live signed artifacts) disagree about present-day truth, the canon wins and the roadmap file must be corrected or retired.
+
 ## What these files are not
 
 - DNA is not a scratchpad
+- SCOPE is not a place to soften claims DNA already states
 - FRAMINGS is not a place to casually invent new doctrine
 - IMPLEMENTATION-TERMS is not the source of truth over the code
+- roadmap/ is not a capability claim — it is a plan made public
 
 ## Code-comment split
 
