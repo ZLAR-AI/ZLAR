@@ -35,10 +35,11 @@ if [ -f "${_GU_HMAC_KEY_FILE}" ]; then
     _GU_HMAC_KEY=$(cat "${_GU_HMAC_KEY_FILE}" 2>/dev/null || true)
 fi
 
-# How stale a heartbeat can be before we treat the old streak as broken.
-# Short enough to catch real gaps (laptop closed, crash, long sleep). Long
-# enough to forgive brief inactivity.
-_GU_STALE_THRESHOLD_SECONDS="${_GU_STALE_THRESHOLD_SECONDS:-600}"   # 10 minutes
+# Retained for test-harness compatibility; no longer gates streak closure.
+# The streak now closes only on explicit gu_record_disable — idle time (laptop
+# closed, lunch, a long read) is not a disable and must not reset the streak.
+# A motivational counter breaks only on an explicit act.
+_GU_STALE_THRESHOLD_SECONDS="${_GU_STALE_THRESHOLD_SECONDS:-600}"
 
 # Minimum interval between heartbeat writes. The heartbeat runs per-invocation
 # but only persists if this interval has elapsed. Cheap coalescing for the hot
@@ -138,28 +139,13 @@ gu_record_heartbeat() {
     new_longest_start=$(printf '%s' "${state_json}" | jq -r '.longest_streak_start_epoch')
     local new_lifetime="${lifetime_sec}"
 
-    # Transition: off → on
+    # Transition: off → on. The only path that resets the streak start
+    # from a heartbeat. The gate being loaded and firing hooks is the
+    # evidence the gate is on; a long idle gap is not evidence of disable.
     if [ "${state}" != "on" ]; then
         transition=1
         write=1
         new_streak_start="${now}"
-    else
-        # Stale heartbeat? Close old streak (count it toward longest/lifetime),
-        # start fresh.
-        local gap=$(( now - last_hb ))
-        if [ "${last_hb}" -gt 0 ] && [ "${gap}" -gt "${_GU_STALE_THRESHOLD_SECONDS}" ]; then
-            local old_streak_sec=$(( last_hb - streak_start ))
-            if [ "${old_streak_sec}" -gt 0 ]; then
-                new_lifetime=$(( lifetime_sec + old_streak_sec ))
-                if [ "${old_streak_sec}" -gt "${longest_sec}" ]; then
-                    new_longest="${old_streak_sec}"
-                    new_longest_start="${streak_start}"
-                fi
-            fi
-            new_streak_start="${now}"
-            transition=1
-            write=1
-        fi
     fi
 
     # Batch: if not transitioning, only write if the last heartbeat is older

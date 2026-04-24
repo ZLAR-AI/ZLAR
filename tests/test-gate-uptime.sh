@@ -109,10 +109,12 @@ lifetime=$(jq -r '.lifetime_on_seconds' "${STATE_FILE}")
 assert "lifetime_on accumulated after disable" "ge4" "${got}"
 
 echo
-echo "=== Stale heartbeat closes old streak, starts new one ==="
+echo "=== Stale heartbeat preserves streak (idle is not disable) ==="
 echo
 
-# Arrange: state on, heartbeat 10s old (> 5s threshold), streak 20s long
+# Arrange: state on, heartbeat 10s old (> 5s threshold), streak started 20s ago.
+# The streak must survive. Idle time (laptop closed, lunch, a long read) is
+# not a disable and must not reset a motivational counter.
 now=$(date +%s)
 stale_start=$(( now - 20 ))
 stale_hb=$(( now - 10 ))
@@ -121,15 +123,19 @@ jq --argjson s "${stale_start}" --argjson hb "${stale_hb}" \
     "${STATE_FILE}" | _gu_sealed_write
 
 gu_record_heartbeat
-# Old streak should have been rolled into lifetime (~10s: hb - start)
-lifetime_after_stale=$(jq -r '.lifetime_on_seconds' "${STATE_FILE}")
-[ "${lifetime_after_stale}" -ge 5 ] && got="ge5" || got="lt5"
-assert "stale heartbeat rolls old streak into lifetime" "ge5" "${got}"
 
-# New streak should have just started (~0s old)
-new_start=$(jq -r '.current_streak_start_epoch' "${STATE_FILE}")
-[ "${new_start}" -ge "${now}" ] && got="fresh" || got="stale"
-assert "stale heartbeat opens fresh streak" "fresh" "${got}"
+# Streak start must be preserved across the idle gap.
+preserved_start=$(jq -r '.current_streak_start_epoch' "${STATE_FILE}")
+assert "stale heartbeat preserves streak start" "${stale_start}" "${preserved_start}"
+
+# Heartbeat is updated (so the next invocation sees fresh liveness).
+preserved_hb=$(jq -r '.last_heartbeat_epoch' "${STATE_FILE}")
+[ "${preserved_hb}" -ge "${now}" ] && got="fresh" || got="stale"
+assert "stale heartbeat updates last_heartbeat_epoch" "fresh" "${got}"
+
+# Lifetime is not rolled at idle — it accumulates only on explicit disable.
+lifetime_after_stale=$(jq -r '.lifetime_on_seconds' "${STATE_FILE}")
+assert "idle does not roll lifetime" "0" "${lifetime_after_stale}"
 
 echo
 echo "=== HMAC tamper detection ==="
