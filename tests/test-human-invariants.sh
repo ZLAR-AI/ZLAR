@@ -279,13 +279,21 @@ assert "10s elapsed for critical (floor=5) → ok" "ok" "${result2}"
 result3=$(hi_check_deliberation "test-human-h15-elapsed" "warn" 2>/dev/null)
 assert "10s elapsed for warn (floor=3) → ok" "ok" "${result3}"
 
-# Set ask_epoch to 2 seconds ago for warn test
+# Boundary test: elapsed < floor must return too_fast.
+# Wide floor (60s) so CI-runner latency between `date +%s` here and the
+# second `date +%s` inside hi_check_deliberation cannot tip 2s-elapsed
+# across the boundary. Cold jq + openssl dgst + sealed-write during the
+# _hi_ensure_state date-rollover and pending_count migrations burn ~1-2s
+# on macOS GitHub runners — enough to make floor=3 a 1-second margin that
+# deterministically fails when the runner is sluggish. Same invariant,
+# wider margin. Restored by the "Restore defaults" block below.
+HI_DELIBERATION_FLOOR_WARN=60
 epoch_2s=$(($(date +%s) - 2))
 state_file_2s="${TEMP_DIR}/var/human-state/test-human-h15-2s.json"
 jq -n --argjson t "${epoch_2s}" '{human_id:"test-human-h15-2s",date:"2026-04-06",decisions_today:0,approvals_recent:[],pending_count:0,last_ask_epoch:$t}' > "${state_file_2s}"
 
 result4=$(hi_check_deliberation "test-human-h15-2s" "warn" 2>/dev/null)
-assert "2s elapsed for warn (floor=3) → too_fast" "too_fast" "${result4}"
+assert "2s elapsed for warn (floor=60) → too_fast" "too_fast" "${result4}"
 
 # Restore defaults
 HI_DELIBERATION_FLOOR_CRITICAL=30
@@ -297,20 +305,24 @@ echo "=== H17: Human Authenticity ==="
 echo
 
 HUMAN="test-human-h17"
-HI_MIN_RESPONSE_TIME=3
+# Wide min_response (60s) so the "instant → suspicious" assertion cannot
+# tip across the boundary if the runner is slow between record_ask_time
+# and check_authenticity. Fixture for the "ok" path bumps to 90s elapsed
+# so margin sits on both sides of the widened floor.
+HI_MIN_RESPONSE_TIME=60
 
-# Record ask time and check immediately (< 3 seconds)
+# Record ask time and check immediately (well under 60s)
 hi_record_ask_time "${HUMAN}" 2>/dev/null
 result=$(hi_check_authenticity "${HUMAN}" 2>/dev/null)
 assert "instant response → suspicious" "suspicious" "${result}"
 
-# Set ask_epoch to 5 seconds ago
+# Set ask_epoch to 90 seconds ago
 state_file_auth="${TEMP_DIR}/var/human-state/test-human-h17-ok.json"
-epoch_5s=$(($(date +%s) - 5))
-jq -n --argjson t "${epoch_5s}" '{human_id:"test-human-h17-ok",date:"2026-04-06",decisions_today:0,approvals_recent:[],pending_count:0,last_ask_epoch:$t}' > "${state_file_auth}"
+epoch_90s=$(($(date +%s) - 90))
+jq -n --argjson t "${epoch_90s}" '{human_id:"test-human-h17-ok",date:"2026-04-06",decisions_today:0,approvals_recent:[],pending_count:0,last_ask_epoch:$t}' > "${state_file_auth}"
 
 result2=$(hi_check_authenticity "test-human-h17-ok" 2>/dev/null)
-assert "5s elapsed (min=3) → ok" "ok" "${result2}"
+assert "90s elapsed (min=60) → ok" "ok" "${result2}"
 
 HI_MIN_RESPONSE_TIME=2
 
@@ -376,8 +388,14 @@ echo "=== Combined: Post-Response Check ==="
 echo
 
 HUMAN="test-human-combined-post"
-HI_MIN_RESPONSE_TIME=3
-HI_DELIBERATION_FLOOR_CRITICAL=5
+# Wide floors so the "instant critical approval → suspicious" assertion
+# cannot tip across either boundary when the record+increment+post chain
+# runs slowly. H17 (min_response) is checked before H15 (deliberation
+# floor) in hi_post_response_check, so the suspicious-direction signal
+# is dominated by min_response. Widen both to keep the "ok" fixture
+# (now 150s elapsed) robustly past both floors.
+HI_MIN_RESPONSE_TIME=60
+HI_DELIBERATION_FLOOR_CRITICAL=120
 
 # Record ask, then check immediately
 hi_record_ask_time "${HUMAN}" 2>/dev/null
@@ -385,13 +403,13 @@ hi_increment_pending "${HUMAN}" 2>/dev/null
 result=$(hi_post_response_check "${HUMAN}" "critical" "approve" 2>/dev/null)
 assert "instant critical approval → suspicious" "suspicious" "${result}"
 
-# With enough elapsed time
+# With enough elapsed time (150s > both floors)
 state_file_ok="${TEMP_DIR}/var/human-state/test-human-post-ok.json"
-epoch_20s=$(($(date +%s) - 20))
-jq -n --argjson t "${epoch_20s}" '{human_id:"test-human-post-ok",date:"2026-04-06",decisions_today:0,approvals_recent:[],pending_count:1,last_ask_epoch:$t}' > "${state_file_ok}"
+epoch_150s=$(($(date +%s) - 150))
+jq -n --argjson t "${epoch_150s}" '{human_id:"test-human-post-ok",date:"2026-04-06",decisions_today:0,approvals_recent:[],pending_count:1,last_ask_epoch:$t}' > "${state_file_ok}"
 
 result2=$(hi_post_response_check "test-human-post-ok" "critical" "approve" 2>/dev/null)
-assert "20s critical approval → ok" "ok" "${result2}"
+assert "150s critical approval (min=60, floor=120) → ok" "ok" "${result2}"
 
 HI_MIN_RESPONSE_TIME=2
 HI_DELIBERATION_FLOOR_CRITICAL=30
