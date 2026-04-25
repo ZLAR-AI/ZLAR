@@ -91,6 +91,32 @@
     "audit_prev_hash": {
       "type": "string",
       "description": "prev_hash from the audit entry. Anchors receipt to the hash chain."
+    },
+    "h15_elapsed_seconds": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "H15 audit field (canary v1 Element D). Actual response time in seconds, integer (ZLAR canonicalization forbids floats — see lib/canonicalize.mjs). Sub-second elapsed times round/truncate to 0; this is acceptable because (a) H14 variance threshold is 4s, much larger than 1s noise, and (b) sub-second elapsed is the canary signal regardless of exact value. Null when not measured (e.g., gate-side decisions, errors before timing capture)."
+    },
+    "h15_floor_seconds": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "H15 audit field (canary v1 Element D). The H15 response-time floor that would have applied to this severity, integer seconds (ZLAR canonical form forbids floats). Floor values today are whole-second (3/10/30) so no precision loss. Null when no floor applies."
+    },
+    "h15_below_floor": {
+      "type": ["boolean", "null"],
+      "description": "H15 audit field (canary v1 Element D). True iff h15_elapsed_seconds < h15_floor_seconds. Audit-significant for warn/info severities once Element A ships canary-zone semantics; for critical severities a true value should not occur in normal flow. Null when either elapsed or floor is null. Optional for backward compatibility."
+    },
+    "h14_alert_tier": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3,
+      "description": "H14 audit field (canary v1 Element D). Canary alert tier emitted alongside this decision. 0 = no alert (default), 1 = banner, 2 = pre-confirm, 3 = forced pause. Tiers 1+ require Elements B+E behavior to be live; emission emits 0 in this slice. See doctrine/roadmap/human-attention-canary.md."
+    },
+    "h14_alert_ack_receipt_id": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]+$",
+      "minLength": 12,
+      "description": "H14 audit field (canary v1 Element D). Receipt ID of a prior canary alert acknowledgement that preceded this decision, if any. Null when no canary ack flow occurred. Format matches the envelope id pattern. Optional for backward compatibility."
     }
   }
 }

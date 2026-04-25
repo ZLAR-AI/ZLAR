@@ -28,6 +28,7 @@ const {
   decodePayloadV1,
   receiptHashV1,
   pubkeyFingerprint,
+  canonicalize,
   // v0 functions for cross-format test
   createReceipt,
   signReceipt,
@@ -305,6 +306,164 @@ const payloadVerified = decodePayloadV1(signedIdentity);
 assert('signed: agent_config_hash preserved', hashFull, payloadVerified.agent_config_hash);
 assert('signed: agent_config_source preserved', 'project_claude_md', payloadVerified.agent_config_source);
 assert('signed: agent_fingerprint preserved', '0123456789abcdef', payloadVerified.agent_fingerprint);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+console.log('=== v1 Canary Audit Fields (Element D) ===');
+console.log();
+
+// Default emission — all 5 canary fields present with default values.
+const receiptCanaryDefault = createReceiptV1FromEvent(testEvent);
+const payloadCanaryDefault = decodePayloadV1(receiptCanaryDefault);
+assertTruthy('default: h15_elapsed_seconds key present', 'h15_elapsed_seconds' in payloadCanaryDefault);
+assertTruthy('default: h15_floor_seconds key present', 'h15_floor_seconds' in payloadCanaryDefault);
+assertTruthy('default: h15_below_floor key present', 'h15_below_floor' in payloadCanaryDefault);
+assertTruthy('default: h14_alert_tier key present', 'h14_alert_tier' in payloadCanaryDefault);
+assertTruthy('default: h14_alert_ack_receipt_id key present', 'h14_alert_ack_receipt_id' in payloadCanaryDefault);
+assert('default: h15_elapsed_seconds is null', null, payloadCanaryDefault.h15_elapsed_seconds);
+assert('default: h15_floor_seconds is null', null, payloadCanaryDefault.h15_floor_seconds);
+assert('default: h15_below_floor is null', null, payloadCanaryDefault.h15_below_floor);
+assert('default: h14_alert_tier is 0 (no alert)', 0, payloadCanaryDefault.h14_alert_tier);
+assert('default: h14_alert_ack_receipt_id is null', null, payloadCanaryDefault.h14_alert_ack_receipt_id);
+
+// Population via opts — all 5 fields flow through. Integer seconds per ZLAR
+// canonicalization spec (no floats); see lib/canonicalize.mjs.
+const receiptCanaryOpts = createReceiptV1FromEvent(testEvent, {
+  h15_elapsed_seconds: 2,
+  h15_floor_seconds: 10,
+  h15_below_floor: true,
+  h14_alert_tier: 1,
+  h14_alert_ack_receipt_id: '0123456789abdeadbeef0011'
+});
+const payloadCanaryOpts = decodePayloadV1(receiptCanaryOpts);
+assert('opts: h15_elapsed_seconds flows through', 2, payloadCanaryOpts.h15_elapsed_seconds);
+assert('opts: h15_floor_seconds flows through', 10, payloadCanaryOpts.h15_floor_seconds);
+assert('opts: h15_below_floor flows through', true, payloadCanaryOpts.h15_below_floor);
+assert('opts: h14_alert_tier flows through', 1, payloadCanaryOpts.h14_alert_tier);
+assert('opts: h14_alert_ack_receipt_id flows through', '0123456789abdeadbeef0011', payloadCanaryOpts.h14_alert_ack_receipt_id);
+
+// Population via event — fields flow from event when not given via opts.
+const eventWithCanary = {
+  ...testEvent,
+  id: 'test-event-canary-from-event',
+  h15_elapsed_seconds: 1,
+  h15_floor_seconds: 3,
+  h15_below_floor: true,
+  h14_alert_tier: 1,
+  h14_alert_ack_receipt_id: 'aabbccddeeff00112233'
+};
+const receiptCanaryFromEvent = createReceiptV1FromEvent(eventWithCanary);
+const payloadCanaryFromEvent = decodePayloadV1(receiptCanaryFromEvent);
+assert('event: h15_elapsed_seconds from event', 1, payloadCanaryFromEvent.h15_elapsed_seconds);
+assert('event: h15_floor_seconds from event', 3, payloadCanaryFromEvent.h15_floor_seconds);
+assert('event: h15_below_floor from event', true, payloadCanaryFromEvent.h15_below_floor);
+assert('event: h14_alert_tier from event', 1, payloadCanaryFromEvent.h14_alert_tier);
+assert('event: h14_alert_ack_receipt_id from event', 'aabbccddeeff00112233', payloadCanaryFromEvent.h14_alert_ack_receipt_id);
+
+// opts override event — parallel to existing agent_config_* override pattern.
+const receiptCanaryOverride = createReceiptV1FromEvent(eventWithCanary, {
+  h14_alert_tier: 2,
+  h14_alert_ack_receipt_id: 'fedcba0987654321aabb'
+});
+const payloadCanaryOverride = decodePayloadV1(receiptCanaryOverride);
+assert('override: opts.h14_alert_tier wins', 2, payloadCanaryOverride.h14_alert_tier);
+assert('override: opts.h14_alert_ack_receipt_id wins', 'fedcba0987654321aabb', payloadCanaryOverride.h14_alert_ack_receipt_id);
+assert('override: h15_elapsed_seconds falls through from event', 1, payloadCanaryOverride.h15_elapsed_seconds);
+
+// Round-trip — fields survive sign + verify.
+const signedCanary = signReceiptV1(receiptCanaryOpts, privPem, keyId);
+const verifiedCanary = verifyReceiptV1(signedCanary, pubPem);
+assert('canary round-trip: signature valid', true, verifiedCanary.valid);
+assert('canary round-trip: h14_alert_tier preserved', 1, verifiedCanary.payload.h14_alert_tier);
+assert('canary round-trip: h15_elapsed_seconds preserved', 2, verifiedCanary.payload.h15_elapsed_seconds);
+assert('canary round-trip: h15_below_floor preserved', true, verifiedCanary.payload.h15_below_floor);
+assert('canary round-trip: h14_alert_ack_receipt_id preserved', '0123456789abdeadbeef0011', verifiedCanary.payload.h14_alert_ack_receipt_id);
+
+// Schema sanity — load the schema and confirm Element D fields are properties,
+// are NOT in required (backward compat), and h14_alert_tier has the 0..3 bound.
+const { readFileSync: readFS } = await import('node:fs');
+const schemaPath = join(__dirname, '..', 'etc', 'receipt-v1-payload.schema.json');
+const schema = JSON.parse(readFS(schemaPath, 'utf8'));
+assertTruthy('schema: h15_elapsed_seconds in properties', 'h15_elapsed_seconds' in schema.properties);
+assertTruthy('schema: h15_floor_seconds in properties', 'h15_floor_seconds' in schema.properties);
+assertTruthy('schema: h15_below_floor in properties', 'h15_below_floor' in schema.properties);
+assertTruthy('schema: h14_alert_tier in properties', 'h14_alert_tier' in schema.properties);
+assertTruthy('schema: h14_alert_ack_receipt_id in properties', 'h14_alert_ack_receipt_id' in schema.properties);
+assertFalsy('schema: h15_elapsed_seconds NOT required (backward compat)', schema.required.includes('h15_elapsed_seconds'));
+assertFalsy('schema: h15_floor_seconds NOT required', schema.required.includes('h15_floor_seconds'));
+assertFalsy('schema: h15_below_floor NOT required', schema.required.includes('h15_below_floor'));
+assertFalsy('schema: h14_alert_tier NOT required', schema.required.includes('h14_alert_tier'));
+assertFalsy('schema: h14_alert_ack_receipt_id NOT required', schema.required.includes('h14_alert_ack_receipt_id'));
+assert('schema: h14_alert_tier minimum is 0', 0, schema.properties.h14_alert_tier.minimum);
+assert('schema: h14_alert_tier maximum is 3', 3, schema.properties.h14_alert_tier.maximum);
+
+// All Element D fields are emitted and present in schema.properties.
+// (Scoped to Element D — broader payload/schema cleanliness is out of scope here.)
+const elementDFields = [
+  'h15_elapsed_seconds',
+  'h15_floor_seconds',
+  'h15_below_floor',
+  'h14_alert_tier',
+  'h14_alert_ack_receipt_id'
+];
+const schemaProperties = new Set(Object.keys(schema.properties));
+let elementDMissingFromSchema = null;
+let elementDMissingFromPayload = null;
+for (const k of elementDFields) {
+  if (!schemaProperties.has(k)) { elementDMissingFromSchema = k; break; }
+  if (!(k in payloadCanaryOpts)) { elementDMissingFromPayload = k; break; }
+}
+assert('schema: all Element D fields present in schema.properties', null, elementDMissingFromSchema);
+assert('payload: all Element D fields present in emitted payload', null, elementDMissingFromPayload);
+
+// All schema-required fields present in emitted payload.
+let missingRequired = null;
+for (const r of schema.required) {
+  if (!(r in payloadCanaryOpts) || payloadCanaryOpts[r] === undefined) { missingRequired = r; break; }
+}
+assert('schema: all required fields present in emitted payload', null, missingRequired);
+
+// Backward compatibility — legacy payload (pre-Element-D shape, no canary
+// fields) signs and verifies cleanly. Proves that pre-Element-D receipts on
+// disk continue to verify after Element D ships.
+const legacyPayload = {
+  tool: 'Bash',
+  domain: 'file',
+  detail_hash: 'a'.repeat(64),
+  outcome: 'allow',
+  rule: 'R001',
+  authorizer: 'policy',
+  ts: '2026-04-06T14:00:00.000Z',
+  policy_version: '2.6.0',
+  manifest_agent_id: null,
+  manifest_principal: null,
+  agent_config_hash: null,
+  agent_config_source: null,
+  agent_fingerprint: null,
+  delegation_chain: [],
+  audit_event_id: 'legacy-event-pre-element-d',
+  audit_prev_hash: 'genesis',
+  escalation_source: null
+  // No h15_*/h14_* fields — pre-Element-D shape.
+};
+const legacyCanonical = canonicalize(legacyPayload);
+const legacyB64 = Buffer.from(legacyCanonical, 'utf8').toString('base64')
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const legacyEnvelope = {
+  v: 1,
+  id: '0123456789abcdef00112233',
+  kid: '',
+  iat: 1759765200,
+  type: 'governed-action',
+  payload: legacyB64,
+  sig: '',
+  prev: null
+};
+const legacySigned = signReceiptV1(legacyEnvelope, privPem, keyId);
+const legacyVerified = verifyReceiptV1(legacySigned, pubPem);
+assert('backward-compat: legacy payload (no canary fields) signs+verifies', true, legacyVerified.valid);
+const legacyDecoded = decodePayloadV1(legacySigned);
+assertFalsy('backward-compat: legacy payload has no h15_elapsed_seconds key', 'h15_elapsed_seconds' in legacyDecoded);
+assertFalsy('backward-compat: legacy payload has no h14_alert_tier key', 'h14_alert_tier' in legacyDecoded);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Cleanup

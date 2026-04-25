@@ -133,6 +133,15 @@ POLICY_VERSION=$(echo "${EVENT}" | jq -r '.policy_version // "unknown"')
 AUDIT_EVENT_ID=$(echo "${EVENT}" | jq -r '.id // "unknown"')
 AUDIT_PREV_HASH=$(echo "${EVENT}" | jq -r '.prev_hash // "genesis"')
 
+# Canary v1 Element D — H15/H14 audit fields extracted from event with safe defaults.
+# Use jq without -r so the output is a JSON literal (number, boolean, string, or null)
+# suitable for --argjson. h14_alert_tier defaults to 0 (no alert); the rest default null.
+H15_ELAPSED_SECONDS=$(echo "${EVENT}" | jq '.h15_elapsed_seconds // null')
+H15_FLOOR_SECONDS=$(echo "${EVENT}" | jq '.h15_floor_seconds // null')
+H15_BELOW_FLOOR=$(echo "${EVENT}" | jq '.h15_below_floor // null')
+H14_ALERT_TIER=$(echo "${EVENT}" | jq '.h14_alert_tier // 0')
+H14_ALERT_ACK_RECEIPT_ID=$(echo "${EVENT}" | jq '.h14_alert_ack_receipt_id // null')
+
 # Compute detail hash: SHA-256 of canonical detail JSON
 DETAIL_HASH=$(printf '%s' "${DETAIL}" | jq -S -c '.' | shasum -a 256 | awk '{print $1}')
 
@@ -210,6 +219,11 @@ if [ "${RECEIPT_FORMAT}" = "v1" ]; then
         --argjson manifest_principal "${MANIFEST_PRINCIPAL}" \
         --arg audit_event_id "${AUDIT_EVENT_ID}" \
         --arg audit_prev_hash "${AUDIT_PREV_HASH}" \
+        --argjson h15_elapsed_seconds "${H15_ELAPSED_SECONDS}" \
+        --argjson h15_floor_seconds "${H15_FLOOR_SECONDS}" \
+        --argjson h15_below_floor "${H15_BELOW_FLOOR}" \
+        --argjson h14_alert_tier "${H14_ALERT_TIER}" \
+        --argjson h14_alert_ack_receipt_id "${H14_ALERT_ACK_RECEIPT_ID}" \
         '{
             tool: $tool,
             domain: $domain,
@@ -223,7 +237,12 @@ if [ "${RECEIPT_FORMAT}" = "v1" ]; then
             manifest_principal: $manifest_principal,
             delegation_chain: [],
             audit_event_id: $audit_event_id,
-            audit_prev_hash: $audit_prev_hash
+            audit_prev_hash: $audit_prev_hash,
+            h15_elapsed_seconds: $h15_elapsed_seconds,
+            h15_floor_seconds: $h15_floor_seconds,
+            h15_below_floor: $h15_below_floor,
+            h14_alert_tier: $h14_alert_tier,
+            h14_alert_ack_receipt_id: $h14_alert_ack_receipt_id
         }')
 
     # 2. Canonicalize payload
