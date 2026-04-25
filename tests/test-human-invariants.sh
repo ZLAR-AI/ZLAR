@@ -327,25 +327,26 @@ assert "90s elapsed (min=60) → ok" "ok" "${result2}"
 HI_MIN_RESPONSE_TIME=2
 
 echo
-echo "=== H14: Approval Rate (Rubber-Stamp Detection) ==="
+echo "=== H14: Response Time Variance (Rubber-Stamp Detection) ==="
 echo
+# Lib defaults exercised here: HI_VARIANCE_STDDEV_FLOOR=4, HI_VARIANCE_MIN_SAMPLE=10,
+# HI_VARIANCE_WINDOW=20. Variance check filters severity != "critical"; default
+# severity for hi_record_decision is "info" so all decisions below qualify.
 
 HUMAN="test-human-h14"
-HI_APPROVAL_RATE_THRESHOLD=80
-HI_APPROVAL_RATE_WINDOW=10
 
 # Not enough data yet
-result=$(hi_check_approval_rate "${HUMAN}" 2>/dev/null)
+result=$(hi_check_response_variance "${HUMAN}" 2>/dev/null)
 assert "no data → ok (insufficient)" "ok" "${result}"
 
-# Record 9 approvals and 1 denial (90% approval rate)
+# Record 10 decisions with default elapsed=0 → uniform response times (stddev=0)
 for i in $(seq 1 9); do
     hi_record_decision "${HUMAN}" "approve"
 done
 hi_record_decision "${HUMAN}" "deny"
 
-result2=$(hi_check_approval_rate "${HUMAN}" 2>/dev/null)
-assert "90% approval rate (threshold=80%) → rubber_stamping" "rubber_stamping" "${result2}"
+result2=$(hi_check_response_variance "${HUMAN}" 2>/dev/null)
+assert "uniform response times (stddev=0) → rubber_stamping" "rubber_stamping" "${result2}"
 
 # Record decisions with high variance — stddev > 4s means H14 should pass
 HUMAN_LOW="test-human-h14-low"
@@ -356,11 +357,8 @@ for elapsed in 10 3 18 6 12; do
     hi_record_decision "${HUMAN_LOW}" "deny" "${elapsed}" "info"
 done
 
-result3=$(hi_check_approval_rate "${HUMAN_LOW}" 2>/dev/null)
+result3=$(hi_check_response_variance "${HUMAN_LOW}" 2>/dev/null)
 assert "varied response times (stddev > 4s) → ok" "ok" "${result3}"
-
-HI_APPROVAL_RATE_THRESHOLD=90
-HI_APPROVAL_RATE_WINDOW=20
 
 echo
 echo "=== Combined: Pre-Ask Check ==="

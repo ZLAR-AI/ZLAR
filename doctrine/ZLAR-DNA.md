@@ -104,7 +104,7 @@ Policy-Routed Human Authority
 The gate does not show every action to a human. Policy decides. For actions below the consequential threshold, the gate evaluates deterministically and proceeds. For actions above it, the gate routes to a human via Telegram and blocks until the human answers. The threshold is policy, not model judgment.
 
 Approval is not rubber-stamping
-Sustained very-high approval rates are a warning sign that the system may be rubber-stamping rather than governing. Either policy is routing too much to humans (noise) or the human is no longer reading (capture). Both are operational failures, detectable from the receipt chain.
+Sustained low-variance response times are a warning sign that the system may be rubber-stamping rather than governing. A genuine deliberator's response times vary with request complexity; a rubber-stamper responds uniformly fast regardless of severity. Either policy is routing too much to humans (noise) or the human is no longer reading (capture). Both are operational failures, detectable from the receipt chain.
 
 Silence is not consent
 If the human does not answer, the action does not proceed. Deny-by-timeout is the only safe default. Anything else lets the absence of a human become an implicit yes, which is the precise failure mode governance exists to prevent.

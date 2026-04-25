@@ -158,7 +158,7 @@ v3:
 
 DNA §4 Invariant Four (Human authority at the contact boundary): canary strengthens this. Rubber-stamping is the failure mode that dissolves invariant four in practice. Detection-based mitigation is more faithful to the invariant than punishment-based mitigation.
 
-DNA §7 Policy-Routed Human Authority: the framing "sustained very-high approval rates are a warning sign that the system may be rubber-stamping" already anticipates this work. This design formalizes the detection.
+DNA §7 Policy-Routed Human Authority: the framing "sustained low-variance response times are a warning sign that the system may be rubber-stamping" already anticipates this work. This design formalizes the detection.
 
 SCOPE.md: no scope impact. Internal gate-behavior refinement. Claim unchanged.
 

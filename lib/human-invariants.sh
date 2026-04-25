@@ -7,13 +7,13 @@
 #
 #   H6  — No Throughput Pressure (decision cap per day)
 #   H13 — Judgment Must Be Over-Provisioned (capacity monitoring)
-#   H14 — Protected Human Judgment (approval rate monitoring)
+#   H14 — Protected Human Judgment (response-time variance monitoring)
 #   H15 — Deliberation Floor (minimum review time per risk class)
 #   H17 — Human Authenticity (reject automated response patterns)
 #
 # State is per-human, not per-session. A human's daily decision count
 # persists across sessions. These invariants enforce decision quality
-# constraints: daily caps, deliberation floors, and approval rate monitoring.
+# constraints: daily caps, deliberation floors, and response-time variance monitoring.
 #
 # Design: every function returns a decision. Callers act on it.
 # No function calls exit. No function overrides policy.
@@ -136,15 +136,18 @@ _hi_ensure_state() {
     today=$(date -u +%Y-%m-%d)
     if [ "${state_date}" != "${today}" ]; then
         # v2.7.0: resets pending_count alongside decisions_today (H13 belt fix).
-        # v2.7.2: also resets approvals_recent. Without this, yesterday's
-        # approval-rate sliding window persists across the date boundary,
-        # which is how H14 (rubber_stamping) can stay fire-closed after a
-        # full day's reset. Origin: April 9 2026 incident where H14 fired
-        # on a fresh morning session because the previous session's
-        # 100% approval rate was still in the window.
+        # v2.7.2: introduced cross-day reset for H14's sliding window so
+        # yesterday's window cannot keep H14 fire-closed after a full day's
+        # reset. At the time the window was approvals_recent — del(.approvals_recent)
+        # below scrubs that legacy field. Origin: April 9 2026 incident where
+        # H14 fired on a fresh morning session because the previous session's
+        # history was still in the window.
         # v2.8.0: pending_count scalar replaced with pending: [{action_hash,ts}]
         # TTL array. Rollover drops the dead pending_count field and resets
         # the pending array to empty.
+        # v2.9.0: H14 switched to response-time variance. response_times is the
+        # active sliding window now; the v2.7.2 cross-day reset principle
+        # applies to it (response_times = []).
         jq --arg today "${today}" \
             'del(._hmac) | .date = $today | .decisions_today = 0 | .pending = [] | .response_times = [] | del(.approvals_recent) | del(.pending_count)' \
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
