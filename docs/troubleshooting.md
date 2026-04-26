@@ -196,6 +196,14 @@ sudo /usr/local/bin/zlar-tg-boot.sh &
 
 **After every reboot, run `zlar doctor`** — it checks whether the callback listener is alive and the HMAC secret is readable.
 
+**If the dispatcher does not auto-restart after a crash**, the LaunchDaemon plist may be missing `KeepAlive`. The canonical plist is at `etc/com.zlar.tg-dispatcher.plist` in the repo. To reinstall it:
+
+```bash
+sudo cp etc/com.zlar.tg-dispatcher.plist /Library/LaunchDaemons/
+sudo launchctl unload /Library/LaunchDaemons/com.zlar.tg-dispatcher.plist
+sudo launchctl load /Library/LaunchDaemons/com.zlar.tg-dispatcher.plist
+```
+
 ---
 
 ## Gate silently dies (all tool calls allowed, no audit entries)
