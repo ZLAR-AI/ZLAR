@@ -61,7 +61,25 @@ HI_DELIBERATION_FLOOR_WARN="${ZLAR_DELIBERATION_WARN:-10}"
 HI_DELIBERATION_FLOOR_INFO="${ZLAR_DELIBERATION_INFO:-3}"
 
 # H17: Minimum response time in seconds for any action. Below this = suspicious.
+# v1 floor kept for backward compatibility — callers that set ZLAR_MIN_RESPONSE_TIME
+# continue to work. H17 v2 adds ms-precision floors; see hi_check_authenticity.
 HI_MIN_RESPONSE_TIME="${ZLAR_MIN_RESPONSE_TIME:-2}"
+
+# H17 v2: millisecond-precision floors.
+# HI_MIN_RESPONSE_TIME_MS: leave empty so hi_check_authenticity derives it from
+# HI_MIN_RESPONSE_TIME at call time. This makes tests that override HI_MIN_RESPONSE_TIME
+# (the legacy seconds knob) work without also setting the ms knob.
+# Set ZLAR_MIN_RESPONSE_TIME_MS explicitly to bypass derivation.
+HI_MIN_RESPONSE_TIME_MS="${ZLAR_MIN_RESPONSE_TIME_MS:-}"
+
+# Machine-speed / authenticity floor: no operator profile can pass below this.
+# Responses arriving faster than this are physically impossible for a human operator.
+HI_ABSOLUTE_MIN_RESPONSE_TIME_MS="${ZLAR_ABSOLUTE_MIN_RESPONSE_TIME_MS:-500}"
+
+# Graduated floor for calibrated operators on critical-severity approvals.
+# Calibrated operators (sufficient response-time variance history) earn a lower
+# floor here than the default, but not as low as the authenticity floor.
+HI_CALIBRATED_CRITICAL_FLOOR_MS="${ZLAR_CALIBRATED_CRITICAL_FLOOR_MS:-1500}"
 
 # ─── HMAC Protection (v3.1.3; refactored v3.1.4+) ────────────────────────────
 # State files at var/human-state/{human_id}.json carry H6/H13/H14 counters
@@ -90,6 +108,53 @@ fi
 _hi_verify_hmac()   { _state_hmac_verify       "${_HI_HMAC_KEY}" "$1"; }
 _hi_sealed_write()  { _state_hmac_sealed_write "${_HI_HMAC_KEY}" "$1"; }
 
+# ─── Timing ───────────────────────────────────────────────────────────────────
+
+# Returns current time as integer milliseconds since Unix epoch.
+# Portable: GNU date (Linux/CI) first; python3 fallback (macOS and everywhere else);
+# last resort is second-granularity * 1000.
+_hi_epoch_ms() {
+    local ms
+    ms=$(date +%s%3N 2>/dev/null)
+    if printf '%s' "${ms}" | grep -qE '^[0-9]{13,}$'; then
+        printf '%s\n' "${ms}"
+        return
+    fi
+    python3 -c "import time; print(int(time.time()*1000))" 2>/dev/null || \
+        printf '%s000\n' "$(date +%s)"
+}
+
+# ─── H17 v2: Calibration Check ────────────────────────────────────────────────
+
+# Returns 0 (true) if the human has enough response-time variance to be
+# considered calibrated; 1 (false) otherwise. Calibration is the same signal
+# H14 uses: std_dev of non-critical response times ≥ HI_VARIANCE_STDDEV_FLOOR
+# over at least HI_VARIANCE_MIN_SAMPLE entries.
+#
+# Takes the already-resolved state file path to avoid a redundant _hi_ensure_state
+# call from within hi_check_authenticity.
+_hi_is_calibrated() {
+    local state_file="${1:?}"
+
+    local stddev
+    stddev=$(jq -r --argjson min_sample "${HI_VARIANCE_MIN_SAMPLE}" '
+        .response_times as $arr |
+        [$arr[] | select(type == "object" and .severity != "critical") | .elapsed] as $filtered |
+        if ($filtered | length) < $min_sample then
+            -1
+        else
+            (($filtered | add) / ($filtered | length)) as $mean |
+            ([$filtered[] | (. - $mean) * (. - $mean)] | add) / ($filtered | length) |
+            sqrt
+        end
+    ' "${state_file}" 2>/dev/null)
+
+    [ -n "${stddev}" ] && [ "${stddev}" != "-1" ] || return 1
+
+    awk -v sd="${stddev}" -v floor="${HI_VARIANCE_STDDEV_FLOOR}" \
+        'BEGIN { exit (sd >= floor) ? 0 : 1 }'
+}
+
 # ─── State Management ─────────────────────────────────────────────────────────
 
 _hi_log() {
@@ -108,7 +173,7 @@ _hi_ensure_state() {
         jq -n \
             --arg hid "${human_id}" \
             --arg today "${today}" \
-            '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0}' \
+            '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0}' \
             | _hi_sealed_write "${state_file}"
     else
         # Verify HMAC. On tamper: log + rebuild safe defaults. Rebuild, not
@@ -124,7 +189,7 @@ _hi_ensure_state() {
             jq -n \
                 --arg hid "${human_id}" \
                 --arg today "${today}" \
-                '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0}' \
+                '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0}' \
                 | _hi_sealed_write "${state_file}"
         fi
     fi
@@ -344,9 +409,11 @@ hi_record_ask_time() {
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
-    local epoch_now
+    local epoch_now epoch_ms_now
     epoch_now=$(date +%s)
-    jq --argjson t "${epoch_now}" 'del(._hmac) | .last_ask_epoch = $t' \
+    epoch_ms_now=$(_hi_epoch_ms)
+    jq --argjson t "${epoch_now}" --argjson tms "${epoch_ms_now}" \
+        'del(._hmac) | .last_ask_epoch = $t | .last_ask_epoch_ms = $tms' \
         "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
 }
 
@@ -383,25 +450,73 @@ hi_check_deliberation() {
 }
 
 # ─── H17: Human Authenticity ──────────────────────────────────────────────────
-# Reject suspiciously fast responses. A human cannot read, comprehend, and
-# decide on a tool call in under 2 seconds.
+# Reject machine-speed responses. Uses millisecond-precision timing and
+# per-operator calibration to distinguish fast-but-genuine human approvals
+# from automation.
+#
+# Floor selection (ms):
+#   All operators  — responses below HI_ABSOLUTE_MIN_RESPONSE_TIME_MS are
+#                    always rejected (machine-speed / authenticity floor).
+#   Uncalibrated   — responses below the default floor (derived from
+#                    HI_MIN_RESPONSE_TIME_MS or HI_MIN_RESPONSE_TIME * 1000)
+#                    are rejected regardless of severity.
+#   Calibrated, warn/info — floor drops to HI_ABSOLUTE_MIN_RESPONSE_TIME_MS.
+#   Calibrated, critical  — floor drops to HI_CALIBRATED_CRITICAL_FLOOR_MS.
+#
+# Calibration = sufficient non-critical response-time variance (same signal as H14).
+#
+# Backward compat: if last_ask_epoch_ms is absent, falls back to
+# last_ask_epoch * 1000 (second-granularity, ≤1s precision loss).
 #
 # Returns: "ok" or "suspicious"
 
 hi_check_authenticity() {
     local human_id="${1:?}"
+    local severity="${2:-info}"
 
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
-    local ask_epoch
-    ask_epoch=$(jq -r '.last_ask_epoch // 0' "${state_file}" 2>/dev/null)
-    local now_epoch
-    now_epoch=$(date +%s)
-    local elapsed=$((now_epoch - ask_epoch))
+    # Read ms ask time; fall back to seconds * 1000 for pre-v2 state files.
+    local ask_ms
+    ask_ms=$(jq -r '.last_ask_epoch_ms // 0' "${state_file}" 2>/dev/null)
+    if [ "${ask_ms}" = "0" ] || [ -z "${ask_ms}" ]; then
+        local ask_epoch
+        ask_epoch=$(jq -r '.last_ask_epoch // 0' "${state_file}" 2>/dev/null)
+        ask_ms=$(( ask_epoch * 1000 ))
+    fi
 
-    if [ "${elapsed}" -lt "${HI_MIN_RESPONSE_TIME}" ]; then
-        _hi_log "H17 VIOLATED: ${human_id} responded in ${elapsed}s (min: ${HI_MIN_RESPONSE_TIME}s) — possible automated response"
+    local now_ms elapsed_ms
+    now_ms=$(_hi_epoch_ms)
+    elapsed_ms=$(( now_ms - ask_ms ))
+
+    # Machine-speed / authenticity floor — uncrossable regardless of calibration.
+    if [ "${elapsed_ms}" -lt "${HI_ABSOLUTE_MIN_RESPONSE_TIME_MS}" ]; then
+        _hi_log "H17 VIOLATED: ${human_id} responded in ${elapsed_ms}ms (machine-speed floor: ${HI_ABSOLUTE_MIN_RESPONSE_TIME_MS}ms)"
+        echo "suspicious"
+        return 1
+    fi
+
+    # Resolve the default floor: prefer HI_MIN_RESPONSE_TIME_MS if explicitly set
+    # (new ms knob), else derive from HI_MIN_RESPONSE_TIME for backward compat.
+    local default_floor_ms
+    if [ -n "${HI_MIN_RESPONSE_TIME_MS:-}" ]; then
+        default_floor_ms="${HI_MIN_RESPONSE_TIME_MS}"
+    else
+        default_floor_ms=$(( HI_MIN_RESPONSE_TIME * 1000 ))
+    fi
+
+    # Select floor by severity and calibration status.
+    local floor_ms="${default_floor_ms}"
+    if _hi_is_calibrated "${state_file}"; then
+        case "${severity}" in
+            critical) floor_ms="${HI_CALIBRATED_CRITICAL_FLOOR_MS}" ;;
+            *)        floor_ms="${HI_ABSOLUTE_MIN_RESPONSE_TIME_MS}" ;;
+        esac
+    fi
+
+    if [ "${elapsed_ms}" -lt "${floor_ms}" ]; then
+        _hi_log "H17 VIOLATED: ${human_id} responded in ${elapsed_ms}ms (floor: ${floor_ms}ms, severity: ${severity})"
         echo "suspicious"
         return 1
     fi
@@ -567,7 +682,7 @@ hi_post_response_check() {
 
     # H17: Authenticity (must come first — if automated, deliberation is meaningless)
     local auth_result
-    auth_result=$(hi_check_authenticity "${human_id}")
+    auth_result=$(hi_check_authenticity "${human_id}" "${severity}")
     if [ "${auth_result}" = "suspicious" ]; then
         echo "suspicious"
         return 1

@@ -327,6 +327,122 @@ assert "90s elapsed (min=60) → ok" "ok" "${result2}"
 HI_MIN_RESPONSE_TIME=2
 
 echo
+echo "=== H17 v2: Operator-Calibrated Authenticity ==="
+echo
+
+# Calibrated history fixture: 10 warn/info entries, std_dev ≈ 5.7s (> 4s floor).
+# Values: [2,8,15,5,20,10,3,18,6,12] — mean=9.9s, std_dev≈5.7s.
+_CAL_RT='[{"elapsed":2,"severity":"info"},{"elapsed":8,"severity":"warn"},{"elapsed":15,"severity":"info"},{"elapsed":5,"severity":"warn"},{"elapsed":20,"severity":"info"},{"elapsed":10,"severity":"warn"},{"elapsed":3,"severity":"info"},{"elapsed":18,"severity":"warn"},{"elapsed":6,"severity":"info"},{"elapsed":12,"severity":"warn"}]'
+
+# v2 config for this section. Wide defaults give CI-safe margins.
+# Individual tests override HI_CALIBRATED_CRITICAL_FLOOR_MS where noted.
+HI_MIN_RESPONSE_TIME_MS=5000           # uncalibrated default floor = 5s
+HI_ABSOLUTE_MIN_RESPONSE_TIME_MS=500   # machine-speed / authenticity floor = 500ms
+HI_CALIBRATED_CRITICAL_FLOOR_MS=1500   # production default
+
+_now_ms_v2=$(_hi_epoch_ms)
+
+# Test 1: machine-speed floor is uncrossable — calibrated operator below 500ms.
+# Elapsed ≈ 200ms (< 500ms authenticity floor). Calibration cannot override.
+HUMAN_H17V2_MACH="test-h17v2-machine-speed"
+_ask_ms_mach=$(( _now_ms_v2 - 200 ))
+jq -n --arg hid "${HUMAN_H17V2_MACH}" --argjson ask_ms "${_ask_ms_mach}" \
+    --argjson rt "${_CAL_RT}" \
+    '{human_id:$hid,date:"2026-04-26",decisions_today:0,response_times:$rt,pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
+    > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_MACH}.json"
+result_h17v2_mach=$(hi_check_authenticity "${HUMAN_H17V2_MACH}" "info" 2>/dev/null)
+assert "calibrated, info, ~200ms (below 500ms machine-speed floor) → suspicious" "suspicious" "${result_h17v2_mach}"
+
+# Test 2: calibrated operator, warn, 1000ms elapsed — above 500ms authenticity
+# floor, below 5000ms uncalibrated default. Calibration earns ok.
+HUMAN_H17V2_CAL_WARN="test-h17v2-cal-warn"
+_ask_ms_cal_warn=$(( _now_ms_v2 - 1000 ))
+jq -n --arg hid "${HUMAN_H17V2_CAL_WARN}" --argjson ask_ms "${_ask_ms_cal_warn}" \
+    --argjson rt "${_CAL_RT}" \
+    '{human_id:$hid,date:"2026-04-26",decisions_today:0,response_times:$rt,pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
+    > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_CAL_WARN}.json"
+result_h17v2_cal_warn=$(hi_check_authenticity "${HUMAN_H17V2_CAL_WARN}" "warn" 2>/dev/null)
+assert "calibrated, warn, ~1000ms (above authenticity floor, calibrated) → ok" "ok" "${result_h17v2_cal_warn}"
+
+# Test 3: same elapsed (1000ms), uncalibrated — 5000ms default floor applies.
+HUMAN_H17V2_UNCAL="test-h17v2-uncal-warn"
+jq -n --arg hid "${HUMAN_H17V2_UNCAL}" --argjson ask_ms "${_ask_ms_cal_warn}" \
+    '{human_id:$hid,date:"2026-04-26",decisions_today:0,response_times:[],pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
+    > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_UNCAL}.json"
+result_h17v2_uncal=$(hi_check_authenticity "${HUMAN_H17V2_UNCAL}" "warn" 2>/dev/null)
+assert "uncalibrated, warn, ~1000ms (below 5000ms default floor) → suspicious" "suspicious" "${result_h17v2_uncal}"
+
+# Test 4: calibrated, critical, 1600ms elapsed, floor=1500ms → ok.
+# elapsed ≥ 1600ms (time only moves forward from _now_ms_v2) > 1500ms floor.
+HUMAN_H17V2_CAL_CRIT_OK="test-h17v2-cal-crit-ok"
+_ask_ms_crit_ok=$(( _now_ms_v2 - 1600 ))
+jq -n --arg hid "${HUMAN_H17V2_CAL_CRIT_OK}" --argjson ask_ms "${_ask_ms_crit_ok}" \
+    --argjson rt "${_CAL_RT}" \
+    '{human_id:$hid,date:"2026-04-26",decisions_today:0,response_times:$rt,pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
+    > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_CAL_CRIT_OK}.json"
+result_h17v2_crit_ok=$(hi_check_authenticity "${HUMAN_H17V2_CAL_CRIT_OK}" "critical" 2>/dev/null)
+assert "calibrated, critical, ~1600ms elapsed (floor=1500ms) → ok" "ok" "${result_h17v2_crit_ok}"
+
+# Test 5: calibrated, critical, 1400ms elapsed, wide floor → suspicious.
+# Floor widened to 3000ms so CI execution time cannot push elapsed past the boundary.
+# Validates that calibration does not bypass the calibrated critical floor.
+HI_CALIBRATED_CRITICAL_FLOOR_MS=3000
+HUMAN_H17V2_CAL_CRIT_SUSP="test-h17v2-cal-crit-susp"
+_ask_ms_crit_susp=$(( _now_ms_v2 - 1400 ))
+jq -n --arg hid "${HUMAN_H17V2_CAL_CRIT_SUSP}" --argjson ask_ms "${_ask_ms_crit_susp}" \
+    --argjson rt "${_CAL_RT}" \
+    '{human_id:$hid,date:"2026-04-26",decisions_today:0,response_times:$rt,pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
+    > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_CAL_CRIT_SUSP}.json"
+result_h17v2_crit_susp=$(hi_check_authenticity "${HUMAN_H17V2_CAL_CRIT_SUSP}" "critical" 2>/dev/null)
+assert "calibrated, critical, ~1400ms elapsed (floor=3000ms) → suspicious" "suspicious" "${result_h17v2_crit_susp}"
+HI_CALIBRATED_CRITICAL_FLOOR_MS=1500
+
+# Test 6: insufficient history (5 entries, below min_sample=10) → not calibrated.
+HUMAN_H17V2_FEW="test-h17v2-few-history"
+_ask_ms_few=$(( _now_ms_v2 - 1000 ))
+jq -n --arg hid "${HUMAN_H17V2_FEW}" --argjson ask_ms "${_ask_ms_few}" \
+    '{human_id:$hid,date:"2026-04-26",decisions_today:0,
+      response_times:[{"elapsed":2,"severity":"info"},{"elapsed":8,"severity":"warn"},
+                      {"elapsed":15,"severity":"info"},{"elapsed":5,"severity":"warn"},
+                      {"elapsed":20,"severity":"info"}],
+      pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
+    > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_FEW}.json"
+result_h17v2_few=$(hi_check_authenticity "${HUMAN_H17V2_FEW}" "warn" 2>/dev/null)
+assert "5 history entries (below min_sample=10) → not calibrated → suspicious" "suspicious" "${result_h17v2_few}"
+
+# Test 7: uniform history (stddev=0, below 4s floor) → not calibrated.
+HUMAN_H17V2_UNI="test-h17v2-uniform"
+_ask_ms_uni=$(( _now_ms_v2 - 1000 ))
+jq -n --arg hid "${HUMAN_H17V2_UNI}" --argjson ask_ms "${_ask_ms_uni}" \
+    '{human_id:$hid,date:"2026-04-26",decisions_today:0,
+      response_times:[{"elapsed":5,"severity":"info"},{"elapsed":5,"severity":"warn"},
+                      {"elapsed":5,"severity":"info"},{"elapsed":5,"severity":"warn"},
+                      {"elapsed":5,"severity":"info"},{"elapsed":5,"severity":"warn"},
+                      {"elapsed":5,"severity":"info"},{"elapsed":5,"severity":"warn"},
+                      {"elapsed":5,"severity":"info"},{"elapsed":5,"severity":"warn"}],
+      pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
+    > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_UNI}.json"
+result_h17v2_uni=$(hi_check_authenticity "${HUMAN_H17V2_UNI}" "warn" 2>/dev/null)
+assert "uniform history (stddev=0, below 4s floor) → not calibrated → suspicious" "suspicious" "${result_h17v2_uni}"
+
+# Test 8: backward compat — no last_ask_epoch_ms in state, falls back to last_ask_epoch * 1000.
+# 90s elapsed via last_ask_epoch, default floor 5000ms — should pass.
+HUMAN_H17V2_COMPAT="test-h17v2-compat"
+_epoch_90s_compat=$(( $(date +%s) - 90 ))
+jq -n --arg hid "${HUMAN_H17V2_COMPAT}" --argjson t "${_epoch_90s_compat}" \
+    --argjson rt "${_CAL_RT}" \
+    '{human_id:$hid,date:"2026-04-06",decisions_today:0,response_times:$rt,
+      pending:[],last_ask_epoch:$t}' \
+    > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_COMPAT}.json"
+result_h17v2_compat=$(hi_check_authenticity "${HUMAN_H17V2_COMPAT}" "warn" 2>/dev/null)
+assert "no last_ask_epoch_ms, 90s via last_ask_epoch → ok (backward compat)" "ok" "${result_h17v2_compat}"
+
+# Restore config
+HI_MIN_RESPONSE_TIME_MS=
+HI_ABSOLUTE_MIN_RESPONSE_TIME_MS=500
+HI_CALIBRATED_CRITICAL_FLOOR_MS=1500
+
+echo
 echo "=== H14: Response Time Variance (Rubber-Stamp Detection) ==="
 echo
 # Lib defaults exercised here: HI_VARIANCE_STDDEV_FLOOR=4, HI_VARIANCE_MIN_SAMPLE=10,
