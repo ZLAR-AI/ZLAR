@@ -2122,7 +2122,7 @@ telegram_ask_async() {
     # context, rule+risk as compact metadata at bottom. v2.8.1 restructure —
     # the old layout buried the consequence below the raw command, making the
     # message unreadable at a glance on mobile.
-    local text="${emoji} 🖥️ *${rule}*${tier_banner}${fatigue_banner}${novelty_banner}${restore_banner}${authority_type}
+    local text="${emoji} 🖥️ *$(_mdv2e "${rule}")*${tier_banner}${fatigue_banner}${novelty_banner}${restore_banner}${authority_type}
 
 ${consequence_line}${intent_line}${verify_line}
 
