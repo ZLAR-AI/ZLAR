@@ -24,7 +24,7 @@
 #
 # Usage:
 #   source lib/fail-closed-alert.sh
-#   fail_closed_alert <reason>     # one of: capacity_exceeded, overloaded, rubber_stamping
+#   fail_closed_alert <reason>     # one of: canary_pattern_check, capacity_exceeded, overloaded, rubber_stamping (legacy)
 #
 # Required environment (set by the calling script before invocation):
 #   TELEGRAM_TOKEN     — bot token (already loaded by bin/zlar-gate from .env)
@@ -115,7 +115,11 @@ fail_closed_alert() {
     timestamp_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     case "${reason}" in
+        canary_pattern_check)
+            invariant_label="H14 — response-time variance below floor (canary pattern check)"
+            ;;
         rubber_stamping)
+            # Legacy compat — keep until all callers and receipts migrated to canary_pattern_check.
             invariant_label="H14 — response-time stddev below floor over last 20 non-critical decisions"
             ;;
         overloaded)

@@ -346,7 +346,7 @@ done
 hi_record_decision "${HUMAN}" "deny"
 
 result2=$(hi_check_response_variance "${HUMAN}" 2>/dev/null)
-assert "uniform response times (stddev=0) → rubber_stamping" "rubber_stamping" "${result2}"
+assert "uniform response times (stddev=0) → canary_pattern_check" "canary_pattern_check" "${result2}"
 
 # Record decisions with high variance — stddev > 4s means H14 should pass
 HUMAN_LOW="test-human-h14-low"

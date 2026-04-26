@@ -149,7 +149,7 @@ _hi_ensure_state() {
         # active sliding window now; the v2.7.2 cross-day reset principle
         # applies to it (response_times = []).
         jq --arg today "${today}" \
-            'del(._hmac) | .date = $today | .decisions_today = 0 | .pending = [] | .response_times = [] | del(.approvals_recent) | del(.pending_count)' \
+            'del(._hmac) | .date = $today | .decisions_today = 0 | .pending = [] | .response_times = [] | del(.approvals_recent) | del(.pending_count) | del(.h14_lockout_until)' \
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
@@ -454,21 +454,6 @@ hi_check_response_variance() {
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
-    # H14 cooldown check: if a lockout is active, enforce it.
-    # If expired, clear it — response_times was wiped when lockout started,
-    # so min_sample check will fail and return "ok" naturally.
-    local _h14_lockout
-    _h14_lockout=$(jq -r '.h14_lockout_until // 0' "${state_file}" 2>/dev/null)
-    if [ "${_h14_lockout}" != "0" ] && [ "${_h14_lockout}" != "null" ]; then
-        local _now_s; _now_s=$(date +%s)
-        if [ "${_now_s}" -lt "${_h14_lockout}" ]; then
-            echo "rubber_stamping"
-            return 1
-        fi
-        # Cooldown expired — clear flag
-        jq 'del(._hmac) | .h14_lockout_until = 0' "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
-    fi
-
     # Variance check on non-critical decisions only.
     # Critical decisions are governed by H15 (30s floor) which creates
     # artificial uniformity — including critical in variance would fire H14
@@ -499,17 +484,14 @@ hi_check_response_variance() {
 
     if [ "${is_uniform}" = "yes" ]; then
         _hi_log "H14 WARNING: ${human_id} warn/info response time std_dev is ${stddev}s (floor: ${HI_VARIANCE_STDDEV_FLOOR}s) — suspiciously uniform on non-critical decisions"
-        # Reset + cooldown: clear response_times so the human gets a fresh
-        # window after cooldown expires. Without this, H14 is self-sealing —
-        # it blocks asks, so no decisions are recorded, so variance never
-        # changes, so H14 stays fired until midnight.
-        local _lockout_until
-        _lockout_until=$(( $(date +%s) + 300 ))  # 5-minute cooldown
-        jq --argjson lockout "${_lockout_until}" \
-           'del(._hmac) | .response_times = [] | .h14_lockout_until = $lockout' \
+        # Reset response_times so the window starts fresh. Without this, H14 fires
+        # on every pre-ask until midnight — no new decisions enter the window so
+        # variance never recovers. Advisory semantics mean asks still route, so
+        # new decisions accumulate naturally from here.
+        jq 'del(._hmac) | .response_times = []' \
            "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
-        _hi_log "H14: response_times cleared, 5-minute cooldown set (until $(date -u -r "${_lockout_until}" +%H:%M:%S 2>/dev/null || echo "${_lockout_until}"))"
-        echo "rubber_stamping"
+        _hi_log "H14: response_times cleared"
+        echo "canary_pattern_check"
         return 1
     fi
 

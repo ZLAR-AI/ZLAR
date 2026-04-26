@@ -97,7 +97,7 @@ ZLAR 3.0 adds a behavioral observation layer that runs alongside the enforcement
 
 `repo/var/human-state/` contains per-human state files. File naming: `<telegram_chat_id>.json`. The Telegram chat ID is the human's identity within the gate.
 
-**Schema (v2.11.1, current):**
+**Schema (canary v1 Element B, current):**
 ```json
 {
   "human_id": "<telegram_chat_id>",
@@ -105,23 +105,21 @@ ZLAR 3.0 adds a behavioral observation layer that runs alongside the enforcement
   "decisions_today": <int>,
   "response_times": [{"elapsed": <int>, "severity": "<class>"}, ...],
   "pending": [{"action_hash": "<sha256>", "ts": <unix_seconds>}, ...],
-  "last_ask_epoch": <unix_seconds>,
-  "h14_lockout_until": <unix_seconds>
+  "last_ask_epoch": <unix_seconds>
 }
 ```
 
 **Field semantics:**
 - `decisions_today` — H6 daily decision counter. Resets at midnight UTC via `_hi_ensure_state` date-rollover logic.
 - `pending` — H13 pending array (v2.8.0 rewrite). Each entry is `{action_hash, ts}`. On every increment, stale entries (older than `HI_PENDING_TTL`, default 1800s) are filtered before counting; a retry with the same `action_hash` does not re-append. Replaces the v2.7.x scalar `pending_count` which leaked under orphaned increments and retries.
-- `response_times` — H14 rolling window of `{elapsed, severity}` pairs, last 20 decisions (v2.11.1). Replaces the v2.7.x `approvals_recent` approval-rate tracking. H14 now measures response-time variance on warn/info decisions; low variance fires `rubber_stamping`. Critical decisions are excluded from variance (H15's 30s floor creates artificial uniformity that would falsely fire H14).
+- `response_times` — H14 rolling window of `{elapsed, severity}` pairs, last 20 decisions. Replaces the v2.7.x `approvals_recent` approval-rate tracking. H14 now measures response-time variance on warn/info decisions; low variance fires `canary_pattern_check` (advisory). Critical decisions are excluded from variance (H15's 30s floor creates artificial uniformity that would falsely fire H14). When H14 fires, `response_times` is cleared so the window starts fresh.
 - `last_ask_epoch` — H15/H17 timing reference for deliberation and authenticity checks.
-- `h14_lockout_until` — timestamp after which H14 lockout expires (v2.11.1). Set when H14 fires; clears `response_times` and imposes a 5-minute cooldown so H14 is not self-sealing.
 
 **Created by:** `_hi_ensure_state` in `lib/human-invariants.sh` (and equivalent in `.mjs`). Lazily created on first reference. Includes v2.8.0 schema migration that drops any lingering `pending_count` / `approvals_recent` scalars.
 
 **Reset path:** `ZLAR reset` (added v2.7.0). Backs up to `/tmp/zlar-state-backup-<timestamp>/` before deleting the .json file. Next gate invocation auto-recreates with zero values.
 
-**Known issues resolved:** the v2.7.x `pending_count` scalar leak under orphaned increments is fixed in v2.8.0 via the TTL+dedup array. H14 self-sealing (fires → blocks asks → no new decisions → variance never updates → stays fired) is fixed in v2.11.1 via the lockout-with-reset pattern.
+**Known issues resolved:** the v2.7.x `pending_count` scalar leak under orphaned increments is fixed in v2.8.0 via the TTL+dedup array. H14 self-sealing resolved: when H14 fires, `response_times` is cleared so the min-sample check fails and H14 returns ok on the next pre-ask. Gate advisory semantics ensure asks still route during detection, so new decisions accumulate naturally.
 
 ---
 
