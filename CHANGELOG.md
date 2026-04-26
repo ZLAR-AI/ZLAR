@@ -1,5 +1,91 @@
 # Changelog
 
+## 3.2.0 — 2026-04-26 — Human-Attention Canary v1
+
+Governed-autonomy milestone. The H14 response-variance detector now produces
+a tier, the tier produces visible signals, and at Tier 2 the gate structurally
+interrupts before the main ask card appears. Approval without deliberation is
+architecturally harder, not just flagged.
+
+Human-Attention Canary v1 (D → B → A → C → E1 → E2 build order):
+
+Element D — canary audit fields in v1 receipt schema:
+- Five optional fields added to v1 payload schema: canary_tier,
+  canary_trip_count, canary_pattern_check, canary_signal, canary_cleared.
+  Inert at write time. Schema addition only; no gate routing change.
+
+Element B — H14 lockout replaced with advisory reason:
+- h14_lockout_until removed from both gate implementations. When H14 variance
+  trips, the gate records canary_pattern_check reason and clears response_times
+  in the same atomic write. No cooldown window; no self-sealing lockout.
+  hi_check_approval_rate / checkApprovalRate aliases retained for external
+  callers.
+
+Element A — H15 severity-aware deliberation floor:
+- warn and info decisions below the deliberation floor now signal rather than
+  hard-reject. critical decisions below floor remain hard-reject (unchanged).
+  hi_check_deliberation / checkDeliberation detector unchanged — returns too_fast
+  for all severity classes. Only the post-response handler changed.
+
+Element C — R012 split by effect (policy v3.2.0, 85 rules):
+- R012 retired. Replaced by four rules keyed to effect:
+  R012I (read, allow+log), R012W_SIGN (sign operations, ask),
+  R012W_MODE (chmod/chown enforcement layer, ask),
+  R012W_EDIT (write/edit enforcement layer, ask).
+- Closes coverage gap: zlar on/off/reset were previously unprotected.
+- jq .enabled evaluation bug fixed in gate and runner.
+
+H17 v2 — operator-calibrated authenticity:
+- Ms-precision timing via last_ask_epoch_ms. Three-floor structure:
+  machine-speed absolute 500ms, calibrated-critical 1500ms,
+  uncalibrated 2000ms. Operators with 10+ critical decisions in the
+  response_times window earn the lower floor. ZLAR_MIN_RESPONSE_TIME still
+  accepted for backward compatibility.
+- elapsed_ms stored per decision in response_times alongside elapsed (seconds)
+  for future floor tuning. Both CC gate and MCP gate updated in lockstep.
+
+Element E1 — visible canary tiers:
+- canary_tier and canary_trip_count added to per-human state. H14 trip
+  increments tier (cap 2). hi_record_decision resets tier to 0 when variance
+  recovers (stddev >= 2x floor). Both gates inject tier banner into ask cards:
+  ⚡ Tier 1 / 🚨 Tier 2. Banner visible to the human on every ask while elevated.
+
+Element E2 — Tier 2 preconfirm structural interrupt:
+- When canary_tier == 2, the gate sends a preconfirm interrupt card before the
+  main ask card. Human taps PROCEED to see the full ask, or BLOCK to halt
+  immediately. Timeout hard-denies (differs from main ask which re-sends on
+  timeout).
+- lib/preconfirm-cc.sh: 4-state file-based machine (0=proceed_acked,
+  1=blocked/timeout, 2=not_sent, 3=waiting). check_preconfirm(rule, action_hash).
+  Pending files keyed pc-{rule}-{SESSION_ID}-{hash:0:16}.pending.
+  telegram_preconfirm_async sends PROCEED/BLOCK inline keyboard card.
+- bin/zlar-gate: _mdv2e promoted to top-level. Tier 2 fork in deny-then-retry
+  *) case: PROCEED falls through to main ask; BLOCK/timeout/waiting deny
+  immediately via _skip_ask flag.
+- mcp-gate/gate.mjs: telegramPreconfirm() blocking poll with mcp:pc_proceed /
+  mcp:pc_block callbacks. Fork between canaryTier lookup and telegramAsk.
+- scripts/zlar-tg-poll: pc_proceed / pc_block UX text in answer and edit
+  switches. Routing unchanged (cc: / mcp: prefix covers preconfirm callbacks).
+
+Fixes:
+- MarkdownV2 rule name escaping: *${rule}* in ask card bold span caused HTTP 400
+  on rule IDs with underscores (R012W_EDIT, R012W_SIGN, R012W_MODE). _mdv2e
+  now applied at rule name site. MJS gate unaffected (post-assembly escapedText
+  handles _).
+- MarkdownV2 content fields: pre-escaped via _mdv2e before template assembly
+  in CC gate. Removes broken post-assembly sed chain.
+- Uptime streak close: last_heartbeat used as streak endpoint on disable, not
+  wall clock. Inflated lifetime_on and longest_streak on idle sessions fixed.
+
+Operational:
+- LaunchDaemon plist added to repo as source of truth:
+  etc/com.zlar.tg-dispatcher.plist. KeepAlive=true added. Poller now
+  auto-restarts on crash. Previously the plist lived only in the archive
+  and was not repo-tracked.
+
+Tests: 238 assertions across 5 suites (preconfirm 26, human-invariants 73,
+canary 25, mcp-gate 8, perimeter-closure 106). 0 failures.
+
 ## 3.1.0 — 2026-04-15 — CODE-COMPLETE
 
 Red-team hardened. Adversarial audit, same-day fixes, canonical-form
