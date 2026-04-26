@@ -577,8 +577,14 @@ hi_post_response_check() {
     local delib_result
     delib_result=$(hi_check_deliberation "${human_id}" "${severity}")
     if [ "${delib_result}" = "too_fast" ]; then
-        echo "too_fast"
-        return 1
+        if [ "${severity}" = "critical" ]; then
+            echo "too_fast"
+            return 1
+        fi
+        # warn/info: H15 floor violation is signal-only — approval proceeds.
+        # H17 (authenticity) already blocked machine-speed responses above;
+        # this path is reached only when elapsed >= minResponseTime but < deliberationFloor.
+        _hi_log "H15 SIGNAL (${severity}): ${human_id} responded below deliberation floor — logged, not rejected"
     fi
 
     # Record the decision for H14 variance tracking (elapsed = now - ask_time)

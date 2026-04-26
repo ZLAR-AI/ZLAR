@@ -413,6 +413,66 @@ HI_MIN_RESPONSE_TIME=2
 HI_DELIBERATION_FLOOR_CRITICAL=30
 
 echo
+echo "=== H15 Element A: warn/info signal-only, critical hard-reject, H17 always hard-reject ==="
+echo
+
+# Fixture: 5s elapsed. H17 min=2s (passes). H15 floor=60s for all classes (fails).
+# Tests 1-3 prove the severity-based enforcement split in hi_post_response_check.
+HI_MIN_RESPONSE_TIME=2
+HI_DELIBERATION_FLOOR_WARN=60
+HI_DELIBERATION_FLOOR_INFO=60
+HI_DELIBERATION_FLOOR_CRITICAL=60
+
+epoch_5s=$(($(date +%s) - 5))
+
+state_file_h15a_warn="${TEMP_DIR}/var/human-state/test-h15a-warn.json"
+jq -n --argjson t "${epoch_5s}" \
+    '{human_id:"test-h15a-warn",date:"2026-04-06",decisions_today:0,approvals_recent:[],pending_count:1,last_ask_epoch:$t}' \
+    > "${state_file_h15a_warn}"
+result_h15a_warn=$(hi_post_response_check "test-h15a-warn" "warn" "approve" 2>/dev/null)
+assert "warn below H15 floor, above H17 min → ok (signal-only)" "ok" "${result_h15a_warn}"
+
+state_file_h15a_info="${TEMP_DIR}/var/human-state/test-h15a-info.json"
+jq -n --argjson t "${epoch_5s}" \
+    '{human_id:"test-h15a-info",date:"2026-04-06",decisions_today:0,approvals_recent:[],pending_count:1,last_ask_epoch:$t}' \
+    > "${state_file_h15a_info}"
+result_h15a_info=$(hi_post_response_check "test-h15a-info" "info" "approve" 2>/dev/null)
+assert "info below H15 floor, above H17 min → ok (signal-only)" "ok" "${result_h15a_info}"
+
+state_file_h15a_crit="${TEMP_DIR}/var/human-state/test-h15a-crit.json"
+jq -n --argjson t "${epoch_5s}" \
+    '{human_id:"test-h15a-crit",date:"2026-04-06",decisions_today:0,approvals_recent:[],pending_count:1,last_ask_epoch:$t}' \
+    > "${state_file_h15a_crit}"
+result_h15a_crit=$(hi_post_response_check "test-h15a-crit" "critical" "approve" 2>/dev/null)
+assert "critical below H15 floor, above H17 min → too_fast (hard-reject)" "too_fast" "${result_h15a_crit}"
+
+# Tests 4a/4b: H17 minimum is severity-independent. Instant warn/info responses
+# must be rejected as suspicious — Element A signal-only does NOT apply here.
+# H17 runs before H15 in hi_post_response_check; a machine-speed approval is
+# rejected before the deliberation-floor check is ever reached.
+HI_MIN_RESPONSE_TIME=60
+HI_DELIBERATION_FLOOR_WARN=1
+HI_DELIBERATION_FLOOR_INFO=1
+
+HUMAN_H17_WARN="test-h15a-h17-warn"
+hi_record_ask_time "${HUMAN_H17_WARN}" 2>/dev/null
+hi_increment_pending "${HUMAN_H17_WARN}" 2>/dev/null
+result_h15a_h17_warn=$(hi_post_response_check "${HUMAN_H17_WARN}" "warn" "approve" 2>/dev/null)
+assert "warn below H17 minimum → suspicious (H17 hard-reject, unaffected by severity)" "suspicious" "${result_h15a_h17_warn}"
+
+HUMAN_H17_INFO="test-h15a-h17-info"
+hi_record_ask_time "${HUMAN_H17_INFO}" 2>/dev/null
+hi_increment_pending "${HUMAN_H17_INFO}" 2>/dev/null
+result_h15a_h17_info=$(hi_post_response_check "${HUMAN_H17_INFO}" "info" "approve" 2>/dev/null)
+assert "info below H17 minimum → suspicious (H17 hard-reject, unaffected by severity)" "suspicious" "${result_h15a_h17_info}"
+
+# Restore defaults
+HI_MIN_RESPONSE_TIME=2
+HI_DELIBERATION_FLOOR_CRITICAL=30
+HI_DELIBERATION_FLOOR_WARN=10
+HI_DELIBERATION_FLOOR_INFO=3
+
+echo
 echo "=== State Persistence Across Calls ==="
 echo
 
