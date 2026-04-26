@@ -7,12 +7,19 @@ a tier, the tier produces visible signals, and at Tier 2 the gate structurally
 interrupts before the main ask card appears. Approval without deliberation is
 architecturally harder, not just flagged.
 
+v3.2.0 is ZLAR's first governed-autonomy release: persistent intelligence can
+keep moving through scoped, auditable space, while real consequence boundaries
+gain visible gates, calibrated human attention, and structural interruption when
+risk patterns persist. In short: ordinary doors open smoothly; dangerous doors
+require a human; the path leaves footprints.
+
 Human-Attention Canary v1 (D → B → A → C → E1 → E2 build order):
 
 Element D — canary audit fields in v1 receipt schema:
-- Five optional fields added to v1 payload schema: canary_tier,
-  canary_trip_count, canary_pattern_check, canary_signal, canary_cleared.
-  Inert at write time. Schema addition only; no gate routing change.
+- Five optional fields added to v1 payload schema: h15_elapsed_seconds,
+  h15_floor_seconds, h15_below_floor, h14_alert_tier,
+  h14_alert_ack_receipt_id. Inert at write time. Schema addition only;
+  no gate routing change.
 
 Element B — H14 lockout replaced with advisory reason:
 - h14_lockout_until removed from both gate implementations. When H14 variance
@@ -30,7 +37,7 @@ Element A — H15 severity-aware deliberation floor:
 Element C — R012 split by effect (policy v3.2.0, 85 rules):
 - R012 retired. Replaced by four rules keyed to effect:
   R012I (read, allow+log), R012W_SIGN (sign operations, ask),
-  R012W_MODE (chmod/chown enforcement layer, ask),
+  R012W_MODE (gate mode/trust-state changes, ask),
   R012W_EDIT (write/edit enforcement layer, ask).
 - Closes coverage gap: zlar on/off/reset were previously unprotected.
 - jq .enabled evaluation bug fixed in gate and runner.
@@ -38,9 +45,10 @@ Element C — R012 split by effect (policy v3.2.0, 85 rules):
 H17 v2 — operator-calibrated authenticity:
 - Ms-precision timing via last_ask_epoch_ms. Three-floor structure:
   machine-speed absolute 500ms, calibrated-critical 1500ms,
-  uncalibrated 2000ms. Operators with 10+ critical decisions in the
-  response_times window earn the lower floor. ZLAR_MIN_RESPONSE_TIME still
-  accepted for backward compatibility.
+  uncalibrated 2000ms. Calibration is derived from non-critical
+  response-time variance: std_dev ≥ variance floor over the minimum
+  sample window earns the lower 1500ms critical floor.
+  ZLAR_MIN_RESPONSE_TIME still accepted for backward compatibility.
 - elapsed_ms stored per decision in response_times alongside elapsed (seconds)
   for future floor tuning. Both CC gate and MCP gate updated in lockstep.
 
