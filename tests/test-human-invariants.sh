@@ -500,6 +500,66 @@ result3=$(hi_check_response_variance "${HUMAN_LOW}" 2>/dev/null)
 assert "varied response times (stddev > 4s) → ok" "ok" "${result3}"
 
 echo
+echo "=== H14: Canary Tier State (Element E1) ==="
+echo
+
+# hi_get_canary_tier on fresh human → 0
+HUMAN_TIER="test-human-tier"
+tier0=$(hi_get_canary_tier "${HUMAN_TIER}" 2>/dev/null)
+assert "fresh human → canary_tier 0" "0" "${tier0}"
+
+# Trigger H14 once: uniform decisions → tier should increment to 1
+for i in $(seq 1 10); do
+    hi_record_decision "${HUMAN_TIER}" "approve" 0 "info"
+done
+hi_check_response_variance "${HUMAN_TIER}" >/dev/null 2>&1 || true
+tier1=$(hi_get_canary_tier "${HUMAN_TIER}" 2>/dev/null)
+assert "after first H14 trip → canary_tier 1" "1" "${tier1}"
+
+# canary_trip_count should be 1
+trip1=$(jq -r '.canary_trip_count // 0' "${TEMP_DIR}/var/human-state/${HUMAN_TIER}.json" 2>/dev/null)
+assert "after first H14 trip → canary_trip_count 1" "1" "${trip1}"
+
+# Trigger H14 a second time: refill with uniform decisions → tier should increment to 2
+for i in $(seq 1 10); do
+    hi_record_decision "${HUMAN_TIER}" "approve" 0 "info"
+done
+hi_check_response_variance "${HUMAN_TIER}" >/dev/null 2>&1 || true
+tier2=$(hi_get_canary_tier "${HUMAN_TIER}" 2>/dev/null)
+assert "after second H14 trip → canary_tier 2" "2" "${tier2}"
+
+# Trigger H14 a third time: tier must not exceed 2 (cap)
+for i in $(seq 1 10); do
+    hi_record_decision "${HUMAN_TIER}" "approve" 0 "info"
+done
+hi_check_response_variance "${HUMAN_TIER}" >/dev/null 2>&1 || true
+tier2b=$(hi_get_canary_tier "${HUMAN_TIER}" 2>/dev/null)
+assert "after third H14 trip → canary_tier still 2 (cap)" "2" "${tier2b}"
+
+# canary_trip_count keeps incrementing past the tier cap
+trip3=$(jq -r '.canary_trip_count // 0' "${TEMP_DIR}/var/human-state/${HUMAN_TIER}.json" 2>/dev/null)
+assert "after three H14 trips → canary_trip_count 3" "3" "${trip3}"
+
+# Variance recovery resets tier: record 10 decisions with high variance (stddev >> 8s)
+# then call hi_record_decision once more to trigger the reset check.
+HUMAN_RESET="test-human-tier-reset"
+# Seed with tier=2 state via H14 trips
+for i in $(seq 1 10); do hi_record_decision "${HUMAN_RESET}" "approve" 0 "info"; done
+hi_check_response_variance "${HUMAN_RESET}" >/dev/null 2>&1 || true
+# Now record 10 high-variance decisions to fill the window above reset_floor (8s)
+for elapsed in 1 20 3 25 2 30 4 22 1 18; do
+    hi_record_decision "${HUMAN_RESET}" "approve" "${elapsed}" "info"
+done
+tier_reset=$(hi_get_canary_tier "${HUMAN_RESET}" 2>/dev/null)
+assert "after variance recovery (stddev >> 8s) → canary_tier 0" "0" "${tier_reset}"
+trip_reset=$(jq -r '.canary_trip_count // 0' "${TEMP_DIR}/var/human-state/${HUMAN_RESET}.json" 2>/dev/null)
+assert "after variance recovery → canary_trip_count 0" "0" "${trip_reset}"
+
+# response_times must NOT be cleared by the tier reset (only by H14 trip)
+rt_len=$(jq '.response_times | length' "${TEMP_DIR}/var/human-state/${HUMAN_RESET}.json" 2>/dev/null)
+assert "tier reset must not clear response_times" "10" "${rt_len}"
+
+echo
 echo "=== Combined: Pre-Ask Check ==="
 echo
 

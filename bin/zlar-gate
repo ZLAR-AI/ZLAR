@@ -2026,6 +2026,20 @@ telegram_ask_async() {
     [ "${severity}" = "critical" ] && emoji="🔴"
     [ "${severity}" = "warn" ] && emoji="🟡"
 
+    # Canary tier banner — H14 variance-based escalation (Element E1).
+    # Tier 1: first H14 trip this day. Tier 2: second+ trip. Both advisory;
+    # pre-confirm structural interruption deferred to Element E full.
+    local tier_banner=""
+    local _canary_tier
+    _canary_tier=$(hi_get_canary_tier "${TELEGRAM_CHAT_ID}" 2>/dev/null || echo "0")
+    if [ "${_canary_tier}" = "2" ]; then
+        tier_banner="
+🚨 *Pattern persists* — second flag this session — read this ask"
+    elif [ "${_canary_tier}" = "1" ]; then
+        tier_banner="
+⚡ *Pattern check* — quick approvals this session — review carefully"
+    fi
+
     # Fatigue warning — if canary detected rubber-stamping, add friction
     local fatigue_banner=""
     if [ "${CANARY_LOADED}" = "true" ] && canary_is_fatigued "${SESSION_ID:-unknown}" 2>/dev/null; then
@@ -2108,7 +2122,7 @@ telegram_ask_async() {
     # context, rule+risk as compact metadata at bottom. v2.8.1 restructure —
     # the old layout buried the consequence below the raw command, making the
     # message unreadable at a glance on mobile.
-    local text="${emoji} 🖥️ *${rule}*${fatigue_banner}${novelty_banner}${restore_banner}${authority_type}
+    local text="${emoji} 🖥️ *${rule}*${tier_banner}${fatigue_banner}${novelty_banner}${restore_banner}${authority_type}
 
 ${consequence_line}${intent_line}${verify_line}
 

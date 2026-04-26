@@ -44,6 +44,7 @@ import {
   postResponseCheck,
   recordAskTime,
   recordDecision,
+  getCanaryTier,
 } from '../lib/human-invariants.mjs';
 
 // Cedar policy evaluation (Phase C — Cedar Integration)
@@ -940,9 +941,12 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
     ? `\n⚠️ *Advisory:* ${flags.advisory} (routed anyway — you decide)`
     : '';
 
+  // Canary tier banner — H14 variance-based escalation (Element E1).
+  const tierBannerLine = flags.tierBanner ? `\n${flags.tierBanner}` : '';
+
   // Message layout mirrors bash gate v2.8.1: consequence first, intent (if present),
   // verify hint (if present), action for context, rule+risk as compact metadata at bottom.
-  const text = `${emoji} 🔷 *${rule}*\n\n${consequenceLine}${intentLine}${verifyLine}${noveltyLine}${advisoryLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${riskScore}/100`;
+  const text = `${emoji} 🔷 *${rule}*${tierBannerLine}\n\n${consequenceLine}${intentLine}${verifyLine}${noveltyLine}${advisoryLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${riskScore}/100`;
   const escapedText = text.replace(/[_\[\]()~>#+=|{}.!-]/g, '\\$&').replace(/\\`/g, '`').replace(/\\\*/g, '*');
 
   const keyboard = {
@@ -1239,9 +1243,16 @@ async function handleRequest(msg) {
       recordAskTime(humanId);
 
       const actionId = genId();
+      const canaryTier = getCanaryTier(humanId);
+      const tierBanner = canaryTier === 2
+        ? '🚨 *Pattern persists* — second flag this session — read this ask'
+        : canaryTier === 1
+          ? '⚡ *Pattern check* — quick approvals this session — review carefully'
+          : null;
       const askFlags = {
         novelty: !!evaluation.noveltyEscalated,
         advisory: hiPre.ok ? null : `${hiPre.reason} — ${hiPre.detail}`,
+        tierBanner,
       };
       const decision = await telegramAsk(actionId, toolName, args, evaluation.rule, evaluation.riskScore, evaluation.severity, evaluation.verifyHint || '', askFlags);
 

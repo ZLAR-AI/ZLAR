@@ -173,7 +173,7 @@ _hi_ensure_state() {
         jq -n \
             --arg hid "${human_id}" \
             --arg today "${today}" \
-            '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0}' \
+            '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0}' \
             | _hi_sealed_write "${state_file}"
     else
         # Verify HMAC. On tamper: log + rebuild safe defaults. Rebuild, not
@@ -189,7 +189,7 @@ _hi_ensure_state() {
             jq -n \
                 --arg hid "${human_id}" \
                 --arg today "${today}" \
-                '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0}' \
+                '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0}' \
                 | _hi_sealed_write "${state_file}"
         fi
     fi
@@ -214,7 +214,7 @@ _hi_ensure_state() {
         # active sliding window now; the v2.7.2 cross-day reset principle
         # applies to it (response_times = []).
         jq --arg today "${today}" \
-            'del(._hmac) | .date = $today | .decisions_today = 0 | .pending = [] | .response_times = [] | del(.approvals_recent) | del(.pending_count) | del(.h14_lockout_until)' \
+            'del(._hmac) | .date = $today | .decisions_today = 0 | .pending = [] | .response_times = [] | .canary_tier = 0 | .canary_trip_count = 0 | del(.approvals_recent) | del(.pending_count) | del(.h14_lockout_until)' \
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
@@ -226,6 +226,12 @@ _hi_ensure_state() {
     # capacity again.
     if jq -e 'has("pending_count") or (has("pending") | not)' "${state_file}" >/dev/null 2>&1; then
         jq 'del(._hmac) | del(.pending_count) | .pending = (.pending // [])' \
+            "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+    fi
+
+    # v3.2.x schema migration: add canary_tier / canary_trip_count if absent.
+    if jq -e '(has("canary_tier") | not) or (has("canary_trip_count") | not)' "${state_file}" >/dev/null 2>&1; then
+        jq 'del(._hmac) | .canary_tier = (.canary_tier // 0) | .canary_trip_count = (.canary_trip_count // 0)' \
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
@@ -539,6 +545,16 @@ hi_check_authenticity() {
 #
 # Returns: "ok" or "rubber_stamping"
 
+# Read the current canary escalation tier for a human (0=none, 1=banner, 2=heavy banner).
+# Initialized to 0; incremented by hi_check_response_variance on H14 trips (cap 2);
+# reset to 0 by hi_record_decision when variance recovers (stddev >= 2× floor).
+hi_get_canary_tier() {
+    local human_id="${1:?Usage: hi_get_canary_tier <human_id>}"
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+    jq -r '.canary_tier // 0' "${state_file}" 2>/dev/null || echo "0"
+}
+
 hi_record_decision() {
     local human_id="${1:?}"
     local decision="${2:?}"        # "approve" or "deny" (kept for audit trail)
@@ -554,16 +570,33 @@ hi_record_decision() {
     # risk=100 → 1.0 unit (same as old integer 1). risk=10 → 0.10 unit.
     # Store {elapsed, severity} pairs, plus elapsed_ms when available (H17 v2 tuning).
     # H14 variance computation reads .elapsed (seconds); elapsed_ms is a side-channel.
+    # After appending, check if variance has recovered enough to reset the canary tier.
+    # Reset requires: tier > 0, sufficient non-critical samples, stddev >= 2× floor.
+    # Only resets canary_tier/canary_trip_count — response_times is not touched here.
+    local _reset_floor
+    _reset_floor=$(awk "BEGIN{print ${HI_VARIANCE_STDDEV_FLOOR} * 2}")
     jq --argjson elapsed "${elapsed_s}" \
        --arg sev "${severity}" \
        --argjson risk "${risk_score}" \
        --argjson window "${HI_VARIANCE_WINDOW}" \
        --arg ems "${elapsed_ms_val}" \
+       --argjson min_sample "${HI_VARIANCE_MIN_SAMPLE}" \
+       --argjson reset_floor "${_reset_floor}" \
        'del(._hmac) |
         ([$risk, 10] | max | . / 100) as $cost |
         .decisions_today = ((.decisions_today // 0) + $cost) |
         ({elapsed:$elapsed,severity:$sev} + (if $ems != "" then {elapsed_ms:($ems|tonumber)} else {} end)) as $entry |
-        .response_times = (.response_times + [$entry] | .[-$window:])' \
+        .response_times = (.response_times + [$entry] | .[-$window:]) |
+        if (.canary_tier // 0) > 0 then
+          [.response_times[] | select(type == "object" and .severity != "critical") | .elapsed] as $nc |
+          if ($nc | length) >= $min_sample then
+            (($nc | add) / ($nc | length)) as $mean |
+            ([$nc[] | (. - $mean) * (. - $mean)] | add) as $sum_sq |
+            ($sum_sq / ($nc | length) | sqrt) as $stddev |
+            if $stddev >= $reset_floor then .canary_tier = 0 | .canary_trip_count = 0
+            else . end
+          else . end
+        else . end' \
         "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
 }
 
@@ -607,9 +640,13 @@ hi_check_response_variance() {
         # on every pre-ask until midnight — no new decisions enter the window so
         # variance never recovers. Advisory semantics mean asks still route, so
         # new decisions accumulate naturally from here.
-        jq 'del(._hmac) | .response_times = []' \
+        # Also increment canary_tier (cap at 2) and canary_trip_count in the same write.
+        jq 'del(._hmac) | .response_times = [] |
+            (.canary_tier // 0) as $t |
+            .canary_tier = ([$t + 1, 2] | min) |
+            .canary_trip_count = ((.canary_trip_count // 0) + 1)' \
            "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
-        _hi_log "H14: response_times cleared"
+        _hi_log "H14: response_times cleared, canary_tier incremented to $(jq -r '.canary_tier // 0' "${state_file}" 2>/dev/null)"
         echo "canary_pattern_check"
         return 1
     fi
