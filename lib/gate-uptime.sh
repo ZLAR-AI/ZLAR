@@ -224,9 +224,18 @@ gu_record_disable() {
     local new_lifetime="${lifetime_sec}"
 
     if [ "${state}" = "on" ] && [ "${streak_start}" -gt 0 ]; then
-        # End the streak at now (not last_hb — the user is explicitly closing
-        # it, and they are present at the keyboard to witness the current time).
-        local streak_sec=$(( now - streak_start ))
+        # Close at last_hb, not now. Idle time between the last gate invocation
+        # and an explicit disable (stepping away, then running `zlar off`) is
+        # not active gate use and must not inflate lifetime_on_seconds or
+        # longest_streak_seconds. The idle-preserving semantic already prevents
+        # idle from resetting the streak; this aligns disable accounting with it.
+        #
+        # Safety floor: if no heartbeat was recorded in this streak (e.g.
+        # gu_record_enable followed immediately by gu_record_disable), fall back
+        # to now so the streak gets a non-zero duration.
+        local close_at="${last_hb}"
+        [ "${close_at}" -le "${streak_start}" ] && close_at="${now}"
+        local streak_sec=$(( close_at - streak_start ))
         if [ "${streak_sec}" -gt 0 ]; then
             new_lifetime=$(( lifetime_sec + streak_sec ))
             if [ "${streak_sec}" -gt "${longest_sec}" ]; then

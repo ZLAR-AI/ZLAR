@@ -138,6 +138,31 @@ lifetime_after_stale=$(jq -r '.lifetime_on_seconds' "${STATE_FILE}")
 assert "idle does not roll lifetime" "0" "${lifetime_after_stale}"
 
 echo
+echo "=== Disable after idle: idle tail not counted in lifetime ==="
+echo
+
+# Arrange: gate on, last active heartbeat 50s ago, streak started 100s ago.
+# The 50s idle tail (between last heartbeat and now) must not enter lifetime.
+now=$(date +%s)
+idle_start=$(( now - 100 ))
+last_active_hb=$(( now - 50 ))
+jq --argjson s "${idle_start}" --argjson hb "${last_active_hb}" \
+    '.state = "on" | .current_streak_start_epoch = $s | .last_heartbeat_epoch = $hb | .longest_streak_seconds = 0 | .lifetime_on_seconds = 0' \
+    "${STATE_FILE}" | _gu_sealed_write
+
+gu_record_disable
+
+# Active span = last_hb - streak_start = 50s. Idle tail (50s) must not be added.
+# Accept [45, 60] — tight enough to confirm the fix, loose enough for slow runners.
+lifetime_idle=$(jq -r '.lifetime_on_seconds' "${STATE_FILE}")
+{ [ "${lifetime_idle}" -ge 45 ] && [ "${lifetime_idle}" -le 60 ]; } && got="near50" || got="wrong:${lifetime_idle}"
+assert "disable after idle: lifetime uses last_heartbeat not wall clock" "near50" "${got}"
+
+longest_idle=$(jq -r '.longest_streak_seconds' "${STATE_FILE}")
+{ [ "${longest_idle}" -ge 45 ] && [ "${longest_idle}" -le 60 ]; } && got="near50" || got="wrong:${longest_idle}"
+assert "disable after idle: longest_streak uses last_heartbeat not wall clock" "near50" "${got}"
+
+echo
 echo "=== HMAC tamper detection ==="
 echo
 
