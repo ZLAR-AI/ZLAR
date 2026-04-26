@@ -84,7 +84,7 @@ evaluate_policy() {
         rule=$(echo "${POLICY_RULES_JSON}" | jq -c ".[${i}]" 2>/dev/null)
 
         local enabled
-        enabled=$(echo "${rule}" | jq -r '.enabled // true' 2>/dev/null)
+        enabled=$(echo "${rule}" | jq -r '.enabled' 2>/dev/null)
         if [ "${enabled}" = "false" ]; then i=$((i + 1)); continue; fi
 
         local rule_domain

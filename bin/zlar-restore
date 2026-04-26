@@ -64,10 +64,12 @@ cmd_evaluate() {
     require_enabled
 
     local session_id=""
+    local dry_run=false
 
     while [ $# -gt 0 ]; do
         case "$1" in
             --session) session_id="$2"; shift 2 ;;
+            --dry-run) dry_run=true; shift ;;
             *) echo "Unknown option: $1" >&2; exit 1 ;;
         esac
     done
@@ -157,6 +159,12 @@ cmd_evaluate() {
     echo
     echo "Detector Results:"
     echo "${result}" | jq -r '.detectors | to_entries[] | "  \(.key): score=\(.value.score) confidence=\(.value.confidence) evidence=\(.value.evidence_count)"'
+
+    if [ "${dry_run}" = "true" ]; then
+        echo
+        echo "(dry-run: no state transitions applied)"
+        return 0
+    fi
 
     # Apply trust state transition if recommendation is worse than current
     if [ "${recommendation}" != "healthy" ]; then
@@ -324,7 +332,8 @@ usage() {
 Usage: zlar-restore <command> [options]
 
 Commands:
-  evaluate [--session <id>]  Run detectors against session trace
+  evaluate [--session <id>] [--dry-run]  Run detectors against session trace
+                                         --dry-run: show results only, no state transitions
   status                     Show current trust state
   reset <reason>             Reset trust state (requires reason)
   history                    Show state transition history

@@ -259,6 +259,92 @@ const fixtures = [
     expected_rule: null, expected_action: 'deny',
   },
 
+  // ── R012 family — informational (R012I) ──────────────────────────────────
+  {
+    desc: 'R012I: zlar-restore status → allow/info',
+    domain: 'bash',
+    detail: { command: 'bin/zlar-restore status', cwd: '' },
+    expected_rule: 'R012I', expected_action: 'allow',
+  },
+  {
+    desc: 'R012I: zlar-restore history → allow/info',
+    domain: 'bash',
+    detail: { command: 'bin/zlar-restore history', cwd: '' },
+    expected_rule: 'R012I', expected_action: 'allow',
+  },
+  {
+    desc: 'R012I: zlar-restore detectors → allow/info',
+    domain: 'bash',
+    detail: { command: 'bin/zlar-restore detectors', cwd: '' },
+    expected_rule: 'R012I', expected_action: 'allow',
+  },
+  {
+    desc: 'R012I: zlar-restore evaluate --dry-run → allow/info',
+    domain: 'bash',
+    detail: { command: 'bin/zlar-restore evaluate --dry-run', cwd: '' },
+    expected_rule: 'R012I', expected_action: 'allow',
+  },
+  {
+    desc: 'R012I: zlar-restore evaluate --session s1 --dry-run → allow/info',
+    domain: 'bash',
+    detail: { command: 'bin/zlar-restore evaluate --session abc123 --dry-run', cwd: '' },
+    expected_rule: 'R012I', expected_action: 'allow',
+  },
+
+  // ── R012 family — trust-state writes (R012W_MODE) ────────────────────────
+  {
+    desc: 'R012W_MODE: zlar-restore evaluate (bare) → ask/critical',
+    domain: 'bash',
+    detail: { command: 'bin/zlar-restore evaluate', cwd: '' },
+    expected_rule: 'R012W_MODE', expected_action: 'ask',
+  },
+  {
+    desc: 'R012W_MODE: zlar-restore reset → ask/critical',
+    domain: 'bash',
+    detail: { command: 'bin/zlar-restore reset "manual override"', cwd: '' },
+    expected_rule: 'R012W_MODE', expected_action: 'ask',
+  },
+  {
+    desc: 'R012W_MODE: zlar off → ask/critical',
+    domain: 'bash',
+    detail: { command: 'bin/zlar off', cwd: '' },
+    expected_rule: 'R012W_MODE', expected_action: 'ask',
+  },
+  {
+    desc: 'R012W_MODE: zlar on → ask/critical',
+    domain: 'bash',
+    detail: { command: 'bin/zlar on', cwd: '' },
+    expected_rule: 'R012W_MODE', expected_action: 'ask',
+  },
+  {
+    desc: 'R012W_MODE: zlar reset → ask/critical',
+    domain: 'bash',
+    detail: { command: 'bin/zlar reset', cwd: '' },
+    expected_rule: 'R012W_MODE', expected_action: 'ask',
+  },
+
+  // ── R012 family — signing / trust-state metadata (R012W_SIGN) ────────────
+  {
+    desc: 'R012W_SIGN: zlar-restore sign-config → ask/critical',
+    domain: 'bash',
+    detail: { command: 'bin/zlar-restore sign-config', cwd: '' },
+    expected_rule: 'R012W_SIGN', expected_action: 'ask',
+  },
+
+  // ── R012 family — enforcement path write catch-all (R012W_EDIT) ──────────
+  {
+    desc: 'R012W_EDIT: write to policy file → ask/critical',
+    domain: 'bash',
+    detail: { command: 'cp /tmp/new.json etc/policies/active.policy.json', cwd: '' },
+    expected_rule: 'R012W_EDIT', expected_action: 'ask',
+  },
+  {
+    desc: 'R012W_EDIT: edit gate hook → ask/critical',
+    domain: 'bash',
+    detail: { command: 'vim /Users/testuser/.claude/hooks/pre-tool', cwd: '' },
+    expected_rule: 'R012W_EDIT', expected_action: 'ask',
+  },
+
   // ── Write domain ─────────────────────────────────────────────────────────
   {
     desc: 'Write normal file → allow',

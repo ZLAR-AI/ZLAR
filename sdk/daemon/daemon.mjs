@@ -157,18 +157,22 @@ function verifyPolicySignature(cfg, parsed) {
   }
 
   try {
-    // Canonical form: set signature.value = "" — matches bash gate's
-    // `jq '.signature.value = ""' file`. Use jq subprocess for bit-exact compat.
-    const r = spawnSync('jq', ['.signature.value = ""', cfg.policyFile], { encoding: 'utf8' });
-    if (r.status !== 0) throw new Error(`jq exited ${r.status}: ${r.stderr}`);
+    const pubKey = createPublicKey(readFileSync(cfg.policyPubkey, 'utf8'));
+    const sigBuf = Buffer.from(sigValue, 'base64');
 
-    // SHA-256 hex of canonical text — matches zlar_crypto_hash output
-    const sha256Hex = createHash('sha256').update(r.stdout).digest('hex');
+    // Spec form (ADR-011): jq -S -c, no trailing newline — matches zlar-policy sign
+    const rSpec = spawnSync('jq', ['-S', '-c', '.signature.value = ""', cfg.policyFile], { encoding: 'utf8' });
+    if (rSpec.status === 0) {
+      const canonSpec  = rSpec.stdout.replace(/\n$/, '');
+      const sha256Spec = createHash('sha256').update(canonSpec).digest('hex');
+      if (cryptoVerify(null, Buffer.from(sha256Spec), pubKey, sigBuf)) return true;
+    }
 
-    const pubKey  = createPublicKey(readFileSync(cfg.policyPubkey, 'utf8'));
-    const sigBuf  = Buffer.from(sigValue, 'base64');
-
-    return cryptoVerify(null, Buffer.from(sha256Hex), pubKey, sigBuf);
+    // Legacy fallback: pretty-printed with trailing newline — pre-ADR-011 signatures
+    const rPretty = spawnSync('jq', ['.signature.value = ""', cfg.policyFile], { encoding: 'utf8' });
+    if (rPretty.status !== 0) throw new Error(`jq exited ${rPretty.status}: ${rPretty.stderr}`);
+    const sha256Pretty = createHash('sha256').update(rPretty.stdout).digest('hex');
+    return cryptoVerify(null, Buffer.from(sha256Pretty), pubKey, sigBuf);
   } catch (e) {
     log(`Policy signature verification error: ${e.message}`);
     return false;

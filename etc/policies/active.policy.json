@@ -1,12 +1,13 @@
 {
-  "version": "3.1.0",
+  "version": "3.2.0",
   "created_at": "2026-03-29T00:00:00Z",
+  "updated_at": "2026-04-26T00:00:00Z",
   "author": "vincentnijjar",
-  "description": "ZLAR v2.11.1 — Dotfile perimeter closure. Six new rules close write/edit domain gaps: R035 (write .ssh/ deny), R035B (write credential dotfiles ask), R033E (edit /etc/ deny), R041H (edit shell configs ask), R041I (edit .env ask), R041J (edit credential dotfiles ask). Mirrors write-domain protection to edit domain throughout.",
+  "description": "ZLAR v3.2.0 — R012 split by effect. Retires monolithic R012 (ask/critical for all ZLAR path touches). Adds R012I (allow/info: informational CLI reads — status, uptime, brief, digest, audit, restore status/history/detectors, evaluate --dry-run), R012W_SIGN (ask/critical: signing and trust-state metadata writes), R012W_MODE (ask/critical: gate mode changes and trust-state resets — zlar on/off/reset/lock/unlock, restore reset/evaluate), R012W_EDIT (ask/critical: enforcement path write catch-all). Closes gap: zlar on/off/reset/lock/unlock were previously unprotected (matched R020 allow). Adds zlar-restore evaluate --dry-run as read-only diagnostic path (R012I).",
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "hKx9wHOMdbmw35SjxXU0Mg6YITUVjiHWRT1vH8ICHhOgOIjzFiBnRxP88XFo1kEnz7puZemcC78r/ORR8UaeAw=="
+    "value": "56R8uzwrtuGBxdltfgkOEHQz45t8wkq6q+zNmWVRc1vS88TnCLIgoJliw4rBRFDFAsBX6vkE80OYjk+aKz+SBQ=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -352,6 +353,27 @@
       }
     },
     {
+      "id": "R012I",
+      "enabled": true,
+      "description": "ZLAR CLI informational commands — allowed with audit",
+      "domain": "bash",
+      "action": "allow",
+      "severity": "info",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "bin/zlar-(status|uptime|brief|digest|audit)\\b|bin/zlar\\s+(status|uptime)\\b|bin/zlar-restore\\s+(status|history|detectors)\\b|bin/zlar-restore\\s+evaluate\\b.*--dry-run\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 0,
+        "consequence": 0,
+        "blast_radius": 0
+      }
+    },
+    {
       "id": "R012R",
       "enabled": true,
       "description": "Read-only access to ZLAR paths — allowed with audit",
@@ -378,28 +400,6 @@
       }
     },
     {
-      "id": "R012",
-      "enabled": true,
-      "description": "ZLAR enforcement modification — ask human",
-      "domain": "bash",
-      "action": "ask",
-      "severity": "critical",
-      "audit": true,
-      "match": {
-        "detail": {
-          "command": {
-            "regex": "/(bin|etc|config|scripts)/zlar-|/\\.claude/(hooks|settings|\\.gate-disabled)|policy.*\\.json|pf-zlar|pf\\.conf|gate\\.json|/var/log/(audit|gate)"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 100,
-        "consequence": 100,
-        "blast_radius": 100
-      },
-      "verify_hint": "Is the modification within ZLAR's enforcement layer (bin/zlar-gate, lib/hmac, lib/invariants, etc/policies, keys)?"
-    },
-    {
       "id": "R012BR",
       "enabled": true,
       "description": "Read-only access to audit/log/state files — allowed with audit",
@@ -424,6 +424,72 @@
         "consequence": 0,
         "blast_radius": 0
       }
+    },
+    {
+      "id": "R012W_SIGN",
+      "enabled": true,
+      "description": "Signing / trust-state metadata write — ask human",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "bin/zlar-restore\\s+sign-config\\b|bin/zlar-policy\\s+sign\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      },
+      "verify_hint": "This signs or rewrites trust-bearing state metadata. Confirm the authority object and signing key before approving."
+    },
+    {
+      "id": "R012W_MODE",
+      "enabled": true,
+      "description": "Gate enforcement mode / trust-state reset — ask human",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "bin/zlar\\s+(on|off|reset|lock|unlock)\\b|bin/zlar-restore\\s+(reset|evaluate)\\b"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      },
+      "verify_hint": "This changes gate enforcement mode or resets human-invariant trust state. Confirm the change is intentional."
+    },
+    {
+      "id": "R012W_EDIT",
+      "enabled": true,
+      "description": "ZLAR enforcement path write — ask human",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "/(bin|etc|config|scripts)/zlar-|/\\.claude/(hooks|settings|\\.gate-disabled)|policy.*\\.json|pf-zlar|pf\\.conf|gate\\.json|/var/log/(audit|gate)"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      },
+      "verify_hint": "This edits enforcement policy, gate code, or hooks. Confirm the specific file and change before approving."
     },
     {
       "id": "R012B",

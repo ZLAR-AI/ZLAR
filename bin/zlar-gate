@@ -1522,7 +1522,7 @@ evaluate_policy() {
 
         # Skip disabled rules
         local enabled
-        enabled=$(echo "${rule}" | jq -r '.enabled // true' 2>/dev/null)
+        enabled=$(echo "${rule}" | jq -r '.enabled' 2>/dev/null)
         if [ "${enabled}" = "false" ]; then
             i=$((i + 1))
             continue
@@ -1987,7 +1987,7 @@ get_consequence_line() {
         R090*|R095*) echo "⚠️ *If wrong:* external service contacted — data may be shared" ;;
         *)
             if [ "${risk_score}" -ge 70 ]; then
-                echo "⚠️ *If wrong:* high-consequence action (risk ${risk_score}/100)"
+                echo "⚠️ *If wrong:* high\-consequence action \(risk ${risk_score}/100\)"
             else
                 echo "⚠️ *If wrong:* unreviewed action"
             fi
