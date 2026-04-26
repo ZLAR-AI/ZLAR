@@ -437,6 +437,29 @@ jq -n --arg hid "${HUMAN_H17V2_COMPAT}" --argjson t "${_epoch_90s_compat}" \
 result_h17v2_compat=$(hi_check_authenticity "${HUMAN_H17V2_COMPAT}" "warn" 2>/dev/null)
 assert "no last_ask_epoch_ms, 90s via last_ask_epoch → ok (backward compat)" "ok" "${result_h17v2_compat}"
 
+# Test 9: elapsed_ms recorded in response_times after a successful approval.
+# Verifies that hi_post_response_check → hi_record_decision carries ms precision
+# into the state window so the calibrated-critical floor can be tuned from data.
+# Fixture: last_ask_epoch_ms set 5000ms ago. Default floor=2000ms → H17 passes.
+# H15 info floor=3s, 5s elapsed → passes. hi_record_decision stores elapsed_ms.
+HUMAN_H17V2_ELMS="test-h17v2-elapsed-ms"
+_now_ms_elms=$(_hi_epoch_ms)
+_ask_ms_elms=$(( _now_ms_elms - 5000 ))
+_ask_epoch_elms=$(( $(date +%s) - 5 ))
+_pending_ts_elms=$(date +%s)
+jq -n \
+    --arg hid "${HUMAN_H17V2_ELMS}" \
+    --argjson t "${_ask_epoch_elms}" \
+    --argjson tms "${_ask_ms_elms}" \
+    --argjson pts "${_pending_ts_elms}" \
+    '{human_id:$hid,date:"2026-04-26",decisions_today:0,response_times:[],
+      pending:[{action_hash:"",ts:$pts}],last_ask_epoch:$t,last_ask_epoch_ms:$tms}' \
+    > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_ELMS}.json"
+hi_post_response_check "${HUMAN_H17V2_ELMS}" "info" "approve" 2>/dev/null
+has_elapsed_ms=$(jq -r '.response_times[0] | has("elapsed_ms")' \
+    "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_ELMS}.json" 2>/dev/null)
+assert "elapsed_ms stored in response_times after approval" "true" "${has_elapsed_ms}"
+
 # Restore config
 HI_MIN_RESPONSE_TIME_MS=
 HI_ABSOLUTE_MIN_RESPONSE_TIME_MS=500

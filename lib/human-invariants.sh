@@ -545,21 +545,25 @@ hi_record_decision() {
     local elapsed_s="${3:-0}"      # response time in seconds
     local severity="${4:-info}"    # severity tier of the decision
     local risk_score="${5:-100}"   # 0-100 risk score; default 100 = 1.0 unit (backward-compat)
+    local elapsed_ms_val="${6:-}"  # optional ms-precision elapsed; omitted when unavailable
 
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
     # decisions_today is a float. Each decision costs max(10, risk_score) / 100 units.
     # risk=100 → 1.0 unit (same as old integer 1). risk=10 → 0.10 unit.
-    # Store {elapsed, severity} pairs. Severity weighting applied at check time.
+    # Store {elapsed, severity} pairs, plus elapsed_ms when available (H17 v2 tuning).
+    # H14 variance computation reads .elapsed (seconds); elapsed_ms is a side-channel.
     jq --argjson elapsed "${elapsed_s}" \
        --arg sev "${severity}" \
        --argjson risk "${risk_score}" \
        --argjson window "${HI_VARIANCE_WINDOW}" \
+       --arg ems "${elapsed_ms_val}" \
        'del(._hmac) |
         ([$risk, 10] | max | . / 100) as $cost |
         .decisions_today = ((.decisions_today // 0) + $cost) |
-        .response_times = (.response_times + [{elapsed:$elapsed,severity:$sev}] | .[-$window:])' \
+        ({elapsed:$elapsed,severity:$sev} + (if $ems != "" then {elapsed_ms:($ems|tonumber)} else {} end)) as $entry |
+        .response_times = (.response_times + [$entry] | .[-$window:])' \
         "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
 }
 
@@ -702,13 +706,21 @@ hi_post_response_check() {
         _hi_log "H15 SIGNAL (${severity}): ${human_id} responded below deliberation floor — logged, not rejected"
     fi
 
-    # Record the decision for H14 variance tracking (elapsed = now - ask_time)
-    local _state_file _ask_epoch _now_epoch _elapsed
+    # Record the decision for H14 variance tracking (elapsed = now - ask_time).
+    # Also capture ms-precision elapsed for H17 v2 floor tuning.
+    local _state_file _ask_epoch _ask_ms _now_epoch _now_ms _elapsed _elapsed_ms
     _state_file=$(_hi_ensure_state "${human_id}")
     _ask_epoch=$(jq -r '.last_ask_epoch // 0' "${_state_file}" 2>/dev/null || echo 0)
+    _ask_ms=$(jq -r '.last_ask_epoch_ms // 0' "${_state_file}" 2>/dev/null || echo 0)
     _now_epoch=$(date +%s)
+    _now_ms=$(_hi_epoch_ms)
     _elapsed=$(( _now_epoch - _ask_epoch ))
-    hi_record_decision "${human_id}" "${decision}" "${_elapsed}" "${severity}" "${risk_score}"
+    if [ "${_ask_ms}" != "0" ] && [ -n "${_ask_ms}" ]; then
+        _elapsed_ms=$(( _now_ms - _ask_ms ))
+    else
+        _elapsed_ms=$(( (_now_epoch - _ask_epoch) * 1000 ))
+    fi
+    hi_record_decision "${human_id}" "${decision}" "${_elapsed}" "${severity}" "${risk_score}" "${_elapsed_ms}"
 
     echo "ok"
     return 0
