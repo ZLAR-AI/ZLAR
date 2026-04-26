@@ -2051,25 +2051,31 @@ telegram_ask_async() {
 🆕 *First time this session*"
     fi
 
+    # Escape MarkdownV2 special characters in content variables.
+    # Applied to user/policy/agent-controlled strings BEFORE template assembly.
+    # Template formatting markers (* for bold, ` for code) live in hardcoded
+    # strings and must NOT be run through this function.
+    _mdv2e() { printf '%s' "$1" | sed 's/\\/\\\\/g' | sed 's/[]_*[()~`>#+=|{}.!-]/\\&/g'; }
+
     # Restore escalation banner — policy said allow, but Agent Health escalated
     local restore_banner=""
     if [ "${RESTORE_ESCALATED}" = "true" ]; then
         restore_banner="
-🩺 *Agent Health escalated* — trust state: ${RESTORE_TRUST_STATE:-unknown}"
+🩺 *Agent Health escalated* — trust state: $(_mdv2e "${RESTORE_TRUST_STATE:-unknown}")"
     fi
 
     # Agent intent — .description field from Bash tool_input (why the agent ran this)
     local intent_line=""
     if [ -n "${TOOL_INTENT:-}" ]; then
         intent_line="
-📋 *Context:* ${TOOL_INTENT}"
+📋 *Context:* $(_mdv2e "${TOOL_INTENT}")"
     fi
 
     # Verify hint — policy-authored check prompt for this rule
     local verify_line=""
     if [ -n "${MATCHED_VERIFY_HINT:-}" ]; then
         verify_line="
-🔍 *Verify:* ${MATCHED_VERIFY_HINT}"
+🔍 *Verify:* $(_mdv2e "${MATCHED_VERIFY_HINT}")"
     fi
 
     # Action label: domain-prefixed, command trimmed to 80 chars for readability.
@@ -2077,6 +2083,7 @@ telegram_ask_async() {
     local short_display
     short_display=$(echo "${display}" | head -c 80)
     [ ${#display} -gt 80 ] && short_display="${short_display}…"
+    short_display=$(_mdv2e "${short_display}")
 
     local action_label
     case "${tool_name}" in
@@ -2108,12 +2115,9 @@ ${consequence_line}${intent_line}${verify_line}
 *${action_label}:* \`${short_display}\`
 Risk ${risk_score}/100 · Session \`${short_session}\`"
 
-    # Escape MarkdownV2 special characters. POSIX bracket expression rules:
-    # - ] must be FIRST to be literal (right after [)
-    # - - must be LAST to be literal (right before closing ])
-    # - \ has NO special meaning inside bracket expressions
-    # Then restore ` and * (used for formatting in the message template).
-    text=$(echo "${text}" | sed 's/[]_[()~>#+=|{}.!-]/\\&/g' | sed 's/\\`/`/g' | sed 's/\\\*/*/g')
+    # Content variables are pre-escaped via _mdv2e before template assembly.
+    # Template formatting markers (* bold, ` code) are in hardcoded strings and
+    # are intentionally not escaped. No post-assembly sed pass needed.
 
     local keyboard
     keyboard=$(jq -n -c \

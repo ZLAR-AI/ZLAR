@@ -136,7 +136,7 @@ _restore_force_closed() {
     if [ -n "${TELEGRAM_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
         local _alert_body
         _alert_body=$(jq -n --arg chat "${TELEGRAM_CHAT_ID}" --arg reason "${_reason}" \
-            '{"chat_id":$chat,"text":"🚨 ZLAR CRITICAL: Restore config integrity failure (\($reason)). Agent Health forced to maximum escalation. All actions require human approval. Check etc/restore-config.json for tampering.","parse_mode":"Markdown"}')
+            '{"chat_id":$chat,"text":"🚨 ZLAR CRITICAL: Restore config integrity failure (\($reason)). Agent Health forced to maximum escalation. All actions require human approval. Check etc/restore-config.json for tampering."}')
         curl -s -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
             -H "Content-Type: application/json" -d "${_alert_body}" >/dev/null 2>&1 || true
     fi

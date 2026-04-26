@@ -920,6 +920,7 @@ cmd_help() {
     printf "  ${BOLD}Commands:${NC}\n"
     printf "    status      Show governed frameworks, policy summary, audit count\n"
     printf "    doctor      Check installation health (deps, keys, hooks, policy)\n"
+    printf "    reset       Reset human-invariant state (clear stuck pending counters)\n"
     printf "    audit [n]   Show last n audit entries (default: 20)\n"
     printf "    policy      Show current policy rules\n"
     printf "    telegram    Set up Telegram approval (upgrade from deny-all)\n"
