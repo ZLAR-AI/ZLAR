@@ -916,6 +916,83 @@ function getConsequenceLine(toolName, rule, riskScore) {
   return '⚠️ *If wrong:* unreviewed action';
 }
 
+async function telegramPreconfirm(rule, riskScore, severity, toolName) {
+  if (!CONFIG.telegramToken || !CONFIG.telegramChatId) return 'block'; // fail closed
+
+  const pcActionId = genId();
+  const emoji = severity === 'critical' ? '🔴' : severity === 'warn' ? '🟡' : '⚡';
+  const text = `${emoji} 🚨 *Tier 2 preconfirm required*\n\nThis session has a repeated quick-approval pattern. A second flag was recorded.\n\nRule: *${rule}*\nAction: ${toolName}\n\nTap PROCEED to see the full ask card, or BLOCK to halt this action immediately.`;
+  const escapedText = text.replace(/[_\[\]()~>#+=|{}.!-]/g, '\\$&').replace(/\\`/g, '`').replace(/\\\*/g, '*');
+
+  const keyboard = {
+    inline_keyboard: [[
+      { text: '✅ PROCEED', callback_data: `mcp:pc_proceed:${pcActionId}` },
+      { text: '🚫 BLOCK', callback_data: `mcp:pc_block:${pcActionId}` },
+    ]],
+  };
+
+  const result = await telegramApi('sendMessage', {
+    chat_id: CONFIG.telegramChatId,
+    text: escapedText,
+    parse_mode: 'MarkdownV2',
+    reply_markup: keyboard,
+  });
+
+  const msgId = result?.result?.message_id;
+  if (!msgId) return 'block'; // fail closed on send failure
+
+  console.log(`[gate] Tier 2 preconfirm sent: msg_id=${msgId}, pc_id=${pcActionId}`);
+
+  const inboxDir = '/var/run/zlar-tg/inbox/mcp';
+  const deadline = Date.now() + CONFIG.telegramTimeoutS * 1000;
+
+  while (Date.now() < deadline) {
+    try {
+      const { readdirSync, readFileSync: readF, unlinkSync } = await import('fs');
+      const files = readdirSync(inboxDir).filter(f => f.endsWith('.json'));
+
+      for (const file of files) {
+        const filePath = join(inboxDir, file);
+        try {
+          const cb = JSON.parse(readF(filePath, 'utf8'));
+          const cbData = cb.data || '';
+          const cbFrom = cb.from_id || '';
+          const cbId = cb.callback_query_id || '';
+          const cbHmac = cb.hmac || '';
+
+          if (cbFrom !== CONFIG.telegramChatId) { unlinkSync(filePath); continue; }
+
+          if (!verifyInboxHmac(cbData, cbFrom, cbId, cbHmac)) {
+            console.error(`[gate] SECURITY: preconfirm inbox HMAC mismatch: ${file}`);
+            unlinkSync(filePath);
+            continue;
+          }
+
+          if (cbData === `mcp:pc_proceed:${pcActionId}`) {
+            unlinkSync(filePath);
+            console.log(`[gate] Tier 2 preconfirm: PROCEED (user_id=${cbFrom})`);
+            return 'proceed';
+          } else if (cbData === `mcp:pc_block:${pcActionId}`) {
+            unlinkSync(filePath);
+            console.log(`[gate] Tier 2 preconfirm: BLOCK (user_id=${cbFrom})`);
+            return 'block';
+          }
+        } catch (e) {
+          try { unlinkSync(filePath); } catch {}
+          auditInternalError('preconfirm_inbox_file_parse', e, { file });
+        }
+      }
+    } catch (e) {
+      auditInternalError('preconfirm_inbox_loop_read', e);
+    }
+
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  console.log(`[gate] Tier 2 preconfirm: TIMED OUT after ${CONFIG.telegramTimeoutS}s`);
+  return 'timeout';
+}
+
 async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, verifyHint = '', flags = {}) {
   if (!CONFIG.telegramToken || !CONFIG.telegramChatId) {
     console.error('[gate] No Telegram token or chat ID — cannot ask human');
@@ -1244,6 +1321,25 @@ async function handleRequest(msg) {
 
       const actionId = genId();
       const canaryTier = getCanaryTier(humanId);
+
+      // Tier 2 preconfirm: structural interrupt before main ask when H14 tier == 2.
+      if (canaryTier === 2) {
+        const pcResult = await telegramPreconfirm(evaluation.rule, evaluation.riskScore, evaluation.severity, toolName);
+        if (pcResult !== 'proceed') {
+          const reason = pcResult === 'block' ? 'preconfirm_blocked' : 'preconfirm_timeout';
+          emitEvent('mcp', toolName, 'denied', { tool: toolName, reason }, evaluation.rule, evaluation.severity, evaluation.riskScore, `gate:${reason}`);
+          return {
+            action: 'deny',
+            response: {
+              type: 'text',
+              text: pcResult === 'block'
+                ? `Blocked at Tier 2 preconfirm (rule ${evaluation.rule})`
+                : `Tier 2 preconfirm timed out (rule ${evaluation.rule})`,
+            },
+          };
+        }
+      }
+
       const tierBanner = canaryTier === 2
         ? '🚨 *Pattern persists* — second flag this session — read this ask'
         : canaryTier === 1

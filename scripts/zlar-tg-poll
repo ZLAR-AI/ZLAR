@@ -153,6 +153,8 @@ while true; do
         case "${cb_data}" in
             *:canary:approve:*) answer_text="⚠️ Canary — governance test" ;;
             *:canary:deny:*)    answer_text="✅ Canary passed" ;;
+            *:pc_proceed:*)     answer_text="▶️ Proceeding to full ask" ;;
+            *:pc_block:*)       answer_text="🚫 Action blocked" ;;
             *:approve:*)        answer_text="✅ Approved" ;;
             *:deny:*)           answer_text="❌ Denied" ;;
         esac
@@ -172,6 +174,14 @@ while true; do
     ;;
 *:canary:deny:*)
     edit_text="✅ Canary passed — governance check healthy"
+    ;;
+*:pc_proceed:*)
+    case "${cb_data}" in cc:*) pfx="🖥️";; mcp:*) pfx="🔷";; *) pfx="";; esac
+    edit_text="${pfx} ▶️ Tier 2 preconfirm cleared — full ask incoming"
+    ;;
+*:pc_block:*)
+    case "${cb_data}" in cc:*) pfx="🖥️";; mcp:*) pfx="🔷";; *) pfx="";; esac
+    edit_text="${pfx} 🚫 Tier 2 preconfirm — action blocked"
     ;;
 *:approve:*)
     case "${cb_data}" in cc:*) pfx="🖥️";; oc:*) pfx="🦞";; mcp:*) pfx="🔷";; *) pfx="";; esac

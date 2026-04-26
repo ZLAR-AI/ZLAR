@@ -125,6 +125,8 @@ gu_record_heartbeat 2>/dev/null || true
 # alerting about. Best-effort and silent on failure.
 # shellcheck source=../lib/fail-closed-alert.sh
 source "${PROJECT_DIR}/lib/fail-closed-alert.sh"
+# shellcheck source=../lib/preconfirm-cc.sh
+source "${PROJECT_DIR}/lib/preconfirm-cc.sh"
 
 # ─── Private temp directory ──────────────────────────────────────────────────
 # Not /tmp (world-readable). Gate-private directory for policy verification.
@@ -1995,6 +1997,10 @@ get_consequence_line() {
     esac
 }
 
+# Escape MarkdownV2 special characters. Used by telegram_ask_async and
+# preconfirm-cc.sh (sourced at startup, before first ask).
+_mdv2e() { printf '%s' "$1" | sed 's/\\/\\\\/g' | sed 's/[]_*[()~`>#+=|{}.!-]/\\&/g'; }
+
 # Send Telegram ask and return immediately (non-blocking).
 # Writes pending file for check_pending_approval to find on retry.
 # Returns: 0 = message sent, 1 = send failed, 2 = no token, 3 = rate limited
@@ -2064,12 +2070,6 @@ telegram_ask_async() {
         novelty_banner="
 🆕 *First time this session*"
     fi
-
-    # Escape MarkdownV2 special characters in content variables.
-    # Applied to user/policy/agent-controlled strings BEFORE template assembly.
-    # Template formatting markers (* for bold, ` for code) live in hardcoded
-    # strings and must NOT be run through this function.
-    _mdv2e() { printf '%s' "$1" | sed 's/\\/\\\\/g' | sed 's/[]_*[()~`>#+=|{}.!-]/\\&/g'; }
 
     # Restore escalation banner — policy said allow, but Agent Health escalated
     local restore_banner=""
@@ -2789,6 +2789,45 @@ main() {
                             respond_deny "⏳ Still awaiting Telegram approval (rule ${MATCHED_RULE}). Approve on phone, then retry." "pending"
                             ;;
                         *)
+                            # Tier 2 preconfirm: if canary_tier == 2, send interrupt card before main ask.
+                            # PROCEED (state 0) falls through to main ask. BLOCK/timeout (1), waiting (3),
+                            # or not-yet-sent (2) skip the main ask path entirely.
+                            local _skip_ask="false"
+                            if [ "${CANARY_LOADED}" = "true" ]; then
+                                local _pc_tier
+                                _pc_tier=$(hi_get_canary_tier "${TELEGRAM_CHAT_ID}" 2>/dev/null || echo "0")
+                                if [ "${_pc_tier}" = "2" ]; then
+                                    local _pc_result
+                                    check_preconfirm "${MATCHED_RULE}" "${action_hash}" && _pc_result=0 || _pc_result=$?
+                                    case ${_pc_result} in
+                                        0)  ;; # cleared — fall through to main ask
+                                        1)
+                                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:preconfirm_blocked"
+                                            respond_deny "Blocked at Tier 2 preconfirm (rule ${MATCHED_RULE})" "preconfirm_blocked"
+                                            _skip_ask="true"
+                                            ;;
+                                        2)
+                                            local _pc_send=0
+                                            telegram_preconfirm_async "${action_hash}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${TOOL_DISPLAY}" || _pc_send=$?
+                                            if [ "${_pc_send}" = "0" ]; then
+                                                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "ask_pending" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:preconfirm"
+                                                respond_deny "⏳ Tier 2 preconfirm sent (rule ${MATCHED_RULE}). Tap PROCEED on phone, then retry." "pending"
+                                            else
+                                                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:preconfirm_error"
+                                                respond_deny "Could not send Tier 2 preconfirm (rule ${MATCHED_RULE})" "gate_error"
+                                            fi
+                                            _skip_ask="true"
+                                            ;;
+                                        3)
+                                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "ask_pending_retry" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:preconfirm"
+                                            respond_deny "⏳ Still awaiting Tier 2 preconfirm (rule ${MATCHED_RULE}). Tap PROCEED on phone, then retry." "pending"
+                                            _skip_ask="true"
+                                            ;;
+                                    esac
+                                fi
+                            fi
+
+                            if [ "${_skip_ask}" = "false" ]; then
                             # No approval yet — check human invariants, then send Telegram ask
 
                             # H6/H13/H14: Is the human available and capable of another decision?
@@ -2862,6 +2901,7 @@ main() {
                                     respond_deny "Could not reach human for approval (rule ${MATCHED_RULE})" "gate_error"
                                     ;;
                             esac
+                            fi # end _skip_ask
                             ;;
                     esac
                     fi
