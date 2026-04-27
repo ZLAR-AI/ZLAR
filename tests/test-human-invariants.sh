@@ -336,6 +336,7 @@ _CAL_RT='[{"elapsed":2,"severity":"info"},{"elapsed":8,"severity":"warn"},{"elap
 
 # v2 config for this section. Wide defaults give CI-safe margins.
 # Individual tests override HI_CALIBRATED_CRITICAL_FLOOR_MS where noted.
+_H17_TODAY=$(date -u +%Y-%m-%d)       # prevents cross-day rollover wiping response_times
 HI_MIN_RESPONSE_TIME_MS=5000           # uncalibrated default floor = 5s
 HI_ABSOLUTE_MIN_RESPONSE_TIME_MS=500   # machine-speed / authenticity floor = 500ms
 HI_CALIBRATED_CRITICAL_FLOOR_MS=1500   # production default
@@ -346,9 +347,9 @@ _now_ms_v2=$(_hi_epoch_ms)
 # Elapsed ≈ 200ms (< 500ms authenticity floor). Calibration cannot override.
 HUMAN_H17V2_MACH="test-h17v2-machine-speed"
 _ask_ms_mach=$(( _now_ms_v2 - 200 ))
-jq -n --arg hid "${HUMAN_H17V2_MACH}" --argjson ask_ms "${_ask_ms_mach}" \
+jq -n --arg hid "${HUMAN_H17V2_MACH}" --arg today "${_H17_TODAY}" --argjson ask_ms "${_ask_ms_mach}" \
     --argjson rt "${_CAL_RT}" \
-    '{human_id:$hid,date:"2026-04-26",decisions_today:0,response_times:$rt,pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
+    '{human_id:$hid,date:$today,decisions_today:0,response_times:$rt,pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
     > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_MACH}.json"
 result_h17v2_mach=$(hi_check_authenticity "${HUMAN_H17V2_MACH}" "info" 2>/dev/null)
 assert "calibrated, info, ~200ms (below 500ms machine-speed floor) → suspicious" "suspicious" "${result_h17v2_mach}"
@@ -357,17 +358,17 @@ assert "calibrated, info, ~200ms (below 500ms machine-speed floor) → suspiciou
 # floor, below 5000ms uncalibrated default. Calibration earns ok.
 HUMAN_H17V2_CAL_WARN="test-h17v2-cal-warn"
 _ask_ms_cal_warn=$(( _now_ms_v2 - 1000 ))
-jq -n --arg hid "${HUMAN_H17V2_CAL_WARN}" --argjson ask_ms "${_ask_ms_cal_warn}" \
+jq -n --arg hid "${HUMAN_H17V2_CAL_WARN}" --arg today "${_H17_TODAY}" --argjson ask_ms "${_ask_ms_cal_warn}" \
     --argjson rt "${_CAL_RT}" \
-    '{human_id:$hid,date:"2026-04-26",decisions_today:0,response_times:$rt,pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
+    '{human_id:$hid,date:$today,decisions_today:0,response_times:$rt,pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
     > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_CAL_WARN}.json"
 result_h17v2_cal_warn=$(hi_check_authenticity "${HUMAN_H17V2_CAL_WARN}" "warn" 2>/dev/null)
 assert "calibrated, warn, ~1000ms (above authenticity floor, calibrated) → ok" "ok" "${result_h17v2_cal_warn}"
 
 # Test 3: same elapsed (1000ms), uncalibrated — 5000ms default floor applies.
 HUMAN_H17V2_UNCAL="test-h17v2-uncal-warn"
-jq -n --arg hid "${HUMAN_H17V2_UNCAL}" --argjson ask_ms "${_ask_ms_cal_warn}" \
-    '{human_id:$hid,date:"2026-04-26",decisions_today:0,response_times:[],pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
+jq -n --arg hid "${HUMAN_H17V2_UNCAL}" --arg today "${_H17_TODAY}" --argjson ask_ms "${_ask_ms_cal_warn}" \
+    '{human_id:$hid,date:$today,decisions_today:0,response_times:[],pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
     > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_UNCAL}.json"
 result_h17v2_uncal=$(hi_check_authenticity "${HUMAN_H17V2_UNCAL}" "warn" 2>/dev/null)
 assert "uncalibrated, warn, ~1000ms (below 5000ms default floor) → suspicious" "suspicious" "${result_h17v2_uncal}"
@@ -376,9 +377,9 @@ assert "uncalibrated, warn, ~1000ms (below 5000ms default floor) → suspicious"
 # elapsed ≥ 1600ms (time only moves forward from _now_ms_v2) > 1500ms floor.
 HUMAN_H17V2_CAL_CRIT_OK="test-h17v2-cal-crit-ok"
 _ask_ms_crit_ok=$(( _now_ms_v2 - 1600 ))
-jq -n --arg hid "${HUMAN_H17V2_CAL_CRIT_OK}" --argjson ask_ms "${_ask_ms_crit_ok}" \
+jq -n --arg hid "${HUMAN_H17V2_CAL_CRIT_OK}" --arg today "${_H17_TODAY}" --argjson ask_ms "${_ask_ms_crit_ok}" \
     --argjson rt "${_CAL_RT}" \
-    '{human_id:$hid,date:"2026-04-26",decisions_today:0,response_times:$rt,pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
+    '{human_id:$hid,date:$today,decisions_today:0,response_times:$rt,pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
     > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_CAL_CRIT_OK}.json"
 result_h17v2_crit_ok=$(hi_check_authenticity "${HUMAN_H17V2_CAL_CRIT_OK}" "critical" 2>/dev/null)
 assert "calibrated, critical, ~1600ms elapsed (floor=1500ms) → ok" "ok" "${result_h17v2_crit_ok}"
@@ -389,9 +390,9 @@ assert "calibrated, critical, ~1600ms elapsed (floor=1500ms) → ok" "ok" "${res
 HI_CALIBRATED_CRITICAL_FLOOR_MS=3000
 HUMAN_H17V2_CAL_CRIT_SUSP="test-h17v2-cal-crit-susp"
 _ask_ms_crit_susp=$(( _now_ms_v2 - 1400 ))
-jq -n --arg hid "${HUMAN_H17V2_CAL_CRIT_SUSP}" --argjson ask_ms "${_ask_ms_crit_susp}" \
+jq -n --arg hid "${HUMAN_H17V2_CAL_CRIT_SUSP}" --arg today "${_H17_TODAY}" --argjson ask_ms "${_ask_ms_crit_susp}" \
     --argjson rt "${_CAL_RT}" \
-    '{human_id:$hid,date:"2026-04-26",decisions_today:0,response_times:$rt,pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
+    '{human_id:$hid,date:$today,decisions_today:0,response_times:$rt,pending:[],last_ask_epoch:0,last_ask_epoch_ms:$ask_ms}' \
     > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_CAL_CRIT_SUSP}.json"
 result_h17v2_crit_susp=$(hi_check_authenticity "${HUMAN_H17V2_CAL_CRIT_SUSP}" "critical" 2>/dev/null)
 assert "calibrated, critical, ~1400ms elapsed (floor=3000ms) → suspicious" "suspicious" "${result_h17v2_crit_susp}"
@@ -400,8 +401,8 @@ HI_CALIBRATED_CRITICAL_FLOOR_MS=1500
 # Test 6: insufficient history (5 entries, below min_sample=10) → not calibrated.
 HUMAN_H17V2_FEW="test-h17v2-few-history"
 _ask_ms_few=$(( _now_ms_v2 - 1000 ))
-jq -n --arg hid "${HUMAN_H17V2_FEW}" --argjson ask_ms "${_ask_ms_few}" \
-    '{human_id:$hid,date:"2026-04-26",decisions_today:0,
+jq -n --arg hid "${HUMAN_H17V2_FEW}" --arg today "${_H17_TODAY}" --argjson ask_ms "${_ask_ms_few}" \
+    '{human_id:$hid,date:$today,decisions_today:0,
       response_times:[{"elapsed":2,"severity":"info"},{"elapsed":8,"severity":"warn"},
                       {"elapsed":15,"severity":"info"},{"elapsed":5,"severity":"warn"},
                       {"elapsed":20,"severity":"info"}],
@@ -413,8 +414,8 @@ assert "5 history entries (below min_sample=10) → not calibrated → suspiciou
 # Test 7: uniform history (stddev=0, below 4s floor) → not calibrated.
 HUMAN_H17V2_UNI="test-h17v2-uniform"
 _ask_ms_uni=$(( _now_ms_v2 - 1000 ))
-jq -n --arg hid "${HUMAN_H17V2_UNI}" --argjson ask_ms "${_ask_ms_uni}" \
-    '{human_id:$hid,date:"2026-04-26",decisions_today:0,
+jq -n --arg hid "${HUMAN_H17V2_UNI}" --arg today "${_H17_TODAY}" --argjson ask_ms "${_ask_ms_uni}" \
+    '{human_id:$hid,date:$today,decisions_today:0,
       response_times:[{"elapsed":5,"severity":"info"},{"elapsed":5,"severity":"warn"},
                       {"elapsed":5,"severity":"info"},{"elapsed":5,"severity":"warn"},
                       {"elapsed":5,"severity":"info"},{"elapsed":5,"severity":"warn"},
@@ -449,10 +450,11 @@ _ask_epoch_elms=$(( $(date +%s) - 5 ))
 _pending_ts_elms=$(date +%s)
 jq -n \
     --arg hid "${HUMAN_H17V2_ELMS}" \
+    --arg today "${_H17_TODAY}" \
     --argjson t "${_ask_epoch_elms}" \
     --argjson tms "${_ask_ms_elms}" \
     --argjson pts "${_pending_ts_elms}" \
-    '{human_id:$hid,date:"2026-04-26",decisions_today:0,response_times:[],
+    '{human_id:$hid,date:$today,decisions_today:0,response_times:[],
       pending:[{action_hash:"",ts:$pts}],last_ask_epoch:$t,last_ask_epoch_ms:$tms}' \
     > "${TEMP_DIR}/var/human-state/${HUMAN_H17V2_ELMS}.json"
 hi_post_response_check "${HUMAN_H17V2_ELMS}" "info" "approve" 2>/dev/null
