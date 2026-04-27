@@ -1,5 +1,76 @@
 # Changelog
 
+## 3.2.1 — 2026-04-27 — Hotfix: approved-cache replay, PC tombstones, H14 pass-through, MCP E2 ordering
+
+Five post-release bugs found in operational testing of v3.2.0 (Element E2,
+Tier 2 preconfirm). All fixes land as a single hotfix. No new behaviour:
+every change corrects a broken guarantee.
+
+Bug 1 — Approved-cache replay after H15/H17 rejection:
+- When check_pending_approval matched an approve callback, it seeded a
+  .approved cache file before H15/H17 ran. If H15 (deliberation floor) or
+  H17 (authenticity) then rejected the action, the .approved file survived.
+  The next retry read the cache, returned 0 (approved), and bypassed both
+  checks entirely.
+- Fix: in bin/zlar-gate, the H15/H17 hard-reject path now deletes
+  ${APPROVAL_DIR}/${MATCHED_RULE}-${SESSION_ID}-${action_hash:0:16}.approved
+  immediately after rejection. Cache hit on a rejected action is no longer
+  possible within the same session.
+- Regression: test-approval-race.sh Test 8 — simulates H15/H17 rejection by
+  deleting the approved file; verifies next CPA call returns 2 (fresh ask).
+
+Bug 2 — CC Tier 2 preconfirm BLOCK/timeout not sticky:
+- check_preconfirm returned 2 (not_sent) on every retry after a BLOCK or
+  timeout. The pending file was deleted on BLOCK/timeout, so each new retry
+  sent a fresh preconfirm card and a fresh phone ping.
+- Fix: on BLOCK or timeout, lib/preconfirm-cc.sh writes a TTL-aware .blocked
+  tombstone keyed pc-{rule}-{SESSION_ID}-{hash:0:16}.blocked. On PROCEED,
+  writes a .acked tombstone of the same form. Future calls within TTL read
+  the tombstone (return 1 for blocked, 0 for acked) without sending any card.
+  Tombstones expire after ZLAR_APPROVED_TTL_S (default 300s), same TTL as
+  the main approval cache.
+  Action hash stored in the pending file (line 2) is verified on each poll
+  to guard against hash-prefix collisions.
+- Regression: test-preconfirm.sh Tests 19-23 — retry-after-BLOCK sticky,
+  retry-after-timeout sticky, retry-after-PROCEED acked, expired tombstone
+  ignored, hash mismatch clears pending.
+
+Bug 3 — H14 pre-check not recognising canary_pattern_check:
+- hi_pre_ask_check compared the H14 result against the literal string
+  "rubber_stamping". Since Element B (v3.2.0) replaced lockout with advisory
+  reasons, hi_check_response_variance returns "canary_pattern_check" instead.
+  The string comparison always missed, so the pre-ask gate never fired.
+- Fix: condition changed from exact-match "rubber_stamping" to "!= ok" so
+  any non-ok reason (canary_pattern_check or any future reason) is surfaced.
+- Regression: test-human-invariants.sh Bug 3 section — feeds 10 uniform
+  decisions, verifies variance returns canary_pattern_check, then verifies
+  hi_pre_ask_check surfaces it (not ok).
+
+Bug 4 — MCP gate E2 ordering: preconfirm ran after H13/H15 accounting:
+- In mcp-gate/gate.mjs the Tier 2 preconfirm fork ran after preAskCheck
+  (H13 pending-queue increment) and recordAskTime (H15 floor timer start).
+  A BLOCK at the preconfirm stage was already counted against H13 and had
+  already started the H15 clock.
+- Fix: Tier 2 preconfirm moved to before preAskCheck and recordAskTime.
+  H13 does not count a preconfirm-blocked ask. H15 timer starts when the
+  main ask card is sent, not when the preconfirm card is sent.
+
+Bug 5 — VERSION file:
+- Updated 3.1.4 → 3.2.1.
+
+Schema (optional, non-breaking):
+- etc/receipt-v1-payload.schema.json: escalation_source field added between
+  audit_prev_hash and h15_elapsed_seconds. Type string|null; null when not
+  applicable. Was emitted by the gate but not declared in the schema.
+
+Tests:
+- test-human-invariants.sh: H17 v2 fixture date changed from hardcoded
+  "2026-04-26" to $(date -u +%Y-%m-%d) across 8 fixture writes. The
+  hardcoded date caused the _hi_ensure_state cross-day rollover to wipe
+  response_times when CI ran on UTC 2026-04-27, breaking calibration and
+  producing false "suspicious" results. 75/75 now.
+- Total CI-passing assertions: 1697 across 43 files (macOS), 1669 (Ubuntu, no ML-DSA-44).
+
 ## 3.2.0 — 2026-04-26 — Human-Attention Canary v1
 
 Trustworthy delegated motion milestone. The H14 response-variance detector now
