@@ -2,16 +2,15 @@
 
 ## 3.2.0 — 2026-04-26 — Human-Attention Canary v1
 
-Governed-autonomy milestone. The H14 response-variance detector now produces
-a tier, the tier produces visible signals, and at Tier 2 the gate structurally
-interrupts before the main ask card appears. Approval without deliberation is
-architecturally harder, not just flagged.
+Trustworthy delegated motion milestone. The H14 response-variance detector now
+produces a tier, the tier produces visible signals, and at Tier 2 the gate
+structurally interrupts before the main ask card appears. Approval without
+deliberation is architecturally harder, not just flagged.
 
-v3.2.0 is ZLAR's first governed-autonomy release: persistent intelligence can
-keep moving through scoped, auditable space, while real consequence boundaries
-gain visible gates, calibrated human attention, and structural interruption when
-risk patterns persist. In short: ordinary doors open smoothly; dangerous doors
-require a human; the path leaves footprints.
+v3.2.0 is a step toward trustworthy delegated motion: persistent intelligence
+moving through bounded space. Scoped authority. Reversible paths. Escalating
+human attention where risk patterns persist. In short: ordinary doors open
+smoothly; dangerous doors require a human; the path leaves footprints.
 
 Human-Attention Canary v1 (D → B → A → C → E1 → E2 build order):
 
