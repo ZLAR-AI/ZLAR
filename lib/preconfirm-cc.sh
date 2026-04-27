@@ -21,10 +21,47 @@ _pc_pending_file() {
     echo "${APPROVAL_DIR}/pc-${1}-${SESSION_ID}-${2:0:16}.pending"
 }
 
+_pc_blocked_file() {
+    echo "${APPROVAL_DIR}/pc-${1}-${SESSION_ID}-${2:0:16}.blocked"
+}
+
+_pc_acked_file() {
+    echo "${APPROVAL_DIR}/pc-${1}-${SESSION_ID}-${2:0:16}.acked"
+}
+
+# _pc_tombstone_active file_path — returns 0 if tombstone exists and is within TTL.
+# Cleans up expired tombstones. Uses ZLAR_APPROVED_TTL_S (default 300s).
+_pc_tombstone_active() {
+    local f="$1"
+    [ -f "${f}" ] || return 1
+    local age
+    age=$(( $(date +%s) - $(stat -c %Y "${f}" 2>/dev/null || stat -f %m "${f}" 2>/dev/null || echo 0) ))
+    if [ "${age}" -lt "${ZLAR_APPROVED_TTL_S:-300}" ]; then
+        return 0  # still within TTL
+    fi
+    rm -f "${f}"  # expired — clean up
+    return 1
+}
+
 check_preconfirm() {
     local rule="$1" action_hash="$2"
-    local pending_file
+    local pending_file blocked_file acked_file
     pending_file=$(_pc_pending_file "${rule}" "${action_hash}")
+    blocked_file=$(_pc_blocked_file "${rule}" "${action_hash}")
+    acked_file=$(_pc_acked_file "${rule}" "${action_hash}")
+
+    # Blocked tombstone: BLOCK or timeout already occurred this session within TTL.
+    if _pc_tombstone_active "${blocked_file}"; then
+        log "Tier 2 preconfirm BLOCKED (tombstone active, action=${action_hash:0:16})"
+        return 1
+    fi
+
+    # Acked tombstone: PROCEED already given this session within TTL.
+    # Guards against re-sending preconfirm if main ask send fails.
+    if _pc_tombstone_active "${acked_file}"; then
+        log "Tier 2 preconfirm ACKED (tombstone active, action=${action_hash:0:16})"
+        return 0
+    fi
 
     [ -f "${pending_file}" ] || return 2  # state 2: not sent yet
 
@@ -33,6 +70,17 @@ check_preconfirm() {
     if [ -z "${pc_action_id}" ]; then
         rm -f "${pending_file}"
         return 2  # corrupt pending file — re-send
+    fi
+
+    # Verify action hash stored in pending file matches caller.
+    # Filename includes hash prefix, but pending file line 2 carries the full hash.
+    local pending_action_hash
+    pending_action_hash=$(sed -n '2p' "${pending_file}" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "${action_hash}" ] && [ -n "${pending_action_hash}" ] && \
+       [ "${action_hash}" != "${pending_action_hash}" ]; then
+        log "SECURITY: preconfirm action hash mismatch (file=${pending_action_hash:0:16}, caller=${action_hash:0:16}) — forcing re-send"
+        rm -f "${pending_file}"
+        return 2
     fi
 
     local inbox_dir="${ZLAR_INBOX_CC_DIR:-/var/run/zlar-tg/inbox/cc}"
@@ -68,22 +116,26 @@ check_preconfirm() {
 
         if [ "${cb_data}" = "cc:pc_proceed:${pc_action_id}" ]; then
             echo "${cb_basename}" >> "${consumed_file}" 2>/dev/null || true
+            touch "${acked_file}" 2>/dev/null || true
             rm -f "${pending_file}"
             log "Tier 2 preconfirm PROCEED (action=${action_hash:0:16})"
             return 0
         elif [ "${cb_data}" = "cc:pc_block:${pc_action_id}" ]; then
             echo "${cb_basename}" >> "${consumed_file}" 2>/dev/null || true
+            touch "${blocked_file}" 2>/dev/null || true
             rm -f "${pending_file}"
             log "Tier 2 preconfirm BLOCK (action=${action_hash:0:16})"
             return 1
         fi
     done
 
-    # Timeout = hard deny (differs from main ask which returns 2 to re-send)
+    # Timeout = hard deny (differs from main ask which returns 2 to re-send).
+    # Write blocked tombstone so retries within TTL don't resend the preconfirm card.
     local pending_age
     pending_age=$(( $(date +%s) - $(stat -c %Y "${pending_file}" 2>/dev/null || stat -f %m "${pending_file}" 2>/dev/null || echo 0) ))
     if [ "${pending_age}" -gt "${TELEGRAM_TIMEOUT_S}" ]; then
         log "Tier 2 preconfirm EXPIRED (age=${pending_age}s)"
+        touch "${blocked_file}" 2>/dev/null || true
         rm -f "${pending_file}"
         return 1  # expired = hard deny, not re-send
     fi

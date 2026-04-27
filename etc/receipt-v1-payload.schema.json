@@ -92,6 +92,10 @@
       "type": "string",
       "description": "prev_hash from the audit entry. Anchors receipt to the hash chain."
     },
+    "escalation_source": {
+      "type": ["string", "null"],
+      "description": "Escalation routing source for this action (e.g., restore, canary). Null when not applicable."
+    },
     "h15_elapsed_seconds": {
       "type": ["integer", "null"],
       "minimum": 0,

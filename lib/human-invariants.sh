@@ -685,8 +685,8 @@ hi_pre_ask_check() {
     # H14: Response time variance
     local rate_result
     rate_result=$(hi_check_response_variance "${human_id}")
-    if [ "${rate_result}" = "rubber_stamping" ]; then
-        echo "rubber_stamping"
+    if [ "${rate_result}" != "ok" ]; then
+        echo "${rate_result}"
         return 1
     fi
 

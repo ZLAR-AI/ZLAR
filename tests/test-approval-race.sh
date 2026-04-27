@@ -149,6 +149,25 @@ assert_eq "Stale pending → return 2 (expired, fresh ask)" "2" "${rc}"
 assert_eq "Stale pending cleaned up" "false" "$([ -f "${PENDING_FILE}" ] && echo true || echo false)"
 echo
 
+# ── Test 8: H15/H17 rejection must invalidate approved cache ──
+echo "── H15/H17 rejection must not allow replay (Bug 1 regression) ──"
+rm -f "${PENDING_FILE}" "${APPROVED_FILE}" "${INBOX_DIR}"/*.json
+rm -f "${CONSUMED_FILE}"
+# Simulate check_pending_approval returning 0: create pending + approve callback, run CPA
+printf '%s\n%s\n' "action-id-D" "${HASH}" > "${PENDING_FILE}"
+cat > "${INBOX_DIR}/cb3.json" <<EOF
+{"data":"cc:approve:action-id-D","from_id":"${TELEGRAM_CHAT_ID}","callback_query_id":"qid3","hmac":""}
+EOF
+rc=$(run_cpa "${RULE}" "${HASH}")
+assert_eq "CPA returned 0 (approved, approved file seeded)" "0" "${rc}"
+assert_eq "Approved cache file exists after CPA" "true" "$([ -f "${APPROVED_FILE}" ] && echo true || echo false)"
+# Simulate H15/H17 rejection: gate deletes the approved file
+rm -f "${APPROVED_FILE}"
+# Next retry must NOT get a cache hit — must see fresh ask (return 2)
+rc=$(run_cpa "${RULE}" "${HASH}")
+assert_eq "After H15/H17 rejection (approved deleted): CPA returns 2 (fresh ask)" "2" "${rc}"
+echo
+
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Results: ${passed} passed, ${failed} failed"
 echo "═══════════════════════════════════════════════════════════════"

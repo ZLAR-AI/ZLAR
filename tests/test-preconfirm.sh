@@ -66,18 +66,18 @@ _make_cb() {
         > "${ZLAR_INBOX_CC_DIR}/${filename}"
 }
 
-_clean_inbox()   { rm -f "${ZLAR_INBOX_CC_DIR}"/*.json 2>/dev/null || true; }
-_clean_pending() { rm -f "${APPROVAL_DIR}"/pc-*.pending 2>/dev/null || true; }
-_clean_consumed() { : > "${PROJECT_DIR}/var/log/.consumed-callbacks"; }
+_clean_inbox()     { rm -f "${ZLAR_INBOX_CC_DIR}"/*.json 2>/dev/null || true; }
+_clean_pending()   { rm -f "${APPROVAL_DIR}"/pc-*.pending "${APPROVAL_DIR}"/pc-*.blocked "${APPROVAL_DIR}"/pc-*.acked 2>/dev/null || true; }
+_clean_consumed()  { : > "${PROJECT_DIR}/var/log/.consumed-callbacks"; }
 
 # ── 1. State 2: no pending file ──
 echo "1. State 2: no pending file"
-_clean_pending; _clean_inbox; _clean_consumed
+_clean_pending; _clean_inbox; _clean_consumed; _clean_pending
 assert_rc "Returns 2 when no pending file" 2 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}"
 
 # ── 2. State 3: pending exists, no callback ──
 echo "2. State 3: pending file, no inbox callback"
-_clean_inbox; _clean_consumed
+_clean_inbox; _clean_consumed; _clean_pending
 printf '%s\n%s\n' "pc-action-001" "${ACTION_HASH}" > "${PENDING_FILE}"
 assert_rc "Returns 3 with pending and no callback" 3 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}"
 assert "Pending file not removed" "true" "$([ -f "${PENDING_FILE}" ] && echo true || echo false)"
@@ -90,7 +90,7 @@ assert "Pending file removed after PROCEED" "false" "$([ -f "${PENDING_FILE}" ] 
 
 # ── 4. PROCEED callback consumed ──
 echo "4. PROCEED callback marked consumed"
-_clean_inbox; _clean_consumed
+_clean_inbox; _clean_consumed; _clean_pending
 printf '%s\n%s\n' "pc-action-002" "${ACTION_HASH}" > "${PENDING_FILE}"
 _make_cb "002.json" "cc:pc_proceed:pc-action-002"
 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}" || true
@@ -99,7 +99,7 @@ assert "002.json in consumed file" "true" \
 
 # ── 5. State 1: BLOCK callback ──
 echo "5. State 1: BLOCK callback in inbox"
-_clean_inbox; _clean_consumed
+_clean_inbox; _clean_consumed; _clean_pending
 printf '%s\n%s\n' "pc-action-003" "${ACTION_HASH}" > "${PENDING_FILE}"
 _make_cb "003.json" "cc:pc_block:pc-action-003"
 assert_rc "Returns 1 on BLOCK" 1 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}"
@@ -107,7 +107,7 @@ assert "Pending file removed after BLOCK" "false" "$([ -f "${PENDING_FILE}" ] &&
 
 # ── 6. BLOCK callback consumed ──
 echo "6. BLOCK callback marked consumed"
-_clean_inbox; _clean_consumed
+_clean_inbox; _clean_consumed; _clean_pending
 printf '%s\n%s\n' "pc-action-004" "${ACTION_HASH}" > "${PENDING_FILE}"
 _make_cb "004.json" "cc:pc_block:pc-action-004"
 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}" || true
@@ -116,7 +116,7 @@ assert "004.json in consumed file" "true" \
 
 # ── 7. Wrong chat_id ignored ──
 echo "7. Callback from wrong chat_id ignored"
-_clean_inbox; _clean_consumed
+_clean_inbox; _clean_consumed; _clean_pending
 printf '%s\n%s\n' "pc-action-005" "${ACTION_HASH}" > "${PENDING_FILE}"
 _make_cb "005.json" "cc:pc_proceed:pc-action-005" "99999999"
 assert_rc "Returns 3 when callback from wrong chat" 3 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}"
@@ -124,7 +124,7 @@ assert "Pending file unchanged" "true" "$([ -f "${PENDING_FILE}" ] && echo true 
 
 # ── 8. Already-consumed callback skipped ──
 echo "8. Consumed callback skipped"
-_clean_inbox; _clean_consumed
+_clean_inbox; _clean_consumed; _clean_pending
 printf '%s\n%s\n' "pc-action-006" "${ACTION_HASH}" > "${PENDING_FILE}"
 _make_cb "006.json" "cc:pc_proceed:pc-action-006"
 echo "006.json" >> "${PROJECT_DIR}/var/log/.consumed-callbacks"
@@ -132,14 +132,14 @@ assert_rc "Returns 3 when callback already consumed" 3 check_preconfirm "${ACTIO
 
 # ── 9. Corrupt (empty) pending file ──
 echo "9. Corrupt pending file triggers re-send"
-_clean_inbox; _clean_consumed
+_clean_inbox; _clean_consumed; _clean_pending
 : > "${PENDING_FILE}"
 assert_rc "Returns 2 on empty pending file" 2 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}"
 assert "Corrupt pending file removed" "false" "$([ -f "${PENDING_FILE}" ] && echo true || echo false)"
 
 # ── 10. Timeout = hard deny (returns 1, not 2) ──
 echo "10. Timeout triggers hard deny"
-_clean_inbox; _clean_consumed
+_clean_inbox; _clean_consumed; _clean_pending
 printf '%s\n%s\n' "pc-action-007" "${ACTION_HASH}" > "${PENDING_FILE}"
 python3 -c "import os, sys; os.utime(sys.argv[1], (0, 0))" "${PENDING_FILE}" 2>/dev/null \
     || touch -t 200001010000 "${PENDING_FILE}" 2>/dev/null || true
@@ -150,7 +150,7 @@ TELEGRAM_TIMEOUT_S=900
 
 # ── 11. Action ID mismatch not matched ──
 echo "11. Wrong action_id not matched"
-_clean_inbox; _clean_consumed
+_clean_inbox; _clean_consumed; _clean_pending
 printf '%s\n%s\n' "pc-action-008" "${ACTION_HASH}" > "${PENDING_FILE}"
 _make_cb "008.json" "cc:pc_proceed:pc-action-WRONG"
 assert_rc "Returns 3 on action_id mismatch" 3 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}"
@@ -158,7 +158,7 @@ rm -f "${PENDING_FILE}"
 
 # ── 12. HMAC failure skips callback ──
 echo "12. Invalid HMAC skips callback"
-_clean_inbox; _clean_consumed
+_clean_inbox; _clean_consumed; _clean_pending
 printf '%s\n%s\n' "pc-action-009" "${ACTION_HASH}" > "${PENDING_FILE}"
 _make_cb "009.json" "cc:pc_proceed:pc-action-009"
 ZLAR_INBOX_HMAC_SECRET="active"
@@ -221,6 +221,60 @@ assert_rc "Returns 1 on failed send" 1 telegram_preconfirm_async "${ACTION_HASH}
 pf_count=$(find "${APPROVAL_DIR}" -name 'pc-*.pending' | wc -l | tr -d ' ')
 assert "No pending file on failed send" "false" "$([ "${pf_count}" -ge 1 ] && echo true || echo false)"
 telegram_api() { echo '{"ok":true,"result":{"message_id":42}}'; }
+
+
+# ── 19. Retry after BLOCK returns 1 (blocked tombstone, not re-send) ──
+echo "19. Retry after BLOCK: tombstone returns 1 within TTL"
+_clean_inbox; _clean_consumed; _clean_pending
+rm -f "${APPROVAL_DIR}"/pc-*.blocked "${APPROVAL_DIR}"/pc-*.acked 2>/dev/null || true
+printf '%s\n%s\n' "pc-action-010" "${ACTION_HASH}" > "${PENDING_FILE}"
+_make_cb "010.json" "cc:pc_block:pc-action-010"
+check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}" || true  # returns 1, writes blocked file
+# Retry: blocked tombstone must be respected (return 1, not 2)
+assert_rc "Retry after BLOCK returns 1 (tombstone)" 1 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}"
+
+# ── 20. Retry after timeout returns 1 (blocked tombstone, not re-send) ──
+echo "20. Retry after timeout: tombstone returns 1 within TTL"
+_clean_inbox; _clean_consumed; _clean_pending
+rm -f "${APPROVAL_DIR}"/pc-*.blocked "${APPROVAL_DIR}"/pc-*.acked 2>/dev/null || true
+printf '%s\n%s\n' "pc-action-011" "${ACTION_HASH}" > "${PENDING_FILE}"
+python3 -c "import os, sys; os.utime(sys.argv[1], (0, 0))" "${PENDING_FILE}" 2>/dev/null \
+    || touch -t 200001010000 "${PENDING_FILE}" 2>/dev/null || true
+TELEGRAM_TIMEOUT_S=1
+check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}" || true  # returns 1, writes blocked file
+TELEGRAM_TIMEOUT_S=900
+# Retry: blocked tombstone must be respected (return 1, not 2)
+assert_rc "Retry after timeout returns 1 (tombstone)" 1 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}"
+rm -f "${APPROVAL_DIR}"/pc-*.blocked "${APPROVAL_DIR}"/pc-*.acked 2>/dev/null || true
+
+# ── 21. Retry after PROCEED returns 0 (acked tombstone, not re-send) ──
+echo "21. Retry after PROCEED: acked tombstone returns 0 within TTL"
+_clean_inbox; _clean_consumed; _clean_pending
+rm -f "${APPROVAL_DIR}"/pc-*.blocked "${APPROVAL_DIR}"/pc-*.acked 2>/dev/null || true
+printf '%s\n%s\n' "pc-action-012" "${ACTION_HASH}" > "${PENDING_FILE}"
+_make_cb "012.json" "cc:pc_proceed:pc-action-012"
+check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}" || true  # returns 0, writes acked file
+# Retry (e.g. main ask send failed): acked tombstone returns 0, not 2 (re-send)
+assert_rc "Retry after PROCEED returns 0 (acked tombstone)" 0 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}"
+rm -f "${APPROVAL_DIR}"/pc-*.acked 2>/dev/null || true
+
+# ── 22. Expired blocked tombstone is ignored (returns 2, not 1) ──
+echo "22. Expired blocked tombstone ignored — returns 2 for fresh preconfirm"
+_clean_inbox; _clean_consumed; _clean_pending
+blocked_f="${APPROVAL_DIR}/pc-${ACTION_RULE}-${SESSION_ID}-${ACTION_HASH:0:16}.blocked"
+touch "${blocked_f}"
+python3 -c "import os, sys; os.utime(sys.argv[1], (0, 0))" "${blocked_f}" 2>/dev/null \
+    || touch -t 200001010000 "${blocked_f}" 2>/dev/null || true
+assert_rc "Expired blocked tombstone: returns 2 (fresh preconfirm allowed)" 2 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}"
+assert "Expired blocked tombstone cleaned up" "false" "$([ -f "${blocked_f}" ] && echo true || echo false)"
+
+# ── 23. Action hash mismatch in pending file forces re-send ──
+echo "23. Action hash mismatch in pending file forces re-send"
+_clean_inbox; _clean_consumed; _clean_pending
+rm -f "${APPROVAL_DIR}"/pc-*.blocked "${APPROVAL_DIR}"/pc-*.acked 2>/dev/null || true
+printf '%s\n%s\n' "pc-action-013" "different_hash_entirely_not_matching_action_hash_at_all" > "${PENDING_FILE}"
+assert_rc "Hash mismatch in pending → returns 2 (re-send)" 2 check_preconfirm "${ACTION_RULE}" "${ACTION_HASH}"
+assert "Mismatched pending file removed" "false" "$([ -f "${PENDING_FILE}" ] && echo true || echo false)"
 
 echo
 echo "═══════════════════"

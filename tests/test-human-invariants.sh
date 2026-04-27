@@ -739,6 +739,33 @@ assert "stripped _hmac rebuilt to safe default" "0" "${after_strip}"
 hmac_after_rebuild=$(jq -r 'has("_hmac")' "${state_file}" 2>/dev/null)
 assert "rebuild re-seals with _hmac" "true" "${hmac_after_rebuild}"
 
+# ─── Bug 3 regression: hi_pre_ask_check must pass through canary_pattern_check ──
+
+echo
+echo "=== Bug 3 regression: hi_pre_ask_check passes through canary_pattern_check ==="
+echo
+
+HUMAN_BUG3="test-human-bug3-h14-passthru"
+HI_VARIANCE_STDDEV_FLOOR=4
+HI_VARIANCE_WINDOW=20
+HI_VARIANCE_MIN_SAMPLE=10
+
+# Feed 10 uniform non-critical decisions (elapsed=5s each) → triggers H14 → returns canary_pattern_check
+for i in $(seq 1 10); do
+    hi_record_decision "${HUMAN_BUG3}" "approve" 5 "info" 50
+done
+# hi_check_response_variance must now return canary_pattern_check (stddev=0 < floor=4)
+variance_result=$(hi_check_response_variance "${HUMAN_BUG3}" 2>/dev/null)
+assert "uniform decisions → hi_check_response_variance returns canary_pattern_check" "canary_pattern_check" "${variance_result}"
+
+# Response times were cleared by the H14 trip above; refill for next pre-ask check
+for i in $(seq 1 10); do
+    hi_record_decision "${HUMAN_BUG3}2" "approve" 5 "info" 50
+done
+# hi_pre_ask_check must surface canary_pattern_check, not silently return ok
+pre_result=$(hi_pre_ask_check "${HUMAN_BUG3}2" 2>/dev/null) || true
+assert "hi_pre_ask_check surfaces canary_pattern_check (not ok)" "canary_pattern_check" "${pre_result}"
+
 # ─── Results ──────────────────────────────────────────────────────────────────
 
 echo

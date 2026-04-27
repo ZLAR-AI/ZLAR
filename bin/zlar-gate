@@ -2741,7 +2741,7 @@ main() {
                             _hi_post_result=$(hi_post_response_check "${TELEGRAM_CHAT_ID}" "${MATCHED_SEVERITY}" "approve" "${action_hash}" "${MATCHED_RISK_SCORE}" 2>/dev/null) || true
                             if [ "${_hi_post_result}" != "ok" ]; then
                                 log "HUMAN INVARIANT: approval rejected (${_hi_post_result}) — re-ask required"
-                                rm -f "${APPROVAL_DIR}/${MATCHED_RULE}-${SESSION_ID}.pending" 2>/dev/null
+                                rm -f "${APPROVAL_DIR}/${MATCHED_RULE}-${SESSION_ID}-${action_hash:0:16}.approved" 2>/dev/null
                                 emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:human_${_hi_post_result}"
                                 respond_deny "Approval not accepted (${_hi_post_result}). Please review again with more time." "gate:human_integrity"
                                 # Path B: seal before early return (audit event emitted above)

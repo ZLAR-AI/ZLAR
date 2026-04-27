@@ -1298,31 +1298,13 @@ async function handleRequest(msg) {
         return { action: 'passthrough', msg };
       }
 
-      // Human invariant pre-ask checks (H6, H13, H14).
-      //
-      // Advisory semantics (bash-gate parity): if a pre-check trips, we
-      // LOG the condition and emit a warning audit event, but we still
-      // route the ask to the human. Denying here would silence the
-      // human's own channel — an attacker who can provoke rapid failing
-      // asks could use that as a denial-of-service on legitimate work.
-      // The human is the authority; surface the condition to them and
-      // let them judge.
       const humanId = CONFIG.telegramChatId || 'unknown';
-      const hiPre = preAskCheck(humanId);
-      if (!hiPre.ok) {
-        console.log(`[gate] Human invariant ADVISORY: ${hiPre.reason} (${hiPre.detail}) — routing anyway`);
-        emitEvent('mcp', toolName, 'logged',
-          { tool: toolName, reason: `human_${hiPre.reason}`, detail: hiPre.detail, advisory: true },
-          'human_invariant.advisory', 'warn', 0, `gate:human_${hiPre.reason}`);
-      }
-
-      // H15: Record ask time for deliberation floor check
-      recordAskTime(humanId);
-
       const actionId = genId();
       const canaryTier = getCanaryTier(humanId);
 
-      // Tier 2 preconfirm: structural interrupt before main ask when H14 tier == 2.
+      // Tier 2 preconfirm: structural interrupt BEFORE H13 increment and H15 timer.
+      // H13 must not count this ask if the human blocks it at preconfirm.
+      // H15 timing must start when the main ask is sent, not when preconfirm is sent.
       if (canaryTier === 2) {
         const pcResult = await telegramPreconfirm(evaluation.rule, evaluation.riskScore, evaluation.severity, toolName);
         if (pcResult !== 'proceed') {
@@ -1339,6 +1321,26 @@ async function handleRequest(msg) {
           };
         }
       }
+
+      // Human invariant pre-ask checks (H6, H13, H14).
+      //
+      // Advisory semantics (bash-gate parity): if a pre-check trips, we
+      // LOG the condition and emit a warning audit event, but we still
+      // route the ask to the human. Denying here would silence the
+      // human's own channel — an attacker who can provoke rapid failing
+      // asks could use that as a denial-of-service on legitimate work.
+      // The human is the authority; surface the condition to them and
+      // let them judge.
+      const hiPre = preAskCheck(humanId);
+      if (!hiPre.ok) {
+        console.log(`[gate] Human invariant ADVISORY: ${hiPre.reason} (${hiPre.detail}) — routing anyway`);
+        emitEvent('mcp', toolName, 'logged',
+          { tool: toolName, reason: `human_${hiPre.reason}`, detail: hiPre.detail, advisory: true },
+          'human_invariant.advisory', 'warn', 0, `gate:human_${hiPre.reason}`);
+      }
+
+      // H15: Record ask time for deliberation floor check — starts when main ask is sent.
+      recordAskTime(humanId);
 
       const tierBanner = canaryTier === 2
         ? '🚨 *Pattern persists* — second flag this session — read this ask'
