@@ -102,6 +102,7 @@ const CONFIG = {
   emitReceipts: process.env.ZLAR_EMIT_RECEIPTS === 'true',
   // Cedar policy engine (Phase C) — when enabled, Cedar evaluates alongside or instead of JSON
   policyEngine: process.env.ZLAR_POLICY_ENGINE || 'json', // 'json', 'cedar', or 'both'
+  host: process.env.ZLAR_MCP_HOST || '127.0.0.1',
 };
 
 // Parse CLI args
@@ -1533,8 +1534,14 @@ function startTcpProxy() {
     clientSocket.on('end', () => upstream.end());
   });
 
-  server.listen(CONFIG.port, () => {
-    console.log(`[gate] ZLAR MCP Gate listening on port ${CONFIG.port}`);
+  // Loopback-only by default. Binding the gate to a routable interface would
+  // expose policy evaluation and ask-flows to peers on the local network —
+  // any peer could initiate actions that page Vincent's phone for approval.
+  // Override with ZLAR_MCP_HOST only when an isolated network namespace
+  // already restricts access.
+  const listenHost = CONFIG.host || '127.0.0.1';
+  server.listen(CONFIG.port, listenHost, () => {
+    console.log(`[gate] ZLAR MCP Gate listening on ${listenHost}:${CONFIG.port}`);
     console.log(`[gate] Upstream: ${CONFIG.upstreamHost}:${CONFIG.upstreamPort}`);
     console.log(`[gate] Policy: ${POLICY_VERSION}`);
     console.log(`[gate] Audit: ${CONFIG.auditFile}`);

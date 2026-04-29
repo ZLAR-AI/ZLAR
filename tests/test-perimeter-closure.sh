@@ -83,11 +83,12 @@ rule_count=$(jq '.rules | length' "${POLICY_FILE}")
 # v3.1.1 (harness-tools fix): R100 added, 80 → 81.
 # 2026-04-24: R005J added alongside R002 tightening, 81 → 82.
 # 2026-04-26: Element C R012 split (R012I/W_SIGN/W_MODE/W_EDIT, R012 removed), 82 → 85.
-if [ "${rule_count}" -eq 85 ]; then
-    echo "  ✓ Policy has 85 rules"
+# 2026-04-28: v3.2.2 hardening — R012D + R032H + R041K (adapter-shim deny), 85 → 88.
+if [ "${rule_count}" -eq 88 ]; then
+    echo "  ✓ Policy has 88 rules"
     passed=$((passed + 1))
 else
-    echo "  ✗ Policy has ${rule_count} rules, expected 85"
+    echo "  ✗ Policy has ${rule_count} rules, expected 88"
     failed=$((failed + 1))
 fi
 

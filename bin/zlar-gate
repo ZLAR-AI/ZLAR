@@ -1870,8 +1870,17 @@ check_pending_approval() {
         return 2
     fi
 
-    # Verify action hash matches — prevents approval replay across different commands
-    if [ -n "${expected_action_hash}" ] && [ -n "${pending_action_hash}" ]; then
+    # Verify action hash matches — prevents approval replay across different commands.
+    # When the caller supplies an expected hash, the pending file MUST carry one
+    # too. An empty line 2 in the pending file would otherwise short-circuit the
+    # binding check, letting a forged or truncated pending file match any caller's
+    # expected hash. Treat that as a corrupt file: delete and force a fresh ask.
+    if [ -n "${expected_action_hash}" ]; then
+        if [ -z "${pending_action_hash}" ]; then
+            log "SECURITY: Pending file missing action_hash binding for ${rule} — treating as corrupt"
+            rm -f "${pending_file}"
+            return 2
+        fi
         if [ "${expected_action_hash}" != "${pending_action_hash}" ]; then
             log "SECURITY: Action hash mismatch for ${rule} — approval bound to different command"
             rm -f "${pending_file}"

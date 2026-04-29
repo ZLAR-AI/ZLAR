@@ -168,6 +168,32 @@ rc=$(run_cpa "${RULE}" "${HASH}")
 assert_eq "After H15/H17 rejection (approved deleted): CPA returns 2 (fresh ask)" "2" "${rc}"
 echo
 
+# ── Test 9: empty pending_action_hash must NOT short-circuit binding check ──
+# v3.2.2 hardening: a pending file with line 2 empty (forged or truncated) used
+# to skip the hash-mismatch check, letting an attacker's planted pending file
+# replay an unrelated approve callback once the caller's expected hash hit
+# the same prefix path. Hardened CPA treats empty line 2 as corrupt: delete
+# + return 2.
+echo "── Forged empty-hash pending must not bypass binding (v3.2.2 hardening) ──"
+rm -f "${PENDING_FILE}" "${APPROVED_FILE}" "${INBOX_DIR}"/*.json
+rm -f "${CONSUMED_FILE}"
+# Plant a pending file at the path CPA will probe for ${HASH}:0:16, but with
+# action_id only and EMPTY line 2 — the forgery shape an attacker would write.
+printf '%s\n\n' "action-id-E" > "${PENDING_FILE}"
+# Plant an approve callback for that action_id (the replay target).
+cat > "${INBOX_DIR}/cb4.json" <<EOF
+{"data":"cc:approve:action-id-E","from_id":"${TELEGRAM_CHAT_ID}","callback_query_id":"qid4","hmac":""}
+EOF
+# Caller supplies the real (non-empty) HASH. Pre-hardening: returned 0 because
+# the binding check was skipped when pending_action_hash was empty.
+# Post-hardening: must return 2 (corrupt, fresh ask), pending file deleted,
+# no approved cache seeded.
+rc=$(run_cpa "${RULE}" "${HASH}")
+assert_eq "Empty pending hash + non-empty expected → return 2 (corrupt)" "2" "${rc}"
+assert_eq "Corrupt pending file cleaned up" "false" "$([ -f "${PENDING_FILE}" ] && echo true || echo false)"
+assert_eq "No approved cache written on corrupt pending" "false" "$([ -f "${APPROVED_FILE}" ] && echo true || echo false)"
+echo
+
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Results: ${passed} passed, ${failed} failed"
 echo "═══════════════════════════════════════════════════════════════"

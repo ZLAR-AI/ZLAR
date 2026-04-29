@@ -1,13 +1,13 @@
 {
-  "version": "3.2.0",
+  "version": "3.2.2",
   "created_at": "2026-03-29T00:00:00Z",
-  "updated_at": "2026-04-26T00:00:00Z",
+  "updated_at": "2026-04-28T00:00:00Z",
   "author": "vincentnijjar",
-  "description": "ZLAR v3.2.0 — R012 split by effect. Retires monolithic R012 (ask/critical for all ZLAR path touches). Adds R012I (allow/info: informational CLI reads — status, uptime, brief, digest, audit, restore status/history/detectors, evaluate --dry-run), R012W_SIGN (ask/critical: signing and trust-state metadata writes), R012W_MODE (ask/critical: gate mode changes and trust-state resets — zlar on/off/reset/lock/unlock, restore reset/evaluate), R012W_EDIT (ask/critical: enforcement path write catch-all). Closes gap: zlar on/off/reset/lock/unlock were previously unprotected (matched R020 allow). Adds zlar-restore evaluate --dry-run as read-only diagnostic path (R012I).",
+  "description": "ZLAR v3.2.2 — Security hardening. Adds R012D (deny/critical, bash) + R032H (deny/critical, write) + R041K (deny/critical, edit) covering the installed Claude adapter shim ~/.claude/zlar-gate.sh and ~/.claude/zlar-session-hook.sh — the first-allow-point shim that the PreToolUse hook invokes, previously uncovered. Extends R012B regex to deny Bash creation of var/log/approvals/*.{approved,pending,acked,blocked} (forged-cache vector). Fixes R032E/R041E case-sensitivity gap: regex was `ZLAR.*/repo/...` (lowercase) and never matched the actual repo path `ZLAR_Repo`, leaving source-edit ask-rules silently dormant; regex now matches `ZLAR.*/(repo|ZLAR_Repo)/...`. Net rule delta: +3 (85 -> 88). Carries forward v3.2.0 R012 effect-split: R012I (allow/info reads), R012W_SIGN (ask/critical signing), R012W_MODE (ask/critical mode changes), R012W_EDIT (ask/critical enforcement-path edits).",
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "56R8uzwrtuGBxdltfgkOEHQz45t8wkq6q+zNmWVRc1vS88TnCLIgoJliw4rBRFDFAsBX6vkE80OYjk+aKz+SBQ=="
+    "value": "BmX5h67nMlynQR2QtEn9QUYXZmEEV3mdvduel29sw+icGEYp+rD0WZEYD7dPiqfJRhCZloWJI+X0Bj6TBX5wCg=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -502,7 +502,7 @@
       "match": {
         "detail": {
           "command": {
-            "regex": "(audit\\.jsonl|gate\\.log|gate-stderr\\.log|watchdog\\.lock|watchdog\\.log|karma\\.json|away-queue|availability\\.state|\\.policy-cache|\\.gate-active|\\.telegram-rate|/sessions/)"
+            "regex": "(audit\\.jsonl|gate\\.log|gate-stderr\\.log|watchdog\\.lock|watchdog\\.log|karma\\.json|away-queue|availability\\.state|\\.policy-cache|\\.gate-active|\\.telegram-rate|/sessions/|approvals/.+\\.(approved|pending|acked|blocked))"
           }
         }
       },
@@ -510,6 +510,27 @@
         "irreversibility": 100,
         "consequence": 100,
         "blast_radius": 90
+      }
+    },
+    {
+      "id": "R012D",
+      "enabled": true,
+      "description": "Adapter shim write/edit via Bash — blocked (~/.claude/zlar-gate.sh, zlar-session-hook.sh)",
+      "domain": "bash",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "\\.claude/zlar-(gate|session-hook)\\.sh"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
       }
     },
     {
@@ -994,7 +1015,7 @@
       "match": {
         "detail": {
           "path": {
-            "regex": "ZLAR.*/repo/(lib|tests|scripts|mcp-gate|docs|etc/canary)/"
+            "regex": "ZLAR.*/(repo|ZLAR_Repo)/(lib|tests|scripts|mcp-gate|docs|etc/canary)/"
           }
         }
       },
@@ -1136,6 +1157,27 @@
         "blast_radius": 95
       },
       "verify_hint": "This session is about to modify .mcp.json. This file controls which MCP servers load — edits can add new tool surfaces or remove existing ones. Approve?"
+    },
+    {
+      "id": "R032H",
+      "enabled": true,
+      "description": "Write to Claude adapter shim — blocked (first-allow-point hook target)",
+      "domain": "write",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "\\.claude/zlar-(gate|session-hook)\\.sh$"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      }
     },
     {
       "id": "R035",
@@ -1310,7 +1352,7 @@
       "match": {
         "detail": {
           "path": {
-            "regex": "ZLAR.*/repo/(lib|tests|scripts|mcp-gate|docs|etc/canary)/"
+            "regex": "ZLAR.*/(repo|ZLAR_Repo)/(lib|tests|scripts|mcp-gate|docs|etc/canary)/"
           }
         }
       },
@@ -1474,6 +1516,27 @@
         "blast_radius": 70
       },
       "verify_hint": "This edits a credential-adjacent dotfile. Confirm it is your intended change and check for added keys/tokens."
+    },
+    {
+      "id": "R041K",
+      "enabled": true,
+      "description": "Edit Claude adapter shim — blocked (first-allow-point hook target)",
+      "domain": "edit",
+      "action": "deny",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "path": {
+            "regex": "\\.claude/zlar-(gate|session-hook)\\.sh$"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      }
     },
     {
       "id": "R042",
