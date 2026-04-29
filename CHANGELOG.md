@@ -1,5 +1,122 @@
 # Changelog
 
+## 3.2.2 — 2026-04-28 — Security hardening: adapter-shim coverage, approval-state forgery, MCP loopback, pending-hash binding
+
+Five narrow fixes from a six-agent roster review of v3.2.1. Each closes a
+claimed-vs-reality gap or a gate-bypass vector. No new behaviour: every change
+either tightens an existing surface or aligns code with a doctrine claim that
+was already advertised.
+
+Fix 1 — MCP gate listener was bound to all interfaces:
+- mcp-gate/gate.mjs:1536 called server.listen(CONFIG.port, cb) with no host
+  argument. Node defaults to ::, so the gate accepted JSON-RPC from any peer
+  on the local network. The repo and BUILD-NOTE both claimed "127.0.0.1
+  bind" — that claim was false. On any untrusted Wi-Fi the gate's policy
+  evaluation and ask flows were reachable by other peers, who could initiate
+  actions that paged the human's phone for approval.
+- Fix: bind to 127.0.0.1 by default. CONFIG.host derives from
+  ZLAR_MCP_HOST when set; otherwise 127.0.0.1 is hard-coded. Override is
+  intended only for isolated-namespace deployments.
+
+Fix 2 — Adapter shim was uncovered by policy:
+- ~/.claude/zlar-gate.sh and ~/.claude/zlar-session-hook.sh are the
+  scripts the Claude Code PreToolUse hook invokes. Neither was named in
+  any policy rule. R032 covered ZLAR_Repo/bin/zlar-gate (the source
+  binary) but not the deployed shim. A single Edit or Write to the shim
+  could replace the gate body with `cat <<EOF; allow; EOF` — silently
+  bypassing the entire stack downstream (audit chain, sig-verify,
+  Telegram, fingerprint cache).
+- Fix: three new deny/critical rules. R012D denies Bash writes/edits
+  whose command string matches `\.claude/zlar-(gate|session-hook)\.sh`.
+  R032H denies Write-tool writes to that path. R041K denies Edit-tool
+  edits to that path. All three are deny — the shim must not be
+  agent-editable. Net rule delta: 85 → 88.
+
+Fix 3 — Approval state was forge-able via Bash redirect:
+- R012W_EDIT (the broad enforcement-path ask rule) covered
+  /var/log/(audit|gate) but NOT /var/log/approvals/. R032C covered
+  Write-tool writes to ZLAR_Repo/var/log/ (deny) but Bash redirection
+  (`printf ... > approvals/<rule>-<sid>-<hash>.approved`) slipped
+  through. An attacker who could write a forged .approved file at the
+  expected path would short-circuit check_pending_approval into a cache
+  hit on the next ask.
+- Fix: R012B regex extended to deny Bash commands targeting
+  approvals/.+\.(approved|pending|acked|blocked). Closes the redirect
+  vector. R032C continues to handle the Write-tool path.
+
+Fix 4 — check_pending_approval empty-hash short-circuit:
+- bin/zlar-gate:1874 only ran the action-hash binding check when both
+  expected_action_hash AND pending_action_hash were non-empty. An
+  attacker who planted a pending file with empty line 2 (forged or
+  truncated) bypassed the binding check entirely — any subsequent
+  approve callback for the embedded action_id was replayed, regardless
+  of which command the caller asked for.
+- Fix: when expected_action_hash is non-empty, an empty
+  pending_action_hash is now treated as corrupt — the pending file is
+  deleted and the call returns 2 (force fresh ask). The legacy
+  empty-expected, empty-pending path is unchanged (graceful degradation
+  preserved for callers that don't bind).
+- Regression: tests/test-approval-race.sh Test 9 — plants a pending
+  file with empty line 2, plants a matching approve callback, calls
+  CPA with non-empty expected hash, asserts return 2 + pending file
+  deleted + no approved cache seeded.
+
+Fix 5 — H13 pending TTL drift between bash and mjs gates:
+- lib/human-invariants.sh:46 set HI_PENDING_TTL to 360s; the comment
+  explains v2.8.1 reduced from 1800s to fix spurious "overloaded"
+  blocks during high-volume sessions. lib/human-invariants.mjs:78 set
+  pendingTtl to 1800s — carrying the pre-v2.8.1 bug. The fix never
+  propagated.
+- Fix: mjs aligned to 360s with a comment crediting bash's earlier
+  fix. Both gates now share the same TTL; the H13 spurious-overload
+  failure mode is closed on the MJS path.
+
+Fix 6 — R032E/R041E case-sensitivity gap:
+- Both rules used regex `ZLAR.*/repo/(lib|tests|scripts|mcp-gate|docs
+  |etc/canary)/` (lowercase repo). The actual repo directory is
+  `ZLAR_Repo` (capital R). The regex never matched the live path, so
+  the source-edit ask/warn rules — which exist precisely to surface
+  agent edits to lib/, tests/, mcp-gate/, etc. — have been silently
+  dormant since they were written. Every agent edit to those paths
+  fell through to the catch-all R036/R042 (allow). This was a real
+  enforcement gap, not a rule-design intention; the rules' descriptions
+  ("Write to ZLAR repo code", "Edit ZLAR repo code") describe behaviour
+  the regex did not deliver.
+- Fix: regex updated in both rules to `ZLAR.*/(repo|ZLAR_Repo)/(lib
+  |tests|scripts|mcp-gate|docs|etc/canary)/`. Matches both the actual
+  repo dir and the lowercase form (in case the dir is renamed or
+  cloned with a different case). Rules now fire as designed. Operator
+  consequence: agent-driven edits to lib/, tests/, scripts/, mcp-gate/,
+  docs/, and etc/canary/ inside ZLAR_Repo will start surfacing as
+  ask/warn through Telegram — the friction these rules were always
+  meant to add.
+
+Policy:
+- etc/policies/active.policy.json bumped 3.2.0 → 3.2.2, re-signed
+  with software signing key. Description text rewritten to enumerate
+  v3.2.2 additions (R012D / R032H / R041K, R012B regex extension)
+  while carrying forward v3.2.0 R012 effect-split notes.
+- tests/test-perimeter-closure.sh rule count assertion 85 → 88.
+
+Tests:
+- tests/test-approval-race.sh: 18 → 19 assertions (Test 9 added).
+- tests/test-approval-binding.sh: passes unchanged (Test 3's
+  "binding check skipped (backward compat)" narrative is now
+  partially stale — the empty-pending case is no longer a graceful-
+  degradation path when the caller binds. Assertion is structural
+  only, no behavioural drift; narrative cleanup deferred).
+- tests/test-perimeter-closure.sh: 106/106 with new rule count.
+- tests/test-human-invariants.sh: 75/75 unchanged.
+
+Out of scope for this release:
+- Audit hash chain has no parity test asserting bash- and MJS-emitted
+  audit lines are byte-identical for the same event. Open finding from
+  the same roster review; not addressed here because it's neither a
+  one-line fix nor a regex change.
+- Doctrine/website copy drift (Execution Boundary vs Contact Boundary,
+  v3.2.0 vs v3.2.2 eyebrow, softened doctrine sentences). Separate
+  pass.
+
 ## 3.2.1 — 2026-04-27 — Hotfix: approved-cache replay, PC tombstones, H14 pass-through, MCP E2 ordering
 
 Five post-release bugs found in operational testing of v3.2.0 (Element E2,
