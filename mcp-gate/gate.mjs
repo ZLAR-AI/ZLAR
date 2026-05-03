@@ -1358,7 +1358,7 @@ async function handleRequest(msg) {
       switch (decision) {
         case 'allow': {
           // Human invariant post-response checks (H15, H17)
-          const hiPost = postResponseCheck(humanId, evaluation.severity, 'approve');
+          const hiPost = postResponseCheck(humanId, evaluation.severity, 'approve', { riskScore: evaluation.riskScore });
           if (!hiPost.ok) {
             console.log(`[gate] Human invariant: approval rejected (${hiPost.reason})`);
             emitEvent('mcp', toolName, 'denied', { tool: toolName, reason: `human_${hiPost.reason}`, detail: hiPost.detail },
@@ -1378,7 +1378,7 @@ async function handleRequest(msg) {
 
         case 'deny': {
           // Record denial for H14 rate tracking
-          try { recordDecision(humanId, 'deny'); } catch {}
+          try { postResponseCheck(humanId, evaluation.severity, 'deny', { riskScore: evaluation.riskScore }); } catch {}
           emitEvent('mcp', toolName, 'denied', { tool: toolName, args_preview: JSON.stringify(args).substring(0, 200) },
             evaluation.rule, evaluation.severity, evaluation.riskScore, `human:${CONFIG.telegramChatId}`);
           return {

@@ -81,6 +81,14 @@ HI_ABSOLUTE_MIN_RESPONSE_TIME_MS="${ZLAR_ABSOLUTE_MIN_RESPONSE_TIME_MS:-500}"
 # floor here than the default, but not as low as the authenticity floor.
 HI_CALIBRATED_CRITICAL_FLOOR_MS="${ZLAR_CALIBRATED_CRITICAL_FLOOR_MS:-1500}"
 
+# Timing observations: persistent bounded record of all response events, survives
+# UTC rollover. Provides the data foundation for Calibrated Operator Trust
+# Graduation (Slice 2). Not cleared on daily rollover — carries multi-day history.
+# Max age in days — observations older than this are pruned on each write.
+HI_TIMING_OBS_MAX_AGE_DAYS="${ZLAR_TIMING_OBS_MAX_AGE_DAYS:-30}"
+# Maximum observations to keep (ring buffer cap).
+HI_TIMING_OBS_CAP="${ZLAR_TIMING_OBS_CAP:-100}"
+
 # ─── HMAC Protection (v3.1.3; refactored v3.1.4+) ────────────────────────────
 # State files at var/human-state/{human_id}.json carry H6/H13/H14 counters
 # that an agent with filesystem access could poison (inflate decisions_today
@@ -173,7 +181,7 @@ _hi_ensure_state() {
         jq -n \
             --arg hid "${human_id}" \
             --arg today "${today}" \
-            '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0}' \
+            '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0, timing_observations: [], operator_profile_level: 0}' \
             | _hi_sealed_write "${state_file}"
     else
         # Verify HMAC. On tamper: log + rebuild safe defaults. Rebuild, not
@@ -189,7 +197,7 @@ _hi_ensure_state() {
             jq -n \
                 --arg hid "${human_id}" \
                 --arg today "${today}" \
-                '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0}' \
+                '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0, timing_observations: [], operator_profile_level: 0}' \
                 | _hi_sealed_write "${state_file}"
         fi
     fi
@@ -213,6 +221,9 @@ _hi_ensure_state() {
         # v2.9.0: H14 switched to response-time variance. response_times is the
         # active sliding window now; the v2.7.2 cross-day reset principle
         # applies to it (response_times = []).
+        # v3.3.x: timing_observations and operator_profile_level survive rollover
+        # intentionally — timing_observations carries multi-day history for
+        # Calibrated Operator Trust Graduation. Do NOT add them to this reset list.
         jq --arg today "${today}" \
             'del(._hmac) | .date = $today | .decisions_today = 0 | .pending = [] | .response_times = [] | .canary_tier = 0 | .canary_trip_count = 0 | del(.approvals_recent) | del(.pending_count) | del(.h14_lockout_until)' \
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
@@ -232,6 +243,12 @@ _hi_ensure_state() {
     # v3.2.x schema migration: add canary_tier / canary_trip_count if absent.
     if jq -e '(has("canary_tier") | not) or (has("canary_trip_count") | not)' "${state_file}" >/dev/null 2>&1; then
         jq 'del(._hmac) | .canary_tier = (.canary_tier // 0) | .canary_trip_count = (.canary_trip_count // 0)' \
+            "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+    fi
+
+    # v3.3.x schema migration: add timing_observations / operator_profile_level if absent.
+    if jq -e '(has("timing_observations") | not) or (has("operator_profile_level") | not)' "${state_file}" >/dev/null 2>&1; then
+        jq 'del(._hmac) | .timing_observations = (.timing_observations // []) | .operator_profile_level = (.operator_profile_level // 0)' \
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
@@ -702,8 +719,85 @@ hi_pre_ask_check() {
     return 0
 }
 
+# ─── Timing Observation Recording ────────────────────────────────────────────
+# Record every response event (approve or deny) regardless of H17/H15 outcome.
+# Provides the data foundation for Calibrated Operator Trust Graduation (Slice 2).
+# timing_observations survives UTC rollover — not cleared by _hi_ensure_state.
+# Ring buffer: capped at HI_TIMING_OBS_CAP; pruned to HI_TIMING_OBS_MAX_AGE_DAYS.
+#
+# Parameters (all positional, all required):
+#   1  human_id          — human identifier
+#   2  elapsed_ms        — ms elapsed since ask
+#   3  h17_floor_ms      — H17 authenticity floor active at check time
+#   4  h15_floor_ms      — H15 deliberation floor (ms) active at check time
+#   5  effective_floor_ms — max(h17_floor_ms, h15_floor_ms): the binding floor
+#   6  binding_floor     — which check set the floor: "h17" | "h15" | "none"
+#   7  severity          — "critical" | "warn" | "info"
+#   8  risk_score        — 0-100
+#   9  outcome           — "accepted" | "rejected_h17" | "rejected_h15" | "deny_accepted"
+#  10  source            — "approve" | "deny"
+
+_hi_record_timing_observation() {
+    local human_id="${1:?}"
+    local elapsed_ms="${2:?}"
+    local h17_floor_ms="${3:?}"
+    local h15_floor_ms="${4:?}"
+    local effective_floor_ms="${5:?}"
+    local binding_floor="${6:?}"
+    local severity="${7:?}"
+    local risk_score="${8:-100}"
+    local outcome="${9:?}"
+    local source="${10:?}"
+
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+
+    local now_epoch now_iso
+    now_epoch=$(date +%s)
+    now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    local max_age_s
+    max_age_s=$(( HI_TIMING_OBS_MAX_AGE_DAYS * 86400 ))
+
+    jq \
+        --argjson elapsed_ms      "${elapsed_ms}" \
+        --argjson h17_floor_ms    "${h17_floor_ms}" \
+        --argjson h15_floor_ms    "${h15_floor_ms}" \
+        --argjson eff_floor_ms    "${effective_floor_ms}" \
+        --arg     binding_floor   "${binding_floor}" \
+        --arg     severity        "${severity}" \
+        --argjson risk_score      "${risk_score}" \
+        --arg     outcome         "${outcome}" \
+        --arg     source          "${source}" \
+        --argjson now             "${now_epoch}" \
+        --arg     now_iso         "${now_iso}" \
+        --argjson max_age_s       "${max_age_s}" \
+        --argjson cap             "${HI_TIMING_OBS_CAP}" \
+        'del(._hmac) |
+         ((.timing_observations // []) | map(select(($now - .ts) <= $max_age_s))) as $pruned |
+         ({
+             ts:                $now,
+             iso:               $now_iso,
+             elapsed_ms:        $elapsed_ms,
+             h17_floor_ms:      $h17_floor_ms,
+             h15_floor_ms:      $h15_floor_ms,
+             effective_floor_ms: $eff_floor_ms,
+             binding_floor:     $binding_floor,
+             severity:          $severity,
+             risk_score:        $risk_score,
+             outcome:           $outcome,
+             source:            $source
+         }) as $entry |
+         .timing_observations = (($pruned + [$entry]) | .[-$cap:])' \
+        "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}" || {
+        _hi_log "ERROR: _hi_record_timing_observation write failed for ${human_id}"
+        rm -f "${state_file}.tmp" 2>/dev/null
+    }
+}
+
 # ─── Combined Post-Response Check ─────────────────────────────────────────────
-# Call after receiving a human response. Checks H15 + H17.
+# Call after receiving a human response. Checks H15 + H17. Records a timing
+# observation for every exit path (Slice 1 recording layer).
 #
 # action_hash is optional; when provided, it removes the exact pending entry
 # that the matching hi_pre_ask_check added. When omitted, the oldest pending
@@ -716,35 +810,12 @@ hi_post_response_check() {
     local severity="${2:-info}"
     local decision="${3:?}"  # "approve" or "deny"
     local action_hash="${4:-}"
-    local risk_score="${5:-100}"  # passed through to hi_record_decision
+    local risk_score="${5:-100}"
 
     # Decrement pending (by hash if provided, else oldest)
     hi_decrement_pending "${human_id}" "${action_hash}"
 
-    # H17: Authenticity (must come first — if automated, deliberation is meaningless)
-    local auth_result
-    auth_result=$(hi_check_authenticity "${human_id}" "${severity}")
-    if [ "${auth_result}" = "suspicious" ]; then
-        echo "suspicious"
-        return 1
-    fi
-
-    # H15: Deliberation floor
-    local delib_result
-    delib_result=$(hi_check_deliberation "${human_id}" "${severity}")
-    if [ "${delib_result}" = "too_fast" ]; then
-        if [ "${severity}" = "critical" ]; then
-            echo "too_fast"
-            return 1
-        fi
-        # warn/info: H15 floor violation is signal-only — approval proceeds.
-        # H17 (authenticity) already blocked machine-speed responses above;
-        # this path is reached only when elapsed >= minResponseTime but < deliberationFloor.
-        _hi_log "H15 SIGNAL (${severity}): ${human_id} responded below deliberation floor — logged, not rejected"
-    fi
-
-    # Record the decision for H14 variance tracking (elapsed = now - ask_time).
-    # Also capture ms-precision elapsed for H17 v2 floor tuning.
+    # Compute elapsed once at the top — shared by all exit paths.
     local _state_file _ask_epoch _ask_ms _now_epoch _now_ms _elapsed _elapsed_ms
     _state_file=$(_hi_ensure_state "${human_id}")
     _ask_epoch=$(jq -r '.last_ask_epoch // 0' "${_state_file}" 2>/dev/null || echo 0)
@@ -757,6 +828,112 @@ hi_post_response_check() {
     else
         _elapsed_ms=$(( (_now_epoch - _ask_epoch) * 1000 ))
     fi
+
+    # ── DENY PATH FIRST — deny always stands; record timing then return ok ────
+    if [ "${decision}" = "deny" ]; then
+        # Compute floors for the observation (same logic as approve, but no rejection).
+        local _deny_default_floor_ms
+        if [ -n "${HI_MIN_RESPONSE_TIME_MS:-}" ]; then
+            _deny_default_floor_ms="${HI_MIN_RESPONSE_TIME_MS}"
+        else
+            _deny_default_floor_ms=$(( HI_MIN_RESPONSE_TIME * 1000 ))
+        fi
+        local _deny_h17_floor_ms="${_deny_default_floor_ms}"
+        if _hi_is_calibrated "${_state_file}"; then
+            case "${severity}" in
+                critical) _deny_h17_floor_ms="${HI_CALIBRATED_CRITICAL_FLOOR_MS}" ;;
+                *)        _deny_h17_floor_ms="${HI_ABSOLUTE_MIN_RESPONSE_TIME_MS}" ;;
+            esac
+        fi
+        local _deny_h15_floor_s
+        case "${severity}" in
+            critical) _deny_h15_floor_s="${HI_DELIBERATION_FLOOR_CRITICAL}" ;;
+            warn)     _deny_h15_floor_s="${HI_DELIBERATION_FLOOR_WARN}" ;;
+            info|*)   _deny_h15_floor_s="${HI_DELIBERATION_FLOOR_INFO}" ;;
+        esac
+        local _deny_h15_floor_ms=$(( _deny_h15_floor_s * 1000 ))
+        local _deny_effective_floor_ms
+        if [ "${_deny_h17_floor_ms}" -gt "${_deny_h15_floor_ms}" ]; then
+            _deny_effective_floor_ms="${_deny_h17_floor_ms}"
+        else
+            _deny_effective_floor_ms="${_deny_h15_floor_ms}"
+        fi
+        _hi_record_timing_observation "${human_id}" "${_elapsed_ms}" \
+            "${_deny_h17_floor_ms}" "${_deny_h15_floor_ms}" "${_deny_effective_floor_ms}" \
+            "none" "${severity}" "${risk_score}" "deny_accepted" "deny"
+        hi_record_decision "${human_id}" "deny" "${_elapsed}" "${severity}" "${risk_score}" "${_elapsed_ms}"
+        echo "ok"
+        return 0
+    fi
+
+    # ── APPROVE PATH ─────────────────────────────────────────────────────────
+
+    # Compute H17 floor (mirrors hi_check_authenticity floor selection).
+    local _default_floor_ms
+    if [ -n "${HI_MIN_RESPONSE_TIME_MS:-}" ]; then
+        _default_floor_ms="${HI_MIN_RESPONSE_TIME_MS}"
+    else
+        _default_floor_ms=$(( HI_MIN_RESPONSE_TIME * 1000 ))
+    fi
+    local _h17_floor_ms="${_default_floor_ms}"
+    if _hi_is_calibrated "${_state_file}"; then
+        case "${severity}" in
+            critical) _h17_floor_ms="${HI_CALIBRATED_CRITICAL_FLOOR_MS}" ;;
+            *)        _h17_floor_ms="${HI_ABSOLUTE_MIN_RESPONSE_TIME_MS}" ;;
+        esac
+    fi
+
+    # Compute H15 floor (ms).
+    local _h15_floor_s
+    case "${severity}" in
+        critical) _h15_floor_s="${HI_DELIBERATION_FLOOR_CRITICAL}" ;;
+        warn)     _h15_floor_s="${HI_DELIBERATION_FLOOR_WARN}" ;;
+        info|*)   _h15_floor_s="${HI_DELIBERATION_FLOOR_INFO}" ;;
+    esac
+    local _h15_floor_ms=$(( _h15_floor_s * 1000 ))
+
+    # Effective floor = max(h17, h15). Binding = whichever is larger.
+    local _effective_floor_ms _binding_floor
+    if [ "${_h17_floor_ms}" -ge "${_h15_floor_ms}" ]; then
+        _effective_floor_ms="${_h17_floor_ms}"
+        _binding_floor="h17"
+    else
+        _effective_floor_ms="${_h15_floor_ms}"
+        _binding_floor="h15"
+    fi
+
+    # H17: Authenticity (must come first — if automated, deliberation is meaningless).
+    local auth_result
+    auth_result=$(hi_check_authenticity "${human_id}" "${severity}")
+    if [ "${auth_result}" = "suspicious" ]; then
+        _hi_record_timing_observation "${human_id}" "${_elapsed_ms}" \
+            "${_h17_floor_ms}" "${_h15_floor_ms}" "${_effective_floor_ms}" \
+            "${_binding_floor}" "${severity}" "${risk_score}" "rejected_h17" "approve"
+        echo "suspicious"
+        return 1
+    fi
+
+    # H15: Deliberation floor.
+    local delib_result
+    delib_result=$(hi_check_deliberation "${human_id}" "${severity}")
+    if [ "${delib_result}" = "too_fast" ]; then
+        if [ "${severity}" = "critical" ]; then
+            _hi_record_timing_observation "${human_id}" "${_elapsed_ms}" \
+                "${_h17_floor_ms}" "${_h15_floor_ms}" "${_effective_floor_ms}" \
+                "${_binding_floor}" "${severity}" "${risk_score}" "rejected_h15" "approve"
+            echo "too_fast"
+            return 1
+        fi
+        # warn/info: H15 floor violation is signal-only — approval proceeds.
+        # H17 (authenticity) already blocked machine-speed responses above;
+        # this path is reached only when elapsed >= minResponseTime but < deliberationFloor.
+        _hi_log "H15 SIGNAL (${severity}): ${human_id} responded below deliberation floor — logged, not rejected"
+    fi
+
+    # ACCEPTED (or warn/info H15 signal-only) — single write at final exit.
+    _hi_record_timing_observation "${human_id}" "${_elapsed_ms}" \
+        "${_h17_floor_ms}" "${_h15_floor_ms}" "${_effective_floor_ms}" \
+        "${_binding_floor}" "${severity}" "${risk_score}" "accepted" "approve"
     hi_record_decision "${human_id}" "${decision}" "${_elapsed}" "${severity}" "${risk_score}" "${_elapsed_ms}"
 
     echo "ok"

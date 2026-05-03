@@ -694,6 +694,136 @@ response_len=$(jq -r '.response_times | length' "${state_file}" 2>/dev/null)
 assert "response_times length" "3" "${response_len}"
 
 echo
+echo "=== Slice 1: Timing Observations Recording ==="
+echo
+
+# Fixture helper: write a minimal state for T1-T5 timing observation tests.
+# Called before the HMAC section so unsealed fixture files are safe (key not yet installed).
+# Args: human_id  ask_epoch_ms  ask_epoch
+_TOBS_TODAY=$(date -u +%Y-%m-%d)
+_TOBS_NOW_MS=$(_hi_epoch_ms)
+_TOBS_NOW=$(date +%s)
+HI_MIN_RESPONSE_TIME=2
+HI_MIN_RESPONSE_TIME_MS=
+HI_ABSOLUTE_MIN_RESPONSE_TIME_MS=500
+HI_DELIBERATION_FLOOR_CRITICAL=30
+HI_DELIBERATION_FLOOR_WARN=10
+HI_DELIBERATION_FLOOR_INFO=3
+HI_TIMING_OBS_CAP=100
+HI_TIMING_OBS_MAX_AGE_DAYS=30
+
+_tobs_fixture() {
+    local hid="$1" tms="$2" t="$3"
+    local pts="${_TOBS_NOW}"
+    jq -n \
+        --arg hid "${hid}" \
+        --arg today "${_TOBS_TODAY}" \
+        --argjson t "${t}" \
+        --argjson tms "${tms}" \
+        --argjson pts "${pts}" \
+        '{human_id:$hid,date:$today,decisions_today:0,response_times:[],timing_observations:[],
+          operator_profile_level:0,pending:[{action_hash:"",ts:$pts}],
+          last_ask_epoch:$t,last_ask_epoch_ms:$tms,canary_tier:0,canary_trip_count:0}' \
+        > "${TEMP_DIR}/var/human-state/${hid}.json"
+}
+
+# T1: Fast approve (1000ms — above machine-speed 500ms, below H17 floor 2000ms) → suspicious.
+# Obs recorded with outcome=rejected_h17, source=approve. response_times stays empty.
+HUMAN_T1="test-tobs-t1"
+_tobs_fixture "${HUMAN_T1}" $(( _TOBS_NOW_MS - 1000 )) $(( _TOBS_NOW - 1 ))
+t1_result=$(hi_post_response_check "${HUMAN_T1}" "warn" "approve" 2>/dev/null)
+assert "T1: 1000ms warn approve → suspicious" "suspicious" "${t1_result}"
+t1_obs_outcome=$(jq -r '.timing_observations[0].outcome // "none"' "${TEMP_DIR}/var/human-state/${HUMAN_T1}.json" 2>/dev/null)
+assert "T1: obs outcome = rejected_h17" "rejected_h17" "${t1_obs_outcome}"
+t1_obs_source=$(jq -r '.timing_observations[0].source // "none"' "${TEMP_DIR}/var/human-state/${HUMAN_T1}.json" 2>/dev/null)
+assert "T1: obs source = approve" "approve" "${t1_obs_source}"
+t1_rt_len=$(jq '.response_times | length' "${TEMP_DIR}/var/human-state/${HUMAN_T1}.json" 2>/dev/null)
+assert "T1: response_times empty after rejected_h17" "0" "${t1_rt_len}"
+
+# T2: Accepted approve (5000ms > H17 2000ms; warn 5000ms < H15 10000ms → signal-only → ok).
+# Verifies obs fields: h17_floor_ms=2000, h15_floor_ms=10000, outcome=accepted, source=approve.
+# response_times gains 1 entry (hi_record_decision called on accepted path).
+HUMAN_T2="test-tobs-t2"
+_tobs_fixture "${HUMAN_T2}" $(( _TOBS_NOW_MS - 5000 )) $(( _TOBS_NOW - 5 ))
+t2_result=$(hi_post_response_check "${HUMAN_T2}" "warn" "approve" 2>/dev/null)
+assert "T2: 5000ms warn approve → ok" "ok" "${t2_result}"
+t2_obs_outcome=$(jq -r '.timing_observations[0].outcome // "none"' "${TEMP_DIR}/var/human-state/${HUMAN_T2}.json" 2>/dev/null)
+assert "T2: obs outcome = accepted" "accepted" "${t2_obs_outcome}"
+t2_obs_h17=$(jq '.timing_observations[0].h17_floor_ms // -1' "${TEMP_DIR}/var/human-state/${HUMAN_T2}.json" 2>/dev/null)
+assert "T2: obs h17_floor_ms = 2000 (uncalibrated default)" "2000" "${t2_obs_h17}"
+t2_obs_h15=$(jq '.timing_observations[0].h15_floor_ms // -1' "${TEMP_DIR}/var/human-state/${HUMAN_T2}.json" 2>/dev/null)
+assert "T2: obs h15_floor_ms = 10000 (warn floor × 1000)" "10000" "${t2_obs_h15}"
+t2_rt_len=$(jq '.response_times | length' "${TEMP_DIR}/var/human-state/${HUMAN_T2}.json" 2>/dev/null)
+assert "T2: response_times has 1 entry after accepted" "1" "${t2_rt_len}"
+
+# T3: H15 critical rejection (5000ms > H17 2000ms, critical 5000ms < H15 30000ms → too_fast).
+# Obs recorded with outcome=rejected_h15. response_times stays empty.
+HUMAN_T3="test-tobs-t3"
+_tobs_fixture "${HUMAN_T3}" $(( _TOBS_NOW_MS - 5000 )) $(( _TOBS_NOW - 5 ))
+t3_result=$(hi_post_response_check "${HUMAN_T3}" "critical" "approve" 2>/dev/null)
+assert "T3: 5000ms critical approve → too_fast" "too_fast" "${t3_result}"
+t3_obs_outcome=$(jq -r '.timing_observations[0].outcome // "none"' "${TEMP_DIR}/var/human-state/${HUMAN_T3}.json" 2>/dev/null)
+assert "T3: obs outcome = rejected_h15" "rejected_h15" "${t3_obs_outcome}"
+t3_rt_len=$(jq '.response_times | length' "${TEMP_DIR}/var/human-state/${HUMAN_T3}.json" 2>/dev/null)
+assert "T3: response_times empty after rejected_h15" "0" "${t3_rt_len}"
+
+# T4: Fast deny (1000ms, below H17 floor) → ok (deny never rejected).
+# Obs recorded with outcome=deny_accepted, source=deny. response_times gains entry (deny records).
+HUMAN_T4="test-tobs-t4"
+_tobs_fixture "${HUMAN_T4}" $(( _TOBS_NOW_MS - 1000 )) $(( _TOBS_NOW - 1 ))
+t4_result=$(hi_post_response_check "${HUMAN_T4}" "warn" "deny" 2>/dev/null)
+assert "T4: fast deny (1000ms) → ok (never rejected)" "ok" "${t4_result}"
+t4_obs_outcome=$(jq -r '.timing_observations[0].outcome // "none"' "${TEMP_DIR}/var/human-state/${HUMAN_T4}.json" 2>/dev/null)
+assert "T4: obs outcome = deny_accepted" "deny_accepted" "${t4_obs_outcome}"
+t4_obs_source=$(jq -r '.timing_observations[0].source // "none"' "${TEMP_DIR}/var/human-state/${HUMAN_T4}.json" 2>/dev/null)
+assert "T4: obs source = deny" "deny" "${t4_obs_source}"
+t4_rt_len=$(jq '.response_times | length' "${TEMP_DIR}/var/human-state/${HUMAN_T4}.json" 2>/dev/null)
+assert "T4: response_times has 1 entry (deny records decision)" "1" "${t4_rt_len}"
+
+# T5: Slow deny (10000ms) → ok, deny_accepted obs.
+HUMAN_T5="test-tobs-t5"
+_tobs_fixture "${HUMAN_T5}" $(( _TOBS_NOW_MS - 10000 )) $(( _TOBS_NOW - 10 ))
+t5_result=$(hi_post_response_check "${HUMAN_T5}" "warn" "deny" 2>/dev/null)
+assert "T5: slow deny (10000ms) → ok" "ok" "${t5_result}"
+t5_obs_outcome=$(jq -r '.timing_observations[0].outcome // "none"' "${TEMP_DIR}/var/human-state/${HUMAN_T5}.json" 2>/dev/null)
+assert "T5: obs outcome = deny_accepted" "deny_accepted" "${t5_obs_outcome}"
+
+# T6: UTC rollover preserves timing_observations, clears response_times.
+# timing_observations must survive rollover — multi-day history for Slice 2 graduation.
+HUMAN_T6="test-tobs-t6"
+_t6_yesterday=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u --date='-1 day' +%Y-%m-%d 2>/dev/null || echo "2026-05-02")
+jq -n \
+    --arg hid "${HUMAN_T6}" \
+    --arg yesterday "${_t6_yesterday}" \
+    --argjson now "${_TOBS_NOW}" \
+    '{human_id:$hid,date:$yesterday,decisions_today:3,
+      response_times:[{elapsed:5,severity:"info"}],
+      timing_observations:[{ts:$now,iso:"2026-05-02T12:00:00Z",elapsed_ms:5000,
+          h17_floor_ms:2000,h15_floor_ms:3000,effective_floor_ms:3000,
+          binding_floor:"h15",severity:"info",risk_score:50,outcome:"accepted",source:"approve"}],
+      operator_profile_level:0,
+      pending:[],last_ask_epoch:0,last_ask_epoch_ms:0,
+      canary_tier:0,canary_trip_count:0}' \
+    > "${TEMP_DIR}/var/human-state/${HUMAN_T6}.json"
+_hi_ensure_state "${HUMAN_T6}" >/dev/null 2>&1
+t6_rt_len=$(jq '.response_times | length' "${TEMP_DIR}/var/human-state/${HUMAN_T6}.json" 2>/dev/null)
+assert "T6: rollover clears response_times" "0" "${t6_rt_len}"
+t6_tobs_len=$(jq '.timing_observations | length' "${TEMP_DIR}/var/human-state/${HUMAN_T6}.json" 2>/dev/null)
+assert "T6: rollover preserves timing_observations" "1" "${t6_tobs_len}"
+
+# T7: timing_observations ring buffer caps at HI_TIMING_OBS_CAP.
+# Writes 7 observations with cap=5; final length must be 5 (oldest pruned).
+HI_TIMING_OBS_CAP=5
+HUMAN_T7="test-tobs-t7"
+_hi_ensure_state "${HUMAN_T7}" >/dev/null 2>&1
+for _tobs_i in $(seq 1 7); do
+    _hi_record_timing_observation "${HUMAN_T7}" 5000 2000 3000 3000 "h15" "info" 50 "accepted" "approve"
+done
+t7_tobs_len=$(jq '.timing_observations | length' "${TEMP_DIR}/var/human-state/${HUMAN_T7}.json" 2>/dev/null)
+assert "T7: timing_observations capped at 5 (HI_TIMING_OBS_CAP=5)" "5" "${t7_tobs_len}"
+HI_TIMING_OBS_CAP=100
+
+echo
 echo "=== v3.1.3: Human-State HMAC Tamper Detection ==="
 echo
 
