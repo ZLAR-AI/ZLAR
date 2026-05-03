@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.3.1 — 2026-05-03 — Trust lane policy governance (R012W_TRUST_LANE)
+
+Policy-only patch. No code changes to gate logic or enforcement functions.
+
+Adds R012W_TRUST_LANE (ask/critical, bash domain) to active.policy.json.
+This rule governs any agent Bash invocation of scripts/grant-trust-lane.sh,
+closing the gap where the TTY check inside the script was the only control.
+The TTY check remains as defence-in-depth; R012W_TRUST_LANE is the primary
+policy control.
+
+Rule: R012W_TRUST_LANE
+  domain: bash
+  action: ask
+  severity: critical
+  regex: grant-trust-lane(\.sh)?
+  risk: 100/100/100
+  verify_hint: confirm human_id, target lane, and reason before approving
+
+Policy version: 3.2.2 → 3.3.1
+Rule count: 88 → 89
+Signed with software key (Ed25519, same key as v3.2.2).
+draft.json not updated (stale at 3.1.0/82 rules — requires separate regeneration).
+
+Out of scope for this patch:
+- draft.json regeneration
+- Trust lane revoke script (does not exist yet; will be governed when added)
+
+## 3.3.0 — 2026-05-03 — Trust Lane system (Fast / Guarded / Slow)
+
 ## 3.2.3 — 2026-05-03 — H17/H15 timing observation recording layer (Slice 1)
 
 Recording-only change. No floor values changed. No graduation logic. No H15

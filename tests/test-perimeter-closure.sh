@@ -84,11 +84,12 @@ rule_count=$(jq '.rules | length' "${POLICY_FILE}")
 # 2026-04-24: R005J added alongside R002 tightening, 81 → 82.
 # 2026-04-26: Element C R012 split (R012I/W_SIGN/W_MODE/W_EDIT, R012 removed), 82 → 85.
 # 2026-04-28: v3.2.2 hardening — R012D + R032H + R041K (adapter-shim deny), 85 → 88.
-if [ "${rule_count}" -eq 88 ]; then
-    echo "  ✓ Policy has 88 rules"
+# 2026-05-03: v3.3.1 — R012W_TRUST_LANE (trust lane grant execution), 88 → 89.
+if [ "${rule_count}" -eq 89 ]; then
+    echo "  ✓ Policy has 89 rules"
     passed=$((passed + 1))
 else
-    echo "  ✗ Policy has ${rule_count} rules, expected 88"
+    echo "  ✗ Policy has ${rule_count} rules, expected 89"
     failed=$((failed + 1))
 fi
 
@@ -477,6 +478,17 @@ else
         failed=$((failed + 1))
     fi
 fi
+
+# ── R012W_TRUST_LANE: Trust lane grant execution ──
+echo
+echo "── R012W_TRUST_LANE: Trust lane grant execution ──"
+P_R012W_TRUST_LANE='grant-trust-lane(\.sh)?'
+
+assert_matches "grant-trust-lane.sh direct" "${P_R012W_TRUST_LANE}" 'scripts/grant-trust-lane.sh 7662799203 "trusted operator"'
+assert_matches "bash grant-trust-lane.sh" "${P_R012W_TRUST_LANE}" 'bash scripts/grant-trust-lane.sh 7662799203 "reason"'
+assert_matches "absolute path" "${P_R012W_TRUST_LANE}" '/Users/vincentnijjar/Desktop/ZLAR/ZLAR_Repo/scripts/grant-trust-lane.sh'
+assert_matches "no extension" "${P_R012W_TRUST_LANE}" 'grant-trust-lane 7662799203 "reason"'
+assert_no_match "unrelated script not caught" "${P_R012W_TRUST_LANE}" 'scripts/zlar-setup.sh'
 
 # ── Summary ──
 echo

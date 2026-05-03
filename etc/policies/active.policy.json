@@ -1,13 +1,13 @@
 {
-  "version": "3.2.2",
+  "version": "3.3.1",
   "created_at": "2026-03-29T00:00:00Z",
-  "updated_at": "2026-04-28T00:00:00Z",
+  "updated_at": "2026-05-03T00:00:00Z",
   "author": "vincentnijjar",
-  "description": "ZLAR v3.2.2 — Security hardening. Adds R012D (deny/critical, bash) + R032H (deny/critical, write) + R041K (deny/critical, edit) covering the installed Claude adapter shim ~/.claude/zlar-gate.sh and ~/.claude/zlar-session-hook.sh — the first-allow-point shim that the PreToolUse hook invokes, previously uncovered. Extends R012B regex to deny Bash creation of var/log/approvals/*.{approved,pending,acked,blocked} (forged-cache vector). Fixes R032E/R041E case-sensitivity gap: regex was `ZLAR.*/repo/...` (lowercase) and never matched the actual repo path `ZLAR_Repo`, leaving source-edit ask-rules silently dormant; regex now matches `ZLAR.*/(repo|ZLAR_Repo)/...`. Net rule delta: +3 (85 -> 88). Carries forward v3.2.0 R012 effect-split: R012I (allow/info reads), R012W_SIGN (ask/critical signing), R012W_MODE (ask/critical mode changes), R012W_EDIT (ask/critical enforcement-path edits).",
+  "description": "ZLAR v3.3.1 — Trust lane governance. Adds R012W_TRUST_LANE (ask/critical, bash) governing execution of scripts/grant-trust-lane.sh — prevents agent-initiated trust lane authority changes without human approval. Net rule delta: +1 (88 -> 89). Carries forward v3.2.2: R012D + R032H + R041K (adapter-shim deny), R012B forged-cache closure, R032E/R041E case-sensitivity fix. Carries forward v3.2.0 R012 effect-split: R012I (allow/info reads), R012W_SIGN (ask/critical signing), R012W_MODE (ask/critical mode changes), R012W_EDIT (ask/critical enforcement-path edits).",
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "BmX5h67nMlynQR2QtEn9QUYXZmEEV3mdvduel29sw+icGEYp+rD0WZEYD7dPiqfJRhCZloWJI+X0Bj6TBX5wCg=="
+    "value": "avIeu/5rcvs16DGnLftfMeMLn1VMt/CzsZUyk0eIxxPpLbO+6Wu+c0AyP99myqx/QbUf0KtfFThSsCEivj6rDQ=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -490,6 +490,28 @@
         "blast_radius": 100
       },
       "verify_hint": "This edits enforcement policy, gate code, or hooks. Confirm the specific file and change before approving."
+    },
+    {
+      "id": "R012W_TRUST_LANE",
+      "enabled": true,
+      "description": "Trust lane grant execution — ask human (Fast Lane authority change)",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "grant-trust-lane(\\.sh)?"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      },
+      "verify_hint": "This executes the trust lane grant script. Confirm the human_id, target lane, and reason before approving. Fast Lane collapses H15/H17 floors to 500ms for all severities."
     },
     {
       "id": "R012B",
