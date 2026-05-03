@@ -2425,7 +2425,7 @@ main() {
 
     # Passively check for canary results (non-blocking, fail-safe)
     if [ "${CANARY_LOADED}" = "true" ]; then
-        canary_check_result "${SESSION_ID}" 2>/dev/null || true
+        canary_check_result "${SESSION_ID}" "${TELEGRAM_CHAT_ID}" 2>/dev/null || true
     fi
 
     if [ -z "${tool_name}" ]; then

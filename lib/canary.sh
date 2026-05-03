@@ -232,9 +232,12 @@ canary_send() {
 
 # ── Check for canary callback result in inbox ──
 # Called passively on every gate invocation. Does not block.
+# human_id (optional 2nd arg): when provided, lane demotion/restore is applied
+# on canary outcome — fatigue/expired demotes, healthy restores.
 
 canary_check_result() {
     local session_id="${1:?}"
+    local human_id="${2:-}"
     local pending_file="${CANARY_STATE_DIR}/${session_id}.canary.pending"
 
     [ -f "${pending_file}" ] || return 0  # No pending canary — nothing to check
@@ -283,12 +286,12 @@ canary_check_result() {
             if [ "${cb_data}" = "cc:canary:approve:${canary_id}" ]; then
                 # FATIGUE DETECTED — human approved a canary (should have denied)
                 rm -f "${cb_file}" "${pending_file}" 2>/dev/null
-                _canary_log_fatigue "${session_id}" "${canary_id}"
+                _canary_log_fatigue "${session_id}" "${canary_id}" "${human_id}"
                 return 0
             elif [ "${cb_data}" = "cc:canary:deny:${canary_id}" ]; then
                 # HEALTHY — human correctly denied the canary
                 rm -f "${cb_file}" "${pending_file}" 2>/dev/null
-                _canary_log_healthy "${session_id}" "${canary_id}"
+                _canary_log_healthy "${session_id}" "${canary_id}" "${human_id}"
                 return 0
             fi
         done
@@ -310,7 +313,7 @@ canary_check_result() {
     pending_age=$((now_epoch - file_epoch))
     if [ "${pending_age}" -gt "${TELEGRAM_TIMEOUT_S:-900}" ]; then
         rm -f "${pending_file}" 2>/dev/null
-        _canary_log_expired "${session_id}" "${canary_id}"
+        _canary_log_expired "${session_id}" "${canary_id}" "${human_id}"
     fi
 
     return 0
@@ -338,9 +341,10 @@ canary_fatigue_count() {
 }
 
 # ── Internal logging functions ──
+# Optional 3rd arg human_id: when provided, applies trust lane transition.
 
 _canary_log_fatigue() {
-    local session_id="$1" canary_id="$2"
+    local session_id="$1" canary_id="$2" human_id="${3:-}"
     log "CANARY FAILED: Session ${session_id} approved canary ${canary_id} — FATIGUE DETECTED"
 
     # Emit audit event (uses gate's emit_event if available)
@@ -365,10 +369,13 @@ _canary_log_fatigue() {
             ' "${state_file}" 2>/dev/null)
         [ -n "${new_state}" ] && echo "${new_state}" > "${state_file}" 2>/dev/null
     fi
+
+    # Trust lane demotion: canary_failed demotes fast→guarded or guarded→slow.
+    [ -n "${human_id}" ] && hi_apply_lane_demotion "${human_id}" "canary_failed" 2>/dev/null || true
 }
 
 _canary_log_healthy() {
-    local session_id="$1" canary_id="$2"
+    local session_id="$1" canary_id="$2" human_id="${3:-}"
     log "CANARY PASSED: Session ${session_id} correctly denied canary ${canary_id}"
 
     if type emit_event &>/dev/null; then
@@ -391,10 +398,13 @@ _canary_log_healthy() {
             ' "${state_file}" 2>/dev/null)
         [ -n "${new_state}" ] && echo "${new_state}" > "${state_file}" 2>/dev/null
     fi
+
+    # Trust lane restore: canary_passed restores slow→guarded or guarded→fast (if grant present).
+    [ -n "${human_id}" ] && hi_apply_lane_restore "${human_id}" 2>/dev/null || true
 }
 
 _canary_log_expired() {
-    local session_id="$1" canary_id="$2"
+    local session_id="$1" canary_id="$2" human_id="${3:-}"
     log "CANARY EXPIRED: Session ${session_id} canary ${canary_id} — no response"
 
     if type emit_event &>/dev/null; then
@@ -412,4 +422,7 @@ _canary_log_expired() {
             'del(.pending_canary_id)' "${state_file}" 2>/dev/null)
         [ -n "${new_state}" ] && echo "${new_state}" > "${state_file}" 2>/dev/null
     fi
+
+    # Trust lane demotion: no response is a missed canary — demotes like failure.
+    [ -n "${human_id}" ] && hi_apply_lane_demotion "${human_id}" "canary_missed" 2>/dev/null || true
 }

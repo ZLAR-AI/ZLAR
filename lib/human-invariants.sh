@@ -181,7 +181,7 @@ _hi_ensure_state() {
         jq -n \
             --arg hid "${human_id}" \
             --arg today "${today}" \
-            '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0, timing_observations: [], operator_profile_level: 0}' \
+            '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0, timing_observations: [], operator_profile_level: 0, trust_lane: "guarded"}' \
             | _hi_sealed_write "${state_file}"
     else
         # Verify HMAC. On tamper: log + rebuild safe defaults. Rebuild, not
@@ -197,7 +197,7 @@ _hi_ensure_state() {
             jq -n \
                 --arg hid "${human_id}" \
                 --arg today "${today}" \
-                '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0, timing_observations: [], operator_profile_level: 0}' \
+                '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0, timing_observations: [], operator_profile_level: 0, trust_lane: "guarded"}' \
                 | _hi_sealed_write "${state_file}"
         fi
     fi
@@ -224,6 +224,8 @@ _hi_ensure_state() {
         # v3.2.3: timing_observations and operator_profile_level survive rollover
         # intentionally — timing_observations carries multi-day history for
         # Calibrated Operator Trust Graduation (Slice 2). Do NOT add them to this reset list.
+        # v3.3.0: trust_lane and trust_lane_grant survive rollover — grants are
+        # authority-issued and must not be silently revoked by UTC rollover.
         jq --arg today "${today}" \
             'del(._hmac) | .date = $today | .decisions_today = 0 | .pending = [] | .response_times = [] | .canary_tier = 0 | .canary_trip_count = 0 | del(.approvals_recent) | del(.pending_count) | del(.h14_lockout_until)' \
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
@@ -250,6 +252,12 @@ _hi_ensure_state() {
     # operator_profile_level if absent. Idempotent after first run.
     if jq -e '(has("timing_observations") | not) or (has("operator_profile_level") | not)' "${state_file}" >/dev/null 2>&1; then
         jq 'del(._hmac) | .timing_observations = (.timing_observations // []) | .operator_profile_level = (.operator_profile_level // 0)' \
+            "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+    fi
+
+    # v3.3.0 trust_lane migration: add trust_lane=guarded if absent.
+    if jq -e 'has("trust_lane") | not' "${state_file}" >/dev/null 2>&1; then
+        jq 'del(._hmac) | .trust_lane = "guarded"' \
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
@@ -481,6 +489,8 @@ hi_check_deliberation() {
 # Floor selection (ms):
 #   All operators  — responses below HI_ABSOLUTE_MIN_RESPONSE_TIME_MS are
 #                    always rejected (machine-speed / authenticity floor).
+#   Fast Lane      — floor stays at HI_ABSOLUTE_MIN_RESPONSE_TIME_MS for all
+#                    severities (authority-granted trust replaces calibration).
 #   Uncalibrated   — responses below the default floor (derived from
 #                    HI_MIN_RESPONSE_TIME_MS or HI_MIN_RESPONSE_TIME * 1000)
 #                    are rejected regardless of severity.
@@ -519,6 +529,15 @@ hi_check_authenticity() {
         _hi_log "H17 VIOLATED: ${human_id} responded in ${elapsed_ms}ms (machine-speed floor: ${HI_ABSOLUTE_MIN_RESPONSE_TIME_MS}ms)"
         echo "suspicious"
         return 1
+    fi
+
+    # Fast Lane: authority-granted trust replaces calibration for floor selection.
+    # Floor stays at the absolute minimum for all severities.
+    local _tl
+    _tl=$(jq -r '.trust_lane // "guarded"' "${state_file}" 2>/dev/null)
+    if [ "${_tl}" = "fast" ]; then
+        echo "ok"
+        return 0
     fi
 
     # Resolve the default floor: prefer HI_MIN_RESPONSE_TIME_MS if explicitly set
@@ -624,6 +643,14 @@ hi_check_response_variance() {
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
+    # Fast Lane bypasses H14 — canary is the trust signal, not variance.
+    local _tl
+    _tl=$(jq -r '.trust_lane // "guarded"' "${state_file}" 2>/dev/null)
+    if [ "${_tl}" = "fast" ]; then
+        echo "ok"
+        return 0
+    fi
+
     # Variance check on non-critical decisions only.
     # Critical decisions are governed by H15 (30s floor) which creates
     # artificial uniformity — including critical in variance would fire H14
@@ -726,7 +753,7 @@ hi_pre_ask_check() {
 # timing_observations survives UTC rollover — not cleared by _hi_ensure_state.
 # Ring buffer: capped at HI_TIMING_OBS_CAP; pruned to HI_TIMING_OBS_MAX_AGE_DAYS.
 #
-# Parameters (all positional, all required):
+# Parameters (all positional):
 #   1  human_id          — human identifier
 #   2  elapsed_ms        — ms elapsed since ask
 #   3  h17_floor_ms      — H17 authenticity floor active at check time
@@ -737,6 +764,7 @@ hi_pre_ask_check() {
 #   8  risk_score        — 0-100
 #   9  outcome           — "accepted" | "rejected_h17" | "rejected_h15" | "deny_accepted"
 #  10  source            — "approve" | "deny"
+#  11  trust_lane        — "fast" | "guarded" | "slow" (default: "guarded")
 
 _hi_record_timing_observation() {
     local human_id="${1:?}"
@@ -749,6 +777,7 @@ _hi_record_timing_observation() {
     local risk_score="${8:-100}"
     local outcome="${9:?}"
     local source="${10:?}"
+    local trust_lane="${11:-guarded}"
 
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
@@ -770,6 +799,7 @@ _hi_record_timing_observation() {
         --argjson risk_score      "${risk_score}" \
         --arg     outcome         "${outcome}" \
         --arg     source          "${source}" \
+        --arg     trust_lane      "${trust_lane}" \
         --argjson now             "${now_epoch}" \
         --arg     now_iso         "${now_iso}" \
         --argjson max_age_s       "${max_age_s}" \
@@ -787,7 +817,8 @@ _hi_record_timing_observation() {
              severity:          $severity,
              risk_score:        $risk_score,
              outcome:           $outcome,
-             source:            $source
+             source:            $source,
+             trust_lane:        $trust_lane
          }) as $entry |
          .timing_observations = (($pruned + [$entry]) | .[-$cap:])' \
         "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}" || {
@@ -799,6 +830,10 @@ _hi_record_timing_observation() {
 # ─── Combined Post-Response Check ─────────────────────────────────────────────
 # Call after receiving a human response. Checks H15 + H17. Records a timing
 # observation for every exit path (Slice 1 recording layer).
+#
+# Fast Lane behavior: H15 floor = HI_ABSOLUTE_MIN_RESPONSE_TIME_MS (500ms) for
+# all severities, checked with ms precision. H17 floor = absolute min for all
+# severities (authority-granted trust replaces calibration). H14 bypassed.
 #
 # action_hash is optional; when provided, it removes the exact pending entry
 # that the matching hi_pre_ask_check added. When omitted, the oldest pending
@@ -830,6 +865,10 @@ hi_post_response_check() {
         _elapsed_ms=$(( (_now_epoch - _ask_epoch) * 1000 ))
     fi
 
+    # Read trust_lane once — used by all paths below.
+    local _trust_lane
+    _trust_lane=$(jq -r '.trust_lane // "guarded"' "${_state_file}" 2>/dev/null)
+
     # ── DENY PATH FIRST — deny always stands; record timing then return ok ────
     if [ "${decision}" = "deny" ]; then
         # Compute floors for the observation (same logic as approve, but no rejection).
@@ -840,19 +879,26 @@ hi_post_response_check() {
             _deny_default_floor_ms=$(( HI_MIN_RESPONSE_TIME * 1000 ))
         fi
         local _deny_h17_floor_ms="${_deny_default_floor_ms}"
-        if _hi_is_calibrated "${_state_file}"; then
+        if [ "${_trust_lane}" = "fast" ]; then
+            _deny_h17_floor_ms="${HI_ABSOLUTE_MIN_RESPONSE_TIME_MS}"
+        elif _hi_is_calibrated "${_state_file}"; then
             case "${severity}" in
                 critical) _deny_h17_floor_ms="${HI_CALIBRATED_CRITICAL_FLOOR_MS}" ;;
                 *)        _deny_h17_floor_ms="${HI_ABSOLUTE_MIN_RESPONSE_TIME_MS}" ;;
             esac
         fi
-        local _deny_h15_floor_s
-        case "${severity}" in
-            critical) _deny_h15_floor_s="${HI_DELIBERATION_FLOOR_CRITICAL}" ;;
-            warn)     _deny_h15_floor_s="${HI_DELIBERATION_FLOOR_WARN}" ;;
-            info|*)   _deny_h15_floor_s="${HI_DELIBERATION_FLOOR_INFO}" ;;
-        esac
-        local _deny_h15_floor_ms=$(( _deny_h15_floor_s * 1000 ))
+        local _deny_h15_floor_ms
+        if [ "${_trust_lane}" = "fast" ]; then
+            _deny_h15_floor_ms="${HI_ABSOLUTE_MIN_RESPONSE_TIME_MS}"
+        else
+            local _deny_h15_floor_s
+            case "${severity}" in
+                critical) _deny_h15_floor_s="${HI_DELIBERATION_FLOOR_CRITICAL}" ;;
+                warn)     _deny_h15_floor_s="${HI_DELIBERATION_FLOOR_WARN}" ;;
+                info|*)   _deny_h15_floor_s="${HI_DELIBERATION_FLOOR_INFO}" ;;
+            esac
+            _deny_h15_floor_ms=$(( _deny_h15_floor_s * 1000 ))
+        fi
         local _deny_effective_floor_ms
         if [ "${_deny_h17_floor_ms}" -gt "${_deny_h15_floor_ms}" ]; then
             _deny_effective_floor_ms="${_deny_h17_floor_ms}"
@@ -861,7 +907,7 @@ hi_post_response_check() {
         fi
         _hi_record_timing_observation "${human_id}" "${_elapsed_ms}" \
             "${_deny_h17_floor_ms}" "${_deny_h15_floor_ms}" "${_deny_effective_floor_ms}" \
-            "none" "${severity}" "${risk_score}" "deny_accepted" "deny"
+            "none" "${severity}" "${risk_score}" "deny_accepted" "deny" "${_trust_lane}"
         hi_record_decision "${human_id}" "deny" "${_elapsed}" "${severity}" "${risk_score}" "${_elapsed_ms}"
         echo "ok"
         return 0
@@ -877,21 +923,28 @@ hi_post_response_check() {
         _default_floor_ms=$(( HI_MIN_RESPONSE_TIME * 1000 ))
     fi
     local _h17_floor_ms="${_default_floor_ms}"
-    if _hi_is_calibrated "${_state_file}"; then
+    if [ "${_trust_lane}" = "fast" ]; then
+        _h17_floor_ms="${HI_ABSOLUTE_MIN_RESPONSE_TIME_MS}"
+    elif _hi_is_calibrated "${_state_file}"; then
         case "${severity}" in
             critical) _h17_floor_ms="${HI_CALIBRATED_CRITICAL_FLOOR_MS}" ;;
             *)        _h17_floor_ms="${HI_ABSOLUTE_MIN_RESPONSE_TIME_MS}" ;;
         esac
     fi
 
-    # Compute H15 floor (ms).
-    local _h15_floor_s
-    case "${severity}" in
-        critical) _h15_floor_s="${HI_DELIBERATION_FLOOR_CRITICAL}" ;;
-        warn)     _h15_floor_s="${HI_DELIBERATION_FLOOR_WARN}" ;;
-        info|*)   _h15_floor_s="${HI_DELIBERATION_FLOOR_INFO}" ;;
-    esac
-    local _h15_floor_ms=$(( _h15_floor_s * 1000 ))
+    # Compute H15 floor (ms). Fast Lane: absolute min for all severities.
+    local _h15_floor_ms
+    if [ "${_trust_lane}" = "fast" ]; then
+        _h15_floor_ms="${HI_ABSOLUTE_MIN_RESPONSE_TIME_MS}"
+    else
+        local _h15_floor_s
+        case "${severity}" in
+            critical) _h15_floor_s="${HI_DELIBERATION_FLOOR_CRITICAL}" ;;
+            warn)     _h15_floor_s="${HI_DELIBERATION_FLOOR_WARN}" ;;
+            info|*)   _h15_floor_s="${HI_DELIBERATION_FLOOR_INFO}" ;;
+        esac
+        _h15_floor_ms=$(( _h15_floor_s * 1000 ))
+    fi
 
     # Effective floor = max(h17, h15). Binding = whichever is larger.
     local _effective_floor_ms _binding_floor
@@ -909,19 +962,31 @@ hi_post_response_check() {
     if [ "${auth_result}" = "suspicious" ]; then
         _hi_record_timing_observation "${human_id}" "${_elapsed_ms}" \
             "${_h17_floor_ms}" "${_h15_floor_ms}" "${_effective_floor_ms}" \
-            "${_binding_floor}" "${severity}" "${risk_score}" "rejected_h17" "approve"
+            "${_binding_floor}" "${severity}" "${risk_score}" "rejected_h17" "approve" "${_trust_lane}"
         echo "suspicious"
         return 1
     fi
 
     # H15: Deliberation floor.
+    # Fast Lane: ms-precision check against absolute min (H17 already enforces this,
+    # so too_fast is unreachable in practice — included for correctness).
+    # Guarded/Slow: integer-second check via hi_check_deliberation (existing behavior).
     local delib_result
-    delib_result=$(hi_check_deliberation "${human_id}" "${severity}")
+    if [ "${_trust_lane}" = "fast" ]; then
+        if [ "${_elapsed_ms}" -lt "${_h15_floor_ms}" ]; then
+            delib_result="too_fast"
+        else
+            delib_result="ok"
+        fi
+    else
+        delib_result=$(hi_check_deliberation "${human_id}" "${severity}")
+    fi
+
     if [ "${delib_result}" = "too_fast" ]; then
         if [ "${severity}" = "critical" ]; then
             _hi_record_timing_observation "${human_id}" "${_elapsed_ms}" \
                 "${_h17_floor_ms}" "${_h15_floor_ms}" "${_effective_floor_ms}" \
-                "${_binding_floor}" "${severity}" "${risk_score}" "rejected_h15" "approve"
+                "${_binding_floor}" "${severity}" "${risk_score}" "rejected_h15" "approve" "${_trust_lane}"
             echo "too_fast"
             return 1
         fi
@@ -934,9 +999,53 @@ hi_post_response_check() {
     # ACCEPTED (or warn/info H15 signal-only) — single write at final exit.
     _hi_record_timing_observation "${human_id}" "${_elapsed_ms}" \
         "${_h17_floor_ms}" "${_h15_floor_ms}" "${_effective_floor_ms}" \
-        "${_binding_floor}" "${severity}" "${risk_score}" "accepted" "approve"
+        "${_binding_floor}" "${severity}" "${risk_score}" "accepted" "approve" "${_trust_lane}"
     hi_record_decision "${human_id}" "${decision}" "${_elapsed}" "${severity}" "${risk_score}" "${_elapsed_ms}"
 
     echo "ok"
     return 0
+}
+
+# ─── Trust Lane — Fast / Guarded / Slow ──────────────────────────────────────
+# Demote: fast→guarded→slow (floor at slow). Restore: slow→guarded, then
+# guarded→fast only if trust_lane_grant is present (authority-issued).
+# Called from lib/canary.sh when canary result is known.
+#
+# Returns: "ok"
+
+hi_apply_lane_demotion() {
+    local human_id="${1:?}"
+    local reason="${2:-unspecified}"
+
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+
+    jq --arg reason "${reason}" \
+        'del(._hmac) |
+         (.trust_lane // "guarded") as $cur |
+         if $cur == "fast" then .trust_lane = "guarded"
+         elif $cur == "guarded" then .trust_lane = "slow"
+         else . end |
+         .trust_lane_demotion = {"reason": $reason, "ts": now}' \
+        "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+    _hi_log "trust_lane demotion: ${human_id} reason=${reason} lane=$(jq -r '.trust_lane' "${state_file}" 2>/dev/null)"
+    echo "ok"
+}
+
+hi_apply_lane_restore() {
+    local human_id="${1:?}"
+
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+
+    jq 'del(._hmac) |
+        (.trust_lane // "guarded") as $cur |
+        if $cur == "slow" then .trust_lane = "guarded"
+        elif $cur == "guarded" then
+            if has("trust_lane_grant") then .trust_lane = "fast"
+            else . end
+        else . end' \
+        "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+    _hi_log "trust_lane restore: ${human_id} lane=$(jq -r '.trust_lane' "${state_file}" 2>/dev/null)"
+    echo "ok"
 }

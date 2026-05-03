@@ -898,6 +898,116 @@ done
 pre_result=$(hi_pre_ask_check "${HUMAN_BUG3}2" 2>/dev/null) || true
 assert "hi_pre_ask_check surfaces canary_pattern_check (not ok)" "canary_pattern_check" "${pre_result}"
 
+# ─── v3.3.0: Trust Lane (Fast / Guarded / Slow) ──────────────────────────────
+
+echo
+echo "=== v3.3.0: Trust Lane (Fast / Guarded / Slow) ==="
+echo
+
+# TL-1: new state carries trust_lane=guarded
+HUMAN_TL1="test-tl-1-migration"
+_hi_ensure_state "${HUMAN_TL1}" > /dev/null
+tl_file1="${TEMP_DIR}/var/human-state/${HUMAN_TL1}.json"
+tl1_lane=$(jq -r '.trust_lane // "MISSING"' "${tl_file1}" 2>/dev/null)
+assert "TL-1: new state has trust_lane=guarded" "guarded" "${tl1_lane}"
+
+# TL-2: Fast Lane bypasses H14 — uniform responses do not fire canary_pattern_check
+HUMAN_TL2="test-tl-2-h14-bypass"
+HI_VARIANCE_MIN_SAMPLE=10
+for i in $(seq 1 10); do
+    hi_record_decision "${HUMAN_TL2}" "approve" 5 "info" 50
+done
+tl_file2="${TEMP_DIR}/var/human-state/${HUMAN_TL2}.json"
+jq 'del(._hmac) | .trust_lane = "fast"' "${tl_file2}" 2>/dev/null | _hi_sealed_write "${tl_file2}" 2>/dev/null
+tl2_result=$(hi_check_response_variance "${HUMAN_TL2}" 2>/dev/null)
+assert "TL-2: Fast Lane bypasses H14 → ok" "ok" "${tl2_result}"
+
+# TL-3: Guarded H14 unchanged — uniform responses still fire canary_pattern_check
+HUMAN_TL3="test-tl-3-h14-guarded"
+for i in $(seq 1 10); do
+    hi_record_decision "${HUMAN_TL3}" "approve" 5 "info" 50
+done
+tl3_result=$(hi_check_response_variance "${HUMAN_TL3}" 2>/dev/null)
+assert "TL-3: Guarded H14 unchanged → canary_pattern_check" "canary_pattern_check" "${tl3_result}"
+
+# TL-4: Fast Lane — critical at ~2100ms accepted (H15 floor=500ms, not 30s)
+# 2100ms chosen so H17 passes (default floor=2000ms) and Fast Lane H15 passes (floor=500ms)
+HUMAN_TL4="test-tl-4-post-fast"
+_hi_ensure_state "${HUMAN_TL4}" > /dev/null
+tl_file4="${TEMP_DIR}/var/human-state/${HUMAN_TL4}.json"
+jq 'del(._hmac) | .trust_lane = "fast"' "${tl_file4}" 2>/dev/null | _hi_sealed_write "${tl_file4}" 2>/dev/null
+tl4_now_ms=$(_hi_epoch_ms)
+tl4_ask_ms=$(( tl4_now_ms - 2100 ))
+jq --argjson ask_ms "${tl4_ask_ms}" \
+    'del(._hmac) | .last_ask_epoch_ms = $ask_ms | .last_ask_epoch = ($ask_ms / 1000 | floor)' \
+    "${tl_file4}" 2>/dev/null | _hi_sealed_write "${tl_file4}" 2>/dev/null
+tl4_result=$(hi_post_response_check "${HUMAN_TL4}" "critical" "approve" "" 90 2>/dev/null)
+assert "TL-4: Fast Lane critical ~2100ms → ok" "ok" "${tl4_result}"
+
+# TL-5: Guarded — critical at ~2100ms rejected by H15 (floor=30s)
+HUMAN_TL5="test-tl-5-post-guarded"
+_hi_ensure_state "${HUMAN_TL5}" > /dev/null
+tl_file5="${TEMP_DIR}/var/human-state/${HUMAN_TL5}.json"
+jq 'del(._hmac) | .trust_lane = "guarded"' "${tl_file5}" 2>/dev/null | _hi_sealed_write "${tl_file5}" 2>/dev/null
+tl5_now_ms=$(_hi_epoch_ms)
+tl5_ask_ms=$(( tl5_now_ms - 2100 ))
+jq --argjson ask_ms "${tl5_ask_ms}" \
+    'del(._hmac) | .last_ask_epoch_ms = $ask_ms | .last_ask_epoch = ($ask_ms / 1000 | floor)' \
+    "${tl_file5}" 2>/dev/null | _hi_sealed_write "${tl_file5}" 2>/dev/null
+tl5_result=$(hi_post_response_check "${HUMAN_TL5}" "critical" "approve" "" 90 2>/dev/null || true)
+assert "TL-5: Guarded critical ~2100ms → too_fast" "too_fast" "${tl5_result}"
+
+# TL-6/7/8: hi_apply_lane_demotion — fast→guarded→slow→slow (floor)
+HUMAN_TL6="test-tl-6-demotion"
+_hi_ensure_state "${HUMAN_TL6}" > /dev/null
+tl_file6="${TEMP_DIR}/var/human-state/${HUMAN_TL6}.json"
+jq 'del(._hmac) | .trust_lane = "fast"' "${tl_file6}" 2>/dev/null | _hi_sealed_write "${tl_file6}" 2>/dev/null
+hi_apply_lane_demotion "${HUMAN_TL6}" "canary_failed" 2>/dev/null || true
+tl6_a=$(jq -r '.trust_lane' "${tl_file6}" 2>/dev/null)
+assert "TL-6: demotion fast→guarded" "guarded" "${tl6_a}"
+hi_apply_lane_demotion "${HUMAN_TL6}" "canary_missed" 2>/dev/null || true
+tl6_b=$(jq -r '.trust_lane' "${tl_file6}" 2>/dev/null)
+assert "TL-7: demotion guarded→slow" "slow" "${tl6_b}"
+hi_apply_lane_demotion "${HUMAN_TL6}" "canary_failed" 2>/dev/null || true
+tl6_c=$(jq -r '.trust_lane' "${tl_file6}" 2>/dev/null)
+assert "TL-8: demotion slow→slow (floor)" "slow" "${tl6_c}"
+
+# TL-9/10: hi_apply_lane_restore — slow→guarded→fast (with grant)
+HUMAN_TL9="test-tl-9-restore"
+_hi_ensure_state "${HUMAN_TL9}" > /dev/null
+tl_file9="${TEMP_DIR}/var/human-state/${HUMAN_TL9}.json"
+jq 'del(._hmac) | .trust_lane = "slow" | .trust_lane_grant = {"source":"authority","granted_at":1777824155,"reason":"test"}' \
+    "${tl_file9}" 2>/dev/null | _hi_sealed_write "${tl_file9}" 2>/dev/null
+hi_apply_lane_restore "${HUMAN_TL9}" 2>/dev/null || true
+tl9_a=$(jq -r '.trust_lane' "${tl_file9}" 2>/dev/null)
+assert "TL-9: restore slow→guarded" "guarded" "${tl9_a}"
+hi_apply_lane_restore "${HUMAN_TL9}" 2>/dev/null || true
+tl9_b=$(jq -r '.trust_lane' "${tl_file9}" 2>/dev/null)
+assert "TL-10: restore guarded→fast (grant present)" "fast" "${tl9_b}"
+
+# TL-11: hi_apply_lane_restore — guarded stays guarded without a grant
+HUMAN_TL11="test-tl-11-no-grant"
+_hi_ensure_state "${HUMAN_TL11}" > /dev/null
+tl_file11="${TEMP_DIR}/var/human-state/${HUMAN_TL11}.json"
+jq 'del(._hmac) | .trust_lane = "guarded"' "${tl_file11}" 2>/dev/null | _hi_sealed_write "${tl_file11}" 2>/dev/null
+hi_apply_lane_restore "${HUMAN_TL11}" 2>/dev/null || true
+tl11_result=$(jq -r '.trust_lane' "${tl_file11}" 2>/dev/null)
+assert "TL-11: restore guarded→guarded (no grant)" "guarded" "${tl11_result}"
+
+# TL-12: timing_observation records trust_lane field
+HUMAN_TL12="test-tl-12-obs"
+_hi_ensure_state "${HUMAN_TL12}" > /dev/null
+tl_file12="${TEMP_DIR}/var/human-state/${HUMAN_TL12}.json"
+jq 'del(._hmac) | .trust_lane = "fast"' "${tl_file12}" 2>/dev/null | _hi_sealed_write "${tl_file12}" 2>/dev/null
+tl12_now_ms=$(_hi_epoch_ms)
+tl12_ask_ms=$(( tl12_now_ms - 2100 ))
+jq --argjson ask_ms "${tl12_ask_ms}" \
+    'del(._hmac) | .last_ask_epoch_ms = $ask_ms | .last_ask_epoch = ($ask_ms / 1000 | floor)' \
+    "${tl_file12}" 2>/dev/null | _hi_sealed_write "${tl_file12}" 2>/dev/null
+hi_post_response_check "${HUMAN_TL12}" "critical" "approve" "" 90 2>/dev/null || true
+tl12_obs_lane=$(jq -r '.timing_observations[-1].trust_lane // "MISSING"' "${tl_file12}" 2>/dev/null)
+assert "TL-12: observation has trust_lane=fast" "fast" "${tl12_obs_lane}"
+
 # ─── Results ──────────────────────────────────────────────────────────────────
 
 echo
