@@ -1,5 +1,66 @@
 # Changelog
 
+## 3.2.3 — 2026-05-03 — H17/H15 timing observation recording layer (Slice 1)
+
+Recording-only change. No floor values changed. No graduation logic. No H15
+floor reductions. No canary_credits, no Level 1/2 operator profiles, no
+operator_profile_level writes beyond schema initialization.
+
+The gate now records a timing_observations entry on every human response
+(approve or deny), regardless of whether H17 or H15 rejected it. This is the
+data foundation for Calibrated Operator Trust Graduation (Slice 2), which will
+not ship until timing_observations has accumulated real-usage data and a floor
+review has been done.
+
+New state fields (both bash and MJS gates):
+- timing_observations: [] — per-response audit records; survives UTC rollover;
+  ring-buffered at 100 entries; observations older than 30 days are pruned on
+  each write.
+- operator_profile_level: 0 — reserved for Slice 2 graduation level; written
+  only on schema init; not used by any logic in this release.
+
+Each timing_observations entry carries:
+  ts, iso, elapsed_ms, h17_floor_ms, h15_floor_ms, effective_floor_ms,
+  binding_floor ("h17" | "h15" | "none"), severity, risk_score,
+  outcome ("accepted" | "rejected_h17" | "rejected_h15" | "deny_accepted"),
+  source ("approve" | "deny")
+
+hi_post_response_check / postResponseCheck rewritten:
+- Deny path branches before H17/H15 checks. Deny always stands; the gate
+  records a deny_accepted observation and calls hi_record_decision, then
+  returns ok without running authenticity or deliberation checks.
+- Elapsed computed once at function entry; reused by all exit paths.
+- Single _hi_record_timing_observation call per distinct exit point —
+  no write-then-overwrite ambiguity, no duplicate writes.
+- H17 and H15 floor values are computed for the observation record before
+  each check, so rejected events carry the floor that would have needed to
+  be met.
+
+mcp-gate/gate.mjs:
+- approve path: postResponseCheck now receives {riskScore: evaluation.riskScore}
+  so timing observations carry the actual risk score rather than the default 100.
+- deny path: routes through postResponseCheck instead of bare recordDecision,
+  achieving deny-observation parity with the bash gate.
+
+v3.2.3 schema migration:
+- _hi_ensure_state / loadState adds timing_observations and
+  operator_profile_level to any existing state file that lacks them.
+- UTC rollover does not clear timing_observations (explicit design — multi-day
+  observation history is required for Slice 2 graduation).
+
+Tests: 21 new assertions (75 → 96 in test-human-invariants.sh). T1-T7 cover:
+fast approve → rejected_h17, accepted approve with correct floor fields,
+H15 critical reject → rejected_h15, fast/slow deny → deny_accepted (never
+rejected), date rollover preserves timing_observations, ring buffer cap.
+
+Out of scope for this release:
+- Floor selection wired to graduation level (Slice 2)
+- compute_graduation_level() function
+- canary_credits / hi_record_canary_pass
+- Level 1 / Level 2 H15 floor reductions (15s/3s/0s and 5s/0s/0s)
+- operator_profile_level write command
+- Receipt schema additions (h17_graduation_level, h17_elapsed_ms, h17_floor_ms)
+
 ## 3.2.2 — 2026-04-28 — Security hardening: adapter-shim coverage, approval-state forgery, MCP loopback, pending-hash binding
 
 Five narrow fixes from a six-agent roster review of v3.2.1. Each closes a

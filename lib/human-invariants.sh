@@ -221,9 +221,9 @@ _hi_ensure_state() {
         # v2.9.0: H14 switched to response-time variance. response_times is the
         # active sliding window now; the v2.7.2 cross-day reset principle
         # applies to it (response_times = []).
-        # v3.3.x: timing_observations and operator_profile_level survive rollover
+        # v3.2.3: timing_observations and operator_profile_level survive rollover
         # intentionally — timing_observations carries multi-day history for
-        # Calibrated Operator Trust Graduation. Do NOT add them to this reset list.
+        # Calibrated Operator Trust Graduation (Slice 2). Do NOT add them to this reset list.
         jq --arg today "${today}" \
             'del(._hmac) | .date = $today | .decisions_today = 0 | .pending = [] | .response_times = [] | .canary_tier = 0 | .canary_trip_count = 0 | del(.approvals_recent) | del(.pending_count) | del(.h14_lockout_until)' \
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
@@ -246,7 +246,8 @@ _hi_ensure_state() {
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
-    # v3.3.x schema migration: add timing_observations / operator_profile_level if absent.
+    # v3.2.3 timing observation schema migration: add timing_observations /
+    # operator_profile_level if absent. Idempotent after first run.
     if jq -e '(has("timing_observations") | not) or (has("operator_profile_level") | not)' "${state_file}" >/dev/null 2>&1; then
         jq 'del(._hmac) | .timing_observations = (.timing_observations // []) | .operator_profile_level = (.operator_profile_level // 0)' \
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
