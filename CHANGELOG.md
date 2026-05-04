@@ -1,5 +1,55 @@
 # Changelog
 
+## 3.3.2 — 2026-05-04 — MCP Trust Lane canary parity
+
+MCP gate now participates in trust lane transitions driven by canary outcomes,
+closing the gap where the bash gate was the only path that could demote or
+restore the lane.
+
+New function: checkCanaryResult(sessionId, humanId) in mcp-gate/gate.mjs.
+Called passively at the top of handleRequest on every request (non-blocking,
+never throws). Mirrors canary_check_result from lib/canary.sh (bash gate
+line 2428).
+
+Behavior:
+  - Reads var/canary/{sessionId}.canary.pending for a pending canary ID.
+  - If present, scans /var/run/zlar-tg/inbox/cc/*.json for a matching
+    cc:canary:{approve|deny}:{canary_id} callback, HMAC-verified.
+  - approve (fatigue detected) → applyLaneDemotion(humanId, 'canary_failed')
+  - deny   (healthy)           → applyLaneRestore(humanId)
+  - stale  (no response)       → applyLaneDemotion(humanId, 'canary_missed')
+  - restore guarded→fast ONLY when trust_lane_grant is present in state
+    (authority-issued; same rule as bash gate).
+
+MCP canary SEND is not implemented in this release. The result-check is
+operative today for canaries sent by the bash gate on the same session ID.
+MCP send is a separate gap with a separate patch.
+
+Supporting changes for test isolation:
+  lib/human-invariants.mjs:
+    - STATE_DIR: respects ZLAR_HUMAN_STATE_DIR env var (test override).
+    - HMAC_KEY_FILE: respects ZLAR_HUMAN_STATE_HMAC_KEY_FILE env var (test
+      override; enables unkeyed mode in isolated test environments).
+  mcp-gate/gate.mjs:
+    - HMAC_SECRET_FILE: respects ZLAR_INBOX_HMAC_SECRET_FILE env var.
+    - New CONFIG: canaryStateDir, ccInboxDir (env + CLI override).
+    - New CLI args: --session-id, --canary-state-dir, --cc-inbox-dir.
+
+Tests: 5 new TL-MCP assertions in mcp-gate/test.mjs.
+  TL-MCP-1: canary_failed demotes fast→guarded.
+  TL-MCP-2: canary_missed (stale pending) demotes fast→guarded.
+  TL-MCP-3: canary_passed restores guarded→fast with authority grant.
+  TL-MCP-4: canary_passed keeps guarded (no authority grant present).
+  TL-MCP-5: HMAC mismatch discards callback — lane unchanged.
+Note: mcp-gate/test.mjs uses a TCP mock server and hits a pre-existing EPERM
+flake on macOS due to application firewall restrictions. Tests pass on CI
+(Linux). Human-invariants.sh: 108/108 (unchanged).
+
+Out of scope for this patch:
+  - MCP canary send
+  - Phase F signing chain rotation
+  - draft.json regeneration
+
 ## 3.3.1 — 2026-05-03 — Trust lane policy governance (R012W_TRUST_LANE)
 
 Policy-only patch. No code changes to gate logic or enforcement functions.

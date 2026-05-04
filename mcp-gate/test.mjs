@@ -5,11 +5,11 @@
 // correctly against policy. No real MCP server needed.
 
 import { createServer, createConnection } from 'net';
-import { readFileSync, existsSync, unlinkSync, writeFileSync, mkdirSync, rmSync } from 'fs';
+import { readFileSync, existsSync, unlinkSync, writeFileSync, mkdirSync, rmSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { generateKeyPairSync, sign as cryptoSign } from 'crypto';
+import { generateKeyPairSync, sign as cryptoSign, createHmac } from 'crypto';
 import { canonicalize, sha256hex } from '../lib/receipt.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -382,6 +382,173 @@ async function runTests() {
   }
 
   failClosedGate.kill();
+
+  // ─── Trust Lane Parity Tests ─────────────────────────────────────────────
+  // Verify MCP gate passive canary result processing drives trust lane
+  // transitions, matching bash gate behavior from lib/canary.sh.
+  //
+  // Isolated via ZLAR_HUMAN_STATE_DIR, ZLAR_HUMAN_STATE_HMAC_KEY_FILE,
+  // ZLAR_INBOX_HMAC_SECRET_FILE, --canary-state-dir, --cc-inbox-dir,
+  // --session-id, --telegram-chat-id.
+
+  const TEST_HUMAN_STATE_DIR = join(TEST_SCRATCH, 'var', 'human-state');
+  const TEST_CANARY_DIR      = join(TEST_SCRATCH, 'var', 'canary');
+  const TEST_CC_INBOX_DIR    = join(TEST_SCRATCH, 'inbox', 'cc');
+  const TEST_HMAC_SECRET     = 'test-inbox-hmac-secret-01';
+  const TEST_HMAC_SECRET_FILE = join(TEST_SCRATCH, 'inbox-hmac-secret');
+
+  mkdirSync(TEST_HUMAN_STATE_DIR, { recursive: true });
+  mkdirSync(TEST_CANARY_DIR,      { recursive: true });
+  mkdirSync(TEST_CC_INBOX_DIR,    { recursive: true });
+  writeFileSync(TEST_HMAC_SECRET_FILE, TEST_HMAC_SECRET);
+
+  const TL_SESSION_ID = 'tl-mcp-session-001';
+  const TL_HUMAN_ID   = 'test-mcp-tl-001';
+  const TL_GATE_PORT  = 3104;
+
+  const tlGate = spawn('node', [
+    join(__dirname, 'gate.mjs'),
+    '--port', String(TL_GATE_PORT),
+    '--upstream', `localhost:${MOCK_PORT}`,
+    '--audit-file', TEST_AUDIT,
+    '--policy-file', TEST_ALLOW_POLICY,
+    '--policy-pubkey', TEST_POLICY_PUBKEY,
+    '--manifest-file', TEST_MANIFEST_FILE,
+    '--constitution-presence-file', TEST_CONSTITUTION_PRESENCE,
+    '--restore-config-file', TEST_RESTORE_CONFIG,
+    '--telegram-chat-id', TL_HUMAN_ID,
+    '--session-id', TL_SESSION_ID,
+    '--canary-state-dir', TEST_CANARY_DIR,
+    '--cc-inbox-dir', TEST_CC_INBOX_DIR,
+    '--agent-id', 'test-tl-agent',
+  ], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      ZLAR_HUMAN_STATE_DIR: TEST_HUMAN_STATE_DIR,
+      ZLAR_HUMAN_STATE_HMAC_KEY_FILE: join(TEST_SCRATCH, 'no-hmac-key'),
+      ZLAR_INBOX_HMAC_SECRET_FILE: TEST_HMAC_SECRET_FILE,
+    },
+  });
+
+  await new Promise((resolve) => {
+    tlGate.stdout.on('data', (data) => { if (data.toString().includes('listening')) resolve(); });
+    setTimeout(resolve, 2000);
+  });
+  console.log(`✓ Trust lane test gate on port ${TL_GATE_PORT}\n`);
+
+  const sendTL = (msg) => sendMessage(TL_GATE_PORT, msg);
+  let tlMsgId = 300;
+
+  // Write initial trust lane state (unkeyed mode — no HMAC key in test env)
+  function writeTLState(lane, grantPresent = false) {
+    const state = {
+      human_id: TL_HUMAN_ID,
+      date: new Date().toISOString().slice(0, 10),
+      decisions_today: 0,
+      response_times: [],
+      pending: [],
+      last_ask_epoch: 0,
+      last_ask_epoch_ms: 0,
+      canary_tier: 0,
+      canary_trip_count: 0,
+      timing_observations: [],
+      operator_profile_level: 0,
+      trust_lane: lane,
+      ...(grantPresent ? { trust_lane_grant: { source: 'authority', granted_at: Math.floor(Date.now() / 1000), reason: 'test' } } : {}),
+    };
+    writeFileSync(join(TEST_HUMAN_STATE_DIR, `${TL_HUMAN_ID}.json`), JSON.stringify(state));
+  }
+
+  function readTLLane() {
+    try { return JSON.parse(readFileSync(join(TEST_HUMAN_STATE_DIR, `${TL_HUMAN_ID}.json`), 'utf8')).trust_lane; }
+    catch { return null; }
+  }
+
+  function writePending(canaryId) {
+    writeFileSync(join(TEST_CANARY_DIR, `${TL_SESSION_ID}.canary.pending`), canaryId + '\n');
+  }
+
+  function writeCallback(canaryId, result) {
+    const data  = `cc:canary:${result}:${canaryId}`;
+    const from  = TL_HUMAN_ID;
+    const cbId  = `cb-${canaryId}`;
+    const hmac  = createHmac('sha256', TEST_HMAC_SECRET).update(`${data}|${from}|${cbId}`).digest('base64');
+    writeFileSync(join(TEST_CC_INBOX_DIR, `${canaryId}.json`), JSON.stringify({ data, from_id: from, callback_query_id: cbId, hmac }));
+  }
+
+  function cleanTLFiles(canaryId) {
+    try { unlinkSync(join(TEST_CANARY_DIR, `${TL_SESSION_ID}.canary.pending`)); } catch {}
+    try { unlinkSync(join(TEST_CC_INBOX_DIR, `${canaryId}.json`)); } catch {}
+  }
+
+  // TL-MCP-1: canary_failed demotes fast→guarded
+  writeTLState('fast');
+  writePending('canary-mcp-01');
+  writeCallback('canary-mcp-01', 'approve');
+  try {
+    await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
+    const lane = readTLLane();
+    if (lane === 'guarded') { console.log(`✓ TL-MCP-1: canary_failed demotes fast→guarded`); passed++; }
+    else { console.log(`✗ TL-MCP-1: expected guarded, got ${lane}`); failed++; }
+  } catch (e) { console.log(`✗ TL-MCP-1: ${e.message}`); failed++; }
+  cleanTLFiles('canary-mcp-01');
+
+  // TL-MCP-2: canary_missed demotes fast→guarded (stale pending, no callback)
+  writeTLState('fast');
+  writePending('canary-mcp-02');
+  try { utimesSync(join(TEST_CANARY_DIR, `${TL_SESSION_ID}.canary.pending`), new Date(0), new Date(0)); } catch {}
+  try {
+    await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
+    const lane = readTLLane();
+    if (lane === 'guarded') { console.log(`✓ TL-MCP-2: canary_missed demotes fast→guarded`); passed++; }
+    else { console.log(`✗ TL-MCP-2: expected guarded, got ${lane}`); failed++; }
+  } catch (e) { console.log(`✗ TL-MCP-2: ${e.message}`); failed++; }
+  cleanTLFiles('canary-mcp-02');
+
+  // TL-MCP-3: canary_passed restores guarded→fast with authority grant
+  writeTLState('guarded', true);
+  writePending('canary-mcp-03');
+  writeCallback('canary-mcp-03', 'deny');
+  try {
+    await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
+    const lane = readTLLane();
+    if (lane === 'fast') { console.log(`✓ TL-MCP-3: canary_passed restores guarded→fast (authority grant)`); passed++; }
+    else { console.log(`✗ TL-MCP-3: expected fast, got ${lane}`); failed++; }
+  } catch (e) { console.log(`✗ TL-MCP-3: ${e.message}`); failed++; }
+  cleanTLFiles('canary-mcp-03');
+
+  // TL-MCP-4: canary_passed does NOT restore guarded→fast without grant
+  writeTLState('guarded', false);
+  writePending('canary-mcp-04');
+  writeCallback('canary-mcp-04', 'deny');
+  try {
+    await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
+    const lane = readTLLane();
+    if (lane === 'guarded') { console.log(`✓ TL-MCP-4: canary_passed keeps guarded (no authority grant)`); passed++; }
+    else { console.log(`✗ TL-MCP-4: expected guarded, got ${lane}`); failed++; }
+  } catch (e) { console.log(`✗ TL-MCP-4: ${e.message}`); failed++; }
+  cleanTLFiles('canary-mcp-04');
+
+  // TL-MCP-5: HMAC mismatch discards callback — lane unchanged
+  writeTLState('fast');
+  writePending('canary-mcp-05');
+  writeFileSync(join(TEST_CC_INBOX_DIR, 'canary-mcp-05.json'), JSON.stringify({
+    data: `cc:canary:approve:canary-mcp-05`,
+    from_id: TL_HUMAN_ID,
+    callback_query_id: 'cb-05',
+    hmac: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+  }));
+  try {
+    await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
+    const lane = readTLLane();
+    if (lane === 'fast') { console.log(`✓ TL-MCP-5: HMAC mismatch discards callback — lane unchanged`); passed++; }
+    else { console.log(`✗ TL-MCP-5: expected fast (HMAC discarded), got ${lane}`); failed++; }
+  } catch (e) { console.log(`✗ TL-MCP-5: ${e.message}`); failed++; }
+  cleanTLFiles('canary-mcp-05');
+
+  tlGate.kill();
+  console.log('');
 
   // ─── Verify Audit Trail ────────────────────────────────────────────────
 

@@ -12,7 +12,7 @@
 //   node gate.mjs --port 3100 --upstream localhost:3200
 
 import { createServer, createConnection } from 'net';
-import { readFileSync, appendFileSync, existsSync, statSync } from 'fs';
+import { readFileSync, appendFileSync, existsSync, statSync, readdirSync, unlinkSync } from 'fs';
 import { createHash, createHmac, randomBytes, timingSafeEqual, sign as cryptoSign, verify as cryptoVerify, createPublicKey } from 'crypto';
 import { execSync, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -38,13 +38,15 @@ import {
   verifyAnyCanonical,
 } from '../lib/sig-verify.mjs';
 
-// Human invariant enforcement (H6, H13, H14, H15, H17)
+// Human invariant enforcement (H6, H13, H14, H15, H17) + trust lane transitions
 import {
   preAskCheck,
   postResponseCheck,
   recordAskTime,
   recordDecision,
   getCanaryTier,
+  applyLaneDemotion,
+  applyLaneRestore,
 } from '../lib/human-invariants.mjs';
 
 // Cedar policy evaluation (Phase C — Cedar Integration)
@@ -95,6 +97,10 @@ const CONFIG = {
   telegramTimeoutS: 300,
   sessionId: randomBytes(16).toString('hex'),
   agentId: 'mcp-client',
+  // Canary result check paths (v3.3.2 parity with bash canary_check_result).
+  // Override via CLI or env for test isolation.
+  canaryStateDir: process.env.ZLAR_CANARY_STATE_DIR || join(PROJECT_DIR, 'var/canary'),
+  ccInboxDir: process.env.ZLAR_CC_INBOX_DIR || '/var/run/zlar-tg/inbox/cc',
   // Receipt generation (Phase A)
   signingKey: join(process.env.HOME || '', '.zlar-signing.key'),
   signingPubkey: join(process.env.HOME || '', '.zlar-signing.pub'),
@@ -133,6 +139,9 @@ for (let i = 0; i < args.length; i++) {
       CONFIG.telegramChatId = '';
       CONFIG.noTelegram = true;
       break;
+    case '--session-id': CONFIG.sessionId = args[++i]; break;
+    case '--canary-state-dir': CONFIG.canaryStateDir = args[++i]; break;
+    case '--cc-inbox-dir': CONFIG.ccInboxDir = args[++i]; break;
     case '--policy-engine': CONFIG.policyEngine = args[++i]; break;
     case '--help':
       console.log(`ZLAR MCP Gate — vendor-agnostic governance proxy
@@ -856,7 +865,7 @@ function emitEvent(domain, action, outcome, detail, rule, severity, riskScore, a
 
 // ─── Inbox HMAC Verification ─────────────────────────────────────────────────
 
-const HMAC_SECRET_FILE = '/var/run/zlar-tg/inbox-hmac-secret';
+const HMAC_SECRET_FILE = process.env.ZLAR_INBOX_HMAC_SECRET_FILE || '/var/run/zlar-tg/inbox-hmac-secret';
 
 function loadHmacSecret() {
   if (!existsSync(HMAC_SECRET_FILE)) return null;
@@ -874,6 +883,92 @@ function verifyInboxHmac(data, fromId, cbId, expectedHmac) {
   try {
     return timingSafeEqual(Buffer.from(computed), Buffer.from(expectedHmac));
   } catch { return false; }  // length mismatch
+}
+
+// ─── MCP Canary Result Check ─────────────────────────────────────────────────
+// Passive check run on every handleRequest invocation. Mirrors
+// canary_check_result from lib/canary.sh (bash gate line 2428).
+//
+// Reads var/canary/{sessionId}.canary.pending for the pending canary ID.
+// If present, scans the cc inbox for a matching callback and applies the
+// trust lane transition:
+//   approve (fatigue detected) → applyLaneDemotion('canary_failed')
+//   deny   (healthy)           → applyLaneRestore()
+//   stale  (no response)       → applyLaneDemotion('canary_missed')
+//
+// MCP canary SEND is not implemented in this release. This result-check is
+// operative for canaries sent by the bash gate on the same session ID, and
+// will become fully self-contained when MCP send is added (future patch).
+// A no-op when no pending file exists.
+
+function checkCanaryResult(sessionId, humanId) {
+  const pendingFile = join(CONFIG.canaryStateDir, `${sessionId}.canary.pending`);
+  if (!existsSync(pendingFile)) return;
+
+  let canaryId;
+  try { canaryId = readFileSync(pendingFile, 'utf8').trim(); } catch { return; }
+  if (!canaryId) { try { unlinkSync(pendingFile); } catch {} return; }
+
+  // Scan cc inbox for a matching canary callback
+  if (existsSync(CONFIG.ccInboxDir)) {
+    let files = [];
+    try { files = readdirSync(CONFIG.ccInboxDir).filter(f => f.endsWith('.json')); } catch {}
+
+    for (const file of files) {
+      const filePath = join(CONFIG.ccInboxDir, file);
+      try {
+        const cb = JSON.parse(readFileSync(filePath, 'utf8'));
+        const cbData = cb.data || '';
+        const cbFrom = cb.from_id || '';
+        const cbId = cb.callback_query_id || '';
+        const cbHmac = cb.hmac || '';
+
+        if (cbFrom !== humanId) { try { unlinkSync(filePath); } catch {} continue; }
+
+        if (!verifyInboxHmac(cbData, cbFrom, cbId, cbHmac)) {
+          console.error(`[gate] SECURITY: canary inbox HMAC mismatch: ${file}`);
+          try { unlinkSync(filePath); } catch {}
+          continue;
+        }
+
+        if (cbData === `cc:canary:approve:${canaryId}`) {
+          // FATIGUE — human approved the canary (should have denied)
+          try { unlinkSync(filePath); } catch {}
+          try { unlinkSync(pendingFile); } catch {}
+          console.log(`[gate] CANARY FAILED: session ${sessionId} fatigue detected (canary ${canaryId})`);
+          emitEvent('mcp', 'canary_result', 'logged',
+            { session_id: sessionId, canary_id: canaryId, result: 'fatigue_detected' },
+            'canary', 'warn', 0, 'canary');
+          try { applyLaneDemotion(humanId, 'canary_failed'); } catch {}
+          return;
+        }
+        if (cbData === `cc:canary:deny:${canaryId}`) {
+          // HEALTHY — human correctly denied the canary
+          try { unlinkSync(filePath); } catch {}
+          try { unlinkSync(pendingFile); } catch {}
+          console.log(`[gate] CANARY PASSED: session ${sessionId} healthy (canary ${canaryId})`);
+          emitEvent('mcp', 'canary_result', 'logged',
+            { session_id: sessionId, canary_id: canaryId, result: 'healthy' },
+            'canary', 'info', 0, 'canary');
+          try { applyLaneRestore(humanId); } catch {}
+          return;
+        }
+      } catch { try { unlinkSync(filePath); } catch {} }
+    }
+  }
+
+  // No matching callback — check whether the pending file is stale
+  try {
+    const ageMs = Date.now() - statSync(pendingFile).mtimeMs;
+    if (ageMs > CONFIG.telegramTimeoutS * 1000) {
+      try { unlinkSync(pendingFile); } catch {}
+      console.log(`[gate] CANARY EXPIRED: session ${sessionId} no response (canary ${canaryId})`);
+      emitEvent('mcp', 'canary_result', 'logged',
+        { session_id: sessionId, canary_id: canaryId, result: 'expired' },
+        'canary', 'info', 0, 'canary');
+      try { applyLaneDemotion(humanId, 'canary_missed'); } catch {}
+    }
+  } catch {}
 }
 
 // ─── Telegram HITL ───────────────────────────────────────────────────────────
@@ -1129,6 +1224,11 @@ function parseMessages(buffer) {
 }
 
 async function handleRequest(msg) {
+  // Passive canary result check — mirrors canary_check_result in lib/canary.sh
+  // (bash gate line 2428). Runs on every request; non-blocking; never throws.
+  const _passiveHumanId = CONFIG.telegramChatId || '';
+  if (_passiveHumanId) checkCanaryResult(CONFIG.sessionId, _passiveHumanId);
+
   // Only intercept tools/call
   if (msg.method !== 'tools/call') {
     return { action: 'passthrough', msg };
