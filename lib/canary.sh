@@ -35,6 +35,10 @@ CANARY_PROBABILITY="${ZLAR_CANARY_PROBABILITY:-20}"       # percent (0-100)
 CANARY_COOLDOWN_S="${ZLAR_CANARY_COOLDOWN:-300}"           # min seconds between canaries
 CANARY_STATE_DIR="${ZLAR_CANARY_STATE_DIR:-${PROJECT_DIR:-.}/var/canary}"
 CANARY_SCENARIOS_FILE="${ZLAR_CANARY_SCENARIOS_FILE:-${PROJECT_DIR:-.}/etc/canary-scenarios.json}"
+# v3.3.4 Clean Run Trust Lane Auto-Promotion. ZLAR does not score the human.
+# It watches the run. A clean run earns speed; a broken run restores friction.
+CANARY_CLEAN_RUN_PROMOTION_THRESHOLD="${ZLAR_CANARY_PROMOTION_THRESHOLD:-5}"
+CANARY_AUTO_PROMOTION_ENABLED="${ZLAR_CANARY_AUTO_PROMOTION:-true}"
 
 # ── Initialization ──
 
@@ -58,6 +62,10 @@ canary_load_config() {
         [ -n "${_v}" ] && CANARY_COOLDOWN_S="${_v}"
         _v=$(jq -r '.canary.scenarios_file // empty' "${gate_config}" 2>/dev/null)
         [ -n "${_v}" ] && CANARY_SCENARIOS_FILE="${PROJECT_DIR:-.}/${_v}"
+        _v=$(jq -r '.canary.clean_run_promotion_threshold // empty' "${gate_config}" 2>/dev/null)
+        [ -n "${_v}" ] && CANARY_CLEAN_RUN_PROMOTION_THRESHOLD="${_v}"
+        _v=$(jq -r '.canary.auto_promotion_enabled // empty' "${gate_config}" 2>/dev/null)
+        [ -n "${_v}" ] && CANARY_AUTO_PROMOTION_ENABLED="${_v}"
     fi
 }
 
@@ -370,8 +378,19 @@ _canary_log_fatigue() {
         [ -n "${new_state}" ] && echo "${new_state}" > "${state_file}" 2>/dev/null
     fi
 
-    # Trust lane demotion: canary_failed demotes fast→guarded or guarded→slow.
-    [ -n "${human_id}" ] && hi_apply_lane_demotion "${human_id}" "canary_failed" 2>/dev/null || true
+    # v3.3.4: clean run resets, lane demotes one step (fast→guarded or
+    # guarded→slow). ZLAR does not score the human. It watches the run.
+    if [ -n "${human_id}" ]; then
+        local _crun_action
+        _crun_action=$(hi_record_canary_outcome "${human_id}" "failed" \
+            "${CANARY_CLEAN_RUN_PROMOTION_THRESHOLD}" "${CANARY_AUTO_PROMOTION_ENABLED}" 2>/dev/null || true)
+        if [ "${_crun_action#demoted:}" != "${_crun_action}" ] && type emit_event &>/dev/null; then
+            emit_event "canary" "trust_lane_demoted" "logged" \
+                "$(jq -n -c --arg cid "${canary_id}" --arg act "${_crun_action}" \
+                    '{canary_id:$cid,transition:$act,clean_run_reset:true}')" \
+                "canary" "warn" 0 "canary"
+        fi
+    fi
 }
 
 _canary_log_healthy() {
@@ -399,8 +418,20 @@ _canary_log_healthy() {
         [ -n "${new_state}" ] && echo "${new_state}" > "${state_file}" 2>/dev/null
     fi
 
-    # Trust lane restore: canary_passed restores slow→guarded or guarded→fast (if grant present).
-    [ -n "${human_id}" ] && hi_apply_lane_restore "${human_id}" 2>/dev/null || true
+    # v3.3.4: clean run advances. After threshold consecutive healthy
+    # canaries, lane promotes one step (slow→guarded or guarded→fast).
+    # No manual grant required. A clean run earns speed.
+    if [ -n "${human_id}" ]; then
+        local _crun_action
+        _crun_action=$(hi_record_canary_outcome "${human_id}" "passed" \
+            "${CANARY_CLEAN_RUN_PROMOTION_THRESHOLD}" "${CANARY_AUTO_PROMOTION_ENABLED}" 2>/dev/null || true)
+        if [ "${_crun_action#promoted:}" != "${_crun_action}" ] && type emit_event &>/dev/null; then
+            emit_event "canary" "trust_lane_auto_promoted" "logged" \
+                "$(jq -n -c --arg cid "${canary_id}" --arg act "${_crun_action}" \
+                    '{canary_id:$cid,transition:$act}')" \
+                "canary" "info" 0 "canary"
+        fi
+    fi
 }
 
 _canary_log_expired() {
@@ -423,6 +454,17 @@ _canary_log_expired() {
         [ -n "${new_state}" ] && echo "${new_state}" > "${state_file}" 2>/dev/null
     fi
 
-    # Trust lane demotion: no response is a missed canary — demotes like failure.
-    [ -n "${human_id}" ] && hi_apply_lane_demotion "${human_id}" "canary_missed" 2>/dev/null || true
+    # v3.3.4: missed canary is a broken run — clean_run_count resets and
+    # lane demotes one step. Manual grant does not shield from demotion.
+    if [ -n "${human_id}" ]; then
+        local _crun_action
+        _crun_action=$(hi_record_canary_outcome "${human_id}" "missed" \
+            "${CANARY_CLEAN_RUN_PROMOTION_THRESHOLD}" "${CANARY_AUTO_PROMOTION_ENABLED}" 2>/dev/null || true)
+        if [ "${_crun_action#demoted:}" != "${_crun_action}" ] && type emit_event &>/dev/null; then
+            emit_event "canary" "trust_lane_demoted" "logged" \
+                "$(jq -n -c --arg cid "${canary_id}" --arg act "${_crun_action}" \
+                    '{canary_id:$cid,transition:$act,clean_run_reset:true}')" \
+                "canary" "warn" 0 "canary"
+        fi
+    fi
 }

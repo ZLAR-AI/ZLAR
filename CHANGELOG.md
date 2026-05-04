@@ -1,5 +1,59 @@
 # Changelog
 
+## 3.3.4 — 2026-05-04 — Clean Run Trust Lane Auto-Promotion
+
+ZLAR does not score the human. It watches the run.
+A clean run earns speed; a broken run restores friction.
+
+Trust lane now graduates on canary-outcome history rather than authority grant
+alone. Five consecutive healthy canaries promote one lane (slow → guarded,
+guarded → fast). One failed or missed canary resets the run and demotes one
+lane. Manual authority grant remains as bootstrap and as override; it is no
+longer required for promotion, and it does not shield from demotion.
+
+State schema:
+- clean_run_count (int, default 0) — consecutive healthy canary outcomes.
+- clean_run_started_epoch (int, default 0) — telemetry; epoch when the
+  current run began. Cleared on demotion or promotion.
+Both fields persist across UTC rollover. A run is a logical sequence of
+canary outcomes, not a calendar artifact. Idempotent migration on load.
+
+New behavior in lib/human-invariants.{sh,mjs}:
+- hi_record_canary_outcome / recordCanaryOutcome — single source of truth for
+  clean-run accounting and lane transitions on canary outcomes.
+  passed: count++; if count >= threshold and lane in {slow, guarded}, promote
+  one lane and reset count. At lane=fast, reset count, no lane change. If
+  auto_promotion_enabled=false, cap count at threshold (no drift).
+  failed | missed: reset count and started_epoch; demote one lane (fast →
+  guarded → slow); manual grant does not shield.
+
+Call-site swap: lib/canary.sh and mcp-gate/gate.mjs canary-result paths now
+call the new function instead of hi_apply_lane_demotion / hi_apply_lane_restore.
+The old functions are kept exported for external operator scripts and marked
+deprecated; do not call from new code.
+
+Config in etc/gate.json .canary:
+- clean_run_promotion_threshold (default 5)
+- auto_promotion_enabled (default true) — kill switch.
+Env overrides for test isolation: ZLAR_CANARY_PROMOTION_THRESHOLD,
+ZLAR_CANARY_AUTO_PROMOTION.
+
+Audit:
+- New event trust_lane_auto_promoted on lane promotion (info severity).
+- Existing demotion path now emits trust_lane_demoted with clean_run_reset:true.
+
+No policy rule changes. Policy version stays 3.3.1 (89 rules). No receipt
+schema changes. No change to ceremony or critical-severity gating — auto-
+promotion only affects H14/H15/H17 floor handling, exactly as v3.3.0
+trust_lane already does.
+
+Tests:
+- New tests/test-trust-lane-cleanrun.sh — 12 assertions covering increment,
+  promotion at threshold from slow and guarded, no-op at fast, demotion from
+  fast and guarded, slow-stays-slow, mixed sequences, auto_promotion_enabled
+  off, threshold cap, migration.
+- New mcp-gate/test-cleanrun.mjs — 12 parallel assertions for MJS gate.
+
 ## 3.3.3 — 2026-05-04 — MCP canary SEND parity
 
 MCP gate can now initiate canary probes, closing the remaining gap where bash

@@ -97,7 +97,7 @@ ZLAR 3.0 adds a behavioral observation layer that runs alongside the enforcement
 
 `repo/var/human-state/` contains per-human state files. File naming: `<telegram_chat_id>.json`. The Telegram chat ID is the human's identity within the gate.
 
-**Schema (canary v1 Element B, current):**
+**Schema (v3.3.4, current):**
 ```json
 {
   "human_id": "<telegram_chat_id>",
@@ -105,7 +105,11 @@ ZLAR 3.0 adds a behavioral observation layer that runs alongside the enforcement
   "decisions_today": <int>,
   "response_times": [{"elapsed": <int>, "severity": "<class>"}, ...],
   "pending": [{"action_hash": "<sha256>", "ts": <unix_seconds>}, ...],
-  "last_ask_epoch": <unix_seconds>
+  "last_ask_epoch": <unix_seconds>,
+  "trust_lane": "fast" | "guarded" | "slow",
+  "trust_lane_grant": { "source": "authority", "granted_at": <epoch>, "reason": "<str>" },
+  "clean_run_count": <int>,
+  "clean_run_started_epoch": <unix_seconds>
 }
 ```
 
@@ -114,6 +118,10 @@ ZLAR 3.0 adds a behavioral observation layer that runs alongside the enforcement
 - `pending` — H13 pending array (v2.8.0 rewrite). Each entry is `{action_hash, ts}`. On every increment, stale entries (older than `HI_PENDING_TTL`, default 1800s) are filtered before counting; a retry with the same `action_hash` does not re-append. Replaces the v2.7.x scalar `pending_count` which leaked under orphaned increments and retries.
 - `response_times` — H14 rolling window of `{elapsed, severity}` pairs, last 20 decisions. Replaces the v2.7.x `approvals_recent` approval-rate tracking. H14 now measures response-time variance on warn/info decisions; low variance fires `canary_pattern_check` (advisory). Critical decisions are excluded from variance (H15's 30s floor creates artificial uniformity that would falsely fire H14). When H14 fires, `response_times` is cleared so the window starts fresh.
 - `last_ask_epoch` — H15/H17 timing reference for deliberation and authenticity checks.
+- `trust_lane` — v3.3.0 lane state. `fast` (H14 bypassed; H15/H17 floors at 500ms minimum), `guarded` (default; full floors), `slow` (reserved). Survives UTC rollover.
+- `trust_lane_grant` — v3.3.0 manual authority grant (terminal-only, TTY-gated, HMAC-sealed). Bootstraps lane=fast at grant time. v3.3.4: grant does not shortcut auto-promotion and does not shield from demotion.
+- `clean_run_count` — v3.3.4 consecutive healthy canary outcomes. Five consecutive promote one lane (slow→guarded, guarded→fast). Reset to 0 on promotion, demotion, or canary failure/miss. Capped at threshold when `auto_promotion_enabled=false`. ZLAR does not score the human. It watches the run.
+- `clean_run_started_epoch` — v3.3.4 telemetry; epoch when the current run began (count went 0→1). Cleared on demotion or promotion. Persists across UTC rollover (a run is logical, not calendar-bound).
 
 **Created by:** `_hi_ensure_state` in `lib/human-invariants.sh` (and equivalent in `.mjs`). Lazily created on first reference. Includes v2.8.0 schema migration that drops any lingering `pending_count` / `approvals_recent` scalars.
 

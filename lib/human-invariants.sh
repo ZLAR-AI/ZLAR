@@ -181,7 +181,7 @@ _hi_ensure_state() {
         jq -n \
             --arg hid "${human_id}" \
             --arg today "${today}" \
-            '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0, timing_observations: [], operator_profile_level: 0, trust_lane: "guarded"}' \
+            '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0, timing_observations: [], operator_profile_level: 0, trust_lane: "guarded", clean_run_count: 0, clean_run_started_epoch: 0}' \
             | _hi_sealed_write "${state_file}"
     else
         # Verify HMAC. On tamper: log + rebuild safe defaults. Rebuild, not
@@ -197,7 +197,7 @@ _hi_ensure_state() {
             jq -n \
                 --arg hid "${human_id}" \
                 --arg today "${today}" \
-                '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0, timing_observations: [], operator_profile_level: 0, trust_lane: "guarded"}' \
+                '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0, timing_observations: [], operator_profile_level: 0, trust_lane: "guarded", clean_run_count: 0, clean_run_started_epoch: 0}' \
                 | _hi_sealed_write "${state_file}"
         fi
     fi
@@ -258,6 +258,16 @@ _hi_ensure_state() {
     # v3.3.0 trust_lane migration: add trust_lane=guarded if absent.
     if jq -e 'has("trust_lane") | not' "${state_file}" >/dev/null 2>&1; then
         jq 'del(._hmac) | .trust_lane = "guarded"' \
+            "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+    fi
+
+    # v3.3.4 clean-run migration: add clean_run_count / clean_run_started_epoch
+    # if absent. ZLAR does not score the human. It watches the run.
+    # A clean run earns speed; a broken run restores friction. These two
+    # fields persist across UTC rollover — a run is a logical sequence of
+    # canary outcomes, not a calendar artifact.
+    if jq -e '(has("clean_run_count") | not) or (has("clean_run_started_epoch") | not)' "${state_file}" >/dev/null 2>&1; then
+        jq 'del(._hmac) | .clean_run_count = (.clean_run_count // 0) | .clean_run_started_epoch = (.clean_run_started_epoch // 0)' \
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
@@ -1033,6 +1043,10 @@ hi_apply_lane_demotion() {
 }
 
 hi_apply_lane_restore() {
+    # DEPRECATED in v3.3.4. Internal canary call sites use hi_record_canary_outcome.
+    # Kept exported for external operator scripts that may still call it.
+    # Semantics frozen as written: slow→guarded; guarded→fast only with
+    # trust_lane_grant. Do not call from new code.
     local human_id="${1:?}"
 
     local state_file
@@ -1048,4 +1062,113 @@ hi_apply_lane_restore() {
         "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     _hi_log "trust_lane restore: ${human_id} lane=$(jq -r '.trust_lane' "${state_file}" 2>/dev/null)"
     echo "ok"
+}
+
+# ─── v3.3.4: Clean Run Trust Lane Auto-Promotion ─────────────────────────────
+# ZLAR does not score the human. It watches the run.
+# A clean run earns speed; a broken run restores friction.
+#
+# hi_record_canary_outcome <human_id> <outcome> [threshold] [auto_enabled]
+#   outcome      "passed" | "failed" | "missed"
+#   threshold    promotion threshold (default 5)
+#   auto_enabled "true" | "false" (default "true")
+#
+# passed:  clean_run_count++. If auto_enabled and count >= threshold and
+#          lane in {slow, guarded}: promote one lane (slow→guarded,
+#          guarded→fast — no manual grant required), reset count to 0.
+#          At lane=fast: reset count to 0, no lane change.
+#          If auto_enabled is false: cap count at threshold (no drift).
+# failed:  reset count + epoch to 0; demote one lane (fast→guarded,
+#          guarded→slow, slow stays slow). Manual grant does not shield
+#          from demotion.
+# missed:  same as failed.
+#
+# Returns one of (echoed):
+#   nochange                       (passed below threshold or auto-disabled)
+#   promoted:slow→guarded
+#   promoted:guarded→fast
+#   nochange:fast                  (passed at lane=fast — count reset, lane unchanged)
+#   demoted:fast→guarded
+#   demoted:guarded→slow
+#   nochange:slow                  (failed/missed at lane=slow)
+hi_record_canary_outcome() {
+    local human_id="${1:?}"
+    local outcome="${2:?}"
+    local threshold="${3:-5}"
+    local auto_enabled="${4:-true}"
+
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+
+    local cur_lane action
+    cur_lane=$(jq -r '.trust_lane // "guarded"' "${state_file}" 2>/dev/null)
+
+    case "${outcome}" in
+        passed)
+            jq --argjson threshold "${threshold}" \
+               --arg auto "${auto_enabled}" \
+               'del(._hmac) |
+                .clean_run_count = ((.clean_run_count // 0) + 1) |
+                if (.clean_run_count == 1) then .clean_run_started_epoch = now else . end |
+                (.trust_lane // "guarded") as $cur |
+                if ($auto == "true") and (.clean_run_count >= $threshold) then
+                  if $cur == "slow" then
+                    .trust_lane = "guarded" |
+                    .trust_lane_auto_promoted = {from: "slow", to: "guarded", clean_run_length: .clean_run_count, ts: now} |
+                    .clean_run_count = 0 | .clean_run_started_epoch = 0
+                  elif $cur == "guarded" then
+                    .trust_lane = "fast" |
+                    .trust_lane_auto_promoted = {from: "guarded", to: "fast", clean_run_length: .clean_run_count, ts: now} |
+                    .clean_run_count = 0 | .clean_run_started_epoch = 0
+                  else
+                    .clean_run_count = 0 | .clean_run_started_epoch = 0
+                  end
+                else
+                  if (.clean_run_count > $threshold) then .clean_run_count = $threshold else . end
+                end' \
+               "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+            local new_lane new_count
+            new_lane=$(jq -r '.trust_lane // "guarded"' "${state_file}" 2>/dev/null)
+            new_count=$(jq -r '.clean_run_count // 0' "${state_file}" 2>/dev/null)
+            if [ "${cur_lane}" = "slow" ] && [ "${new_lane}" = "guarded" ]; then
+                action="promoted:slow→guarded"
+            elif [ "${cur_lane}" = "guarded" ] && [ "${new_lane}" = "fast" ]; then
+                action="promoted:guarded→fast"
+            elif [ "${cur_lane}" = "fast" ] && [ "${new_count}" = "0" ]; then
+                action="nochange:fast"
+            else
+                action="nochange"
+            fi
+            _hi_log "clean_run: ${human_id} passed lane=${cur_lane}→${new_lane} count=${new_count} action=${action}"
+            echo "${action}"
+            ;;
+        failed|missed)
+            local reason="canary_${outcome}"
+            jq --arg reason "${reason}" \
+               'del(._hmac) |
+                .clean_run_count = 0 |
+                .clean_run_started_epoch = 0 |
+                (.trust_lane // "guarded") as $cur |
+                if $cur == "fast" then .trust_lane = "guarded"
+                elif $cur == "guarded" then .trust_lane = "slow"
+                else . end |
+                .trust_lane_demotion = {reason: $reason, ts: now, clean_run_reset: true}' \
+               "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+            local new_lane
+            new_lane=$(jq -r '.trust_lane // "guarded"' "${state_file}" 2>/dev/null)
+            if [ "${cur_lane}" = "fast" ] && [ "${new_lane}" = "guarded" ]; then
+                action="demoted:fast→guarded"
+            elif [ "${cur_lane}" = "guarded" ] && [ "${new_lane}" = "slow" ]; then
+                action="demoted:guarded→slow"
+            else
+                action="nochange:slow"
+            fi
+            _hi_log "clean_run: ${human_id} ${outcome} lane=${cur_lane}→${new_lane} count=0 action=${action}"
+            echo "${action}"
+            ;;
+        *)
+            _hi_log "clean_run: ${human_id} unknown outcome=${outcome} — ignored"
+            echo "nochange"
+            ;;
+    esac
 }

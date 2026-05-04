@@ -1008,6 +1008,153 @@ hi_post_response_check "${HUMAN_TL12}" "critical" "approve" "" 90 2>/dev/null ||
 tl12_obs_lane=$(jq -r '.timing_observations[-1].trust_lane // "MISSING"' "${tl_file12}" 2>/dev/null)
 assert "TL-12: observation has trust_lane=fast" "fast" "${tl12_obs_lane}"
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# v3.3.4: Clean Run Trust Lane Auto-Promotion
+# ZLAR does not score the human. It watches the run.
+# A clean run earns speed; a broken run restores friction.
+# ═══════════════════════════════════════════════════════════════════════════════
+echo
+echo "=== Clean Run Auto-Promotion (v3.3.4) ==="
+echo
+
+# CR-1: passed canary increments clean_run_count, lane unchanged below threshold
+HUMAN_CR1="test-cr-1"
+cr_file1=$(_hi_ensure_state "${HUMAN_CR1}")
+hi_record_canary_outcome "${HUMAN_CR1}" "passed" 5 "true" >/dev/null 2>&1
+cr1_count=$(jq -r '.clean_run_count' "${cr_file1}" 2>/dev/null)
+cr1_lane=$(jq -r '.trust_lane' "${cr_file1}" 2>/dev/null)
+assert "CR-1: 1 passed → count=1" "1" "${cr1_count}"
+assert "CR-1: 1 passed → lane stays guarded" "guarded" "${cr1_lane}"
+
+# CR-2: 5 passed at slow promotes to guarded, count resets to 0
+HUMAN_CR2="test-cr-2"
+cr_file2=$(_hi_ensure_state "${HUMAN_CR2}")
+jq 'del(._hmac) | .trust_lane = "slow"' "${cr_file2}" 2>/dev/null | _hi_sealed_write "${cr_file2}" 2>/dev/null
+for _ in 1 2 3 4 5; do
+    hi_record_canary_outcome "${HUMAN_CR2}" "passed" 5 "true" >/dev/null 2>&1
+done
+cr2_lane=$(jq -r '.trust_lane' "${cr_file2}" 2>/dev/null)
+cr2_count=$(jq -r '.clean_run_count' "${cr_file2}" 2>/dev/null)
+cr2_promoted=$(jq -r '.trust_lane_auto_promoted.to // "MISSING"' "${cr_file2}" 2>/dev/null)
+assert "CR-2: 5 passed at slow → lane=guarded" "guarded" "${cr2_lane}"
+assert "CR-2: promotion resets count to 0" "0" "${cr2_count}"
+assert "CR-2: trust_lane_auto_promoted.to recorded" "guarded" "${cr2_promoted}"
+
+# CR-3: 5 passed at guarded WITHOUT grant promotes to fast (no grant required)
+HUMAN_CR3="test-cr-3"
+cr_file3=$(_hi_ensure_state "${HUMAN_CR3}")
+cr3_grant_pre=$(jq -r 'has("trust_lane_grant")' "${cr_file3}" 2>/dev/null)
+for _ in 1 2 3 4 5; do
+    hi_record_canary_outcome "${HUMAN_CR3}" "passed" 5 "true" >/dev/null 2>&1
+done
+cr3_lane=$(jq -r '.trust_lane' "${cr_file3}" 2>/dev/null)
+cr3_count=$(jq -r '.clean_run_count' "${cr_file3}" 2>/dev/null)
+assert "CR-3: precondition no grant" "false" "${cr3_grant_pre}"
+assert "CR-3: 5 passed at guarded → lane=fast (no grant)" "fast" "${cr3_lane}"
+assert "CR-3: promotion resets count" "0" "${cr3_count}"
+
+# CR-4: passed at fast no-ops on lane, resets count
+HUMAN_CR4="test-cr-4"
+cr_file4=$(_hi_ensure_state "${HUMAN_CR4}")
+jq 'del(._hmac) | .trust_lane = "fast" | .clean_run_count = 4' "${cr_file4}" 2>/dev/null | _hi_sealed_write "${cr_file4}" 2>/dev/null
+hi_record_canary_outcome "${HUMAN_CR4}" "passed" 5 "true" >/dev/null 2>&1
+cr4_lane=$(jq -r '.trust_lane' "${cr_file4}" 2>/dev/null)
+cr4_count=$(jq -r '.clean_run_count' "${cr_file4}" 2>/dev/null)
+assert "CR-4: passed at fast (count→5) → lane stays fast" "fast" "${cr4_lane}"
+assert "CR-4: passed at fast (count→5) → count resets" "0" "${cr4_count}"
+
+# CR-5: failed at fast demotes to guarded, count and epoch reset
+HUMAN_CR5="test-cr-5"
+cr_file5=$(_hi_ensure_state "${HUMAN_CR5}")
+jq 'del(._hmac) | .trust_lane = "fast" | .clean_run_count = 3 | .clean_run_started_epoch = 1234567' \
+    "${cr_file5}" 2>/dev/null | _hi_sealed_write "${cr_file5}" 2>/dev/null
+hi_record_canary_outcome "${HUMAN_CR5}" "failed" 5 "true" >/dev/null 2>&1
+cr5_lane=$(jq -r '.trust_lane' "${cr_file5}" 2>/dev/null)
+cr5_count=$(jq -r '.clean_run_count' "${cr_file5}" 2>/dev/null)
+cr5_epoch=$(jq -r '.clean_run_started_epoch' "${cr_file5}" 2>/dev/null)
+cr5_reset=$(jq -r '.trust_lane_demotion.clean_run_reset // false' "${cr_file5}" 2>/dev/null)
+assert "CR-5: failed at fast → lane=guarded" "guarded" "${cr5_lane}"
+assert "CR-5: failed resets count to 0" "0" "${cr5_count}"
+assert "CR-5: failed resets started_epoch to 0" "0" "${cr5_epoch}"
+assert "CR-5: demotion records clean_run_reset" "true" "${cr5_reset}"
+
+# CR-6: missed parity with failed (guarded → slow)
+HUMAN_CR6="test-cr-6"
+cr_file6=$(_hi_ensure_state "${HUMAN_CR6}")
+jq 'del(._hmac) | .clean_run_count = 2' "${cr_file6}" 2>/dev/null | _hi_sealed_write "${cr_file6}" 2>/dev/null
+hi_record_canary_outcome "${HUMAN_CR6}" "missed" 5 "true" >/dev/null 2>&1
+cr6_lane=$(jq -r '.trust_lane' "${cr_file6}" 2>/dev/null)
+cr6_count=$(jq -r '.clean_run_count' "${cr_file6}" 2>/dev/null)
+assert "CR-6: missed at guarded → lane=slow" "slow" "${cr6_lane}"
+assert "CR-6: missed resets count" "0" "${cr6_count}"
+
+# CR-7: failed at slow keeps slow (floor)
+HUMAN_CR7="test-cr-7"
+cr_file7=$(_hi_ensure_state "${HUMAN_CR7}")
+jq 'del(._hmac) | .trust_lane = "slow" | .clean_run_count = 1' "${cr_file7}" 2>/dev/null | _hi_sealed_write "${cr_file7}" 2>/dev/null
+hi_record_canary_outcome "${HUMAN_CR7}" "failed" 5 "true" >/dev/null 2>&1
+cr7_lane=$(jq -r '.trust_lane' "${cr_file7}" 2>/dev/null)
+cr7_count=$(jq -r '.clean_run_count' "${cr_file7}" 2>/dev/null)
+assert "CR-7: failed at slow stays slow" "slow" "${cr7_lane}"
+assert "CR-7: failed at slow resets count" "0" "${cr7_count}"
+
+# CR-8: mixed sequence — 4 passed then 1 failed → count=0, lane demotes one
+HUMAN_CR8="test-cr-8"
+cr_file8=$(_hi_ensure_state "${HUMAN_CR8}")
+for _ in 1 2 3 4; do
+    hi_record_canary_outcome "${HUMAN_CR8}" "passed" 5 "true" >/dev/null 2>&1
+done
+hi_record_canary_outcome "${HUMAN_CR8}" "failed" 5 "true" >/dev/null 2>&1
+cr8_lane=$(jq -r '.trust_lane' "${cr_file8}" 2>/dev/null)
+cr8_count=$(jq -r '.clean_run_count' "${cr_file8}" 2>/dev/null)
+assert "CR-8: 4 passed + 1 failed → lane=slow" "slow" "${cr8_lane}"
+assert "CR-8: 4 passed + 1 failed → count=0" "0" "${cr8_count}"
+
+# CR-9: auto_promotion_enabled=false — count caps at threshold, lane unchanged
+HUMAN_CR9="test-cr-9"
+cr_file9=$(_hi_ensure_state "${HUMAN_CR9}")
+for _ in 1 2 3 4 5 6 7; do
+    hi_record_canary_outcome "${HUMAN_CR9}" "passed" 5 "false" >/dev/null 2>&1
+done
+cr9_lane=$(jq -r '.trust_lane' "${cr_file9}" 2>/dev/null)
+cr9_count=$(jq -r '.clean_run_count' "${cr_file9}" 2>/dev/null)
+assert "CR-9: auto-disabled → lane stays guarded" "guarded" "${cr9_lane}"
+assert "CR-9: auto-disabled → count caps at threshold (5)" "5" "${cr9_count}"
+
+# CR-10: auto re-enable + 1 fresh passed → promotion fires from cap
+HUMAN_CR10="test-cr-10"
+cr_file10=$(_hi_ensure_state "${HUMAN_CR10}")
+jq 'del(._hmac) | .clean_run_count = 5' "${cr_file10}" 2>/dev/null | _hi_sealed_write "${cr_file10}" 2>/dev/null
+hi_record_canary_outcome "${HUMAN_CR10}" "passed" 5 "true" >/dev/null 2>&1
+cr10_lane=$(jq -r '.trust_lane' "${cr_file10}" 2>/dev/null)
+cr10_count=$(jq -r '.clean_run_count' "${cr_file10}" 2>/dev/null)
+assert "CR-10: re-enable + fresh passed → lane=fast" "fast" "${cr10_lane}"
+assert "CR-10: promotion resets count" "0" "${cr10_count}"
+
+# CR-11: manual grant + canary failure still demotes (grant does not shield)
+HUMAN_CR11="test-cr-11"
+cr_file11=$(_hi_ensure_state "${HUMAN_CR11}")
+jq 'del(._hmac) | .trust_lane = "fast" | .trust_lane_grant = {"source":"authority","granted_at":1234567,"reason":"test"}' \
+    "${cr_file11}" 2>/dev/null | _hi_sealed_write "${cr_file11}" 2>/dev/null
+hi_record_canary_outcome "${HUMAN_CR11}" "failed" 5 "true" >/dev/null 2>&1
+cr11_lane=$(jq -r '.trust_lane' "${cr_file11}" 2>/dev/null)
+cr11_grant_after=$(jq -r 'has("trust_lane_grant")' "${cr_file11}" 2>/dev/null)
+assert "CR-11: failed at fast WITH grant → demotes to guarded" "guarded" "${cr11_lane}"
+assert "CR-11: grant remains in state after demotion" "true" "${cr11_grant_after}"
+
+# CR-12: migration — pre-existing state without clean_run fields gets defaults
+HUMAN_CR12="test-cr-12"
+cr_file12="${_HI_STATE_DIR}/${HUMAN_CR12}.json"
+mkdir -p "${_HI_STATE_DIR}"
+jq -n --arg hid "${HUMAN_CR12}" --arg today "$(date -u +%Y-%m-%d)" \
+    '{human_id: $hid, date: $today, decisions_today: 0, response_times: [], pending: [], last_ask_epoch: 0, last_ask_epoch_ms: 0, canary_tier: 0, canary_trip_count: 0, timing_observations: [], operator_profile_level: 0, trust_lane: "guarded"}' \
+    | _hi_sealed_write "${cr_file12}"
+_hi_ensure_state "${HUMAN_CR12}" >/dev/null 2>&1
+cr12_count=$(jq -r '.clean_run_count // "MISSING"' "${cr_file12}" 2>/dev/null)
+cr12_epoch=$(jq -r '.clean_run_started_epoch // "MISSING"' "${cr_file12}" 2>/dev/null)
+assert "CR-12: migration adds clean_run_count=0" "0" "${cr12_count}"
+assert "CR-12: migration adds clean_run_started_epoch=0" "0" "${cr12_epoch}"
+
 # ─── Results ──────────────────────────────────────────────────────────────────
 
 echo

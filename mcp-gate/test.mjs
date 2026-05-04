@@ -440,8 +440,9 @@ async function runTests() {
   const sendTL = (msg) => sendMessage(TL_GATE_PORT, msg);
   let tlMsgId = 300;
 
-  // Write initial trust lane state (unkeyed mode — no HMAC key in test env)
-  function writeTLState(lane, grantPresent = false) {
+  // Write initial trust lane state (unkeyed mode — no HMAC key in test env).
+  // v3.3.4: optionally preload clean_run_count to test promotion threshold.
+  function writeTLState(lane, grantPresent = false, cleanRunCount = 0) {
     const state = {
       human_id: TL_HUMAN_ID,
       date: new Date().toISOString().slice(0, 10),
@@ -455,6 +456,8 @@ async function runTests() {
       timing_observations: [],
       operator_profile_level: 0,
       trust_lane: lane,
+      clean_run_count: cleanRunCount,
+      clean_run_started_epoch: 0,
       ...(grantPresent ? { trust_lane_grant: { source: 'authority', granted_at: Math.floor(Date.now() / 1000), reason: 'test' } } : {}),
     };
     writeFileSync(join(TEST_HUMAN_STATE_DIR, `${TL_HUMAN_ID}.json`), JSON.stringify(state));
@@ -462,6 +465,11 @@ async function runTests() {
 
   function readTLLane() {
     try { return JSON.parse(readFileSync(join(TEST_HUMAN_STATE_DIR, `${TL_HUMAN_ID}.json`), 'utf8')).trust_lane; }
+    catch { return null; }
+  }
+
+  function readTLState() {
+    try { return JSON.parse(readFileSync(join(TEST_HUMAN_STATE_DIR, `${TL_HUMAN_ID}.json`), 'utf8')); }
     catch { return null; }
   }
 
@@ -506,27 +514,31 @@ async function runTests() {
   } catch (e) { console.log(`✗ TL-MCP-2: ${e.message}`); failed++; }
   cleanTLFiles('canary-mcp-02');
 
-  // TL-MCP-3: canary_passed restores guarded→fast with authority grant
+  // TL-MCP-3 (v3.3.4): single canary_passed at guarded does not promote.
+  // Promotion now requires 5 consecutive healthy canaries — manual grant
+  // does not shortcut the run. ZLAR does not score the human. It watches
+  // the run.
   writeTLState('guarded', true);
   writePending('canary-mcp-03');
   writeCallback('canary-mcp-03', 'deny');
   try {
     await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
-    const lane = readTLLane();
-    if (lane === 'fast') { console.log(`✓ TL-MCP-3: canary_passed restores guarded→fast (authority grant)`); passed++; }
-    else { console.log(`✗ TL-MCP-3: expected fast, got ${lane}`); failed++; }
+    const s = readTLState();
+    if (s.trust_lane === 'guarded' && s.clean_run_count === 1) { console.log(`✓ TL-MCP-3: 1 canary_passed at guarded → lane stays guarded, count=1 (grant does not shortcut)`); passed++; }
+    else { console.log(`✗ TL-MCP-3: expected lane=guarded count=1, got lane=${s.trust_lane} count=${s.clean_run_count}`); failed++; }
   } catch (e) { console.log(`✗ TL-MCP-3: ${e.message}`); failed++; }
   cleanTLFiles('canary-mcp-03');
 
-  // TL-MCP-4: canary_passed does NOT restore guarded→fast without grant
+  // TL-MCP-4 (v3.3.4): single canary_passed at guarded with no grant —
+  // same expectation. count increments, lane unchanged below threshold.
   writeTLState('guarded', false);
   writePending('canary-mcp-04');
   writeCallback('canary-mcp-04', 'deny');
   try {
     await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
-    const lane = readTLLane();
-    if (lane === 'guarded') { console.log(`✓ TL-MCP-4: canary_passed keeps guarded (no authority grant)`); passed++; }
-    else { console.log(`✗ TL-MCP-4: expected guarded, got ${lane}`); failed++; }
+    const s = readTLState();
+    if (s.trust_lane === 'guarded' && s.clean_run_count === 1) { console.log(`✓ TL-MCP-4: 1 canary_passed at guarded (no grant) → lane stays guarded, count=1`); passed++; }
+    else { console.log(`✗ TL-MCP-4: expected lane=guarded count=1, got lane=${s.trust_lane} count=${s.clean_run_count}`); failed++; }
   } catch (e) { console.log(`✗ TL-MCP-4: ${e.message}`); failed++; }
   cleanTLFiles('canary-mcp-04');
 
@@ -546,6 +558,48 @@ async function runTests() {
     else { console.log(`✗ TL-MCP-5: expected fast (HMAC discarded), got ${lane}`); failed++; }
   } catch (e) { console.log(`✗ TL-MCP-5: ${e.message}`); failed++; }
   cleanTLFiles('canary-mcp-05');
+
+  // ─── v3.3.4: Clean Run Trust Lane Auto-Promotion ──────────────────────────
+  // ZLAR does not score the human. It watches the run.
+
+  // CR-MCP-1: 5th consecutive healthy canary at guarded promotes to fast.
+  // Preload count=4; this canary pushes count to 5 → promotion + reset.
+  writeTLState('guarded', false, 4);
+  writePending('canary-mcp-cr1');
+  writeCallback('canary-mcp-cr1', 'deny');
+  try {
+    await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
+    const s = readTLState();
+    if (s.trust_lane === 'fast' && s.clean_run_count === 0) { console.log(`✓ CR-MCP-1: 5th passed at guarded → lane=fast, count=0 (no grant required)`); passed++; }
+    else { console.log(`✗ CR-MCP-1: expected lane=fast count=0, got lane=${s.trust_lane} count=${s.clean_run_count}`); failed++; }
+  } catch (e) { console.log(`✗ CR-MCP-1: ${e.message}`); failed++; }
+  cleanTLFiles('canary-mcp-cr1');
+
+  // CR-MCP-2: 5th consecutive healthy canary at slow promotes to guarded.
+  writeTLState('slow', false, 4);
+  writePending('canary-mcp-cr2');
+  writeCallback('canary-mcp-cr2', 'deny');
+  try {
+    await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
+    const s = readTLState();
+    if (s.trust_lane === 'guarded' && s.clean_run_count === 0) { console.log(`✓ CR-MCP-2: 5th passed at slow → lane=guarded, count=0`); passed++; }
+    else { console.log(`✗ CR-MCP-2: expected lane=guarded count=0, got lane=${s.trust_lane} count=${s.clean_run_count}`); failed++; }
+  } catch (e) { console.log(`✗ CR-MCP-2: ${e.message}`); failed++; }
+  cleanTLFiles('canary-mcp-cr2');
+
+  // CR-MCP-3: failed canary at fast (with active grant) demotes anyway —
+  // grant does not shield from demotion. clean_run_count resets.
+  writeTLState('fast', true, 3);
+  writePending('canary-mcp-cr3');
+  writeCallback('canary-mcp-cr3', 'approve');
+  try {
+    await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
+    const s = readTLState();
+    const grantStill = s.trust_lane_grant !== undefined;
+    if (s.trust_lane === 'guarded' && s.clean_run_count === 0 && grantStill) { console.log(`✓ CR-MCP-3: failed at fast WITH grant → demotes to guarded, count=0, grant retained`); passed++; }
+    else { console.log(`✗ CR-MCP-3: expected lane=guarded count=0 grant=true, got lane=${s.trust_lane} count=${s.clean_run_count} grant=${grantStill}`); failed++; }
+  } catch (e) { console.log(`✗ CR-MCP-3: ${e.message}`); failed++; }
+  cleanTLFiles('canary-mcp-cr3');
 
   tlGate.kill();
   console.log('');

@@ -47,6 +47,7 @@ import {
   getCanaryTier,
   applyLaneDemotion,
   applyLaneRestore,
+  recordCanaryOutcome,
 } from '../lib/human-invariants.mjs';
 
 // Cedar policy evaluation (Phase C — Cedar Integration)
@@ -108,6 +109,10 @@ const CONFIG = {
   canaryProbability: 20,
   canaryCooldownS: 300,
   canaryScenarioFile: join(PROJECT_DIR, 'etc/canary-scenarios.json'),
+  // v3.3.4 Clean Run Trust Lane Auto-Promotion. ZLAR does not score the
+  // human. It watches the run.
+  canaryCleanRunThreshold: 5,
+  canaryAutoPromotion: true,
   // Receipt generation (Phase A)
   signingKey: join(process.env.HOME || '', '.zlar-signing.key'),
   signingPubkey: join(process.env.HOME || '', '.zlar-signing.pub'),
@@ -221,6 +226,10 @@ if (!CONFIG.telegramChatId && !CONFIG.noTelegram) {
         CONFIG.canaryCooldownS = gc.canary.cooldown_s;
       if (gc?.canary?.scenarios_file && !process.env.ZLAR_CANARY_SCENARIOS_FILE)
         CONFIG.canaryScenarioFile = join(PROJECT_DIR, gc.canary.scenarios_file);
+      if (gc?.canary?.clean_run_promotion_threshold !== undefined && process.env.ZLAR_CANARY_PROMOTION_THRESHOLD === undefined)
+        CONFIG.canaryCleanRunThreshold = gc.canary.clean_run_promotion_threshold;
+      if (gc?.canary?.auto_promotion_enabled !== undefined && process.env.ZLAR_CANARY_AUTO_PROMOTION === undefined)
+        CONFIG.canaryAutoPromotion = gc.canary.auto_promotion_enabled;
     } catch (e) {
       console.error(`[gate] WARN: canary config load failed: ${e.message}`);
     }
@@ -230,6 +239,8 @@ if (!CONFIG.telegramChatId && !CONFIG.noTelegram) {
   if (process.env.ZLAR_CANARY_PROBABILITY !== undefined) CONFIG.canaryProbability = parseInt(process.env.ZLAR_CANARY_PROBABILITY, 10);
   if (process.env.ZLAR_CANARY_COOLDOWN !== undefined) CONFIG.canaryCooldownS = parseInt(process.env.ZLAR_CANARY_COOLDOWN, 10);
   if (process.env.ZLAR_CANARY_SCENARIOS_FILE) CONFIG.canaryScenarioFile = process.env.ZLAR_CANARY_SCENARIOS_FILE;
+  if (process.env.ZLAR_CANARY_PROMOTION_THRESHOLD !== undefined) CONFIG.canaryCleanRunThreshold = parseInt(process.env.ZLAR_CANARY_PROMOTION_THRESHOLD, 10);
+  if (process.env.ZLAR_CANARY_AUTO_PROMOTION !== undefined) CONFIG.canaryAutoPromotion = process.env.ZLAR_CANARY_AUTO_PROMOTION === 'true';
 }
 
 // ─── PQC Metadata ────────────────────────────────────────────────────────────
@@ -927,15 +938,16 @@ function verifyInboxHmac(data, fromId, cbId, expectedHmac) {
 // canary_check_result from lib/canary.sh (bash gate line 2428).
 //
 // Reads var/canary/{sessionId}.canary.pending for the pending canary ID.
-// If present, scans the cc inbox for a matching callback and applies the
-// trust lane transition:
-//   approve (fatigue detected) → applyLaneDemotion('canary_failed')
-//   deny   (healthy)           → applyLaneRestore()
-//   stale  (no response)       → applyLaneDemotion('canary_missed')
+// If present, scans the cc inbox for a matching callback and routes the
+// outcome through recordCanaryOutcome (v3.3.4):
+//   approve (fatigue detected) → recordCanaryOutcome(humanId, 'failed')
+//   deny    (healthy)          → recordCanaryOutcome(humanId, 'passed')
+//   stale   (no response)      → recordCanaryOutcome(humanId, 'missed')
 //
-// MCP canary SEND is not implemented in this release. This result-check is
-// operative for canaries sent by the bash gate on the same session ID, and
-// will become fully self-contained when MCP send is added (future patch).
+// ZLAR does not score the human. It watches the run. A clean run earns
+// speed; a broken run restores friction. The function applies the
+// clean-run accounting and lane transition atomically.
+//
 // A no-op when no pending file exists.
 
 function checkCanaryResult(sessionId, humanId) {
@@ -976,7 +988,14 @@ function checkCanaryResult(sessionId, humanId) {
           emitEvent('mcp', 'canary_result', 'logged',
             { session_id: sessionId, canary_id: canaryId, result: 'fatigue_detected' },
             'canary', 'warn', 0, 'canary');
-          try { applyLaneDemotion(humanId, 'canary_failed'); } catch {}
+          try {
+            const r = recordCanaryOutcome(humanId, 'failed', CONFIG.canaryCleanRunThreshold, CONFIG.canaryAutoPromotion);
+            if (r.action === 'demoted') {
+              emitEvent('mcp', 'trust_lane_demoted', 'logged',
+                { canary_id: canaryId, from_lane: r.fromLane, to_lane: r.toLane, reason: 'canary_failed', clean_run_reset: true },
+                'canary', 'warn', 0, 'canary');
+            }
+          } catch {}
           return;
         }
         if (cbData === `cc:canary:deny:${canaryId}`) {
@@ -987,7 +1006,14 @@ function checkCanaryResult(sessionId, humanId) {
           emitEvent('mcp', 'canary_result', 'logged',
             { session_id: sessionId, canary_id: canaryId, result: 'healthy' },
             'canary', 'info', 0, 'canary');
-          try { applyLaneRestore(humanId); } catch {}
+          try {
+            const r = recordCanaryOutcome(humanId, 'passed', CONFIG.canaryCleanRunThreshold, CONFIG.canaryAutoPromotion);
+            if (r.action === 'promoted') {
+              emitEvent('mcp', 'trust_lane_auto_promoted', 'logged',
+                { canary_id: canaryId, from_lane: r.fromLane, to_lane: r.toLane },
+                'canary', 'info', 0, 'canary');
+            }
+          } catch {}
           return;
         }
       } catch { try { unlinkSync(filePath); } catch {} }
@@ -1003,7 +1029,14 @@ function checkCanaryResult(sessionId, humanId) {
       emitEvent('mcp', 'canary_result', 'logged',
         { session_id: sessionId, canary_id: canaryId, result: 'expired' },
         'canary', 'info', 0, 'canary');
-      try { applyLaneDemotion(humanId, 'canary_missed'); } catch {}
+      try {
+        const r = recordCanaryOutcome(humanId, 'missed', CONFIG.canaryCleanRunThreshold, CONFIG.canaryAutoPromotion);
+        if (r.action === 'demoted') {
+          emitEvent('mcp', 'trust_lane_demoted', 'logged',
+            { canary_id: canaryId, from_lane: r.fromLane, to_lane: r.toLane, reason: 'canary_missed', clean_run_reset: true },
+            'canary', 'warn', 0, 'canary');
+        }
+      } catch {}
     }
   } catch {}
 }

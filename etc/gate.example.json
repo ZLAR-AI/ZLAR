@@ -26,5 +26,14 @@
     "timeout_s": 300,
     "debounce_ms": 800,
     "flood_guard_ms": 1500
+  },
+  "canary": {
+    "enabled": true,
+    "min_approvals_before_trigger": 5,
+    "probability_percent": 20,
+    "cooldown_s": 300,
+    "scenarios_file": "etc/canary-scenarios.json",
+    "clean_run_promotion_threshold": 5,
+    "auto_promotion_enabled": true
   }
 }
