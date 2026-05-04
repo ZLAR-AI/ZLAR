@@ -1,5 +1,57 @@
 # Changelog
 
+## 3.3.3 — 2026-05-04 — MCP canary SEND parity
+
+MCP gate can now initiate canary probes, closing the remaining gap where bash
+gate was the only path that could generate governance health checks.
+
+New functions in mcp-gate/gate.mjs:
+- recordCanaryApproval(sessionId): increments per-session approval counter in
+  var/canary/{sessionId}.canary.json after every human-approved MCP ask.
+  Auto-creates state file on first approval. Same JSON schema as bash gate.
+- canaryShouldTrigger(sessionId): evaluates enabled flag, min-approvals
+  threshold, cooldown, probabilistic roll, and pending guard. Returns bool.
+  Never throws — failure returns false.
+- sendCanary(sessionId): picks a random scenario from etc/canary-scenarios.json,
+  builds a Telegram card in MCP real-ask shape (🔷 prefix, *{display_rule}*
+  header, consequence line, *MCP:* args line, Risk N/100), sends via telegramApi,
+  writes var/canary/{sessionId}.canary.pending. Fail-open: errors log and return
+  without affecting the governed action.
+
+Call site: in handleRequest, immediately after emitEvent('authorized') on the
+human-approved ask path. Not on policy auto-allow paths. sendCanary called async
+with .catch(() => {}) — never blocks the approved tool call.
+
+Callback data uses cc:canary:approve:{id} / cc:canary:deny:{id} (not mcp:canary:)
+so results land in inbox/cc and v3.3.2 checkCanaryResult processes them without
+a second inbox scan path. No second canary system.
+
+Config loaded from gate.json .canary block (independent of telegram chat-id
+check). Five env var overrides for test isolation: ZLAR_CANARY_ENABLED,
+ZLAR_CANARY_MIN_APPROVALS, ZLAR_CANARY_PROBABILITY, ZLAR_CANARY_COOLDOWN,
+ZLAR_CANARY_SCENARIOS_FILE.
+
+Supporting changes:
+- ZLAR_TELEGRAM_API_BASE env var in telegramApi — allows mock Telegram server
+  in tests without hitting real bot API.
+- ZLAR_MCP_INBOX_DIR env var in telegramAsk and telegramPreconfirm — enables
+  test isolation of MCP inbox directory.
+- writeFileSync, mkdirSync added to fs imports.
+
+Tests: 5 new SEND assertions in mcp-gate/test.mjs (SEND-1 through SEND-5).
+Uses a mock Telegram HTTP server that auto-injects MCP approvals and captures
+canary send requests. 18/18 pass (was 13 on macOS/EPERM before SEND tests;
+all pass on CI/Linux).
+
+Shared artifacts (unchanged format):
+- var/canary/{sessionId}.canary.json — bash and MCP gate share the same schema
+- var/canary/{sessionId}.canary.pending — one-line canary ID
+- cc:canary: callback routing via inbox/cc
+
+Out of scope: cooldown behavior after canary send is driven by last_canary_epoch
+in the shared state file; tested indirectly via SEND-4 (pending guard). A
+dedicated cooldown test would require clock manipulation and is deferred.
+
 ## 3.3.2 — 2026-05-04 — MCP Trust Lane canary parity
 
 MCP gate now participates in trust lane transitions driven by canary outcomes,
