@@ -1,5 +1,33 @@
 # Changelog
 
+## 3.3.5 — 2026-05-04 — Status truth refresh
+
+`zlar status` was lying about live state. Hotfix on top of v3.3.4. No
+behavior change to enforcement, canary, or trust lane — display only.
+
+Bugs fixed:
+- `decisions_today` displayed as 0 since v2.8.1 because the numeric
+  validation regex rejected the decimal point added when the field
+  became risk-weighted. Now allows floats.
+- `approvals_recent: 0 entries` shown since v2.9.0 — the field was
+  renamed to `response_times` and the status tool kept reading the
+  retired name. Renamed in display.
+- `var/human-state/` test-fixture artifacts (non-numeric human_ids)
+  were enumerated as humans. Now skipped.
+
+Trust Lane visibility added to status (was missing entirely):
+- `trust_lane` (color-coded: fast=green, guarded=yellow, slow=red)
+- `trust_lane_grant` source if present
+- `clean_run` count / promotion threshold + started ISO timestamp
+- `canary_tier` / `canary_trip_count`
+- last `trust_lane_demotion` reason + ISO timestamp
+
+The status tool now surfaces the v3.3.4 clean-run state and the most
+recent demotion. Vincent caught the discrepancy in production within
+hours of v3.3.4 going live.
+
+Single-file patch: `bin/zlar` only.
+
 ## 3.3.4 — 2026-05-04 — Clean Run Trust Lane Auto-Promotion
 
 ZLAR does not score the human. It watches the run.
