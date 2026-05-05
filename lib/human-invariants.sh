@@ -124,9 +124,11 @@ _hi_sealed_write()  { _state_hmac_sealed_write "${_HI_HMAC_KEY}" "$1"; }
 # Result: phantom canary on Telegram with no resolver. Lock the critical
 # section instead.
 #
-# Backend: prefer flock(1) (Linux/CI). On macOS where flock is absent or
-# the test harness disables it, fall back to mkdir-based mutex with a
-# bounded spin. Both backends grant exactly one winner.
+# Backend: mkdir-based mutex by default. mkdir(2) is atomic on POSIX and
+# runs the body in the current shell, so locals and pipefail behave the
+# same as the rest of the file. flock(1) is opt-in via _HI_LOCK_USE_FLOCK
+# only (a future audit may flip the default once the in-subshell path is
+# vetted on every supported bash/jq combo).
 #
 # _HI_LOCK_BACKEND records which backend the current process uses, for
 # diagnostics. Set on first use.
@@ -138,9 +140,10 @@ _hi_lock_path() {
 }
 
 # _hi_with_lock <human_id> <body...>
-#   Acquires per-human mutex, runs body, releases on exit. Body may not
-#   contain unbalanced quoting but otherwise behaves like a function call.
-#   Returns body's exit status, or 1 on lock-acquire failure.
+#   Acquires per-human mutex, runs body, releases on exit. Body runs in
+#   the current shell — locals from the body's function are scoped
+#   normally, pipefail/set -u apply normally, exit status propagates
+#   normally. Returns body's exit status, or 1 on lock-acquire timeout.
 #
 #   This is the only entry point. Direct acquire/release is deliberately
 #   not exposed — callers cannot leak a held lock if they always go
@@ -151,7 +154,9 @@ _hi_with_lock() {
     lockfile=$(_hi_lock_path "${human_id}")
     mkdir -p "$(dirname "${lockfile}")" 2>/dev/null || true
 
-    if command -v flock &>/dev/null && [ -z "${_HI_LOCK_FORCE_MKDIR:-}" ]; then
+    # Opt-in flock(1) backend (subshell-wrapped). Off by default; reserved
+    # for environments where mkdir-on-tmpfs fails the atomicity guarantee.
+    if [ -n "${_HI_LOCK_USE_FLOCK:-}" ] && command -v flock &>/dev/null; then
         _HI_LOCK_BACKEND="flock"
         (
             flock -w 5 9 || exit 1
@@ -161,6 +166,7 @@ _hi_with_lock() {
     fi
 
     # mkdir-based mutex. mkdir is atomic on POSIX; loser gets EEXIST.
+    # Default backend on every platform.
     _HI_LOCK_BACKEND="mkdir"
     local lockdir="${lockfile}.d"
     local waited=0
