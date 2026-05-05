@@ -271,6 +271,27 @@ _hi_ensure_state() {
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
+    # v3.3.6 canary cross-session migration: add per-human canary trigger fields.
+    # Trigger eligibility (approvals counter + cooldown + pending lock) is a
+    # property of the human, not of any one Claude Code session. Pre-v3.3.6 these
+    # lived in var/canary/{session_id}.canary.json and reset on every new session,
+    # making recovery accidentally harder across short sessions. Five fields:
+    #   canary_approvals_since_last     — counter advancing toward trigger threshold
+    #   canary_last_epoch                — cooldown anchor; epoch of last canary sent
+    #   canary_pending_id                — canary id of any outstanding probe (one per human)
+    #   canary_pending_session_id        — session that issued the pending probe (routing)
+    #   canary_pending_started_epoch     — for staleness check; survives gate restart
+    # All persist across UTC rollover (canary lifecycle is event-driven, not calendar).
+    if jq -e '(has("canary_approvals_since_last") | not) or (has("canary_last_epoch") | not) or (has("canary_pending_id") | not) or (has("canary_pending_session_id") | not) or (has("canary_pending_started_epoch") | not)' "${state_file}" >/dev/null 2>&1; then
+        jq 'del(._hmac) |
+            .canary_approvals_since_last = (.canary_approvals_since_last // 0) |
+            .canary_last_epoch = (.canary_last_epoch // 0) |
+            .canary_pending_id = (.canary_pending_id // "") |
+            .canary_pending_session_id = (.canary_pending_session_id // "") |
+            .canary_pending_started_epoch = (.canary_pending_started_epoch // 0)' \
+            "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+    fi
+
     echo "${state_file}"
 }
 
@@ -1171,4 +1192,116 @@ hi_record_canary_outcome() {
             echo "nochange"
             ;;
     esac
+}
+
+# ─── v3.3.6: Cross-Session Canary Trigger Lifecycle ──────────────────────────
+# Trigger eligibility (counter, cooldown, pending lock) is per-human, not per-
+# session. A clean run should earn future canary opportunity across sessions;
+# the human is what the system is calibrating, not the Claude session.
+#
+# Pending lock is per-human: only one canary may be outstanding for one human
+# at a time. The .pending file in var/canary/{session_id}.canary.pending stays
+# as a routing artifact (so the existing inbox handler keeps working) but the
+# authoritative pending state is here.
+
+# hi_record_canary_approval <human_id>
+#   Atomic increment of canary_approvals_since_last on the per-human state.
+#   Called from canary_record_approval after a human-approved ask resolves.
+hi_record_canary_approval() {
+    local human_id="${1:?Usage: hi_record_canary_approval <human_id>}"
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+
+    jq 'del(._hmac) | .canary_approvals_since_last = ((.canary_approvals_since_last // 0) + 1)' \
+        "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+}
+
+# hi_canary_should_trigger <human_id> <min_approvals> <cooldown_s>
+#   Returns 0 (true) if a canary may fire for this human, 1 (false) otherwise.
+#   Conditions: counter ≥ min_approvals, cooldown elapsed since last_canary_epoch,
+#   no pending canary outstanding for this human.
+#   Probability gate is the caller's responsibility — keeps this function pure.
+hi_canary_should_trigger() {
+    local human_id="${1:?}"
+    local min_approvals="${2:-5}"
+    local cooldown_s="${3:-300}"
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+
+    local approvals last_epoch pending now elapsed
+    approvals=$(jq -r '.canary_approvals_since_last // 0' "${state_file}" 2>/dev/null)
+    last_epoch=$(jq -r '.canary_last_epoch // 0' "${state_file}" 2>/dev/null)
+    pending=$(jq -r '.canary_pending_id // ""' "${state_file}" 2>/dev/null)
+
+    # Per-human pending lock — one canary outstanding at a time.
+    [ -z "${pending}" ] || return 1
+
+    [ "${approvals}" -ge "${min_approvals}" ] || return 1
+
+    now=$(date +%s)
+    elapsed=$((now - last_epoch))
+    [ "${elapsed}" -ge "${cooldown_s}" ] || return 1
+
+    return 0
+}
+
+# hi_canary_set_pending <human_id> <canary_id> <session_id>
+#   Atomically: set pending fields (id, session_id, started_epoch);
+#   reset canary_approvals_since_last to 0; record canary_last_epoch.
+#   Single write to keep the per-human invariants consistent under races.
+hi_canary_set_pending() {
+    local human_id="${1:?}"
+    local canary_id="${2:?}"
+    local session_id="${3:?}"
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+
+    jq --arg cid "${canary_id}" --arg sid "${session_id}" \
+        'del(._hmac) |
+         .canary_pending_id = $cid |
+         .canary_pending_session_id = $sid |
+         .canary_pending_started_epoch = now |
+         .canary_approvals_since_last = 0 |
+         .canary_last_epoch = now' \
+        "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+}
+
+# hi_canary_clear_pending <human_id>
+#   Clear the three pending fields. Counter and last_epoch are NOT reset here;
+#   those represent canary cadence and survive resolution.
+#   Idempotent — safe to call when nothing is pending.
+hi_canary_clear_pending() {
+    local human_id="${1:?}"
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+
+    jq 'del(._hmac) |
+        .canary_pending_id = "" |
+        .canary_pending_session_id = "" |
+        .canary_pending_started_epoch = 0' \
+        "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+}
+
+# hi_canary_get_pending_id <human_id>      → echoes canary_id or empty string
+# hi_canary_get_pending_session <human_id> → echoes session_id or empty string
+# hi_canary_get_pending_started <human_id> → echoes epoch or 0
+hi_canary_get_pending_id() {
+    local human_id="${1:?}"
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+    jq -r '.canary_pending_id // ""' "${state_file}" 2>/dev/null
+}
+
+hi_canary_get_pending_session() {
+    local human_id="${1:?}"
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+    jq -r '.canary_pending_session_id // ""' "${state_file}" 2>/dev/null
+}
+
+hi_canary_get_pending_started() {
+    local human_id="${1:?}"
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+    jq -r '.canary_pending_started_epoch // 0' "${state_file}" 2>/dev/null
 }

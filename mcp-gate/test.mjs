@@ -767,23 +767,26 @@ async function runTests() {
   const sendSEND = (msg) => sendMessage(SEND_GATE_PORT, msg);
   let sendMsgId = 400;
 
+  // v3.3.6: trigger eligibility lives in per-human state, not per-session.
+  // The .pending file in var/canary/{session}.canary.pending stays as a routing
+  // artifact for the inbox handler; authoritative state is the human-state file.
   const readSendState = () => {
-    try { return JSON.parse(readFileSync(join(SEND_CANARY_DIR, `${SEND_SESSION_ID}.canary.json`), 'utf8')); }
+    try { return JSON.parse(readFileSync(join(SEND_HUMAN_DIR, `${SEND_HUMAN_ID}.json`), 'utf8')); }
     catch { return null; }
   };
   const sendPendingExists = () => existsSync(join(SEND_CANARY_DIR, `${SEND_SESSION_ID}.canary.pending`));
 
-  // SEND-1: first human approval creates state, counter=1
+  // SEND-1: first human approval creates per-human counter=1
   lastCanarySendBody = null;
   try {
     await sendSEND({ jsonrpc: '2.0', id: ++sendMsgId, method: 'tools/call',
                      params: { name: 'test_ask_tool', arguments: {} } });
     await new Promise(r => setTimeout(r, 300)); // allow async sendCanary to settle
     const st = readSendState();
-    if (st && st.approvals_since_last_canary === 1 && st.total_approvals === 1) {
-      console.log('✓ SEND-1: first approval creates state, counter=1'); passed++;
+    if (st && st.canary_approvals_since_last === 1) {
+      console.log('✓ SEND-1: first approval creates state, per-human counter=1'); passed++;
     } else {
-      console.log(`✗ SEND-1: expected approvals_since=1, got ${st?.approvals_since_last_canary}`); failed++;
+      console.log(`✗ SEND-1: expected canary_approvals_since_last=1, got ${st?.canary_approvals_since_last}`); failed++;
     }
   } catch (e) { console.log(`✗ SEND-1: ${e.message}`); failed++; }
 
@@ -794,43 +797,42 @@ async function runTests() {
                      params: { name: 'test_ask_tool', arguments: {} } });
     await new Promise(r => setTimeout(r, 300));
     const st = readSendState();
-    if (st && st.approvals_since_last_canary === 2 && !sendPendingExists()) {
+    if (st && st.canary_approvals_since_last === 2 && !sendPendingExists()) {
       console.log('✓ SEND-2: counter=2, below threshold — no canary sent'); passed++;
     } else {
-      console.log(`✗ SEND-2: counter=${st?.approvals_since_last_canary}, pending=${sendPendingExists()}`); failed++;
+      console.log(`✗ SEND-2: counter=${st?.canary_approvals_since_last}, pending=${sendPendingExists()}`); failed++;
     }
   } catch (e) { console.log(`✗ SEND-2: ${e.message}`); failed++; }
 
-  // SEND-3: third approval reaches threshold — canary fires
+  // SEND-3: third approval reaches threshold — canary fires;
+  // human-state pending fields are populated; routing artifact is written.
   lastCanarySendBody = null;
   try {
     await sendSEND({ jsonrpc: '2.0', id: ++sendMsgId, method: 'tools/call',
                      params: { name: 'test_ask_tool', arguments: {} } });
     await new Promise(r => setTimeout(r, 500)); // allow async sendCanary write
-    if (sendPendingExists() && lastCanarySendBody !== null) {
-      console.log('✓ SEND-3: threshold reached — canary sent, pending file written'); passed++;
+    const st = readSendState();
+    const humanPendingSet = !!(st && st.canary_pending_id && st.canary_pending_session_id === SEND_SESSION_ID);
+    if (sendPendingExists() && lastCanarySendBody !== null && humanPendingSet) {
+      console.log('✓ SEND-3: threshold reached — canary sent, .pending written, per-human pending set'); passed++;
     } else {
-      console.log(`✗ SEND-3: pending=${sendPendingExists()}, canaryBody=${lastCanarySendBody !== null}`); failed++;
+      console.log(`✗ SEND-3: pending=${sendPendingExists()}, canaryBody=${lastCanarySendBody !== null}, humanPendingSet=${humanPendingSet}`); failed++;
     }
   } catch (e) { console.log(`✗ SEND-3: ${e.message}`); failed++; }
 
-  // SEND-4: pending guard blocks re-trigger
+  // SEND-4: per-human pending lock blocks re-trigger.
+  // v3.3.6: the lock fires on canary_pending_id != "" — counter value is
+  // irrelevant once a canary is outstanding, so we don't need to seed state.
   const capturedCanaryBody = lastCanarySendBody;
   lastCanarySendBody = null;
   try {
-    // Manually seed state to re-exceed threshold without clearing pending
-    const st = readSendState();
-    if (st) {
-      st.approvals_since_last_canary = 10;
-      writeFileSync(join(SEND_CANARY_DIR, `${SEND_SESSION_ID}.canary.json`), JSON.stringify(st));
-    }
     await sendSEND({ jsonrpc: '2.0', id: ++sendMsgId, method: 'tools/call',
                      params: { name: 'test_ask_tool', arguments: {} } });
     await new Promise(r => setTimeout(r, 300));
     if (lastCanarySendBody === null) {
-      console.log('✓ SEND-4: pending guard blocks re-trigger'); passed++;
+      console.log('✓ SEND-4: per-human pending lock blocks re-trigger'); passed++;
     } else {
-      console.log('✗ SEND-4: sendCanary fired despite pending file'); failed++;
+      console.log('✗ SEND-4: sendCanary fired despite per-human pending lock'); failed++;
     }
   } catch (e) { console.log(`✗ SEND-4: ${e.message}`); failed++; }
 

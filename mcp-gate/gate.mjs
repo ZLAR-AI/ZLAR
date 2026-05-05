@@ -48,6 +48,12 @@ import {
   applyLaneDemotion,
   applyLaneRestore,
   recordCanaryOutcome,
+  // v3.3.6 cross-session canary trigger lifecycle
+  recordCanaryApproval,
+  canaryShouldTrigger,
+  canarySetPending,
+  canaryClearPending,
+  getCanaryPending,
 } from '../lib/human-invariants.mjs';
 
 // Cedar policy evaluation (Phase C — Cedar Integration)
@@ -935,30 +941,36 @@ function verifyInboxHmac(data, fromId, cbId, expectedHmac) {
 
 // ─── MCP Canary Result Check ─────────────────────────────────────────────────
 // Passive check run on every handleRequest invocation. Mirrors
-// canary_check_result from lib/canary.sh (bash gate line 2428).
+// canary_check_result from lib/canary.sh.
 //
-// Reads var/canary/{sessionId}.canary.pending for the pending canary ID.
-// If present, scans the cc inbox for a matching callback and routes the
-// outcome through recordCanaryOutcome (v3.3.4):
-//   approve (fatigue detected) → recordCanaryOutcome(humanId, 'failed')
-//   deny    (healthy)          → recordCanaryOutcome(humanId, 'passed')
-//   stale   (no response)      → recordCanaryOutcome(humanId, 'missed')
+// v3.3.6: keyed on humanId. Pending state lives in per-human state via
+// getCanaryPending(); the .pending routing artifact lives at
+// var/canary/{pending_session}.canary.pending where pending_session may
+// differ from the current session (the cross-session fix).
 //
-// ZLAR does not score the human. It watches the run. A clean run earns
-// speed; a broken run restores friction. The function applies the
-// clean-run accounting and lane transition atomically.
+// Outcomes:
+//   approve (fatigue detected)        → recordCanaryOutcome(humanId, 'failed')  → demote
+//   deny    (healthy)                 → recordCanaryOutcome(humanId, 'passed')  → may promote
+//   stale + artifact present          → recordCanaryOutcome(humanId, 'missed')  → demote
+//   pending recorded + artifact gone  → canary_pending_lost                     → clear, no demote
 //
-// A no-op when no pending file exists.
+// Demotion requires evidence, not absence of evidence. A missing routing
+// artifact is bookkeeping loss, not a human miss.
 
-function checkCanaryResult(sessionId, humanId) {
-  const pendingFile = join(CONFIG.canaryStateDir, `${sessionId}.canary.pending`);
-  if (!existsSync(pendingFile)) return;
+function checkCanaryResult(humanId) {
+  if (!humanId) return;
 
-  let canaryId;
-  try { canaryId = readFileSync(pendingFile, 'utf8').trim(); } catch { return; }
-  if (!canaryId) { try { unlinkSync(pendingFile); } catch {} return; }
+  let pending;
+  try { pending = getCanaryPending(humanId); } catch { return; }
+  if (!pending || !pending.canaryId) return;
 
-  // Scan cc inbox for a matching canary callback
+  const canaryId = pending.canaryId;
+  const pendingSession = pending.sessionId || '';
+  const pendingFile = pendingSession
+    ? join(CONFIG.canaryStateDir, `${pendingSession}.canary.pending`)
+    : '';
+
+  // Scan cc inbox for a matching canary callback.
   if (existsSync(CONFIG.ccInboxDir)) {
     let files = [];
     try { files = readdirSync(CONFIG.ccInboxDir).filter(f => f.endsWith('.json')); } catch {}
@@ -983,10 +995,10 @@ function checkCanaryResult(sessionId, humanId) {
         if (cbData === `cc:canary:approve:${canaryId}`) {
           // FATIGUE — human approved the canary (should have denied)
           try { unlinkSync(filePath); } catch {}
-          try { unlinkSync(pendingFile); } catch {}
-          console.log(`[gate] CANARY FAILED: session ${sessionId} fatigue detected (canary ${canaryId})`);
+          if (pendingFile) { try { unlinkSync(pendingFile); } catch {} }
+          console.log(`[gate] CANARY FAILED: human ${humanId} fatigue detected (canary ${canaryId}, session ${pendingSession})`);
           emitEvent('mcp', 'canary_result', 'logged',
-            { session_id: sessionId, canary_id: canaryId, result: 'fatigue_detected' },
+            { session_id: pendingSession, canary_id: canaryId, result: 'fatigue_detected' },
             'canary', 'warn', 0, 'canary');
           try {
             const r = recordCanaryOutcome(humanId, 'failed', CONFIG.canaryCleanRunThreshold, CONFIG.canaryAutoPromotion);
@@ -996,15 +1008,16 @@ function checkCanaryResult(sessionId, humanId) {
                 'canary', 'warn', 0, 'canary');
             }
           } catch {}
+          try { canaryClearPending(humanId); } catch {}
           return;
         }
         if (cbData === `cc:canary:deny:${canaryId}`) {
           // HEALTHY — human correctly denied the canary
           try { unlinkSync(filePath); } catch {}
-          try { unlinkSync(pendingFile); } catch {}
-          console.log(`[gate] CANARY PASSED: session ${sessionId} healthy (canary ${canaryId})`);
+          if (pendingFile) { try { unlinkSync(pendingFile); } catch {} }
+          console.log(`[gate] CANARY PASSED: human ${humanId} healthy (canary ${canaryId}, session ${pendingSession})`);
           emitEvent('mcp', 'canary_result', 'logged',
-            { session_id: sessionId, canary_id: canaryId, result: 'healthy' },
+            { session_id: pendingSession, canary_id: canaryId, result: 'healthy' },
             'canary', 'info', 0, 'canary');
           try {
             const r = recordCanaryOutcome(humanId, 'passed', CONFIG.canaryCleanRunThreshold, CONFIG.canaryAutoPromotion);
@@ -1014,93 +1027,68 @@ function checkCanaryResult(sessionId, humanId) {
                 'canary', 'info', 0, 'canary');
             }
           } catch {}
+          try { canaryClearPending(humanId); } catch {}
           return;
         }
       } catch { try { unlinkSync(filePath); } catch {} }
     }
   }
 
-  // No matching callback — check whether the pending file is stale
-  try {
-    const ageMs = Date.now() - statSync(pendingFile).mtimeMs;
-    if (ageMs > CONFIG.telegramTimeoutS * 1000) {
-      try { unlinkSync(pendingFile); } catch {}
-      console.log(`[gate] CANARY EXPIRED: session ${sessionId} no response (canary ${canaryId})`);
-      emitEvent('mcp', 'canary_result', 'logged',
-        { session_id: sessionId, canary_id: canaryId, result: 'expired' },
-        'canary', 'info', 0, 'canary');
-      try {
-        const r = recordCanaryOutcome(humanId, 'missed', CONFIG.canaryCleanRunThreshold, CONFIG.canaryAutoPromotion);
-        if (r.action === 'demoted') {
-          emitEvent('mcp', 'trust_lane_demoted', 'logged',
-            { canary_id: canaryId, from_lane: r.fromLane, to_lane: r.toLane, reason: 'canary_missed', clean_run_reset: true },
-            'canary', 'warn', 0, 'canary');
-        }
-      } catch {}
+  // No matching callback. Two paths:
+  //   (a) artifact present + age > timeout → canary_missed (real evidence)
+  //   (b) artifact missing                  → canary_pending_lost (bookkeeping)
+  if (pendingFile && existsSync(pendingFile)) {
+    try {
+      const ageMs = Date.now() - statSync(pendingFile).mtimeMs;
+      if (ageMs > CONFIG.telegramTimeoutS * 1000) {
+        try { unlinkSync(pendingFile); } catch {}
+        console.log(`[gate] CANARY EXPIRED: human ${humanId} no response (canary ${canaryId})`);
+        emitEvent('mcp', 'canary_result', 'logged',
+          { session_id: pendingSession, canary_id: canaryId, result: 'expired' },
+          'canary', 'info', 0, 'canary');
+        try {
+          const r = recordCanaryOutcome(humanId, 'missed', CONFIG.canaryCleanRunThreshold, CONFIG.canaryAutoPromotion);
+          if (r.action === 'demoted') {
+            emitEvent('mcp', 'trust_lane_demoted', 'logged',
+              { canary_id: canaryId, from_lane: r.fromLane, to_lane: r.toLane, reason: 'canary_missed', clean_run_reset: true },
+              'canary', 'warn', 0, 'canary');
+          }
+        } catch {}
+        try { canaryClearPending(humanId); } catch {}
+      }
+    } catch {}
+  } else {
+    // Demotion requires evidence, not absence of evidence.
+    // A missing routing artifact is a system fault, not a human miss —
+    // clear pending state, emit internal warn, do NOT demote.
+    // Only react past the timeout window so we don't misfire on an
+    // artifact-write that's still in flight.
+    const startedEpoch = pending.startedEpoch || 0;
+    const ageS = Math.floor(Date.now() / 1000) - startedEpoch;
+    if (startedEpoch > 0 && ageS > CONFIG.telegramTimeoutS) {
+      console.log(`[gate] CANARY PENDING LOST: human ${humanId} canary ${canaryId} (session ${pendingSession}) — routing artifact missing, clearing without demotion`);
+      emitEvent('mcp', 'canary_pending_lost', 'internal_warn',
+        { canary_id: canaryId, session_id: pendingSession, human_id: humanId, reason: 'artifact_missing' },
+        'canary', 'warn', 0, 'canary');
+      try { canaryClearPending(humanId); } catch {}
     }
-  } catch {}
-}
-
-// ─── Canary SEND (v3.3.3) ────────────────────────────────────────────────────
-// Mirrors canary_record_approval / canary_should_trigger / canary_send
-// from lib/canary.sh. Called only on the human-approved ask path —
-// auto-allowed policy passthrough does not count as a human approval.
-//
-// Artifact format is byte-identical to bash gate:
-//   var/canary/{sessionId}.canary.json   — approval counter + metadata
-//   var/canary/{sessionId}.canary.pending — one-line canary ID
-//
-// Keyboard callback data uses cc:canary: prefix (not mcp:canary:) so
-// the result lands in inbox/cc and v3.3.2 checkCanaryResult processes
-// it without a second inbox scan path.
-
-function recordCanaryApproval(sessionId) {
-  if (!CONFIG.canaryEnabled) return;
-  try {
-    mkdirSync(CONFIG.canaryStateDir, { recursive: true });
-    const stateFile = join(CONFIG.canaryStateDir, `${sessionId}.canary.json`);
-    const now = Math.floor(Date.now() / 1000);
-    let state;
-    if (!existsSync(stateFile)) {
-      state = {
-        approvals_since_last_canary: 1,
-        total_approvals: 1,
-        last_approval_epoch: now,
-        canary_results: [],
-        last_canary_epoch: 0,
-        fatigue_detected: false,
-        fatigue_count: 0,
-      };
-    } else {
-      state = JSON.parse(readFileSync(stateFile, 'utf8'));
-      state.approvals_since_last_canary = (state.approvals_since_last_canary || 0) + 1;
-      state.total_approvals = (state.total_approvals || 0) + 1;
-      state.last_approval_epoch = now;
-    }
-    writeFileSync(stateFile, JSON.stringify(state));
-  } catch (e) {
-    console.error(`[gate] WARN: recordCanaryApproval failed: ${e.message}`);
   }
 }
 
-function canaryShouldTrigger(sessionId) {
-  if (!CONFIG.canaryEnabled) return false;
-  try {
-    if (existsSync(join(CONFIG.canaryStateDir, `${sessionId}.canary.pending`))) return false;
-    const stateFile = join(CONFIG.canaryStateDir, `${sessionId}.canary.json`);
-    if (!existsSync(stateFile)) return false;
-    const state = JSON.parse(readFileSync(stateFile, 'utf8'));
-    if ((state.approvals_since_last_canary || 0) < CONFIG.canaryMinApprovals) return false;
-    const elapsed = Math.floor(Date.now() / 1000) - (state.last_canary_epoch || 0);
-    if (elapsed < CONFIG.canaryCooldownS) return false;
-    return Math.floor(Math.random() * 100) < CONFIG.canaryProbability;
-  } catch {
-    return false;
-  }
-}
+// ─── Canary SEND ──────────────────────────────────────────────────────────────
+// Called only on the human-approved ask path — auto-allowed policy passthrough
+// does not count as a human approval.
+//
+// v3.3.6: trigger eligibility (counter, cooldown, per-human pending lock) is
+// evaluated by canaryShouldTrigger imported from human-invariants.mjs and
+// recorded by recordCanaryApproval there. sendCanary sets the per-human
+// pending state via canarySetPending; the per-session .pending routing
+// artifact is kept so checkCanaryResult and the cc inbox handler can resolve
+// the callback via the pending session id stored in human state.
 
-async function sendCanary(sessionId) {
+async function sendCanary(sessionId, humanId) {
   if (!CONFIG.telegramToken || !CONFIG.telegramChatId) return;
+  if (!humanId) return;
   try {
     let scenario = null;
     if (existsSync(CONFIG.canaryScenarioFile)) {
@@ -1147,21 +1135,18 @@ async function sendCanary(sessionId) {
       return;
     }
 
+    // Routing artifact (per-session). Authoritative state lives in human state.
     mkdirSync(CONFIG.canaryStateDir, { recursive: true });
     writeFileSync(join(CONFIG.canaryStateDir, `${sessionId}.canary.pending`), canaryId + '\n');
 
-    const stateFile = join(CONFIG.canaryStateDir, `${sessionId}.canary.json`);
-    if (existsSync(stateFile)) {
-      const state = JSON.parse(readFileSync(stateFile, 'utf8'));
-      state.approvals_since_last_canary = 0;
-      state.last_canary_epoch = Math.floor(Date.now() / 1000);
-      state.pending_canary_id = canaryId;
-      writeFileSync(stateFile, JSON.stringify(state));
+    // Per-human pending lock + counter reset + cadence — single sealed write.
+    try { canarySetPending(humanId, canaryId, sessionId); } catch (e) {
+      console.error(`[gate] CANARY: canarySetPending failed: ${e.message}`);
     }
 
     emitEvent('mcp', 'canary_sent', 'logged',
-      { session_id: sessionId, canary_id: canaryId }, 'canary', 'info', 0, 'canary');
-    console.log(`[gate] CANARY: Sent ${canaryId} for session ${sessionId}`);
+      { session_id: sessionId, canary_id: canaryId, human_id: humanId }, 'canary', 'info', 0, 'canary');
+    console.log(`[gate] CANARY: Sent ${canaryId} for human ${humanId} (session ${sessionId})`);
   } catch (e) {
     console.error(`[gate] CANARY: sendCanary failed: ${e.message}`);
   }
@@ -1424,7 +1409,7 @@ async function handleRequest(msg) {
   // Passive canary result check — mirrors canary_check_result in lib/canary.sh
   // (bash gate line 2428). Runs on every request; non-blocking; never throws.
   const _passiveHumanId = CONFIG.telegramChatId || '';
-  if (_passiveHumanId) checkCanaryResult(CONFIG.sessionId, _passiveHumanId);
+  if (_passiveHumanId) checkCanaryResult(_passiveHumanId);
 
   // Only intercept tools/call
   if (msg.method !== 'tools/call') {
@@ -1670,9 +1655,15 @@ async function handleRequest(msg) {
           }
           emitEvent('mcp', toolName, 'authorized', { tool: toolName, args_preview: JSON.stringify(args).substring(0, 200) },
             evaluation.rule, evaluation.severity, evaluation.riskScore, `human:${CONFIG.telegramChatId}`);
-          // Canary: record human approval, maybe send probe (fail-open — never blocks governed action)
-          recordCanaryApproval(CONFIG.sessionId);
-          if (canaryShouldTrigger(CONFIG.sessionId)) sendCanary(CONFIG.sessionId).catch(() => {});
+          // Canary: record per-human approval, maybe send probe (fail-open — never blocks governed action).
+          // v3.3.6: trigger eligibility is per-human (cross-session). The .pending routing artifact
+          // remains per-session so the inbox handler can locate it via canary_pending_session_id.
+          try { recordCanaryApproval(humanId); } catch {}
+          try {
+            if (canaryShouldTrigger(humanId, { minApprovals: CONFIG.canaryMinApprovals, cooldownS: CONFIG.canaryCooldownS })) {
+              sendCanary(CONFIG.sessionId, humanId).catch(() => {});
+            }
+          } catch {}
           return { action: 'passthrough', msg };
         }
 

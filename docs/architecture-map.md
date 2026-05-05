@@ -97,7 +97,7 @@ ZLAR 3.0 adds a behavioral observation layer that runs alongside the enforcement
 
 `repo/var/human-state/` contains per-human state files. File naming: `<telegram_chat_id>.json`. The Telegram chat ID is the human's identity within the gate.
 
-**Schema (v3.3.4, current):**
+**Schema (v3.3.6, current):**
 ```json
 {
   "human_id": "<telegram_chat_id>",
@@ -109,7 +109,12 @@ ZLAR 3.0 adds a behavioral observation layer that runs alongside the enforcement
   "trust_lane": "fast" | "guarded" | "slow",
   "trust_lane_grant": { "source": "authority", "granted_at": <epoch>, "reason": "<str>" },
   "clean_run_count": <int>,
-  "clean_run_started_epoch": <unix_seconds>
+  "clean_run_started_epoch": <unix_seconds>,
+  "canary_approvals_since_last": <int>,
+  "canary_last_epoch": <unix_seconds>,
+  "canary_pending_id": "<canary_id_or_empty>",
+  "canary_pending_session_id": "<session_id_or_empty>",
+  "canary_pending_started_epoch": <unix_seconds>
 }
 ```
 
@@ -122,6 +127,24 @@ ZLAR 3.0 adds a behavioral observation layer that runs alongside the enforcement
 - `trust_lane_grant` — v3.3.0 manual authority grant (terminal-only, TTY-gated, HMAC-sealed). Bootstraps lane=fast at grant time. v3.3.4: grant does not shortcut auto-promotion and does not shield from demotion.
 - `clean_run_count` — v3.3.4 consecutive healthy canary outcomes. Five consecutive promote one lane (slow→guarded, guarded→fast). Reset to 0 on promotion, demotion, or canary failure/miss. Capped at threshold when `auto_promotion_enabled=false`. ZLAR does not score the human. It watches the run.
 - `clean_run_started_epoch` — v3.3.4 telemetry; epoch when the current run began (count went 0→1). Cleared on demotion or promotion. Persists across UTC rollover (a run is logical, not calendar-bound).
+- `canary_approvals_since_last` — v3.3.6 per-human trigger counter. Increments on each human-approved ask. Reset to 0 by `canary_send`. Replaces the per-session counter that lived in `var/canary/{session_id}.canary.json`.
+- `canary_last_epoch` — v3.3.6 cooldown anchor. Set by `canary_send` to the moment the canary fired. `canary_should_trigger` requires `now - canary_last_epoch >= cooldown_s` before allowing a new probe.
+- `canary_pending_id` — v3.3.6 per-human pending lock. The canary id of the outstanding probe, or empty string. While non-empty, no new canary fires for this human (across any session). Cleared on resolution (passed/failed/missed/pending_lost).
+- `canary_pending_session_id` — v3.3.6 routing pointer. The session that issued the outstanding canary. Used by `canary_check_result` to locate the per-session `.pending` artifact regardless of which session is currently running. Empty when nothing is pending.
+- `canary_pending_started_epoch` — v3.3.6 staleness reference. Epoch when the canary was sent. Used to distinguish in-flight probes from genuinely stale ones in the missing-artifact branch of `canary_check_result`.
+
+All five v3.3.6 canary fields persist across UTC rollover. The canary lifecycle is event-driven, not calendar-bound — a probe in flight at midnight UTC must still resolve correctly.
+
+**v3.3.6 canary trigger architecture:**
+
+Trigger eligibility (counter, cooldown, pending lock) is **per-human**, not per-session. A clean run earns future canary opportunity across sessions; the human is what the system is calibrating, not the Claude session. Pre-v3.3.6 these counters lived in `var/canary/{session_id}.canary.json` and reset on every new session, making recovery accidentally harder across short sessions.
+
+The `.pending` file at `var/canary/{session_id}.canary.pending` stays as a routing artifact for the inbox handler, but authoritative state is the per-human record. `canary_check_result` is keyed on `human_id` and reads `canary_pending_session_id` to find the artifact — a canary fired in session A is resolvable by any later gate invocation under the same human, in any session.
+
+**Demotion requires evidence, not absence of evidence.**
+- `canary_failed` (callback approve) — evidence of fatigue → demote.
+- `canary_missed` (artifact present, age > timeout, no callback) — evidence the human ignored a real prompt → demote.
+- `canary_pending_lost` (state says pending, but routing artifact is missing) — bookkeeping fault, not human behavior → clear pending state, emit `canary_pending_lost` warn audit event, **do not touch trust lane**. Distinguishes a safety system from a superstition machine.
 
 **Created by:** `_hi_ensure_state` in `lib/human-invariants.sh` (and equivalent in `.mjs`). Lazily created on first reference. Includes v2.8.0 schema migration that drops any lingering `pending_count` / `approvals_recent` scalars.
 

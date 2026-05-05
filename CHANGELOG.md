@@ -1,5 +1,122 @@
 # Changelog
 
+## 3.3.6 — 2026-05-05 — Cross-Session Canary Lifecycle
+
+A clean run should earn future canary opportunity across sessions. The human is
+what the system is calibrating, not the Claude session.
+
+The bug v3.3.6 fixes:
+Pre-v3.3.6, canary trigger eligibility (the approvals counter, cooldown anchor,
+and pending-canary lock) lived in `var/canary/{session_id}.canary.json` —
+session-scoped state. Demotion and promotion (Trust Lane outcomes) were
+already per-human via the v3.3.4 clean_run accounting. This scope mismatch
+made recovery accidentally harder across short Claude Code sessions: each new
+session reset the counter to 0, so even an active operator might never reach
+the canary threshold to earn a clean-run promotion. Demotion was sticky
+per-human, but chances to earn healthy canaries reset every restart.
+
+Fix: trigger eligibility moves to per-human state. Five new fields in
+`var/human-state/{human_id}.json`, idempotent migration on load:
+- `canary_approvals_since_last` — counter advancing toward trigger threshold.
+- `canary_last_epoch` — cooldown anchor; epoch of last canary sent.
+- `canary_pending_id` — canary id of any outstanding probe (one per human).
+- `canary_pending_session_id` — session that issued the pending probe (routing).
+- `canary_pending_started_epoch` — for staleness check; survives gate restart.
+
+All persist across UTC rollover (canary lifecycle is event-driven, not calendar).
+
+The `.pending` file at `var/canary/{session_id}.canary.pending` stays as a
+routing artifact for the existing inbox handler. Authoritative state is the
+per-human record. `canary_check_result` is now keyed on `human_id` and reads
+the pending session from human state — a canary fired in session A is
+resolvable by any later gate invocation under the same human, in any session.
+
+Per-human pending lock: only one canary may be outstanding per human. Parallel
+sessions for the same human cannot fire concurrent canaries.
+
+The invariant landed with this patch:
+**Demotion requires evidence, not absence of evidence.**
+Saved as a permanent rule. canary_failed (callback approve) and canary_missed
+(artifact present, age > timeout, no callback) demote — those are evidence of
+human behavior. canary_pending_lost (state says pending, but the routing
+artifact is missing) is bookkeeping loss, not a human miss: clear pending,
+emit `canary_pending_lost` warn audit event, do not touch trust lane. This
+distinguishes a safety system from a superstition machine.
+
+R041 considerations:
+The original design called for editing `bin/zlar-gate` call sites to pass
+`human_id`. R041 denies edits to the enforcement-layer binary. The patch was
+restructured: `lib/canary.sh` functions now accept the existing single-arg
+session_id call shape and fall back to `${TELEGRAM_CHAT_ID:-}` (a global in
+bin/zlar-gate's scope) for `human_id`. Fail-safe: if `human_id` cannot be
+resolved, no canary fires and no demotion path is reached. Punishment requires
+identifying the human; nothing happens to a human the system can't even name.
+
+`canary_check_result` accepts the existing 2-arg `(session_id, human_id)`
+signature, ignores the first arg, and uses the second. The R041-protected
+binary is untouched.
+
+New behavior in `lib/human-invariants.{sh,mjs}`:
+- `hi_record_canary_approval` / `recordCanaryApproval` — atomic per-human counter
+  increment.
+- `hi_canary_should_trigger` / `canaryShouldTrigger` — pure trigger evaluator
+  (counter, cooldown, pending lock).
+- `hi_canary_set_pending` / `canarySetPending` — atomic write of pending fields
+  + counter reset + cadence record.
+- `hi_canary_clear_pending` / `canaryClearPending` — clear pending fields
+  (counter and last_epoch survive).
+- `hi_canary_get_pending_*` / `getCanaryPending` — readers.
+
+Updated in `lib/canary.sh`:
+- `canary_record_approval` / `canary_should_trigger` / `canary_send` /
+  `canary_check_result` — delegate trigger eligibility and pending to the
+  per-human helpers above. Back-compat fallback to `TELEGRAM_CHAT_ID`.
+- `canary_send` — early-return when `human_id` cannot be resolved (fail-safe;
+  ungovernable canary cannot produce evidence).
+- `canary_init` — orphan `.pending` sweep. A `.pending` file is swept only if
+  age > `TELEGRAM_TIMEOUT_S` AND its canary_id is not referenced by any live
+  human state's `canary_pending_id`. Two-condition guard so we never delete a
+  fresh pending mid-write or a legitimate pending of a not-yet-loaded human.
+- New `_canary_log_pending_lost` — emits `canary_pending_lost` warn event,
+  clears pending state, does NOT call `hi_record_canary_outcome`. Carries
+  the invariant.
+
+Updated in `mcp-gate/gate.mjs`:
+- `recordCanaryApproval`, `canaryShouldTrigger`, `sendCanary`, `checkCanaryResult`
+  rewritten / removed in favor of the per-human helpers from `human-invariants.mjs`.
+- Passive check call site (`handleRequest`): `checkCanaryResult(humanId)` —
+  cross-session resolution.
+- Post-approval call site: `recordCanaryApproval(humanId)` and
+  `canaryShouldTrigger(humanId, opts)` — keyed on human.
+- Same `canary_pending_lost` path on the MCP side.
+
+Legacy stubs:
+- `canary_is_fatigued` / `canary_fatigue_count` (bash) — return safe defaults.
+  Pre-v3.3.6 these read the retired session-scoped `.canary.json`. The
+  per-human signal is now `clean_run_count` via Trust Lane (v3.3.4).
+
+Garbage collection:
+- 50 stale `var/canary/*.canary.json` files (March–May 2026) become inert. A
+  separate `bin/zlar canary-gc` patch will remove them. Not in v3.3.6.
+- Orphan `.pending` files are swept on `canary_init` (see above).
+
+Tests:
+- `tests/test-canary.sh` — full rewrite. 37 assertions across 20 test cases:
+  per-human counter (TC-1..3 incl. cross-session accumulation and human
+  isolation), trigger evaluation (TC-4..7), send semantics (TC-8), outcome
+  paths (TC-9..11), **TC-12 = the invariant test** (`pending_lost` clears
+  state without demote), cross-session resolution (TC-13), orphan sweep
+  (TC-14), back-compat fallback (TC-15), missing-human no-op (TC-16),
+  scenario picker (TC-17), restored cosmetic checks (TC-18..20).
+- `mcp-gate/test.mjs` — SEND-1..4 updated to read per-human state and
+  exercise the per-human pending lock; SEND-5 unchanged. TL-MCP-* and
+  CR-MCP-* unchanged (already keyed on humanId via recordCanaryOutcome).
+
+No policy rule changes. Policy version stays 3.3.1 (89 rules). No receipt
+schema changes. No change to ceremony or critical-severity gating. No
+maintenance window — code-only change in `lib/` and `mcp-gate/`; the
+R041-protected `bin/zlar-gate` is untouched.
+
 ## 3.3.5 — 2026-05-04 — Status truth refresh
 
 `zlar status` was lying about live state. Hotfix on top of v3.3.4. No
