@@ -473,17 +473,34 @@ async function runTests() {
     catch { return null; }
   }
 
-  function writePending(canaryId) {
+  function writePending(canaryId, opts = {}) {
     // Routing artifact (per-session) — kept for the inbox handler.
-    writeFileSync(join(TEST_CANARY_DIR, `${TL_SESSION_ID}.canary.pending`), canaryId + '\n');
+    // opts.skipArtifact: simulate a canary whose .pending file was destroyed.
+    // opts.tamperedContents: write a different canary_id into the artifact.
+    if (!opts.skipArtifact) {
+      const contents = opts.tamperedContents || canaryId;
+      writeFileSync(join(TEST_CANARY_DIR, `${TL_SESSION_ID}.canary.pending`), contents + '\n');
+    }
     // v3.3.6: per-human pending fields — checkCanaryResult reads these first.
     // Without canary_pending_id set, the resolver returns early before scanning
     // the inbox, so the inbox callback never gets processed.
+    //
+    // v3.3.7: also set canary_pending_msg_id (delivery evidence) so the new
+    // resolver sees a delivered canary. msg_id is delivery/posting evidence
+    // (Telegram POST returned a message_id) — NOT proof of human attention.
+    // Tests that want to simulate "claim succeeded but POST never confirmed"
+    // pass opts.noDelivery to suppress msg_id. opts.backdateStartedEpoch
+    // shifts canary_pending_started_epoch into the past so the resolver
+    // judges the canary as past-deadline.
     const stateFile = join(TEST_HUMAN_STATE_DIR, `${TL_HUMAN_ID}.json`);
     const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+    const now = Math.floor(Date.now() / 1000);
     state.canary_pending_id = canaryId;
     state.canary_pending_session_id = TL_SESSION_ID;
-    state.canary_pending_started_epoch = Math.floor(Date.now() / 1000);
+    state.canary_pending_started_epoch = opts.backdateStartedEpoch ? 1 : now;
+    state.canary_pending_msg_id = opts.noDelivery ? '' : `msg-${canaryId}`;
+    state.canary_pending_delivered_epoch = opts.noDelivery ? 0 : now;
+    state.canary_pending_artifact_hash = opts.noDelivery ? '' : `hash-${canaryId}`;
     writeFileSync(stateFile, JSON.stringify(state));
   }
 
@@ -512,10 +529,11 @@ async function runTests() {
   } catch (e) { console.log(`✗ TL-MCP-1: ${e.message}`); failed++; }
   cleanTLFiles('canary-mcp-01');
 
-  // TL-MCP-2: canary_missed demotes fast→guarded (stale pending, no callback)
+  // TL-MCP-2: canary_missed demotes fast→guarded (delivery proven, intact
+  // artifact, age past timeout, no callback). v3.3.7 resolver uses state's
+  // canary_pending_started_epoch, not file mtime — backdateStartedEpoch flag.
   writeTLState('fast');
-  writePending('canary-mcp-02');
-  try { utimesSync(join(TEST_CANARY_DIR, `${TL_SESSION_ID}.canary.pending`), new Date(0), new Date(0)); } catch {}
+  writePending('canary-mcp-02', { backdateStartedEpoch: true });
   try {
     await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
     const lane = readTLLane();
@@ -610,6 +628,51 @@ async function runTests() {
     else { console.log(`✗ CR-MCP-3: expected lane=guarded count=0 grant=true, got lane=${s.trust_lane} count=${s.clean_run_count} grant=${grantStill}`); failed++; }
   } catch (e) { console.log(`✗ CR-MCP-3: ${e.message}`); failed++; }
   cleanTLFiles('canary-mcp-cr3');
+
+  // ─── v3.3.7 Canary Evidence Hardening ───────────────────────────────────
+  // A2: delivery-evidence-anchored resolve. msg_id (Telegram POST evidence)
+  // is the discriminator for canary_missed (demote) vs canary_pending_lost
+  // (no demote). msg_id is delivery/posting evidence — Telegram POST returned
+  // a message_id — NOT proof of human attention.
+
+  // TL-MCP-AD (v3.3.7): artifact destroyed post-delivery — demote anyway.
+  // Delivery evidence stands; missing artifact is bookkeeping loss, not
+  // exoneration of the timeout.
+  writeTLState('fast');
+  writePending('canary-mcp-ad', { skipArtifact: true, backdateStartedEpoch: true });
+  try {
+    await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
+    const lane = readTLLane();
+    if (lane === 'guarded') { console.log(`✓ TL-MCP-AD: artifact destroyed post-delivery → demote (delivery evidence stands)`); passed++; }
+    else { console.log(`✗ TL-MCP-AD: expected guarded, got ${lane}`); failed++; }
+  } catch (e) { console.log(`✗ TL-MCP-AD: ${e.message}`); failed++; }
+  cleanTLFiles('canary-mcp-ad');
+
+  // TL-MCP-TA (v3.3.7): tampered artifact contents — no demote.
+  // Tampered evidence is not delivery evidence we can act on; cannot
+  // rule out attacker corruption of our own bookkeeping.
+  writeTLState('fast');
+  writePending('canary-mcp-ta', { tamperedContents: 'canary-mcp-ta-WRONG', backdateStartedEpoch: true });
+  try {
+    await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
+    const lane = readTLLane();
+    if (lane === 'fast') { console.log(`✓ TL-MCP-TA: tampered artifact contents → no demote (tampered ≠ delivery evidence)`); passed++; }
+    else { console.log(`✗ TL-MCP-TA: expected fast (tampered no-demote), got ${lane}`); failed++; }
+  } catch (e) { console.log(`✗ TL-MCP-TA: ${e.message}`); failed++; }
+  cleanTLFiles('canary-mcp-ta');
+
+  // TL-MCP-PL (v3.3.7): claim succeeded but no msg_id + timeout → pending_lost.
+  // No delivery evidence means we cannot demote without violating the
+  // evidence-conservation invariant.
+  writeTLState('fast');
+  writePending('canary-mcp-pl', { noDelivery: true, backdateStartedEpoch: true });
+  try {
+    await sendTL({ jsonrpc: '2.0', id: ++tlMsgId, method: 'tools/call', params: { name: 'test_tool', arguments: {} } });
+    const lane = readTLLane();
+    if (lane === 'fast') { console.log(`✓ TL-MCP-PL: no delivery evidence + timeout → pending_lost (no demote)`); passed++; }
+    else { console.log(`✗ TL-MCP-PL: expected fast (pending_lost no-demote), got ${lane}`); failed++; }
+  } catch (e) { console.log(`✗ TL-MCP-PL: ${e.message}`); failed++; }
+  cleanTLFiles('canary-mcp-pl');
 
   tlGate.kill();
   console.log('');

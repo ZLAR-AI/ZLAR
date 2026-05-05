@@ -48,10 +48,13 @@ import {
   applyLaneDemotion,
   applyLaneRestore,
   recordCanaryOutcome,
-  // v3.3.6 cross-session canary trigger lifecycle
+  // v3.3.6 cross-session canary trigger lifecycle +
+  // v3.3.7 Canary Evidence Hardening (claim CAS, delivery evidence)
   recordCanaryApproval,
   canaryShouldTrigger,
-  canarySetPending,
+  canaryClaimPending,
+  canaryRecordDelivery,
+  canaryReleasePending,
   canaryClearPending,
   getCanaryPending,
 } from '../lib/human-invariants.mjs';
@@ -129,6 +132,11 @@ const CONFIG = {
   host: process.env.ZLAR_MCP_HOST || '127.0.0.1',
 };
 
+// v3.3.7 — chat_id source tracking. Set during CLI parse / gate.json fallback;
+// read by canaryChatIdSource() to populate the bin/zlar status surface and
+// the canary_subsystem_misconfigured audit when the value is unconfigured.
+let CHAT_ID_SOURCE = '';
+
 // Parse CLI args
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
@@ -148,7 +156,10 @@ for (let i = 0; i < args.length; i++) {
     case '--constitution-presence-file': CONFIG.constitutionPresenceFile = args[++i]; break;
     case '--restore-config-file': CONFIG.restoreConfigFile = args[++i]; break;
     case '--agent-id': CONFIG.agentId = args[++i]; break;
-    case '--telegram-chat-id': CONFIG.telegramChatId = args[++i]; break;
+    case '--telegram-chat-id':
+      CONFIG.telegramChatId = args[++i];
+      CHAT_ID_SOURCE = 'cli';
+      break;
     case '--no-telegram':
       // Test-only. Disables every Telegram-dependent path (novelty
       // escalation, ask routing) by clearing both token and chat id and
@@ -204,6 +215,7 @@ if (!CONFIG.telegramChatId && !CONFIG.noTelegram) {
     try {
       const gateConfig = JSON.parse(readFileSync(gateConfigPath, 'utf8'));
       CONFIG.telegramChatId = gateConfig?.telegram?.chat_id;
+      if (CONFIG.telegramChatId) CHAT_ID_SOURCE = 'gate.json';
       if (gateConfig?.telegram?.timeout_s) CONFIG.telegramTimeoutS = gateConfig.telegram.timeout_s;
       if (gateConfig?.emit_receipts === true) CONFIG.emitReceipts = true;
     } catch (e) {
@@ -1034,44 +1046,88 @@ function checkCanaryResult(humanId) {
     }
   }
 
-  // No matching callback. Two paths:
-  //   (a) artifact present + age > timeout → canary_missed (real evidence)
-  //   (b) artifact missing                  → canary_pending_lost (bookkeeping)
-  if (pendingFile && existsSync(pendingFile)) {
-    try {
-      const ageMs = Date.now() - statSync(pendingFile).mtimeMs;
-      if (ageMs > CONFIG.telegramTimeoutS * 1000) {
-        try { unlinkSync(pendingFile); } catch {}
-        console.log(`[gate] CANARY EXPIRED: human ${humanId} no response (canary ${canaryId})`);
-        emitEvent('mcp', 'canary_result', 'logged',
-          { session_id: pendingSession, canary_id: canaryId, result: 'expired' },
-          'canary', 'info', 0, 'canary');
-        try {
-          const r = recordCanaryOutcome(humanId, 'missed', CONFIG.canaryCleanRunThreshold, CONFIG.canaryAutoPromotion);
-          if (r.action === 'demoted') {
-            emitEvent('mcp', 'trust_lane_demoted', 'logged',
-              { canary_id: canaryId, from_lane: r.fromLane, to_lane: r.toLane, reason: 'canary_missed', clean_run_reset: true },
-              'canary', 'warn', 0, 'canary');
-          }
-        } catch {}
-        try { canaryClearPending(humanId); } catch {}
-      }
-    } catch {}
-  } else {
-    // Demotion requires evidence, not absence of evidence.
-    // A missing routing artifact is a system fault, not a human miss —
-    // clear pending state, emit internal warn, do NOT demote.
-    // Only react past the timeout window so we don't misfire on an
-    // artifact-write that's still in flight.
-    const startedEpoch = pending.startedEpoch || 0;
-    const ageS = Math.floor(Date.now() / 1000) - startedEpoch;
-    if (startedEpoch > 0 && ageS > CONFIG.telegramTimeoutS) {
-      console.log(`[gate] CANARY PENDING LOST: human ${humanId} canary ${canaryId} (session ${pendingSession}) — routing artifact missing, clearing without demotion`);
+  // v3.3.7 Canary Evidence Hardening — msg_id-anchored discriminator.
+  //
+  // No callback matched. Read delivery evidence and decide.
+  // Demotion requires ALL THREE: delivery evidence + timeout + no callback.
+  // msg_id is delivery/posting evidence (Telegram POST returned a
+  // message_id). It is NOT proof of human attention.
+  const startedEpoch = pending.startedEpoch || 0;
+  const pendingMsgId = pending.msgId || '';
+  const ageS = Math.floor(Date.now() / 1000) - startedEpoch;
+
+  // Still in flight — never judge before the timeout.
+  if (startedEpoch > 0 && ageS <= CONFIG.telegramTimeoutS) {
+    return;
+  }
+
+  if (!pendingMsgId) {
+    // No delivery evidence — claim succeeded but Telegram POST never
+    // confirmed (rare partial-write between claim and record_delivery).
+    // Bookkeeping fault, not a human miss. Clear, no demote.
+    if (startedEpoch > 0) {
+      console.log(`[gate] CANARY PENDING LOST: human ${humanId} canary ${canaryId} (session ${pendingSession}) — claim succeeded but no delivery evidence (POST never confirmed), clearing without demotion`);
       emitEvent('mcp', 'canary_pending_lost', 'internal_warn',
-        { canary_id: canaryId, session_id: pendingSession, human_id: humanId, reason: 'artifact_missing' },
+        { canary_id: canaryId, session_id: pendingSession, human_id: humanId, reason: 'no_delivery_evidence' },
         'canary', 'warn', 0, 'canary');
       try { canaryClearPending(humanId); } catch {}
     }
+    return;
+  }
+
+  // Delivery evidence exists. Inspect the routing artifact.
+  if (pendingFile && existsSync(pendingFile)) {
+    let fileCanary = '';
+    try { fileCanary = readFileSync(pendingFile, 'utf8').trim(); } catch {}
+    if (fileCanary === canaryId) {
+      // Delivery evidence + intact artifact + timeout + no callback.
+      // System-observable miss. Demote.
+      try { unlinkSync(pendingFile); } catch {}
+      console.log(`[gate] CANARY EXPIRED: human ${humanId} no response (canary ${canaryId})`);
+      emitEvent('mcp', 'canary_result', 'logged',
+        { session_id: pendingSession, canary_id: canaryId, result: 'expired' },
+        'canary', 'info', 0, 'canary');
+      try {
+        const r = recordCanaryOutcome(humanId, 'missed', CONFIG.canaryCleanRunThreshold, CONFIG.canaryAutoPromotion);
+        if (r.action === 'demoted') {
+          emitEvent('mcp', 'trust_lane_demoted', 'logged',
+            { canary_id: canaryId, from_lane: r.fromLane, to_lane: r.toLane, reason: 'canary_missed', clean_run_reset: true },
+            'canary', 'warn', 0, 'canary');
+        }
+      } catch {}
+      try { canaryClearPending(humanId); } catch {}
+    } else {
+      // Delivery evidence exists but artifact contents do not match.
+      // Tampered evidence is not delivery evidence we can act on.
+      // Clear pending state, emit warn, do NOT touch trust lane.
+      try { unlinkSync(pendingFile); } catch {}
+      console.log(`[gate] CANARY PENDING TAMPERED: human ${humanId} canary ${canaryId} (session ${pendingSession}) — artifact contents did not match recorded canary_id (observed=${fileCanary || '<empty>'}), clearing without demotion`);
+      emitEvent('mcp', 'canary_pending_tampered', 'warn',
+        { canary_id: canaryId, session_id: pendingSession, human_id: humanId, observed_artifact: fileCanary, reason: 'artifact_contents_mismatch' },
+        'canary', 'warn', 0, 'canary');
+      try { canaryClearPending(humanId); } catch {}
+    }
+  } else {
+    // Delivery evidence exists, artifact missing. The .pending file is
+    // not authoritative in v3.3.7 — its absence does not exonerate the
+    // timeout. Demote, with an additional audit event so operators can
+    // correlate destroyed-bookkeeping with the demotion.
+    console.log(`[gate] CANARY EXPIRED: human ${humanId} no response (canary ${canaryId}, artifact missing post-delivery)`);
+    emitEvent('mcp', 'canary_artifact_destroyed_post_delivery', 'warn',
+      { canary_id: canaryId, session_id: pendingSession, human_id: humanId, msg_id: pendingMsgId, note: 'artifact_missing_but_delivery_proven' },
+      'canary', 'warn', 0, 'canary');
+    emitEvent('mcp', 'canary_result', 'logged',
+      { session_id: pendingSession, canary_id: canaryId, result: 'expired' },
+      'canary', 'info', 0, 'canary');
+    try {
+      const r = recordCanaryOutcome(humanId, 'missed', CONFIG.canaryCleanRunThreshold, CONFIG.canaryAutoPromotion);
+      if (r.action === 'demoted') {
+        emitEvent('mcp', 'trust_lane_demoted', 'logged',
+          { canary_id: canaryId, from_lane: r.fromLane, to_lane: r.toLane, reason: 'canary_missed', clean_run_reset: true },
+          'canary', 'warn', 0, 'canary');
+      }
+    } catch {}
+    try { canaryClearPending(humanId); } catch {}
   }
 }
 
@@ -1081,14 +1137,57 @@ function checkCanaryResult(humanId) {
 //
 // v3.3.6: trigger eligibility (counter, cooldown, per-human pending lock) is
 // evaluated by canaryShouldTrigger imported from human-invariants.mjs and
-// recorded by recordCanaryApproval there. sendCanary sets the per-human
-// pending state via canarySetPending; the per-session .pending routing
-// artifact is kept so checkCanaryResult and the cc inbox handler can resolve
-// the callback via the pending session id stored in human state.
+// recorded by recordCanaryApproval there.
+//
+// v3.3.7 Canary Evidence Hardening — claim before send. The flow is:
+//   1. Validate chat_id source (refuse if unconfigured).
+//   2. Generate canaryId; compute artifactHash via createHmac (binds the
+//      .pending routing artifact to this claim for tamper detection).
+//   3. canaryClaimPending — locked CAS. Race losers exit before any
+//      Telegram POST or .pending write.
+//   4. Send Telegram. On failure, canaryReleasePending to roll back.
+//   5. Write .pending routing artifact (now a hint, not authoritative).
+//   6. canaryRecordDelivery — msg_id + delivered_epoch + artifact_hash
+//      under the per-human lock. Once landed, demotion at timeout
+//      becomes legitimate (delivery evidence + timeout + no callback).
+//
+// msg_id is delivery evidence (Telegram POST returned a message_id; the
+// card was POSTED to the chat). It is NOT proof of human attention or
+// proof the human ignored the card. Demotion requires three conjuncts:
+// delivery evidence + timeout + no valid callback — all observable by
+// the system itself.
+
+// v3.3.7 — chat_id source detection. The MCP gate does not have the
+// bash gate's hardcoded fallback (bin/zlar-gate:509), but it can be
+// missing entirely if gate.json omits .telegram.chat_id and no CLI
+// arg was passed. Source values: "cli" | "gate.json" | "unconfigured".
+function canaryChatIdSource() {
+  if (!CONFIG.telegramChatId) return 'unconfigured';
+  // CHAT_ID_SOURCE is set during initialization (see config-load section).
+  // Default 'gate.json' if we cannot tell — that is the historical source.
+  return (typeof CHAT_ID_SOURCE !== 'undefined' && CHAT_ID_SOURCE) || 'gate.json';
+}
 
 async function sendCanary(sessionId, humanId) {
-  if (!CONFIG.telegramToken || !CONFIG.telegramChatId) return;
   if (!humanId) return;
+  if (!CONFIG.telegramToken) return;
+
+  // v3.3.7 A3: explicit visibility on chat_id misconfiguration. Emit a
+  // one-time audit warn if chat_id is unconfigured rather than silently
+  // returning.
+  const source = canaryChatIdSource();
+  if (source === 'unconfigured') {
+    if (!global.__canaryMisconfigLogged) {
+      global.__canaryMisconfigLogged = true;
+      try {
+        emitEvent('mcp', 'canary_subsystem_misconfigured', 'warn',
+          { chat_id_source: source, reason: 'unconfigured' }, 'canary', 'warn', 0, 'canary');
+      } catch { /* never let an audit failure abort a no-send path */ }
+      console.log('[gate] CANARY: chat_id unconfigured — refusing to send');
+    }
+    return;
+  }
+
   try {
     let scenario = null;
     if (existsSync(CONFIG.canaryScenarioFile)) {
@@ -1102,6 +1201,42 @@ async function sendCanary(sessionId, humanId) {
     }
 
     const canaryId = genId();
+
+    // v3.3.7 A2: artifact_hash binds the .pending routing artifact to this
+    // claim. HMAC over the canary_id+human_id+session_id triple, keyed by
+    // the human-state HMAC key (loaded by human-invariants.mjs). We do
+    // not depend on the key here — if it isn't loaded the hash is empty
+    // and tamper detection at resolve time falls back to direct content
+    // comparison against state.canary_pending_id.
+    const hmacKey = process.env.ZLAR_HUMAN_STATE_HMAC_KEY || '';
+    let artifactHash = '';
+    if (hmacKey) {
+      try {
+        const payload = JSON.stringify({ canary_id: canaryId, human_id: humanId, session_id: sessionId });
+        artifactHash = createHmac('sha256', hmacKey).update(payload).digest('hex');
+      } catch { /* leave empty — direct content compare still works */ }
+    }
+
+    // v3.3.7 A1: locked CAS. If another session already holds the per-human
+    // pending claim, exit without Telegram POST or .pending write.
+    let claimed = false;
+    try {
+      claimed = canaryClaimPending(humanId, canaryId, sessionId);
+    } catch (e) {
+      console.error(`[gate] CANARY: canaryClaimPending failed: ${e.message}`);
+      return;
+    }
+    if (!claimed) {
+      try {
+        emitEvent('mcp', 'canary_claim_lost', 'info',
+          { canary_id: canaryId, session_id: sessionId, human_id: humanId,
+            reason: 'another_session_claimed_first' },
+          'canary', 'info', 0, 'canary');
+      } catch { /* ignore */ }
+      console.log(`[gate] CANARY: claim race lost for human ${humanId} (canary ${canaryId} not sent)`);
+      return;
+    }
+
     const emoji = scenario.severity === 'warn' ? '🟡' : '🔴';
     const consequenceLine = getConsequenceLine(scenario.tool, scenario.display_rule, scenario.risk);
     const fakeArgs = scenario.tool === 'Write'
@@ -1132,21 +1267,26 @@ async function sendCanary(sessionId, humanId) {
     const msgId = result?.result?.message_id;
     if (!msgId) {
       console.log(`[gate] CANARY: send failed for session ${sessionId}`);
+      // Roll back the claim — no delivery evidence will ever land.
+      try { canaryReleasePending(humanId, canaryId); } catch { /* ignore */ }
       return;
     }
 
-    // Routing artifact (per-session). Authoritative state lives in human state.
+    // Routing artifact (per-session). v3.3.7: this is a hint, not authoritative.
     mkdirSync(CONFIG.canaryStateDir, { recursive: true });
     writeFileSync(join(CONFIG.canaryStateDir, `${sessionId}.canary.pending`), canaryId + '\n');
 
-    // Per-human pending lock + counter reset + cadence — single sealed write.
-    try { canarySetPending(humanId, canaryId, sessionId); } catch (e) {
-      console.error(`[gate] CANARY: canarySetPending failed: ${e.message}`);
+    // Record delivery evidence under the per-human lock.
+    try {
+      canaryRecordDelivery(humanId, canaryId, String(msgId), artifactHash);
+    } catch (e) {
+      console.error(`[gate] CANARY: canaryRecordDelivery failed: ${e.message}`);
     }
 
     emitEvent('mcp', 'canary_sent', 'logged',
-      { session_id: sessionId, canary_id: canaryId, human_id: humanId }, 'canary', 'info', 0, 'canary');
-    console.log(`[gate] CANARY: Sent ${canaryId} for human ${humanId} (session ${sessionId})`);
+      { session_id: sessionId, canary_id: canaryId, human_id: humanId, msg_id: String(msgId) },
+      'canary', 'info', 0, 'canary');
+    console.log(`[gate] CANARY: Sent ${canaryId} for human ${humanId} (session ${sessionId}, msg_id ${msgId})`);
   } catch (e) {
     console.error(`[gate] CANARY: sendCanary failed: ${e.message}`);
   }

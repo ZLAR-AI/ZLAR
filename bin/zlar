@@ -337,6 +337,110 @@ cmd_status() {
 
     printf "\n"
 
+    # ─── Canary Subsystem (v3.3.7 Canary Evidence Hardening) ──────────────
+    # Surfaces chat_id source, last-7d outcome counts, and a pending_lost
+    # rate alarm. Read-only display from etc/gate.json + var/log/audit.jsonl.
+    # The 1.0/day pending_lost alarm threshold is a v3.3.7 prior, NOT a
+    # calibrated value — recalibrate per Bayesian round 3 once non-developer
+    # production data exists.
+    printf "  ${BOLD}Canary Subsystem (v3.3.7):${NC}\n"
+
+    # chat_id source detection. Matches lib/canary.sh:_canary_chat_id_source.
+    GATE_JSON="${PROJECT_DIR}/etc/gate.json"
+    CANARY_CHAT_ID_SOURCE="unconfigured"
+    if [ -f "${GATE_JSON}" ] && command -v jq >/dev/null 2>&1; then
+        CFG_CHAT_ID=$(jq -r '.telegram.chat_id // empty' "${GATE_JSON}" 2>/dev/null)
+        if [ -n "${CFG_CHAT_ID}" ]; then
+            CANARY_CHAT_ID_SOURCE="gate.json"
+        fi
+    fi
+    if [ "${CANARY_CHAT_ID_SOURCE}" = "unconfigured" ] && [ -n "${ZLAR_TELEGRAM_CHAT_ID:-}" ]; then
+        CANARY_CHAT_ID_SOURCE="env"
+    fi
+
+    case "${CANARY_CHAT_ID_SOURCE}" in
+        gate.json|env)
+            CANARY_STATE_DISPLAY="${GREEN}enabled${NC}"
+            CANARY_SOURCE_DISPLAY="${CANARY_CHAT_ID_SOURCE}"
+            ;;
+        *)
+            CANARY_STATE_DISPLAY="${RED}misconfigured${NC} (canaries refuse to send)"
+            CANARY_SOURCE_DISPLAY="${YELLOW}${CANARY_CHAT_ID_SOURCE}${NC}"
+            ;;
+    esac
+
+    printf "    state:                                       ${CANARY_STATE_DISPLAY}\n"
+    printf "    chat_id source:                              ${CANARY_SOURCE_DISPLAY}\n"
+
+    # 7d outcome counts from audit.jsonl. Tolerant of missing file.
+    AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+    if [ -f "${AUDIT_FILE}" ] && command -v jq >/dev/null 2>&1; then
+        NOW_EPOCH=$(date +%s)
+        WEEK_AGO=$((NOW_EPOCH - 7 * 86400))
+
+        # Use jq to filter and count. Tolerant of malformed lines via
+        # `--null-input`-style streaming with try/catch around each entry.
+        # The audit format uses .ts (epoch seconds, possibly float) and
+        # .event_type (matches our emit_event() second arg).
+        # Keep the jq invocation simple by streaming with -c and counting
+        # in shell to avoid version-specific jq array semantics.
+        PASSED_COUNT=0
+        FAILED_COUNT=0
+        MISSED_COUNT=0
+        PENDING_LOST_COUNT=0
+        TAMPERED_COUNT=0
+        CLAIM_LOST_COUNT=0
+        ARTIFACT_DESTROYED_COUNT=0
+        while IFS= read -r line; do
+            # Skip if no ts or older than 7d. ts may be float; use awk to compare.
+            entry_ts=$(printf '%s' "${line}" | jq -r '.ts // 0' 2>/dev/null || echo 0)
+            entry_ts_int="${entry_ts%%.*}"
+            case "${entry_ts_int}" in ''|*[!0-9]*) continue ;; esac
+            [ "${entry_ts_int}" -ge "${WEEK_AGO}" ] || continue
+
+            event=$(printf '%s' "${line}" | jq -r '.event_type // ""' 2>/dev/null || echo "")
+            outcome=$(printf '%s' "${line}" | jq -r '.detail.result // ""' 2>/dev/null || echo "")
+
+            case "${event}" in
+                governance_health_check|canary_result)
+                    case "${outcome}" in
+                        healthy)            PASSED_COUNT=$((PASSED_COUNT + 1)) ;;
+                        fatigue_detected)   FAILED_COUNT=$((FAILED_COUNT + 1)) ;;
+                        expired)            MISSED_COUNT=$((MISSED_COUNT + 1)) ;;
+                    esac
+                    ;;
+                canary_pending_lost)         PENDING_LOST_COUNT=$((PENDING_LOST_COUNT + 1)) ;;
+                canary_pending_tampered)     TAMPERED_COUNT=$((TAMPERED_COUNT + 1)) ;;
+                canary_claim_lost)           CLAIM_LOST_COUNT=$((CLAIM_LOST_COUNT + 1)) ;;
+                canary_artifact_destroyed_post_delivery)
+                                             ARTIFACT_DESTROYED_COUNT=$((ARTIFACT_DESTROYED_COUNT + 1)) ;;
+            esac
+        done < "${AUDIT_FILE}"
+
+        # pending_lost rate alarm (1.0/day prior, uncalibrated).
+        PENDING_LOST_RATE_INT=$((PENDING_LOST_COUNT * 10 / 7))   # x10 for one decimal
+        PENDING_LOST_RATE_DISPLAY=$(awk -v c="${PENDING_LOST_COUNT}" 'BEGIN { printf "%.2f", c / 7.0 }')
+        if [ "${PENDING_LOST_RATE_INT}" -gt 10 ]; then
+            RATE_DISPLAY="${RED}${PENDING_LOST_RATE_DISPLAY}/day${NC}  ${RED}⚠ ABOVE PRIOR THRESHOLD${NC}"
+        else
+            RATE_DISPLAY="${PENDING_LOST_RATE_DISPLAY}/day"
+        fi
+
+        printf "    last 7 days\n"
+        printf "      passed:                                    ${PASSED_COUNT}\n"
+        printf "      failed:                                    ${FAILED_COUNT}\n"
+        printf "      missed:                                    ${MISSED_COUNT}\n"
+        printf "      pending_lost:                              ${PENDING_LOST_COUNT}\n"
+        printf "      pending_tampered:                          ${TAMPERED_COUNT}\n"
+        printf "      claim_lost (race losers):                  ${CLAIM_LOST_COUNT}\n"
+        printf "      artifact_destroyed_post_delivery:          ${ARTIFACT_DESTROYED_COUNT}\n"
+        printf "    pending_lost rate (7d):                      ${RATE_DISPLAY}\n"
+    else
+        printf "    ${DIM}audit.jsonl missing or jq unavailable — outcome counts unavailable${NC}\n"
+    fi
+
+    printf "\n"
+
     # Frameworks
     printf "  ${BOLD}Frameworks:${NC}\n"
 

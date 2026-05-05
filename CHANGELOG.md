@@ -1,5 +1,157 @@
 # Changelog
 
+## 3.3.7 — 2026-05-05 — Canary Evidence Hardening
+
+A six-task read-only audit of v3.3.6 surfaced four correctness bugs in the
+canary lifecycle: a parallel-session pending claim race, an unsigned `.pending`
+artifact whose deletion suppressed legitimate `canary_missed` demotions, a
+hardcoded `TELEGRAM_CHAT_ID` fallback that silently routed canaries to the
+maintainer on misdeployed boxes, and `canary_pending_lost` events with no
+operator-facing surface. v3.3.7 closes the first three in code and adds
+visibility for the fourth.
+
+The thesis governing the change:
+
+- Evidence Conservation Principle. The system must not convert its own
+  missing, stale, or unrecorded internal state into friction against the
+  human. Punitive lane transitions only proceed from non-zero witness, and
+  the witness is something the system itself can produce — not a guess
+  about what the human did or didn't see.
+- Demotion requires three conjuncts: delivery evidence, timeout, and no
+  valid callback. `msg_id` (Telegram POST returned a `message_id`) is
+  delivery/posting evidence — the card was POSTED to the chat. It is not
+  proof of human attention or proof the human ignored the card.
+- The `.pending` routing artifact is no longer authoritative. Its
+  existence, contents, or absence at resolve time signals the bookkeeping
+  state, not the human's behavior.
+
+### A1: Pending claim race (locked CAS)
+
+`hi_canary_set_pending` is replaced by three lock-wrapped functions:
+
+- `hi_canary_claim_pending(human_id, canary_id, session_id)` — locked
+  read-modify-write. Refuses if `canary_pending_id` is already non-empty.
+  Returns 0 on win, 1 on loss.
+- `hi_canary_record_delivery(human_id, canary_id, msg_id, artifact_hash)` —
+  records Telegram POST evidence under the per-human lock; verifies the
+  claim still belongs to this `canary_id` before writing.
+- `hi_canary_release_pending(human_id, canary_id)` — rollback for the
+  send-failure path; only releases if `pending_id` matches.
+
+Backend: `flock(1)` (Linux/CI) with mkdir-mutex fallback (macOS where
+`flock` is absent). Both grant exactly one winner; both clean up the
+lockfile on body completion.
+
+`canary_send` (bash) and `sendCanary` (mcp-gate) now claim before sending.
+Race losers exit before any Telegram POST or `.pending` write — only one
+session can put a canary card in the human's chat for the same human at
+the same time. New audit event: `canary_claim_lost`.
+
+### A2: Pending artifact integrity (delivery evidence)
+
+Three new fields in per-human state, idempotent migration:
+- `canary_pending_msg_id` — Telegram `sendMessage` response message_id.
+- `canary_pending_delivered_epoch` — wall-clock when delivery was
+  confirmed.
+- `canary_pending_artifact_hash` — HMAC over the claim payload.
+
+The resolve algorithm replaces the old "artifact present + age > timeout
+→ missed; artifact missing → pending_lost" with:
+
+```
+no delivery evidence + timeout
+    → canary_pending_lost (clear, NO demote)
+delivery evidence + timeout + intact artifact
+    → canary_missed (demote)
+delivery evidence + timeout + tampered artifact contents
+    → canary_pending_tampered (clear, NO demote, warn audit)
+delivery evidence + timeout + missing artifact
+    → canary_missed (demote) + canary_artifact_destroyed_post_delivery
+      correlation audit
+```
+
+Tampered evidence is not delivery evidence we can act on. Cannot rule
+out attacker corruption of our own bookkeeping; acting on a tampered
+artifact would let an attacker steer demotions.
+
+Destroyed-post-delivery does not exonerate the timeout — delivery
+evidence in state stands on its own. The correlation audit lets
+operators detect the destruction pattern.
+
+### A3: TELEGRAM_CHAT_ID source visibility
+
+`lib/canary.sh` now reads `gate.json` directly to detect the chat_id
+source. Sources: `gate.json`, `env`, `hardcoded-fallback`,
+`unconfigured`. Only `gate.json` and `env` are accepted. The
+`hardcoded-fallback` case (a non-empty `TELEGRAM_CHAT_ID` inherited
+from `bin/zlar-gate:509` without an explicit gate.json or env value)
+emits `canary_subsystem_misconfigured` once per process and refuses
+to send.
+
+`mcp-gate/gate.mjs` does the same for its own resolution path
+(`cli` | `gate.json` | `unconfigured`).
+
+The R041-protected `bin/zlar-gate:509` hardcoded-fallback removal is
+deferred to a follow-up release at a scheduled R041 maintenance window.
+v3.3.7 is shipped as a hardening-only release without that edit; the
+lib-side guard is sufficient to prevent silent misdeployment in the
+meantime.
+
+### A4: canary_pending_lost monitoring
+
+`bin/zlar status` now displays a Canary Subsystem block:
+
+- state (enabled / misconfigured)
+- chat_id source (gate.json / env / hardcoded-fallback)
+- last 7 days outcome counts: passed, failed, missed, pending_lost,
+  pending_tampered, claim_lost, artifact_destroyed_post_delivery
+- pending_lost rate (per-day, alarm if > 1.0)
+
+The 1.0/day threshold is a v3.3.7 prior, not a calibrated value;
+recalibrate per Bayesian round 3 once non-developer production data
+exists.
+
+### Tests
+
+Bash: 5 new TC-21..TC-25 in `tests/test-canary.sh`. TC-11 updated to
+v3.3.7 semantics (delivery evidence + state-side timeout). 49 → 54
+assertions.
+
+MJS: 3 new TL-MCP-AD/TA/PL in `mcp-gate/test.mjs`. `writePending`
+helper extended with v3.3.7 fields and four opt-in flags
+(`skipArtifact`, `tamperedContents`, `noDelivery`,
+`backdateStartedEpoch`).
+
+### Migration
+
+Three new state fields are added to per-human state on first read after
+upgrade. Live state on Vincent's box has `canary_pending_id=""` at
+upgrade time; migration adds three empty fields and the next canary
+uses the new path cleanly.
+
+If a canary is in flight at upgrade time (`canary_pending_id` non-empty
+but new fields absent), the post-migration resolve treats it as
+`pending_lost` (no delivery evidence) → no demotion. The human gets
+one free pass on a probe issued under v3.3.6 rules.
+
+### Deferred to v3.3.8+
+
+- Telegram reveal / canary progress feedback (round-3 right-adjoint
+  argument acknowledged; ships once production clean-run cycle has
+  been observed under hardened evidence model).
+- `bin/zlar canary explain <id>` contestability dump.
+- Threshold recalibration per Bayesian round 3.
+- `bin/zlar-gate:509` hardcoded-chat-id removal — R041 maintenance
+  window required.
+- Worker-file ownership model under
+  `project_who_asked_the_system_to_watch.md`.
+
+### Rules saved this build
+
+- `feedback_demotion_requires_evidence.md` (v3.3.6, applied here)
+- `feedback_evidence_conservation_principle.md` (v3.3.6, applied here)
+- `feedback_chat_context_must_match_ask.md` (v3.3.6, applied here)
+
 ## 3.3.6 — 2026-05-05 — Cross-Session Canary Lifecycle
 
 A clean run should earn future canary opportunity across sessions. The human is

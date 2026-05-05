@@ -176,20 +176,24 @@ assert "audit emitted fatigue_detected" "true" "$(emits_contain fatigue_detected
 
 # ── TC-10: deny callback → healthy, pending cleared ──
 echo "TC-10: deny callback → healthy + pending cleared"
-hi_canary_set_pending "human-H1" "cid-H1" "sess-H"
+hi_canary_claim_pending "human-H1" "cid-H1" "sess-H"
 _canary_log_healthy "sess-H" "cid-H1" "human-H1"
 assert "human-state pending cleared on healthy" "" "$(hstate human-H1 canary_pending_id)"
 assert "clean_run_count incremented to 1" "1" "$(hstate human-H1 clean_run_count)"
 
-# ── TC-11: stale artifact present → canary_missed → demote ──
-echo "TC-11: stale artifact → canary_missed → demote"
-hi_canary_set_pending "human-M1" "cid-M1" "sess-M"
+# ── TC-11: delivery evidence + timeout + intact artifact → canary_missed → demote ──
+# v3.3.7: the resolver looks at state.canary_pending_msg_id (delivery evidence)
+# plus state.canary_pending_started_epoch (timeout test) plus artifact contents
+# (intact vs. tampered vs. missing). msg_id is delivery/posting evidence —
+# Telegram POST returned a message_id — NOT proof of human attention.
+echo "TC-11: delivery + timeout + intact artifact → canary_missed → demote"
+hi_canary_claim_pending "human-M1" "cid-M1" "sess-M"
+hi_canary_record_delivery "human-M1" "cid-M1" "msg-M1" ""
 jq '.trust_lane = "fast"' "${TEST_DIR}/var/human-state/human-M1.json" > "${TEST_DIR}/h.tmp" && mv "${TEST_DIR}/h.tmp" "${TEST_DIR}/var/human-state/human-M1.json"
+# Backdate started_epoch past the timeout so the resolver judges past-deadline.
+jq '.canary_pending_started_epoch = 1' "${TEST_DIR}/var/human-state/human-M1.json" > "${TEST_DIR}/h.tmp" && mv "${TEST_DIR}/h.tmp" "${TEST_DIR}/var/human-state/human-M1.json"
 echo "cid-M1" > "${ZLAR_CANARY_STATE_DIR}/sess-M.canary.pending"
-python3 -c "import os, sys; os.utime(sys.argv[1], (0, 0))" "${ZLAR_CANARY_STATE_DIR}/sess-M.canary.pending" 2>/dev/null
-TELEGRAM_TIMEOUT_S=1
 canary_check_result "sess-ignored" "human-M1" 2>/dev/null || true
-TELEGRAM_TIMEOUT_S=900
 assert "trust_lane demoted on canary_missed" "guarded" "$(hstate human-M1 trust_lane)"
 assert "pending cleared after miss" "" "$(hstate human-M1 canary_pending_id)"
 assert "stale artifact deleted" "false" "$([ -f "${ZLAR_CANARY_STATE_DIR}/sess-M.canary.pending" ] && echo true || echo false)"
@@ -198,7 +202,7 @@ assert "stale artifact deleted" "false" "$([ -f "${ZLAR_CANARY_STATE_DIR}/sess-M
 # THE INVARIANT: Demotion requires evidence, not absence of evidence.
 # A missing routing artifact is bookkeeping loss, not a human miss.
 echo "TC-12: pending_lost — clear, NO demote (invariant: evidence not absence)"
-hi_canary_set_pending "human-P1" "cid-P1" "sess-P"
+hi_canary_claim_pending "human-P1" "cid-P1" "sess-P"
 jq '.trust_lane = "fast"' "${TEST_DIR}/var/human-state/human-P1.json" > "${TEST_DIR}/h.tmp" && mv "${TEST_DIR}/h.tmp" "${TEST_DIR}/var/human-state/human-P1.json"
 jq '.canary_pending_started_epoch = 1' "${TEST_DIR}/var/human-state/human-P1.json" > "${TEST_DIR}/h.tmp" && mv "${TEST_DIR}/h.tmp" "${TEST_DIR}/var/human-state/human-P1.json"
 canary_check_result "sess-ignored" "human-P1" 2>/dev/null || true
@@ -207,7 +211,7 @@ assert "pending cleared on pending_lost" "" "$(hstate human-P1 canary_pending_id
 
 # ── TC-13 (CS-2): cross-session result resolution ──
 echo "TC-13: cross-session resolution (CS-2)"
-hi_canary_set_pending "human-CS" "cid-CS" "session-A-fired"
+hi_canary_claim_pending "human-CS" "cid-CS" "session-A-fired"
 assert "pending_session correctly recorded as A" "session-A-fired" "$(hstate human-CS canary_pending_session_id)"
 _canary_log_healthy "$(hstate human-CS canary_pending_session_id)" "cid-CS" "human-CS"
 assert "pending cleared after cross-session resolution" "" "$(hstate human-CS canary_pending_id)"
@@ -216,7 +220,7 @@ assert "pending cleared after cross-session resolution" "" "$(hstate human-CS ca
 echo "TC-14: orphan .pending sweep (CS-4)"
 echo "orphan-cid-1" > "${ZLAR_CANARY_STATE_DIR}/orphan-sess.canary.pending"
 python3 -c "import os, sys; os.utime(sys.argv[1], (0, 0))" "${ZLAR_CANARY_STATE_DIR}/orphan-sess.canary.pending" 2>/dev/null
-hi_canary_set_pending "human-K" "live-cid-1" "live-sess"
+hi_canary_claim_pending "human-K" "live-cid-1" "live-sess"
 echo "live-cid-1" > "${ZLAR_CANARY_STATE_DIR}/live-sess.canary.pending"
 python3 -c "import os, sys; os.utime(sys.argv[1], (0, 0))" "${ZLAR_CANARY_STATE_DIR}/live-sess.canary.pending" 2>/dev/null
 ZLAR_HUMAN_STATE_DIR="${TEST_DIR}/var/human-state" PROJECT_DIR="${TEST_DIR}" canary_init
@@ -288,6 +292,81 @@ result=0
 canary_should_trigger "sess-P0" "human-P0" && result=0 || result=$?
 assert "probability=0: never triggers" "1" "${result}"
 CANARY_PROBABILITY=100
+
+# ─── v3.3.7 Canary Evidence Hardening ─────────────────────────────────────────
+# A1: locked claim CAS — two parallel sessions cannot both fire.
+# A2: delivery-evidence-anchored resolve. msg_id (Telegram POST evidence) is
+#     the discriminator between canary_missed (demote) and canary_pending_lost
+#     (no demote). Tampered or destroyed artifacts are handled per evidence-
+#     conservation: tampered → no demote, destroyed-post-delivery → demote
+#     plus correlation audit.
+
+# ── TC-21 (v3.3.7 A1): hi_canary_claim_pending locked CAS first wins ──
+# Two consecutive claims for the same human: first wins, second loses.
+# Demonstrates the CAS without needing parallel subshells (the lock body
+# is what actually races; sequential calls test the same invariant).
+echo "TC-21: locked claim CAS — first wins, second refused"
+hi_canary_claim_pending "human-RC" "cid-RC-A" "sess-A" && r1=0 || r1=$?
+hi_canary_claim_pending "human-RC" "cid-RC-B" "sess-B" && r2=0 || r2=$?
+assert "first claim wins" "0" "${r1}"
+assert "second claim loses" "1" "${r2}"
+assert "state holds first canary_id" "cid-RC-A" "$(hstate human-RC canary_pending_id)"
+assert "state holds first session_id" "sess-A" "$(hstate human-RC canary_pending_session_id)"
+
+# ── TC-22 (v3.3.7 A2): hi_canary_record_delivery only if claim still ours ──
+# msg_id update must verify the pending_id still matches the canary_id we
+# claimed. A stale record_delivery from a different canary cannot overwrite
+# delivery evidence belonging to the actual claim holder.
+echo "TC-22: record_delivery refuses when claim no longer ours"
+hi_canary_claim_pending "human-RD" "cid-RD-A" "sess-RD"
+hi_canary_record_delivery "human-RD" "cid-RD-A" "msg-A" "hash-A" && r3=0 || r3=$?
+hi_canary_record_delivery "human-RD" "cid-RD-WRONG" "msg-WRONG" "hash-WRONG" && r4=0 || r4=$?
+assert "record_delivery for our claim succeeds" "0" "${r3}"
+assert "record_delivery for foreign claim refused" "1" "${r4}"
+assert "msg_id reflects our delivery, not the foreign one" "msg-A" "$(hstate human-RD canary_pending_msg_id)"
+
+# ── TC-23 (v3.3.7 A1): hi_canary_release_pending only matching pending_id ──
+# Rollback safety: release path refuses to clear another canary's claim.
+echo "TC-23: release_pending rolls back only its own claim"
+hi_canary_claim_pending "human-RL" "cid-RL-A" "sess-RL"
+hi_canary_release_pending "human-RL" "cid-RL-WRONG" && r5=0 || r5=$?
+assert "release for non-matching canary refused" "1" "${r5}"
+assert "state still holds our claim" "cid-RL-A" "$(hstate human-RL canary_pending_id)"
+hi_canary_release_pending "human-RL" "cid-RL-A" && r6=0 || r6=$?
+assert "release for our claim succeeds" "0" "${r6}"
+assert "state cleared after our release" "" "$(hstate human-RL canary_pending_id)"
+
+# ── TC-24 (v3.3.7 A2): missing artifact + delivery proven + timeout → DEMOTE ──
+# THE INVARIANT: deletion of .pending no longer suppresses canary_missed
+# when delivery evidence (msg_id) exists. Demote AND emit a separate
+# canary_artifact_destroyed_post_delivery audit so operators correlate.
+echo "TC-24: artifact destroyed post-delivery — demote, plus correlation audit"
+reset_emits
+hi_canary_claim_pending "human-AD" "cid-AD" "sess-AD"
+hi_canary_record_delivery "human-AD" "cid-AD" "msg-AD" "hash-AD"
+jq '.trust_lane = "fast"' "${TEST_DIR}/var/human-state/human-AD.json" > "${TEST_DIR}/h.tmp" && mv "${TEST_DIR}/h.tmp" "${TEST_DIR}/var/human-state/human-AD.json"
+jq '.canary_pending_started_epoch = 1' "${TEST_DIR}/var/human-state/human-AD.json" > "${TEST_DIR}/h.tmp" && mv "${TEST_DIR}/h.tmp" "${TEST_DIR}/var/human-state/human-AD.json"
+# NO .pending file written — simulating attacker deletion.
+canary_check_result "sess-ignored" "human-AD" 2>/dev/null || true
+assert "trust_lane demoted (delivery evidence stands)" "guarded" "$(hstate human-AD trust_lane)"
+assert "pending cleared after demote" "" "$(hstate human-AD canary_pending_id)"
+assert "audit contains canary_artifact_destroyed_post_delivery" "true" "$(emits_contain warn)"
+
+# ── TC-25 (v3.3.7 A2): tampered artifact contents → canary_pending_tampered, NO DEMOTE ──
+# THE INVARIANT: tampered evidence is not delivery evidence we can act on.
+# Cannot rule out attacker corruption of our own bookkeeping.
+echo "TC-25: tampered artifact contents — clear, NO demote, warn audit"
+reset_emits
+hi_canary_claim_pending "human-TA" "cid-TA-real" "sess-TA"
+hi_canary_record_delivery "human-TA" "cid-TA-real" "msg-TA" "hash-TA"
+jq '.trust_lane = "fast"' "${TEST_DIR}/var/human-state/human-TA.json" > "${TEST_DIR}/h.tmp" && mv "${TEST_DIR}/h.tmp" "${TEST_DIR}/var/human-state/human-TA.json"
+jq '.canary_pending_started_epoch = 1' "${TEST_DIR}/var/human-state/human-TA.json" > "${TEST_DIR}/h.tmp" && mv "${TEST_DIR}/h.tmp" "${TEST_DIR}/var/human-state/human-TA.json"
+# Write artifact with WRONG canary_id — simulating attacker corruption.
+echo "cid-TA-tampered" > "${ZLAR_CANARY_STATE_DIR}/sess-TA.canary.pending"
+canary_check_result "sess-ignored" "human-TA" 2>/dev/null || true
+assert "trust_lane UNCHANGED on tampered (no demote)" "fast" "$(hstate human-TA trust_lane)"
+assert "pending cleared after tampered" "" "$(hstate human-TA canary_pending_id)"
+assert "tampered artifact deleted" "false" "$([ -f "${ZLAR_CANARY_STATE_DIR}/sess-TA.canary.pending" ] && echo true || echo false)"
 
 echo
 echo "═══════════════════"

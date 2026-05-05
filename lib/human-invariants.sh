@@ -116,6 +116,68 @@ fi
 _hi_verify_hmac()   { _state_hmac_verify       "${_HI_HMAC_KEY}" "$1"; }
 _hi_sealed_write()  { _state_hmac_sealed_write "${_HI_HMAC_KEY}" "$1"; }
 
+# v3.3.7 Canary Evidence Hardening — per-human mutex.
+# Two parallel sessions acting on the same human can race the read-modify-
+# write of canary pending fields. Atomic rename (sealed write) is not
+# enough: both sessions can observe pending_id="" before either writes,
+# both pass should_trigger, both call set_pending, second overwrites first.
+# Result: phantom canary on Telegram with no resolver. Lock the critical
+# section instead.
+#
+# Backend: prefer flock(1) (Linux/CI). On macOS where flock is absent or
+# the test harness disables it, fall back to mkdir-based mutex with a
+# bounded spin. Both backends grant exactly one winner.
+#
+# _HI_LOCK_BACKEND records which backend the current process uses, for
+# diagnostics. Set on first use.
+_HI_LOCK_BACKEND=""
+
+_hi_lock_path() {
+    local human_id="${1:?}"
+    echo "${_HI_STATE_DIR}/${human_id}.lock"
+}
+
+# _hi_with_lock <human_id> <body...>
+#   Acquires per-human mutex, runs body, releases on exit. Body may not
+#   contain unbalanced quoting but otherwise behaves like a function call.
+#   Returns body's exit status, or 1 on lock-acquire failure.
+#
+#   This is the only entry point. Direct acquire/release is deliberately
+#   not exposed — callers cannot leak a held lock if they always go
+#   through this wrapper.
+_hi_with_lock() {
+    local human_id="${1:?}"; shift
+    local lockfile
+    lockfile=$(_hi_lock_path "${human_id}")
+    mkdir -p "$(dirname "${lockfile}")" 2>/dev/null || true
+
+    if command -v flock &>/dev/null && [ -z "${_HI_LOCK_FORCE_MKDIR:-}" ]; then
+        _HI_LOCK_BACKEND="flock"
+        (
+            flock -w 5 9 || exit 1
+            "$@"
+        ) 9>"${lockfile}"
+        return $?
+    fi
+
+    # mkdir-based mutex. mkdir is atomic on POSIX; loser gets EEXIST.
+    _HI_LOCK_BACKEND="mkdir"
+    local lockdir="${lockfile}.d"
+    local waited=0
+    while ! mkdir "${lockdir}" 2>/dev/null; do
+        if [ "${waited}" -ge 50 ]; then  # 5s at 100ms ticks
+            return 1
+        fi
+        # No subshell sleep — bash builtin via read -t for portability.
+        read -t 0.1 -r _ < /dev/null 2>/dev/null || true
+        waited=$((waited + 1))
+    done
+    "$@"
+    local rc=$?
+    rmdir "${lockdir}" 2>/dev/null || true
+    return ${rc}
+}
+
 # ─── Timing ───────────────────────────────────────────────────────────────────
 
 # Returns current time as integer milliseconds since Unix epoch.
@@ -289,6 +351,23 @@ _hi_ensure_state() {
             .canary_pending_id = (.canary_pending_id // "") |
             .canary_pending_session_id = (.canary_pending_session_id // "") |
             .canary_pending_started_epoch = (.canary_pending_started_epoch // 0)' \
+            "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+    fi
+
+    # v3.3.7 Canary Evidence Hardening: add delivery-evidence fields.
+    #   canary_pending_msg_id           — Telegram message_id from sendMessage
+    #                                     response (proves the card was POSTED;
+    #                                     does NOT prove the human saw it).
+    #   canary_pending_delivered_epoch  — wall-clock when delivery was confirmed.
+    #   canary_pending_artifact_hash    — HMAC over the claim payload; binds the
+    #                                     .pending routing artifact to this claim.
+    # Demotion now requires ALL THREE: delivery evidence + timeout + no callback.
+    # Empty msg_id means claim succeeded but POST never confirmed → pending_lost.
+    if jq -e '(has("canary_pending_msg_id") | not) or (has("canary_pending_delivered_epoch") | not) or (has("canary_pending_artifact_hash") | not)' "${state_file}" >/dev/null 2>&1; then
+        jq 'del(._hmac) |
+            .canary_pending_msg_id = (.canary_pending_msg_id // "") |
+            .canary_pending_delivered_epoch = (.canary_pending_delivered_epoch // 0) |
+            .canary_pending_artifact_hash = (.canary_pending_artifact_hash // "")' \
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
@@ -1245,31 +1324,140 @@ hi_canary_should_trigger() {
     return 0
 }
 
-# hi_canary_set_pending <human_id> <canary_id> <session_id>
-#   Atomically: set pending fields (id, session_id, started_epoch);
-#   reset canary_approvals_since_last to 0; record canary_last_epoch.
-#   Single write to keep the per-human invariants consistent under races.
-hi_canary_set_pending() {
+# v3.3.7 Canary Evidence Hardening — claim / record / release / clear.
+#
+# Lifecycle:
+#   1. canary_send computes canary_id and artifact_hash, then calls
+#      hi_canary_claim_pending. The function takes the per-human lock,
+#      re-reads state, refuses if pending_id is already set (race loser),
+#      else writes pending fields (id, session_id, started_epoch) and
+#      resets the approvals counter. Returns 0 on win, 1 on loss.
+#   2. On win, canary_send calls Telegram. On success, it calls
+#      hi_canary_record_delivery with the message_id and artifact_hash.
+#      Inside the lock, the function verifies the claim still belongs
+#      to this canary_id (defends against a race where the human
+#      resolved the canary while we were sending — vanishingly rare,
+#      but cheap to check) and then sets msg_id + delivered_epoch +
+#      artifact_hash.
+#   3. On Telegram failure, canary_send calls hi_canary_release_pending
+#      to roll back the claim. The function only releases if the
+#      pending_id still matches our canary_id.
+#   4. canary_check_result calls hi_canary_clear_pending after a
+#      callback resolves the canary. Idempotent.
+#
+# msg_id is delivery evidence (Telegram POST returned a message_id; the
+# card was POSTED to the chat). It is NOT proof of human attention or
+# proof the human ignored the card. Demotion requires delivery evidence
+# AND timeout AND no valid callback — three conjuncts, all observable
+# by the system itself.
+
+# _hi_canary_claim_inner — body of the locked critical section. Not for
+# direct calls. Returns 0 if claim taken, 1 if already-pending.
+_hi_canary_claim_inner() {
+    local state_file="$1" canary_id="$2" session_id="$3"
+    local existing
+    existing=$(jq -r '.canary_pending_id // ""' "${state_file}" 2>/dev/null)
+    if [ -n "${existing}" ]; then
+        return 1
+    fi
+    jq --arg cid "${canary_id}" --arg sid "${session_id}" \
+        'del(._hmac) |
+         .canary_pending_id = $cid |
+         .canary_pending_session_id = $sid |
+         .canary_pending_started_epoch = now |
+         .canary_pending_msg_id = "" |
+         .canary_pending_delivered_epoch = 0 |
+         .canary_pending_artifact_hash = "" |
+         .canary_approvals_since_last = 0 |
+         .canary_last_epoch = now' \
+        "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+}
+
+# hi_canary_claim_pending <human_id> <canary_id> <session_id>
+#   Locked CAS. Returns 0 if this canary won the claim, 1 if another
+#   session already holds the per-human pending lock.
+hi_canary_claim_pending() {
     local human_id="${1:?}"
     local canary_id="${2:?}"
     local session_id="${3:?}"
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
 
-    jq --arg cid "${canary_id}" --arg sid "${session_id}" \
+    _hi_with_lock "${human_id}" \
+        _hi_canary_claim_inner "${state_file}" "${canary_id}" "${session_id}"
+}
+
+# _hi_canary_record_delivery_inner — locked-section body. Returns 0 on
+# success, 1 if the claim no longer belongs to this canary_id.
+_hi_canary_record_delivery_inner() {
+    local state_file="$1" canary_id="$2" msg_id="$3" artifact_hash="$4"
+    local cur
+    cur=$(jq -r '.canary_pending_id // ""' "${state_file}" 2>/dev/null)
+    if [ "${cur}" != "${canary_id}" ]; then
+        return 1
+    fi
+    jq --arg mid "${msg_id}" --arg ah "${artifact_hash}" \
         'del(._hmac) |
-         .canary_pending_id = $cid |
-         .canary_pending_session_id = $sid |
-         .canary_pending_started_epoch = now |
-         .canary_approvals_since_last = 0 |
-         .canary_last_epoch = now' \
+         .canary_pending_msg_id = $mid |
+         .canary_pending_delivered_epoch = now |
+         .canary_pending_artifact_hash = $ah' \
         "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
 }
 
+# hi_canary_record_delivery <human_id> <canary_id> <msg_id> <artifact_hash>
+#   Records Telegram delivery evidence under the per-human lock. msg_id
+#   is the message_id returned by sendMessage. artifact_hash is the HMAC
+#   over the claim payload (binds the .pending routing artifact to this
+#   claim so a tampered artifact can be detected at resolve time).
+hi_canary_record_delivery() {
+    local human_id="${1:?}"
+    local canary_id="${2:?}"
+    local msg_id="${3:?}"
+    local artifact_hash="${4:-}"
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+
+    _hi_with_lock "${human_id}" \
+        _hi_canary_record_delivery_inner "${state_file}" "${canary_id}" "${msg_id}" "${artifact_hash}"
+}
+
+# _hi_canary_release_pending_inner — locked-section body.
+_hi_canary_release_pending_inner() {
+    local state_file="$1" canary_id="$2"
+    local cur
+    cur=$(jq -r '.canary_pending_id // ""' "${state_file}" 2>/dev/null)
+    if [ "${cur}" != "${canary_id}" ]; then
+        return 1
+    fi
+    jq 'del(._hmac) |
+        .canary_pending_id = "" |
+        .canary_pending_session_id = "" |
+        .canary_pending_started_epoch = 0 |
+        .canary_pending_msg_id = "" |
+        .canary_pending_delivered_epoch = 0 |
+        .canary_pending_artifact_hash = ""' \
+        "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+}
+
+# hi_canary_release_pending <human_id> <canary_id>
+#   Rollback path for the case where the claim succeeded but the
+#   subsequent Telegram POST failed. Only releases if the current
+#   pending_id matches — never releases someone else's claim.
+hi_canary_release_pending() {
+    local human_id="${1:?}"
+    local canary_id="${2:?}"
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+
+    _hi_with_lock "${human_id}" \
+        _hi_canary_release_pending_inner "${state_file}" "${canary_id}"
+}
+
 # hi_canary_clear_pending <human_id>
-#   Clear the three pending fields. Counter and last_epoch are NOT reset here;
+#   Clear all pending fields. Counter and last_epoch are NOT reset here;
 #   those represent canary cadence and survive resolution.
 #   Idempotent — safe to call when nothing is pending.
+#   v3.3.7: also clears msg_id, delivered_epoch, artifact_hash.
 hi_canary_clear_pending() {
     local human_id="${1:?}"
     local state_file
@@ -1278,7 +1466,10 @@ hi_canary_clear_pending() {
     jq 'del(._hmac) |
         .canary_pending_id = "" |
         .canary_pending_session_id = "" |
-        .canary_pending_started_epoch = 0' \
+        .canary_pending_started_epoch = 0 |
+        .canary_pending_msg_id = "" |
+        .canary_pending_delivered_epoch = 0 |
+        .canary_pending_artifact_hash = ""' \
         "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
 }
 
@@ -1304,4 +1495,19 @@ hi_canary_get_pending_started() {
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
     jq -r '.canary_pending_started_epoch // 0' "${state_file}" 2>/dev/null
+}
+
+# v3.3.7 — getters for delivery-evidence fields.
+hi_canary_get_pending_msg_id() {
+    local human_id="${1:?}"
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+    jq -r '.canary_pending_msg_id // ""' "${state_file}" 2>/dev/null
+}
+
+hi_canary_get_pending_artifact_hash() {
+    local human_id="${1:?}"
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+    jq -r '.canary_pending_artifact_hash // ""' "${state_file}" 2>/dev/null
 }

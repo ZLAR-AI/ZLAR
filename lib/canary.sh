@@ -129,6 +129,70 @@ canary_load_config() {
     fi
 }
 
+# v3.3.7 Canary Evidence Hardening — chat_id source detection.
+#
+# bin/zlar-gate currently falls back to a hardcoded chat_id at line 509 if
+# gate.json doesn't carry .telegram.chat_id and no env override is set.
+# That fallback inherits into TELEGRAM_CHAT_ID for any sourced module,
+# including this file, and on a misdeployed non-maintainer box it routes
+# every canary to the maintainer's Telegram. We cannot detect the
+# fallback by examining TELEGRAM_CHAT_ID alone — the value is identical.
+# Instead, we read gate.json directly and check for the explicit field.
+#
+# Returns one of: "gate.json" | "env" | "hardcoded-fallback" | "unconfigured"
+_canary_chat_id_source() {
+    local gate_config="${PROJECT_DIR:-.}/etc/gate.json"
+    if [ -f "${gate_config}" ] && command -v jq &>/dev/null; then
+        local cfg
+        cfg=$(jq -r '.telegram.chat_id // empty' "${gate_config}" 2>/dev/null)
+        if [ -n "${cfg}" ]; then
+            echo "gate.json"
+            return 0
+        fi
+    fi
+    if [ -n "${ZLAR_TELEGRAM_CHAT_ID:-}" ]; then
+        echo "env"
+        return 0
+    fi
+    if [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+        # Non-empty TELEGRAM_CHAT_ID without gate.json or env override means
+        # the bin/zlar-gate hardcoded fallback at line 509 supplied the value.
+        echo "hardcoded-fallback"
+        return 0
+    fi
+    echo "unconfigured"
+    return 0
+}
+
+# Returns 0 if chat_id source is acceptable for sending canaries
+# (gate.json or env), 1 otherwise. Audit-emits canary_subsystem_misconfigured
+# the first time per process if the source is bad.
+_CANARY_MISCONFIG_LOGGED=""
+_canary_chat_id_validate() {
+    local source
+    source=$(_canary_chat_id_source)
+    case "${source}" in
+        gate.json|env)
+            return 0
+            ;;
+        *)
+            if [ -z "${_CANARY_MISCONFIG_LOGGED}" ]; then
+                _CANARY_MISCONFIG_LOGGED="1"
+                if type log &>/dev/null; then
+                    log "CANARY: chat_id source is '${source}' — refusing to send canaries"
+                fi
+                if type emit_event &>/dev/null; then
+                    emit_event "canary" "canary_subsystem_misconfigured" "warn" \
+                        "$(jq -n -c --arg src "${source}" \
+                            '{chat_id_source:$src,reason:"non_authoritative_source"}')" \
+                        "canary" "warn" 0 "canary"
+                fi
+            fi
+            return 1
+            ;;
+    esac
+}
+
 # ── Record a human approval (increment per-human counter) ──
 # v3.3.6: counter is per-human, not per-session. session_id retained as
 # first arg only for back-compat at existing call sites — its value is
@@ -195,10 +259,27 @@ canary_pick_scenario() {
 
 # ── Send canary to Telegram ──
 # Requires: telegram_api, gen_id, log, TELEGRAM_CHAT_ID (from gate)
-# v3.3.6: state update goes through hi_canary_set_pending (per-human), and
-# the routing artifact at var/canary/{session_id}.canary.pending stays for
-# the existing inbox handler. session_id remains in the artifact path because
-# parallel sessions of the same human still need distinct routing files.
+#
+# v3.3.7 Canary Evidence Hardening — claim before send:
+#
+#   1. Validate chat_id source (refuse if hardcoded-fallback / unconfigured).
+#   2. Generate canary_id.
+#   3. Compute artifact_hash = HMAC over claim payload (binds the .pending
+#      routing artifact to this claim so tamper is detectable at resolve).
+#   4. hi_canary_claim_pending — locked CAS. If we lose the race (another
+#      session is already mid-canary for this human), emit canary_claim_lost
+#      audit and exit without any Telegram POST or .pending write.
+#   5. Send Telegram. On failure, hi_canary_release_pending to roll back.
+#   6. Write .pending routing artifact AND
+#   7. hi_canary_record_delivery (msg_id + delivered_epoch + artifact_hash)
+#      under the lock. Once both land, the canary has full delivery
+#      evidence in state — demotion at timeout becomes legitimate.
+#
+# msg_id is delivery evidence (Telegram POST returned a message_id; the
+# card was POSTED to the chat). It is NOT proof of human attention or
+# proof the human ignored the card. Demotion requires delivery evidence
+# AND timeout AND no valid callback — three conjuncts the system itself
+# can witness.
 
 canary_send() {
     local session_id="${1:?}"
@@ -215,6 +296,13 @@ canary_send() {
         return 0
     fi
 
+    # v3.3.7 A3: refuse to send if chat_id source is non-authoritative
+    # (hardcoded-fallback inherited from bin/zlar-gate:509, or unconfigured).
+    # Audit emitted once per process by _canary_chat_id_validate.
+    if ! _canary_chat_id_validate; then
+        return 0
+    fi
+
     local scenario
     scenario=$(canary_pick_scenario)
     local tool display display_rule risk severity
@@ -226,6 +314,34 @@ canary_send() {
 
     local canary_id
     canary_id=$(gen_id)
+
+    # v3.3.7 A2: artifact_hash binds the .pending routing artifact to this
+    # claim. canonical(payload) | _state_hmac_compute "${_HI_HMAC_KEY}".
+    # Artifact contents = canary_id (existing format); the hash is stored
+    # in human state alongside msg_id so a tampered or replaced .pending
+    # file fails verification at resolve time.
+    local artifact_payload artifact_hash
+    artifact_payload=$(jq -n -c \
+        --arg cid "${canary_id}" \
+        --arg hid "${human_id}" \
+        --arg sid "${session_id}" \
+        '{canary_id:$cid,human_id:$hid,session_id:$sid}')
+    artifact_hash=$(printf '%s' "${artifact_payload}" | _state_hmac_compute "${_HI_HMAC_KEY:-}")
+
+    # v3.3.7 A1: locked CAS. If another session already holds the per-human
+    # pending claim, we exit without Telegram POST or .pending write.
+    if type hi_canary_claim_pending &>/dev/null; then
+        if ! hi_canary_claim_pending "${human_id}" "${canary_id}" "${session_id}" 2>/dev/null; then
+            log "CANARY: claim race lost for human ${human_id} (canary ${canary_id} not sent)"
+            if type emit_event &>/dev/null; then
+                emit_event "canary" "canary_claim_lost" "info" \
+                    "$(jq -n -c --arg cid "${canary_id}" --arg sid "${session_id}" --arg hid "${human_id}" \
+                        '{canary_id:$cid,session_id:$sid,human_id:$hid,reason:"another_session_claimed_first"}')" \
+                    "canary" "info" 0 "canary"
+            fi
+            return 0
+        fi
+    fi
 
     # Emoji matches real asks — canary must be indistinguishable
     local emoji="🔴"
@@ -265,21 +381,28 @@ canary_send() {
 
     if [ -z "${msg_id}" ]; then
         log "CANARY: Failed to send canary message: ${send_result}"
+        # Roll back the claim — no delivery evidence will ever land.
+        if type hi_canary_release_pending &>/dev/null; then
+            hi_canary_release_pending "${human_id}" "${canary_id}" 2>/dev/null || true
+        fi
         return 1
     fi
 
-    # Write the routing artifact (per-session). The authoritative state lives
-    # in human state; this file lets the existing inbox handler resolve back
-    # to the canary id.
+    # Write the routing artifact (per-session). The artifact is now a
+    # routing hint only — the authoritative discriminator at resolve time
+    # is state.canary_pending_msg_id (delivery evidence) plus the
+    # artifact_hash check against the file's canonicalized contents.
     canary_init
     printf '%s\n' "${canary_id}" > "${CANARY_STATE_DIR}/${session_id}.canary.pending" 2>/dev/null
 
-    # Authoritative state: per-human pending lock + counter reset + cadence.
-    if [ -n "${human_id}" ] && type hi_canary_set_pending &>/dev/null; then
-        hi_canary_set_pending "${human_id}" "${canary_id}" "${session_id}" 2>/dev/null || true
+    # Record delivery evidence under the per-human lock. If this fails
+    # (claim resolved during Telegram call, vanishingly rare), the
+    # canary becomes pending_lost on next resolve — fail-safe path.
+    if type hi_canary_record_delivery &>/dev/null; then
+        hi_canary_record_delivery "${human_id}" "${canary_id}" "${msg_id}" "${artifact_hash}" 2>/dev/null || true
     fi
 
-    log "CANARY: Sent ${canary_id} for human ${human_id:-?} (session ${session_id})"
+    log "CANARY: Sent ${canary_id} for human ${human_id:-?} (session ${session_id}, msg_id ${msg_id})"
     return 0
 }
 
@@ -363,33 +486,62 @@ canary_check_result() {
         done
     fi
 
-    # No matching callback. Two paths:
-    #   (a) artifact present + age > timeout → canary_missed (real evidence)
-    #   (b) artifact missing                  → canary_pending_lost (bookkeeping)
-    if [ -n "${pending_file}" ] && [ -f "${pending_file}" ]; then
-        local now_epoch file_epoch age
-        now_epoch=$(date +%s)
-        file_epoch=$(stat -c %Y "${pending_file}" 2>/dev/null || stat -f %m "${pending_file}" 2>/dev/null || echo 0)
-        age=$((now_epoch - file_epoch))
-        if [ "${age}" -gt "${TELEGRAM_TIMEOUT_S:-900}" ]; then
-            rm -f "${pending_file}" 2>/dev/null
-            _canary_log_expired "${pending_session}" "${canary_id}" "${human_id}"
-        fi
-    else
-        # Demotion requires evidence, not absence of evidence.
-        # A missing routing artifact is a system fault, not a human miss —
-        # clear pending state, emit internal warn, do not demote.
-        local started
-        started=$(hi_canary_get_pending_started "${human_id}" 2>/dev/null || echo 0)
-        local now_epoch=$(date +%s)
-        local age=$((now_epoch - started))
-        # Only react once the canary is past the timeout — otherwise it may
-        # still be in-flight and the artifact write may simply not have
-        # landed yet. This narrows the rule to "recorded, expected by now,
-        # but not findable."
-        if [ "${started}" -gt 0 ] && [ "${age}" -gt "${TELEGRAM_TIMEOUT_S:-900}" ]; then
+    # v3.3.7 Canary Evidence Hardening — msg_id-anchored discriminator.
+    #
+    # No callback matched. Read delivery evidence and decide.
+    # Demotion requires ALL THREE: delivery evidence + timeout + no callback.
+    # msg_id is delivery/posting evidence (Telegram POST returned a
+    # message_id). It is NOT proof of human attention.
+    local pending_msg_id started now_epoch age
+    pending_msg_id=$(hi_canary_get_pending_msg_id "${human_id}" 2>/dev/null || echo "")
+    started=$(hi_canary_get_pending_started "${human_id}" 2>/dev/null || echo 0)
+    now_epoch=$(date +%s)
+    age=$((now_epoch - started))
+
+    # Still in flight — never judge before the timeout, regardless of state.
+    if [ "${started}" -gt 0 ] && [ "${age}" -le "${TELEGRAM_TIMEOUT_S:-900}" ]; then
+        return 0
+    fi
+
+    if [ -z "${pending_msg_id}" ]; then
+        # No delivery evidence — claim succeeded but Telegram POST never
+        # confirmed (rare partial-write between claim and record_delivery).
+        # Bookkeeping fault, not a human miss. Clear, no demote.
+        if [ "${started}" -gt 0 ]; then
             _canary_log_pending_lost "${pending_session}" "${canary_id}" "${human_id}"
         fi
+        return 0
+    fi
+
+    # Delivery evidence exists. Inspect the routing artifact.
+    if [ -n "${pending_file}" ] && [ -f "${pending_file}" ]; then
+        local file_canary
+        file_canary=$(cat "${pending_file}" 2>/dev/null | tr -d '[:space:]')
+        if [ "${file_canary}" = "${canary_id}" ]; then
+            # Delivery evidence + intact artifact + timeout + no callback.
+            # System-observable miss. Demote.
+            rm -f "${pending_file}" 2>/dev/null
+            _canary_log_expired "${pending_session}" "${canary_id}" "${human_id}"
+        else
+            # Delivery evidence exists but the artifact's contents do not
+            # match the canary we issued. Cannot rule out attacker
+            # corruption of our own bookkeeping. "Tampered evidence is
+            # not delivery evidence we can act on." Clear, no demote.
+            rm -f "${pending_file}" 2>/dev/null
+            _canary_log_pending_tampered "${pending_session}" "${canary_id}" "${human_id}" "${file_canary}"
+        fi
+    else
+        # Delivery evidence exists, artifact missing. The .pending file is
+        # not authoritative in v3.3.7 — its absence does not exonerate the
+        # timeout. Demote, with an additional audit event so operators can
+        # correlate destroyed-bookkeeping with the demotion.
+        if type emit_event &>/dev/null; then
+            emit_event "canary" "canary_artifact_destroyed_post_delivery" "warn" \
+                "$(jq -n -c --arg cid "${canary_id}" --arg sid "${pending_session}" --arg hid "${human_id}" --arg mid "${pending_msg_id}" \
+                    '{canary_id:$cid,session_id:$sid,human_id:$hid,msg_id:$mid,note:"artifact_missing_but_delivery_proven"}')" \
+                "canary" "warn" 0 "canary"
+        fi
+        _canary_log_expired "${pending_session}" "${canary_id}" "${human_id}"
     fi
 
     return 0
@@ -501,14 +653,43 @@ _canary_log_expired() {
 # said a canary was outstanding, but the routing artifact is gone. We clear
 # the pending state and emit an internal warning. We do NOT call
 # hi_record_canary_outcome and we do NOT touch trust lane.
+#
+# v3.3.7: this path now fires only when delivery evidence (msg_id) is empty —
+# the "claim succeeded but Telegram POST never confirmed" case. When delivery
+# evidence exists but the artifact is missing, the new resolve flow treats
+# that as canary_missed (delivery_proven + timeout) plus a separate
+# canary_artifact_destroyed_post_delivery audit. The artifact is no longer
+# authoritative for the missed-vs-lost distinction.
 _canary_log_pending_lost() {
     local pending_session="${1:-}" canary_id="$2" human_id="${3:?}"
-    log "CANARY PENDING LOST: human ${human_id} canary ${canary_id} (session ${pending_session}) — routing artifact missing, clearing pending state without demotion"
+    log "CANARY PENDING LOST: human ${human_id} canary ${canary_id} (session ${pending_session}) — claim succeeded but no delivery evidence (POST never confirmed), clearing pending state without demotion"
 
     if type emit_event &>/dev/null; then
         emit_event "canary" "canary_pending_lost" "internal_warn" \
             "$(jq -n -c --arg cid "${canary_id}" --arg sid "${pending_session}" --arg hid "${human_id}" \
-                '{canary_id:$cid,session_id:$sid,human_id:$hid,reason:"artifact_missing"}')" \
+                '{canary_id:$cid,session_id:$sid,human_id:$hid,reason:"no_delivery_evidence"}')" \
+            "canary" "warn" 0 "canary"
+    fi
+    if type hi_canary_clear_pending &>/dev/null; then
+        hi_canary_clear_pending "${human_id}" 2>/dev/null || true
+    fi
+}
+
+# v3.3.7 — tampered evidence is not delivery evidence we can act on.
+#
+# Delivery evidence (msg_id) exists, but the .pending routing artifact's
+# contents do not match the canary_id we recorded for this human. The
+# system cannot rule out attacker corruption of its own bookkeeping;
+# acting on a tampered artifact would let an attacker steer demotions.
+# We clear pending state, emit a warn audit, and do NOT touch trust lane.
+_canary_log_pending_tampered() {
+    local pending_session="${1:-}" canary_id="$2" human_id="${3:?}" observed="${4:-}"
+    log "CANARY PENDING TAMPERED: human ${human_id} canary ${canary_id} (session ${pending_session}) — artifact contents did not match recorded canary_id (observed=${observed:-<empty>}), clearing pending state without demotion"
+
+    if type emit_event &>/dev/null; then
+        emit_event "canary" "canary_pending_tampered" "warn" \
+            "$(jq -n -c --arg cid "${canary_id}" --arg sid "${pending_session}" --arg hid "${human_id}" --arg obs "${observed}" \
+                '{canary_id:$cid,session_id:$sid,human_id:$hid,observed_artifact:$obs,reason:"artifact_contents_mismatch"}')" \
             "canary" "warn" 0 "canary"
     fi
     if type hi_canary_clear_pending &>/dev/null; then
