@@ -474,7 +474,17 @@ async function runTests() {
   }
 
   function writePending(canaryId) {
+    // Routing artifact (per-session) — kept for the inbox handler.
     writeFileSync(join(TEST_CANARY_DIR, `${TL_SESSION_ID}.canary.pending`), canaryId + '\n');
+    // v3.3.6: per-human pending fields — checkCanaryResult reads these first.
+    // Without canary_pending_id set, the resolver returns early before scanning
+    // the inbox, so the inbox callback never gets processed.
+    const stateFile = join(TEST_HUMAN_STATE_DIR, `${TL_HUMAN_ID}.json`);
+    const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+    state.canary_pending_id = canaryId;
+    state.canary_pending_session_id = TL_SESSION_ID;
+    state.canary_pending_started_epoch = Math.floor(Date.now() / 1000);
+    writeFileSync(stateFile, JSON.stringify(state));
   }
 
   function writeCallback(canaryId, result) {
