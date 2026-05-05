@@ -62,6 +62,7 @@ source "${PROJECT_DIR}/lib/canary.sh"
 
 PASS=0
 FAIL=0
+FAILED_DESCS=()
 
 assert() {
     local desc="$1" expected="$2" actual="$3"
@@ -70,6 +71,9 @@ assert() {
         PASS=$((PASS + 1))
     else
         echo "  ✗ ${desc} (expected=${expected}, actual=${actual})"
+        # Record the failure for the end-of-run summary so CI logs that
+        # only capture the tail of test output still show what broke.
+        FAILED_DESCS+=("${desc} | expected='${expected}' actual='${actual}'")
         FAIL=$((FAIL + 1))
     fi
 }
@@ -369,6 +373,13 @@ assert "pending cleared after tampered" "" "$(hstate human-TA canary_pending_id)
 assert "tampered artifact deleted" "false" "$([ -f "${ZLAR_CANARY_STATE_DIR}/sess-TA.canary.pending" ] && echo true || echo false)"
 
 echo
+if [ "${FAIL}" -gt 0 ]; then
+    echo "FAILED ASSERTIONS:"
+    for d in "${FAILED_DESCS[@]}"; do
+        echo "  ✗ ${d}"
+    done
+    echo
+fi
 echo "═══════════════════"
 echo "Results: ${PASS} passed, ${FAIL} failed"
 echo "═══════════════════"
