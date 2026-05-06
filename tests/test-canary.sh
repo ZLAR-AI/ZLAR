@@ -31,6 +31,12 @@ mkdir -p "${ZLAR_CANARY_STATE_DIR}"
 # Mock gate dependencies (canary.sh delegates HMAC + send + audit to the gate).
 log() { :; }
 gen_id() { echo "test-canary-$(date +%s)-$$-${RANDOM}"; }
+# v3.3.7 chat_id source: ZLAR_TELEGRAM_CHAT_ID is the explicit env-override
+# path that _canary_chat_id_source accepts as authoritative. Tests need this
+# because etc/gate.json is gitignored — CI has no gate.json, so without an
+# explicit env override, the validation would reject every canary_send as
+# "hardcoded-fallback" (the inherited TELEGRAM_CHAT_ID without a known source).
+export ZLAR_TELEGRAM_CHAT_ID="9999999999"
 TELEGRAM_CHAT_ID="9999999999"
 TELEGRAM_TIMEOUT_S=900
 telegram_api() { echo '{"ok":true,"result":{"message_id":42}}'; }
