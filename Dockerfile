@@ -2,7 +2,7 @@
 # Proves the bash gate, MCP gate, and Cedar PoC run on Linux.
 # Not a production image — no secrets, no Telegram, no runtime config.
 
-FROM node:22-alpine AS base
+FROM node:26-alpine AS base
 
 # bash gate dependencies
 RUN apk add --no-cache \
