@@ -1,5 +1,109 @@
 # Changelog
 
+## 3.3.8 — 2026-05-09 — Status Display Truth
+
+A read-only audit of v3.3.7 was queued under the name "Canary Audit Emit
+Fidelity," premised on a hypothesis that `lib/canary.sh` outcomes were
+mutating per-human lane state without emitting signed audit events. Direct
+verification of `var/log/audit.jsonl` line 1214 (the demotion timestamp from
+the live state file) showed the hypothesis was false: every canary outcome
+*is* in the audit log with `domain="canary"` and `action="governance_health_check"`.
+The original investigation grepped for `category="canary"` and
+`event_type="governance_health_check"` — neither field exists in the audit
+schema. The candidate v3.3.8 frame ("audit emit gap") was a measurement
+artifact.
+
+Three real bugs surfaced in the same pass — all in the bin/zlar status
+display, all introduced or unmasked when v3.3.7 added the A4 status surface.
+Display-only fixes; no canary outcome logic, human-invariants logic, or
+state-data shape changes.
+
+### Bug A — Canary 7d counters always 0 (correctness regression in v3.3.7 A4)
+
+Two compounding bugs in the same parsing block; either alone collapsed the
+counters to 0.
+
+- `bin/zlar:401` read `.event_type`, a field that does not exist in the audit
+  format. `emit_event` writes the value into `.action`. Every event lookup
+  returned `""`, no case branch matched, and all seven canary counters
+  (`passed`, `failed`, `missed`, `pending_lost`, `pending_tampered`,
+  `claim_lost`, `artifact_destroyed_post_delivery`) stayed at 0.
+- `bin/zlar:426` treated `.ts` as an epoch number and stripped a fractional
+  part with `${entry_ts%%.*}`, then failed every line through the `[!0-9]`
+  case because `.ts` is actually an ISO 8601 string ("2026-05-04T02:24:45Z").
+  Even with the field name correct, the 7d window check would have rejected
+  every line. Surfaced only after the field-name fix produced still-zero
+  counters against a known-populated audit log.
+
+Fix: change `.event_type` → `.action`, and parse `.ts` via jq's
+`fromdateiso8601` with a numeric fallback so any future float-epoch lines
+also resolve. Counters now reflect what the audit log actually contains:
+on Vincent's box, `passed: 9, failed: 1` against the demotion at
+2026-05-04 02:24:45Z and the subsequent healthy outcomes. Both fixes
+documented in the parsing-block comment so the next contributor doesn't
+re-introduce either assumption.
+
+### Bug B — Longest streak frozen below the open streak
+
+`lib/gate-uptime.sh:gu_status_lines` printed the stored `longest_streak_seconds`
+raw. The on-disk field is a write-on-disable invariant: it records the longest
+*completed* streak, and only updates when a streak ends. While the gate
+remains on past the previous record, the displayed longest sat below the live
+current, which on a screenshot looked like the data file had a contradiction
+(current > longest).
+
+Lifetime already handled this at the same call site (`display_lifetime =
+lifetime_sec + current_sec`). v3.3.8 applies the same display-only correction
+to longest: when `state="on"` and `current_sec > longest_sec`, the displayed
+longest swaps to the open streak with a `(current — still running)`
+annotation on both the duration line and the start-time line. The on-disk
+value is not mutated.
+
+### Bug C — Stale-state badge on bin/zlar status
+
+Daily-bound counters (`decisions_today`, `response_times`) reset only when
+`_hi_ensure_state` runs on the next gate write. `bin/zlar status` is read-only
+by design, so when no gate call has fired since UTC midnight, the displayed
+`State date` is yesterday's and the daily counters carry yesterday's values
+without any annotation. An operator reading "decisions_today: 3.3 / 80" on
+2026-05-09 with `State date: 2026-05-06` would reasonably read it as today's
+activity when in fact the state had simply not rolled over.
+
+Fix: compare `STATE_DATE` to `$(date -u +%Y-%m-%d)`. If different and not the
+sentinel "?", append `(stale — will roll over on next gate call)` to the date
+line and `(stale)` to `decisions_today` and `response_times`. The "?" sentinel
+(missing-date failure mode, distinct from "yesterday's date") is excluded
+from the badge so the two failure modes don't get conflated.
+
+### Tests
+
+- `tests/test-gate-uptime.sh`: three new assertions (open-streak supersedes
+  stored, current < stored leaves annotation absent, state=off leaves
+  annotation absent).
+- `tests/test-status-display.sh`: new file. Reproduces the canary 7d parsing
+  block against a fixture audit.jsonl with one event per canary action and
+  asserts every counter increments. Defense-in-depth grep over `bin/zlar`
+  for `.event_type` regression. Three Bug C cases (stale, fresh, missing-
+  sentinel).
+
+### What did NOT change
+
+- `lib/canary.sh`, `lib/human-invariants.sh`, `lib/human-invariants.mjs`,
+  `mcp-gate/gate.mjs` canary paths — untouched.
+- Audit emit guards (`if type emit_event &>/dev/null; then`) — untouched.
+- Policy rules — 89 rules, version 3.3.1.
+- Per-human state schema — no migration.
+
+### Memory hygiene
+
+- `project_canary_audit_emit_gap.md` is marked **REFUTED** with a
+  post-mortem block noting why the original grep failed. The memory's
+  hypothesis ("canary outcomes don't emit") and proposed investigation moves
+  ("source emit_event helpers in every dispatch context", "move emit into
+  hi_record_canary_outcome") are no longer applicable.
+- `MEMORY.md` index updated to reflect that v3.3.8 ships as Status Display
+  Truth, not Canary Audit Emit Fidelity.
+
 ## 3.3.7 — 2026-05-05 — Canary Evidence Hardening
 
 A six-task read-only audit of v3.3.6 surfaced four correctness bugs in the

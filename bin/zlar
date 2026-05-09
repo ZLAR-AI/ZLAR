@@ -224,6 +224,20 @@ cmd_status() {
                 LAST_ASK=$(jq -r '.last_ask_epoch // 0' "${state_file}" 2>/dev/null || echo "0")
                 STATE_DATE=$(jq -r '.date // "?"' "${state_file}" 2>/dev/null || echo "?")
 
+                # v3.3.8: stale-state annotation. Daily-bound counters
+                # (decisions_today, response_times) are wiped on UTC
+                # rollover, but only by _hi_ensure_state on a gate write.
+                # status is read-only; if no gate call has fired since UTC
+                # midnight, the file still shows yesterday's values. Mark
+                # them stale so the operator does not misread day-old
+                # counters as today's activity.
+                TODAY_UTC=$(date -u +%Y-%m-%d)
+                if [ "${STATE_DATE}" != "${TODAY_UTC}" ] && [ "${STATE_DATE}" != "?" ]; then
+                    STATE_IS_STALE="true"
+                else
+                    STATE_IS_STALE="false"
+                fi
+
                 # v3.3.0 Trust Lane + v3.3.4 clean-run fields
                 TRUST_LANE=$(jq -r '.trust_lane // "guarded"' "${state_file}" 2>/dev/null || echo "guarded")
                 GRANT_SOURCE=$(jq -r '.trust_lane_grant.source // ""' "${state_file}" 2>/dev/null || echo "")
@@ -314,11 +328,25 @@ cmd_status() {
                     DEMOTION_DISPLAY="—"
                 fi
 
+                # v3.3.8: append "(stale)" to daily-bound counters when the
+                # state file's date is not today UTC. The state itself is
+                # not wrong — it just predates the most recent rollover
+                # boundary. Read-only display correction; no state mutation.
+                if [ "${STATE_IS_STALE}" = "true" ]; then
+                    STATE_DATE_DISPLAY="${STATE_DATE}  ${YELLOW}(stale — will roll over on next gate call)${NC}"
+                    DECISIONS_DISPLAY_FINAL="${DECISIONS_DISPLAY}  ${YELLOW}(stale)${NC}"
+                    RESPONSE_TIMES_DISPLAY_FINAL="${RESPONSE_TIMES_LEN} entries  ${YELLOW}(stale)${NC}"
+                else
+                    STATE_DATE_DISPLAY="${STATE_DATE}"
+                    DECISIONS_DISPLAY_FINAL="${DECISIONS_DISPLAY}"
+                    RESPONSE_TIMES_DISPLAY_FINAL="${RESPONSE_TIMES_LEN} entries"
+                fi
+
                 printf "    Human ID:                                    ${HUMAN_ID_DISPLAY}\n"
-                printf "    State date:                                  ${STATE_DATE}\n"
-                printf "    decisions_today:                             ${DECISIONS_DISPLAY}\n"
+                printf "    State date:                                  ${STATE_DATE_DISPLAY}\n"
+                printf "    decisions_today:                             ${DECISIONS_DISPLAY_FINAL}\n"
                 printf "    pending (ttl-filtered):                      ${PENDING_DISPLAY}\n"
-                printf "    response_times:                              ${RESPONSE_TIMES_LEN} entries\n"
+                printf "    response_times:                              ${RESPONSE_TIMES_DISPLAY_FINAL}\n"
                 printf "    last_ask_epoch:                              ${LAST_ASK_REL}\n"
                 printf "    trust_lane:                                  ${LANE_DISPLAY}\n"
                 printf "    trust_lane_grant:                            ${GRANT_DISPLAY}\n"
@@ -380,8 +408,16 @@ cmd_status() {
 
         # Use jq to filter and count. Tolerant of malformed lines via
         # `--null-input`-style streaming with try/catch around each entry.
-        # The audit format uses .ts (epoch seconds, possibly float) and
-        # .event_type (matches our emit_event() second arg).
+        # Audit format:
+        # - .ts is an ISO 8601 string ("2026-05-04T02:24:45Z") emitted by
+        #   bin/zlar-gate:emit_event. v3.3.7 A4 incorrectly assumed .ts was
+        #   epoch seconds, so the integer-strip + [!0-9] case kicked every
+        #   line into "skipped" and the loop counted nothing. v3.3.8 parses
+        #   ISO 8601 via jq's fromdateiso8601, with a graceful fall back to
+        #   numeric for any future float-epoch lines.
+        # - .action is the second arg to emit_event(). v3.3.7 A4 read
+        #   .event_type, which doesn't exist; the case branches never
+        #   matched. Now reads .action.
         # Keep the jq invocation simple by streaming with -c and counting
         # in shell to avoid version-specific jq array semantics.
         PASSED_COUNT=0
@@ -392,13 +428,21 @@ cmd_status() {
         CLAIM_LOST_COUNT=0
         ARTIFACT_DESTROYED_COUNT=0
         while IFS= read -r line; do
-            # Skip if no ts or older than 7d. ts may be float; use awk to compare.
-            entry_ts=$(printf '%s' "${line}" | jq -r '.ts // 0' 2>/dev/null || echo 0)
-            entry_ts_int="${entry_ts%%.*}"
-            case "${entry_ts_int}" in ''|*[!0-9]*) continue ;; esac
+            # Skip if no ts or older than 7d. .ts is ISO 8601 from emit_event;
+            # parse via jq's fromdateiso8601 with a numeric fallback so any
+            # future float-epoch lines also resolve. Malformed lines collapse
+            # to 0 (skipped by the [!0-9] case below).
+            entry_ts_int=$(printf '%s' "${line}" | jq -r '
+                (.ts // 0) as $t
+                | if ($t | type) == "string"
+                  then ($t | try fromdateiso8601 catch 0)
+                  else ($t | floor)
+                  end
+            ' 2>/dev/null || echo 0)
+            case "${entry_ts_int}" in ''|0|*[!0-9]*) continue ;; esac
             [ "${entry_ts_int}" -ge "${WEEK_AGO}" ] || continue
 
-            event=$(printf '%s' "${line}" | jq -r '.event_type // ""' 2>/dev/null || echo "")
+            event=$(printf '%s' "${line}" | jq -r '.action // ""' 2>/dev/null || echo "")
             outcome=$(printf '%s' "${line}" | jq -r '.detail.result // ""' 2>/dev/null || echo "")
 
             case "${event}" in

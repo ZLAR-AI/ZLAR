@@ -191,6 +191,69 @@ assert "format 1 day 2 hours" "1d 2h 0m" "$(gu_format_duration 93600)"
 assert "format epoch 0" "—" "$(gu_format_epoch 0)"
 
 echo
+echo "=== gu_status_lines: open-streak supersedes stored longest (v3.3.8) ==="
+echo
+
+# When state=on and current_sec > stored longest_sec, gu_status_lines must
+# show the open streak as the displayed longest with a "(current — still
+# running)" annotation. Lifetime already does this; longest used to print
+# the stored value raw, falsely showing a value smaller than the live
+# current streak. Display-only fix; on-disk longest_streak_seconds stays
+# a write-on-disable invariant.
+
+# Arrange: gate on, streak started 200s ago, stored longest_streak_seconds=100.
+now=$(date +%s)
+streak_start=$(( now - 200 ))
+jq --argjson s "${streak_start}" --argjson hb "${now}" \
+    '.state = "on" | .current_streak_start_epoch = $s | .last_heartbeat_epoch = $hb | .longest_streak_seconds = 100 | .longest_streak_start_epoch = ($s - 86400)' \
+    "${STATE_FILE}" | _gu_sealed_write
+
+status_out=$(gu_status_lines)
+running_count=$(printf '%s' "${status_out}" | grep -c "(current — still running)" || true)
+{ [ "${running_count}" -ge 1 ]; } && got="present" || got="missing"
+assert "open-streak > stored: 'still running' annotation appears" "present" "${got}"
+
+# The displayed longest must match the open streak's order of magnitude
+# (not the stale stored 100s). Accept [180, 220] for slow runners.
+longest_line=$(printf '%s' "${status_out}" | grep "Longest streak:" | head -1)
+case "${longest_line}" in
+    *3m*|*4m*) got="open" ;;
+    *1m*) got="stale100s" ;;
+    *) got="other:${longest_line}" ;;
+esac
+assert "displayed longest reflects open streak (~3-4m), not stored 100s" "open" "${got}"
+
+echo
+echo "=== gu_status_lines: stored longest still wins when current < longest (v3.3.8) ==="
+echo
+
+# Inverse: when stored longest exceeds the open streak, no annotation; the
+# displayed longest is the stored value. This protects the existing display
+# semantics for boxes whose live current has not yet caught up.
+now=$(date +%s)
+streak_start=$(( now - 50 ))
+jq --argjson s "${streak_start}" --argjson hb "${now}" \
+    '.state = "on" | .current_streak_start_epoch = $s | .last_heartbeat_epoch = $hb | .longest_streak_seconds = 9999 | .longest_streak_start_epoch = ($s - 86400)' \
+    "${STATE_FILE}" | _gu_sealed_write
+
+status_out=$(gu_status_lines)
+running_count=$(printf '%s' "${status_out}" | grep -c "(current — still running)" || true)
+{ [ "${running_count}" -eq 0 ]; } && got="absent" || got="present"
+assert "current < stored: no 'still running' annotation" "absent" "${got}"
+
+echo
+echo "=== gu_status_lines: state=off shows no running annotation (v3.3.8) ==="
+echo
+
+# When the gate is off, current_sec is 0 by construction. The fix gates the
+# annotation on state=on, so even a zero stored longest must not annotate.
+gu_record_disable
+status_out=$(gu_status_lines)
+running_count=$(printf '%s' "${status_out}" | grep -c "(current — still running)" || true)
+{ [ "${running_count}" -eq 0 ]; } && got="absent" || got="present"
+assert "state=off: no 'still running' annotation regardless of values" "absent" "${got}"
+
+echo
 echo "=== Crash-safe write semantics ==="
 echo
 

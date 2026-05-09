@@ -314,11 +314,27 @@ gu_status_lines() {
     # Include the current open streak in lifetime display (not in stored total).
     local display_lifetime=$(( lifetime_sec + current_sec ))
 
+    # v3.3.8: when the open streak has already exceeded the stored longest,
+    # show the open streak as longest with a "(current — still running)"
+    # annotation. The on-disk longest_streak_seconds is a write-on-disable
+    # invariant — it is correct as the longest *completed* streak, but on
+    # display the operator wants the live truth. Lifetime already does this
+    # at line ~315 (display_lifetime = lifetime_sec + current_sec); apply
+    # the same display-only correction to longest. No state mutation.
+    local display_longest_sec="${longest_sec}"
+    local display_longest_start="${longest_start}"
+    local longest_running_annotation=""
+    if [ "${state}" = "on" ] && [ "${current_sec}" -gt "${longest_sec}" ]; then
+        display_longest_sec="${current_sec}"
+        display_longest_start="${streak_start}"
+        longest_running_annotation="  (current — still running)"
+    fi
+
     printf '    Current streak:                              %s\n' "${current_display}"
     printf '    Streak started:                              %s\n' "$(gu_format_epoch "${streak_start}")"
-    printf '    Longest streak:                              %s\n' "$(gu_format_duration "${longest_sec}")"
-    if [ "${longest_start}" != "0" ] && [ "${longest_start}" != "null" ]; then
-        printf '    Longest streak started:                      %s\n' "$(gu_format_epoch "${longest_start}")"
+    printf '    Longest streak:                              %s%s\n' "$(gu_format_duration "${display_longest_sec}")" "${longest_running_annotation}"
+    if [ "${display_longest_start}" != "0" ] && [ "${display_longest_start}" != "null" ]; then
+        printf '    Longest streak started:                      %s%s\n' "$(gu_format_epoch "${display_longest_start}")" "${longest_running_annotation}"
     fi
     printf '    Lifetime gate-on time:                       %s\n' "$(gu_format_duration "${display_lifetime}")"
     printf '    Last enable:                                 %s\n' "$(gu_format_epoch "${last_enable}")"
