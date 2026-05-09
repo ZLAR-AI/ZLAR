@@ -14,6 +14,9 @@ export APPROVAL_DIR="${TEST_DIR}/approvals"
 export TELEGRAM_TOKEN="test-token"
 export RATE_LIMIT_FILE="${TEST_DIR}/rate-limit"
 export TELEGRAM_FLOOD_GUARD_MS=0
+# v3.3.9: ZLAR_TELEGRAM_CHAT_ID is the env-source override authoritative
+# under the new TELEGRAM_CHAT_ID_SOURCE resolution.
+export ZLAR_TELEGRAM_CHAT_ID="12345678"
 export TELEGRAM_CHAT_ID="12345678"
 export SESSION_ID="test-session-pc"
 export TELEGRAM_TIMEOUT_S=900

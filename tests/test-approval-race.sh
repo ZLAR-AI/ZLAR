@@ -25,6 +25,10 @@ trap 'rm -rf "${TEST_DIR}"' EXIT
 
 export APPROVAL_DIR
 export SESSION_ID="test-race-$$"
+# v3.3.9: ZLAR_TELEGRAM_CHAT_ID is the env-source override authoritative
+# under the new TELEGRAM_CHAT_ID_SOURCE resolution; TELEGRAM_CHAT_ID kept
+# in scope so existing fixture references resolve.
+export ZLAR_TELEGRAM_CHAT_ID="123456"
 export TELEGRAM_CHAT_ID="123456"
 export TELEGRAM_TIMEOUT_S=300
 export ZLAR_APPROVED_TTL_S=300

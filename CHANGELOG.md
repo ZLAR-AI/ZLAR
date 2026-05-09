@@ -1,5 +1,126 @@
 # Changelog
 
+## 3.3.9 — 2026-05-09 — Telegram Chat ID Fail-Closed
+
+`bin/zlar-gate:509` had a hardcoded chat_id fallback that, on a non-maintainer
+deployment with missing or misconfigured `etc/gate.json` and no env override,
+silently routed every general-ask Telegram card to the maintainer's chat.
+v3.3.7 hardened the canary path against this; the general ask path remained
+exposed. v3.3.9 closes that gap. The note in v3.3.7's CHANGELOG that "the
+hardcoded chat_id at bin/zlar-gate:509 still falls through to the maintainer's
+chat for the general ask path" is now resolved.
+
+### Resolution: explicit source detection, no hardcoded fallback
+
+`TELEGRAM_CHAT_ID_SOURCE` is resolved once at config-load time as one of:
+
+- `env` — `ZLAR_TELEGRAM_CHAT_ID` was set before the gate started.
+- `gate.json` — `etc/gate.json` `.telegram.chat_id` was non-empty.
+- `unconfigured` — neither.
+
+Both `lib/canary.sh:_canary_chat_id_validate` (v3.3.7) and the new
+`_telegram_dispatch_ready` helper for the general ask path refuse to dispatch
+when the source is non-authoritative. The hardcoded fallback is gone.
+
+### Option β — structural guarantee that no human-state budget is consumed
+
+Two checks, by intent. The defense-in-depth guard inside `telegram_ask_async`
+ensures the function is safe to call from any path. The early guard in
+`main()`'s ask flow runs *before* `hi_pre_ask_check`, `hi_record_ask_time`,
+the rate-limit window write, and `gen_id`, so a misdeployed gate consumes no
+pending counter, no rate-limit budget, no state writes. The shared helper's
+once-per-process audit guard (`_TELEGRAM_MISCONFIG_LOGGED`) ensures only one
+`telegram_subsystem_misconfigured` warn audit fires per gate invocation.
+
+### Patch 1E — empty-`cb_from` callback rejection (line 1921)
+
+Found in passing during the v3.3.9 audit. The existing callback verification
+at `bin/zlar-gate:1921` was `[ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]`. Under
+unconfigured, `TELEGRAM_CHAT_ID=""`. `jq -r '.from_id // ""'` returns `""`
+when a callback file is missing `from_id` or has it as null. The equality
+`"" != ""` is false, so a forged callback with empty `from_id` would have been
+accepted under unconfigured. Narrow attack surface (transition window: chat_id
+was set, asks fired, chat_id removed, stale `.pending` files on disk), but
+real. Patch 1E rejects empty `cb_from` unconditionally:
+
+```bash
+if [ -z "${cb_from}" ] || [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
+```
+
+A callback without a real sender identity is never eligible to resolve an ask.
+
+### `bin/zlar status` — three-state truth display
+
+The old bottom-line `● Enabled — denied actions get sent to Telegram for
+approval` claimed dispatch capability without verifying token presence or
+chat_id source. Replaced (deleted, not conditionalized) with a top-level
+`Telegram:` block that composes both:
+
+- `state` is `enabled` only when token is present *and* chat_id source is
+  authoritative (`gate.json` or `env`). Otherwise: `disabled (config)` if
+  `.telegram.enabled=false`, `fail-closed (token missing)` if no token,
+  `fail-closed (chat_id unconfigured)` if neither env nor gate.json.
+- `chat_id source` and `token` are surfaced as their own lines.
+
+Single source of truth at the same screen position. No contradictory
+"enabled" claim while the gate is fail-closing.
+
+### Manifest/constitution alerts under unconfigured — named trade-off
+
+The manifest-attack and constitution-deletion alerts at `bin/zlar-gate:396`,
+`:478`, and `:1189` are guarded by `[ -n "${TELEGRAM_CHAT_ID:-}" ]`. Under
+unconfigured (`TELEGRAM_CHAT_ID=""`), the existing guard skips the Telegram
+POST. `fail_closed_alert` (`lib/fail-closed-alert.sh:56`) has its own
+`[ -z "${TELEGRAM_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]` guard and
+also skips Telegram. Critical alerts on a misdeployed gate still land in
+`audit.jsonl` + `gate.log` + `fail-closed-alert.log` — three local surfaces
+carry the signal. Telegram is silent. Deliberate: when Telegram source is
+non-authoritative, Telegram alerts cannot be trusted.
+
+### Claim boundary
+
+This release covers the Claude Code bash gate (`bin/zlar-gate`) only. The
+MCP gate (`mcp-gate/gate.mjs`) carries the same architectural surface and
+**is not covered in this release**. Deferred to a future window.
+
+### Files
+
+- `bin/zlar-gate`: replaced lines 507–510 with explicit source detection;
+  added `_telegram_dispatch_ready` helper above `telegram_ask_async`; added
+  early dispatch_ready guard in main()'s ask flow before any human-state
+  writes; added `case 4` defense-in-depth in `send_result` switch; line 1921
+  callback rejection hardened with unconditional empty-`cb_from` check.
+- `bin/zlar`: replaced bottom Telegram block with three-state composite
+  (`state`, `chat_id source`, `token`); deleted old `● Enabled` bottom line.
+- `tests/test-approval-binding.sh`, `tests/test-approval-race.sh`,
+  `tests/test-preconfirm.sh`: added `ZLAR_TELEGRAM_CHAT_ID` exports so the
+  test fixtures resolve to source=`env` (authoritative) under v3.3.9.
+- `tests/test-telegram-config.sh`: new file, 25 assertions covering source
+  resolution, dispatch_ready return codes, once-per-process audit emission,
+  structural guard ordering, env precedence, line 1921 empty-string
+  rejection, three-state status composition, and live status block shape.
+
+### Out of scope
+
+- MCP gate hardening (deferred — see claim boundary above).
+- The R012W_EDIT regex over-firing observed during the v3.3.9 audit (a
+  read-only `cat etc/gate.json | jq '.telegram'` was matched as an edit).
+  Tracked separately under post-Phase-F policy-rules audit.
+
+### Policy / receipts / state shape
+
+- Policy unchanged (3.3.1, 89 rules, default deny).
+- Receipt schema unchanged.
+- `var/human-state/{human_id}.json` shape unchanged.
+- No `agent-policy-bindings.json` bump required.
+
+### New audit events / reasons
+
+- `telegram_subsystem_misconfigured` (warn, domain=`telegram`) — emitted
+  once per gate invocation when source is non-authoritative.
+- `gate:telegram_unconfigured` — new `respond_deny` reason on the
+  operator-actionable deny path.
+
 ## 3.3.8 — 2026-05-09 — Status Display Truth
 
 A read-only audit of v3.3.7 was queued under the name "Canary Audit Emit

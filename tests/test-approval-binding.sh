@@ -15,6 +15,10 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # We need to mock some globals first
 APPROVAL_DIR=$(mktemp -d)
 SESSION_ID="test-session-$$"
+# v3.3.9: ZLAR_TELEGRAM_CHAT_ID is the env-source override that the gate's
+# new TELEGRAM_CHAT_ID_SOURCE resolution treats as authoritative. Setting
+# both keeps shell references to ${TELEGRAM_CHAT_ID} working in fixtures.
+export ZLAR_TELEGRAM_CHAT_ID="123456"
 TELEGRAM_CHAT_ID="123456"
 TELEGRAM_TOKEN=""  # No actual Telegram calls
 ZLAR_HMAC_SECRET_FILE="/dev/null"  # No HMAC in these tests

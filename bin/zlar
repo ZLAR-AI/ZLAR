@@ -546,18 +546,64 @@ cmd_status() {
 
     printf "\n"
 
-    # Telegram
+    # Telegram (v3.3.9 — three-state truth: state composes token presence
+    # with chat_id source authority. "Enabled" requires both. The old
+    # ●/○-style "Enabled — denied actions get sent for approval" line was
+    # deleted in v3.3.9 because it claimed dispatch capability without
+    # checking either, which masked misdeployed gates.
     printf "  ${BOLD}Telegram:${NC}\n"
     GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
-    if [ -f "${GATE_CONFIG}" ] && command -v jq >/dev/null 2>&1; then
-        TG_ENABLED=$(jq -r '.telegram.enabled // false' "${GATE_CONFIG}" 2>/dev/null)
-        if [ "${TG_ENABLED}" = "true" ]; then
-            printf "    ${GREEN}●${NC} Enabled — denied actions get sent to Telegram for approval\n"
-        else
-            printf "    ${DIM}○${NC} Disabled — denied actions are instantly blocked\n"
-            printf "    ${DIM}  Upgrade: zlar telegram${NC}\n"
+
+    # chat_id source detection — matches lib/canary.sh:_canary_chat_id_source
+    # and bin/zlar-gate's TELEGRAM_CHAT_ID_SOURCE resolution.
+    TG_CHAT_ID_SOURCE="unconfigured"
+    if [ -n "${ZLAR_TELEGRAM_CHAT_ID:-}" ]; then
+        TG_CHAT_ID_SOURCE="env"
+    elif [ -f "${GATE_CONFIG}" ] && command -v jq >/dev/null 2>&1; then
+        CFG_CHAT_ID=$(jq -r '.telegram.chat_id // empty' "${GATE_CONFIG}" 2>/dev/null)
+        if [ -n "${CFG_CHAT_ID}" ]; then
+            TG_CHAT_ID_SOURCE="gate.json"
         fi
     fi
+
+    # Token presence — env > .env file (matches bin/zlar-gate's _load_env).
+    TG_TOKEN_PRESENT="missing"
+    if [ -n "${ZLAR_TELEGRAM_TOKEN:-}" ] || [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+        TG_TOKEN_PRESENT="present"
+    elif [ -f "${PROJECT_DIR}/.env" ] && grep -qE "^(TELEGRAM_BOT_TOKEN|ZLAR_TELEGRAM_TOKEN)=" "${PROJECT_DIR}/.env" 2>/dev/null; then
+        TG_TOKEN_PRESENT="present"
+    fi
+
+    # Operator-explicit disable in gate.json overrides everything else.
+    TG_CONFIG_ENABLED="true"
+    if [ -f "${GATE_CONFIG}" ] && command -v jq >/dev/null 2>&1; then
+        TG_CONFIG_ENABLED=$(jq -r '.telegram.enabled // true' "${GATE_CONFIG}" 2>/dev/null)
+    fi
+
+    # Composite state. Token-missing reported first (more upstream than chat_id).
+    if [ "${TG_CONFIG_ENABLED}" = "false" ]; then
+        TG_STATE_DISPLAY="${DIM}○ disabled (config)${NC}"
+    elif [ "${TG_TOKEN_PRESENT}" = "missing" ]; then
+        TG_STATE_DISPLAY="${RED}⛔ fail-closed (token missing)${NC}"
+    elif [ "${TG_CHAT_ID_SOURCE}" = "unconfigured" ]; then
+        TG_STATE_DISPLAY="${RED}⛔ fail-closed (chat_id unconfigured)${NC}"
+    else
+        TG_STATE_DISPLAY="${GREEN}● enabled${NC}"
+    fi
+
+    case "${TG_CHAT_ID_SOURCE}" in
+        gate.json|env) TG_SOURCE_DISPLAY="${TG_CHAT_ID_SOURCE}" ;;
+        *)             TG_SOURCE_DISPLAY="${YELLOW}${TG_CHAT_ID_SOURCE}${NC}" ;;
+    esac
+
+    case "${TG_TOKEN_PRESENT}" in
+        present) TG_TOKEN_DISPLAY="${TG_TOKEN_PRESENT}" ;;
+        missing) TG_TOKEN_DISPLAY="${YELLOW}${TG_TOKEN_PRESENT}${NC}" ;;
+    esac
+
+    printf "    state:                                       ${TG_STATE_DISPLAY}\n"
+    printf "    chat_id source:                              ${TG_SOURCE_DISPLAY}\n"
+    printf "    token:                                       ${TG_TOKEN_DISPLAY}\n"
 
     printf "\n"
 
