@@ -378,6 +378,109 @@ assert "trust_lane UNCHANGED on tampered (no demote)" "fast" "$(hstate human-TA 
 assert "pending cleared after tampered" "" "$(hstate human-TA canary_pending_id)"
 assert "tampered artifact deleted" "false" "$([ -f "${ZLAR_CANARY_STATE_DIR}/sess-TA.canary.pending" ] && echo true || echo false)"
 
+# ── TC-26 (v3.3.10): float canary_last_epoch does not block trigger ──
+# THE INVARIANT: legacy on-disk floats from pre-v3.3.10 _hi_canary_claim_inner
+# (jq's `now` returns floating-point seconds) must not cause should_trigger to
+# return false. Pre-v3.3.10 bash $(( now - 1234567890.123 )) errored to empty,
+# `[ "" -ge 300 ]` returned 2, `|| return 1` triggered → cooldown check
+# returned false deterministically after the first canary fire. v3.3.10 casts
+# at read with `| floor`; this test confirms the read-side defense holds even
+# when the on-disk value is float-shaped.
+echo "TC-26 (v3.3.10): float canary_last_epoch on disk → trigger eligible"
+reset_emits
+hi_record_canary_approval "human-FLT"
+hi_record_canary_approval "human-FLT"
+hi_record_canary_approval "human-FLT"
+# Inject a float into on-disk state. Bypasses _hi_sealed_write (which would
+# only roundtrip the value through jq) so we exercise the read-side cast.
+jq '.canary_last_epoch = 1234567890.123456' "${TEST_DIR}/var/human-state/human-FLT.json" \
+    > "${TEST_DIR}/h.tmp" && mv "${TEST_DIR}/h.tmp" "${TEST_DIR}/var/human-state/human-FLT.json"
+result=0
+hi_canary_should_trigger "human-FLT" 3 0 || result=$?
+assert "TC-26 float last_epoch → should_trigger returns 0" "0" "${result}"
+assert "TC-26 no cooldown_eval_error audit on legitimate float" "false" "$(emits_contain warn)"
+SKIPS_ERR=$(jq -r '.canary_skips.cooldown_eval_error // 0' "${TEST_DIR}/var/human-state/human-FLT.json" 2>/dev/null)
+assert "TC-26 cooldown_eval_error counter unchanged on float" "0" "${SKIPS_ERR}"
+
+# ── TC-27 (v3.3.10): non-numeric canary_last_epoch → cooldown_eval_error sentinel ──
+# THE INVARIANT: post-`| floor` defense must catch corrupted on-disk values
+# (jq missing, partial write, attacker-injected garbage) and treat them as
+# "do not trigger." Once-per-process audit emission, counter increment.
+echo "TC-27 (v3.3.10): corrupt last_epoch → cooldown_eval_error, no trigger"
+reset_emits
+_HI_CANARY_COOLDOWN_EVAL_ERROR_LOGGED=""   # reset static-var gate for this test
+hi_record_canary_approval "human-CORR"
+hi_record_canary_approval "human-CORR"
+hi_record_canary_approval "human-CORR"
+jq '.canary_last_epoch = "not-a-number"' "${TEST_DIR}/var/human-state/human-CORR.json" \
+    > "${TEST_DIR}/h.tmp" && mv "${TEST_DIR}/h.tmp" "${TEST_DIR}/var/human-state/human-CORR.json"
+result=0
+hi_canary_should_trigger "human-CORR" 3 0 || result=$?
+assert "TC-27 corrupt last_epoch → should_trigger returns 1" "1" "${result}"
+assert "TC-27 cooldown_eval_error audit emitted" "true" "$(emits_contain warn)"
+SKIPS_ERR=$(jq -r '.canary_skips.cooldown_eval_error // 0' "${TEST_DIR}/var/human-state/human-CORR.json" 2>/dev/null)
+assert "TC-27 cooldown_eval_error counter incremented" "1" "${SKIPS_ERR}"
+
+# ── TC-28 (v3.3.10): float pending_started_epoch → in-flight guard intact ──
+# THE INVARIANT: hi_canary_get_pending_started must cast to int so canary_check_result's
+# age computation works against legacy floats. Pre-v3.3.10 bash $((now - float))
+# errored, age was empty, `[ ${age} -le ${TELEGRAM_TIMEOUT_S} ]` failed, the
+# in-flight short-circuit was bypassed (would prematurely conclude on a canary
+# that's actually still in-flight).
+echo "TC-28 (v3.3.10): float pending_started_epoch → in-flight guard fires"
+reset_emits
+hi_canary_claim_pending "human-PFLT" "cid-PFLT" "sess-PFLT"
+hi_canary_record_delivery "human-PFLT" "cid-PFLT" "msg-PFLT" "hash-PFLT"
+RECENT=$(($(date +%s) - 60))
+jq --argjson r "${RECENT}" '.canary_pending_started_epoch = ($r + 0.5)' \
+    "${TEST_DIR}/var/human-state/human-PFLT.json" \
+    > "${TEST_DIR}/h.tmp" && mv "${TEST_DIR}/h.tmp" "${TEST_DIR}/var/human-state/human-PFLT.json"
+echo "cid-PFLT" > "${ZLAR_CANARY_STATE_DIR}/sess-PFLT.canary.pending"
+canary_check_result "sess-ignored" "human-PFLT" 2>/dev/null || true
+assert "TC-28 still-in-flight → trust_lane unchanged" "guarded" "$(hstate human-PFLT trust_lane)"
+assert "TC-28 still-in-flight → pending NOT cleared" "cid-PFLT" "$(hstate human-PFLT canary_pending_id)"
+assert "TC-28 still-in-flight → no fatigue_detected emit" "false" "$(emits_contain fatigue_detected)"
+
+# ── TC-29 (v3.3.10): skip counters increment by reason ──
+# THE INVARIANT: every false return from hi_canary_should_trigger increments
+# the corresponding .canary_skips counter. State-only no-spam observability.
+echo "TC-29 (v3.3.10): skip counters increment per reason"
+reset_emits
+hi_record_canary_approval "human-SKIP"
+hi_record_canary_approval "human-SKIP"
+result=0
+hi_canary_should_trigger "human-SKIP" 3 0 || result=$?
+assert "TC-29 below_threshold returns 1" "1" "${result}"
+SKIPS_BELOW=$(jq -r '.canary_skips.below_threshold // 0' "${TEST_DIR}/var/human-state/human-SKIP.json" 2>/dev/null)
+assert "TC-29 below_threshold counter incremented" "1" "${SKIPS_BELOW}"
+hi_record_canary_approval "human-SKIP"
+hi_canary_claim_pending "human-SKIP" "cid-SKIP-blocking" "sess-SKIP"
+# claim_inner reset .canary_approvals_since_last to 0 and .canary_skips to all 0.
+hi_record_canary_approval "human-SKIP"
+hi_record_canary_approval "human-SKIP"
+hi_record_canary_approval "human-SKIP"
+result=0
+hi_canary_should_trigger "human-SKIP" 3 0 || result=$?
+assert "TC-29 pending_held returns 1" "1" "${result}"
+SKIPS_PENDING=$(jq -r '.canary_skips.pending_held // 0' "${TEST_DIR}/var/human-state/human-SKIP.json" 2>/dev/null)
+assert "TC-29 pending_held counter incremented" "1" "${SKIPS_PENDING}"
+
+# ── TC-30 (v3.3.10): canary_skips reset on claim ──
+# THE INVARIANT: when a canary actually claims pending (fires), .canary_skips
+# resets to all zeros — counters represent "skips since last fire," not
+# cumulative-since-state-init. Without this, the status surface would drift
+# upward forever and lose its signal.
+echo "TC-30 (v3.3.10): canary_skips reset on claim"
+reset_emits
+hi_record_canary_approval "human-RST"
+hi_record_canary_approval "human-RST"
+hi_canary_should_trigger "human-RST" 3 0 || true
+SKIPS_BEFORE=$(jq -r '.canary_skips.below_threshold // 0' "${TEST_DIR}/var/human-state/human-RST.json" 2>/dev/null)
+assert "TC-30 skip counter pre-claim" "1" "${SKIPS_BEFORE}"
+hi_canary_claim_pending "human-RST" "cid-RST" "sess-RST"
+SKIPS_AFTER=$(jq -r '.canary_skips.below_threshold // 0' "${TEST_DIR}/var/human-state/human-RST.json" 2>/dev/null)
+assert "TC-30 skip counter reset on claim" "0" "${SKIPS_AFTER}"
+
 echo
 if [ "${FAIL}" -gt 0 ]; then
     echo "FAILED ASSERTIONS:"

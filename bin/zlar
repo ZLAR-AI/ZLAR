@@ -483,6 +483,48 @@ cmd_status() {
         printf "    ${DIM}audit.jsonl missing or jq unavailable — outcome counts unavailable${NC}\n"
     fi
 
+    # v3.3.10 — trigger eligibility surface. Per-human state, not audit-derived.
+    # Surfaces "why no canary has fired" so a drought (like the v3.3.7→v3.3.10
+    # float-bash-arith bug that produced 0/71 fires over 4.6 days) is visible
+    # before any threshold tuning. Skip counters reset on canary claim.
+    # Reuse CFG_CHAT_ID extracted earlier from gate.json (v3.3.7 chat_id source
+    # detection block). bin/zlar status runs without the gate's runtime env, so
+    # TELEGRAM_CHAT_ID is not exported here — the gate-config form is the only
+    # reliable source for "who is the operator on this box."
+    HUMAN_ID="${CFG_CHAT_ID:-${ZLAR_TELEGRAM_CHAT_ID:-}}"
+    HUMAN_STATE_FILE="${PROJECT_DIR}/var/human-state/${HUMAN_ID}.json"
+    if [ -n "${HUMAN_ID}" ] && [ -f "${HUMAN_STATE_FILE}" ] && command -v jq >/dev/null 2>&1; then
+        APPROVALS_SINCE=$(jq -r '.canary_approvals_since_last // 0' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        case "${APPROVALS_SINCE}" in ''|*[!0-9]*) APPROVALS_SINCE=0 ;; esac
+        LAST_CANARY_EPOCH=$(jq -r '.canary_last_epoch // 0 | floor' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        case "${LAST_CANARY_EPOCH}" in ''|*[!0-9]*) LAST_CANARY_EPOCH=0 ;; esac
+        if [ "${LAST_CANARY_EPOCH}" -gt 0 ]; then
+            LAST_CANARY_ISO=$(jq -nr --argjson e "${LAST_CANARY_EPOCH}" '$e | gmtime | strftime("%Y-%m-%dT%H:%M:%SZ")' 2>/dev/null || echo "?")
+        else
+            LAST_CANARY_ISO="never"
+        fi
+        SKIPS_PENDING=$(jq -r '.canary_skips.pending_held // 0' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        SKIPS_BELOW=$(jq -r '.canary_skips.below_threshold // 0' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        SKIPS_COOLDOWN=$(jq -r '.canary_skips.cooldown_active // 0' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        SKIPS_PROBABILITY=$(jq -r '.canary_skips.probability // 0' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        SKIPS_COOLDOWN_ERR=$(jq -r '.canary_skips.cooldown_eval_error // 0' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        case "${SKIPS_COOLDOWN_ERR}" in ''|*[!0-9]*) SKIPS_COOLDOWN_ERR=0 ;; esac
+        if [ "${SKIPS_COOLDOWN_ERR}" -gt 0 ]; then
+            SKIPS_COOLDOWN_ERR_DISPLAY="${RED}${SKIPS_COOLDOWN_ERR}${NC}  ${RED}⚠ REGRESSION SENTINEL${NC}"
+        else
+            SKIPS_COOLDOWN_ERR_DISPLAY="${SKIPS_COOLDOWN_ERR}"
+        fi
+        printf "    trigger eligibility (per-human state)\n"
+        printf "      approvals_since_last_canary:               ${APPROVALS_SINCE}\n"
+        printf "      last_canary_iso:                           ${LAST_CANARY_ISO}\n"
+        printf "      skips since last canary fire\n"
+        printf "        pending_held:                            ${SKIPS_PENDING}\n"
+        printf "        below_threshold:                         ${SKIPS_BELOW}\n"
+        printf "        cooldown_active:                         ${SKIPS_COOLDOWN}\n"
+        printf "        probability:                             ${SKIPS_PROBABILITY}\n"
+        printf "        cooldown_eval_error:                     ${SKIPS_COOLDOWN_ERR_DISPLAY}\n"
+    fi
+
     printf "\n"
 
     # Frameworks

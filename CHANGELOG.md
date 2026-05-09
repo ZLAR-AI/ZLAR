@@ -1,5 +1,119 @@
 # Changelog
 
+## 3.3.10 — 2026-05-09 — Canary Trigger Drought Fix + Skip Observability
+
+The canary subsystem stopped firing on Vincent's box after the first canary
+fired under v3.3.7. 71 deny-then-retry approvals over 4.6 days produced zero
+canaries, against a 20% probability gate that should have produced ~14. The
+clean_run promotion path was structurally unobservable. Discovered during
+read-only post-v3.3.9 audit. The fix is one type cast applied at every site
+where jq's `now` (float) is consumed by bash arithmetic, plus an observability
+surface so the next drought is visible without code-level forensics.
+
+### Root cause
+
+`_hi_canary_claim_inner` wrote `.canary_last_epoch = now` via jq, which stores
+the value as a floating-point second (`1777993446.847719`).
+`hi_canary_should_trigger` then read that field and ran
+`elapsed=$((now - last_epoch))` in bash. Bash `$(( ... ))` cannot evaluate
+floats — the substitution emitted a syntax error to stderr (suppressed by
+`2>/dev/null`), `elapsed` became empty, the subsequent `[ "" -ge 300 ]` exited
+2 (integer expression expected), and `|| return 1` triggered. The cooldown
+check returned false deterministically on every approval after the first
+canary fire. Probability gate never reached.
+
+The same pattern existed in `hi_canary_get_pending_started` feeding
+`canary_check_result`'s in-flight age computation — latent because no pending
+canary was outstanding on Vincent's box, but would have prematurely concluded
+"timed out" on any pending canary issued post-v3.3.7.
+
+### Fix: cast at every write, defend at every read
+
+All eight `now` writes in `lib/human-invariants.sh` cast to integer via
+`now | floor` before storage:
+
+- `hi_apply_lane_demotion` — trust_lane_demotion.ts
+- `hi_record_canary_outcome:passed` — clean_run_started_epoch + two trust_lane_auto_promoted.ts
+- `hi_record_canary_outcome:failed/missed` — trust_lane_demotion.ts
+- `_hi_canary_claim_inner` — canary_pending_started_epoch + canary_last_epoch
+- `_hi_canary_record_delivery_inner` — canary_pending_delivered_epoch
+
+Read sites consumed by bash arithmetic apply `| floor` defensively to handle
+legacy floats already on disk (no migration write — state self-heals on next
+canary fire that touches the field):
+
+- `hi_canary_should_trigger` — canary_last_epoch
+- `hi_canary_get_pending_started` — canary_pending_started_epoch
+
+`bin/zlar` status display already accepted decimal-shaped values — no change.
+
+### Observability: skip counters in state, not audit
+
+Trigger eligibility decisions are evidence-bearing, but per-call audit
+emission would spam the chain. With Vincent's typical traffic (~14 expected
+probability skips per healthy day), every skip generating a signed audit
+entry would fill the chain with non-events. Asymmetric design:
+
+- Frequent skip reasons (probability, cooldown_active, below_threshold,
+  pending_held) → counters in `.canary_skips` per-human state. Reset on
+  canary claim. Surfaced via `bin/zlar status`.
+- Rare structural events (cooldown_eval_error — corruption / jq missing /
+  partial write that defeats the read-side cast) → ONE signed audit event
+  per gate process, plus state counter. Pattern mirrors
+  `_CANARY_MISCONFIG_LOGGED` in lib/canary.sh.
+
+`hi_canary_should_trigger` now increments the right counter on every false
+return. New helper `hi_canary_increment_skip` (public alias of
+`_hi_canary_increment_skip`) exported for callers outside human-invariants.sh
+— `lib/canary.sh`'s probability gate uses it.
+
+### Status surface
+
+`bin/zlar status` Canary Subsystem block adds a "trigger eligibility" sub-block:
+
+- `approvals_since_last_canary` — counter advancing toward the next fire.
+- `last_canary_iso` — ISO timestamp of the most recent canary that claimed
+  pending (`never` if none), derived via `jq gmtime + strftime` so the
+  display works regardless of int-vs-float on-disk shape.
+- Five skip counters under "skips since last canary fire." cooldown_eval_error
+  highlighted in red if non-zero (regression sentinel).
+
+### Tests
+
+5 new test cases (TC-26 through TC-30, +14 assertions) in `tests/test-canary.sh`:
+
+- Float `canary_last_epoch` on disk does not block trigger eligibility.
+- Non-numeric `canary_last_epoch` triggers cooldown_eval_error sentinel.
+- Float `canary_pending_started_epoch` does not bypass in-flight guard.
+- Skip counters increment by reason.
+- canary_skips resets on claim.
+
+### Claim boundary
+
+`bin/zlar-gate` (Claude Code bash gate) only. `mcp-gate/gate.mjs` may carry
+the same pattern in its canary path; not investigated this release. Same
+boundary as v3.3.9. No `bin/zlar-gate` edit required (the bug is in lib/),
+no R041 maintenance window needed.
+
+### Diagnosis lineage
+
+Found via session-44 read-only audit of post-v3.3.9 trigger drought. The
+math (P(no fire | 67 dice rolls) ≈ 3×10⁻⁷) ruled out chance and forced
+inspection of the deterministic gates. Source-traced `_hi_canary_claim_inner`
+write site (jq `now` → float) → `hi_canary_should_trigger` read site (bash
+`$(( ))` → can't eval float). v3.3.7 build-session validation passed because
+the bug only exposes after the *second* should_trigger call following a
+canary fire — only one canary had ever fired under v3.3.7-shape state on
+Vincent's box. Same shape as the v3.3.6 build-session-self-validation
+problem flagged by the round-2/3 mathematicians panel: n=1 in the
+maintainer's environment isn't a sample.
+
+### No policy changes, no receipt schema changes, no state shape changes
+
+Adds `.canary_skips` (5 zero counters) to per-human state via idempotent
+migration. Existing fields unchanged. Authority chain, signing posture,
+89-rule policy at version 3.3.1 — all unchanged.
+
 ## 3.3.9 — 2026-05-09 — Telegram Chat ID Fail-Closed
 
 `bin/zlar-gate:509` had a hardcoded chat_id fallback that, on a non-maintainer

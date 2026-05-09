@@ -236,9 +236,19 @@ canary_should_trigger() {
     # Probabilistic trigger (RANDOM is 0-32767 in bash)
     local rand
     rand=$((RANDOM % 100))
-    [ "${rand}" -lt "${CANARY_PROBABILITY}" ] || return 1
+    if [ "${rand}" -lt "${CANARY_PROBABILITY}" ]; then
+        return 0
+    fi
 
-    return 0
+    # v3.3.10: probability skip is the most common no-fire reason. Track in
+    # per-human state so `bin/zlar status` can show "dice rolled and missed N
+    # times since the last canary fire." Per-call audit emission is deliberately
+    # avoided — every probability miss generating a signed audit entry would
+    # fill the chain with non-events at ~14/day expected rate.
+    if type hi_canary_increment_skip &>/dev/null; then
+        hi_canary_increment_skip "${human_id}" probability 2>/dev/null || true
+    fi
+    return 1
 }
 
 # ── Pick a random canary scenario ──
@@ -495,6 +505,11 @@ canary_check_result() {
     local pending_msg_id started now_epoch age
     pending_msg_id=$(hi_canary_get_pending_msg_id "${human_id}" 2>/dev/null || echo "")
     started=$(hi_canary_get_pending_started "${human_id}" 2>/dev/null || echo 0)
+    # v3.3.10: defensive guard against any non-integer that slips past
+    # hi_canary_get_pending_started's `| floor` cast (e.g., jq missing on a
+    # bare-bones operator system, or a partial write under crash). "0" treats
+    # the canary as not-started — falls through to msg_id checks safely.
+    case "${started}" in ''|*[!0-9]*) started=0 ;; esac
     now_epoch=$(date +%s)
     age=$((now_epoch - started))
 

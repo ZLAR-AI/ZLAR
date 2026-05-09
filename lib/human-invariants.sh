@@ -377,6 +377,19 @@ _hi_ensure_state() {
             "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     fi
 
+    # v3.3.10 skip-counter migration. Trigger eligibility decisions are
+    # evidence-bearing, but per-call audit emission would spam the chain
+    # (one event per probability miss × ~14 expected per healthy day).
+    # Counters live in state, reset on canary claim, surfaced via
+    # `bin/zlar status`. cooldown_eval_error is a regression sentinel —
+    # post-v3.3.10 should always be 0; non-zero means the float-bash-arith
+    # pattern has reappeared.
+    if jq -e 'has("canary_skips") | not' "${state_file}" >/dev/null 2>&1; then
+        jq 'del(._hmac) |
+            .canary_skips = (.canary_skips // {pending_held:0, below_threshold:0, cooldown_active:0, probability:0, cooldown_eval_error:0})' \
+            "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+    fi
+
     echo "${state_file}"
 }
 
@@ -1142,7 +1155,7 @@ hi_apply_lane_demotion() {
          if $cur == "fast" then .trust_lane = "guarded"
          elif $cur == "guarded" then .trust_lane = "slow"
          else . end |
-         .trust_lane_demotion = {"reason": $reason, "ts": now}' \
+         .trust_lane_demotion = {"reason": $reason, "ts": (now | floor)}' \
         "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
     _hi_log "trust_lane demotion: ${human_id} reason=${reason} lane=$(jq -r '.trust_lane' "${state_file}" 2>/dev/null)"
     echo "ok"
@@ -1215,16 +1228,16 @@ hi_record_canary_outcome() {
                --arg auto "${auto_enabled}" \
                'del(._hmac) |
                 .clean_run_count = ((.clean_run_count // 0) + 1) |
-                if (.clean_run_count == 1) then .clean_run_started_epoch = now else . end |
+                if (.clean_run_count == 1) then .clean_run_started_epoch = (now | floor) else . end |
                 (.trust_lane // "guarded") as $cur |
                 if ($auto == "true") and (.clean_run_count >= $threshold) then
                   if $cur == "slow" then
                     .trust_lane = "guarded" |
-                    .trust_lane_auto_promoted = {from: "slow", to: "guarded", clean_run_length: .clean_run_count, ts: now} |
+                    .trust_lane_auto_promoted = {from: "slow", to: "guarded", clean_run_length: .clean_run_count, ts: (now | floor)} |
                     .clean_run_count = 0 | .clean_run_started_epoch = 0
                   elif $cur == "guarded" then
                     .trust_lane = "fast" |
-                    .trust_lane_auto_promoted = {from: "guarded", to: "fast", clean_run_length: .clean_run_count, ts: now} |
+                    .trust_lane_auto_promoted = {from: "guarded", to: "fast", clean_run_length: .clean_run_count, ts: (now | floor)} |
                     .clean_run_count = 0 | .clean_run_started_epoch = 0
                   else
                     .clean_run_count = 0 | .clean_run_started_epoch = 0
@@ -1258,7 +1271,7 @@ hi_record_canary_outcome() {
                 if $cur == "fast" then .trust_lane = "guarded"
                 elif $cur == "guarded" then .trust_lane = "slow"
                 else . end |
-                .trust_lane_demotion = {reason: $reason, ts: now, clean_run_reset: true}' \
+                .trust_lane_demotion = {reason: $reason, ts: (now | floor), clean_run_reset: true}' \
                "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
             local new_lane
             new_lane=$(jq -r '.trust_lane // "guarded"' "${state_file}" 2>/dev/null)
@@ -1289,6 +1302,62 @@ hi_record_canary_outcome() {
 # as a routing artifact (so the existing inbox handler keeps working) but the
 # authoritative pending state is here.
 
+# v3.3.10 — observability helpers for the no-fire path.
+#
+# Counts skip reasons in per-human state (.canary_skips), reset on claim. This
+# is the "evidence in state" half of the no-spam-audit design:
+#   - frequent skip reasons (probability, cooldown_active, etc.) → state only
+#   - rare structural events (cooldown_eval_error) → audit + state
+#
+# Reasons accepted: pending_held, below_threshold, cooldown_active,
+#                   probability, cooldown_eval_error.
+# Unknown reasons are ignored (return 1) — defends against typos that would
+# silently corrupt the schema if jq accepted any string key.
+_hi_canary_increment_skip() {
+    local human_id="${1:?}"
+    local reason="${2:?}"
+    case "${reason}" in
+        pending_held|below_threshold|cooldown_active|probability|cooldown_eval_error) ;;
+        *) return 1 ;;
+    esac
+    local state_file
+    state_file=$(_hi_ensure_state "${human_id}")
+    jq --arg r "${reason}" \
+       'del(._hmac) |
+        .canary_skips = (.canary_skips // {pending_held:0, below_threshold:0, cooldown_active:0, probability:0, cooldown_eval_error:0}) |
+        .canary_skips[$r] = ((.canary_skips[$r] // 0) + 1)' \
+       "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
+}
+
+# Public alias for callers outside this file (lib/canary.sh's probability gate).
+hi_canary_increment_skip() {
+    _hi_canary_increment_skip "$@"
+}
+
+# One-shot signed-audit emission for cooldown_eval_error. Static-var-gated so
+# we emit at most once per gate process — pattern mirrors _CANARY_MISCONFIG_LOGGED
+# in lib/canary.sh. Per-call audit would obscure the signal in a chain of
+# repeated entries; the once-per-process emission gives a single timestamped
+# witness with the raw on-disk value that broke arithmetic.
+_HI_CANARY_COOLDOWN_EVAL_ERROR_LOGGED=""
+_hi_emit_cooldown_eval_error_once() {
+    local human_id="${1:?}"
+    local raw="${2:-}"
+    if [ -n "${_HI_CANARY_COOLDOWN_EVAL_ERROR_LOGGED}" ]; then
+        return 0
+    fi
+    _HI_CANARY_COOLDOWN_EVAL_ERROR_LOGGED="1"
+    if type emit_event &>/dev/null; then
+        emit_event "canary" "canary_cooldown_eval_error" "warn" \
+            "$(jq -n -c --arg hid "${human_id}" --arg raw "${raw}" \
+                '{human_id:$hid, raw_value:$raw, reason:"non_integer_canary_last_epoch_blocked_arithmetic"}')" \
+            "canary" "warn" 0 "canary"
+    fi
+    if type _hi_log &>/dev/null; then
+        _hi_log "canary cooldown_eval_error: human=${human_id} raw='${raw}'"
+    fi
+}
+
 # hi_record_canary_approval <human_id>
 #   Atomic increment of canary_approvals_since_last on the per-human state.
 #   Called from canary_record_approval after a human-approved ask resolves.
@@ -1306,6 +1375,16 @@ hi_record_canary_approval() {
 #   Conditions: counter ≥ min_approvals, cooldown elapsed since last_canary_epoch,
 #   no pending canary outstanding for this human.
 #   Probability gate is the caller's responsibility — keeps this function pure.
+#
+# v3.3.10 — every false return increments the corresponding .canary_skips
+# counter so the no-fire path is observable via `bin/zlar status` without
+# spamming audit.jsonl. cooldown_eval_error is a regression sentinel: pre-
+# v3.3.10 _hi_canary_claim_inner wrote `canary_last_epoch = now` (jq's `now`
+# returns float), then this function read the float and bash $(( ... ))
+# could not evaluate it — every cooldown check returned false silently after
+# the first canary fire. v3.3.10 casts at both write and read; if the read
+# still produces a non-integer (corruption / jq missing / partial write),
+# emit one signed audit event per process and treat as "do not trigger."
 hi_canary_should_trigger() {
     local human_id="${1:?}"
     local min_approvals="${2:-5}"
@@ -1315,17 +1394,43 @@ hi_canary_should_trigger() {
 
     local approvals last_epoch pending now elapsed
     approvals=$(jq -r '.canary_approvals_since_last // 0' "${state_file}" 2>/dev/null)
-    last_epoch=$(jq -r '.canary_last_epoch // 0' "${state_file}" 2>/dev/null)
+    # v3.3.10: `| floor` defends against legacy on-disk floats from
+    # _hi_canary_claim_inner pre-v3.3.10. Bash `$(( ... ))` cannot evaluate
+    # floats — the missing cast was the v3.3.7→v3.3.10 trigger drought bug.
+    last_epoch=$(jq -r '.canary_last_epoch // 0 | floor' "${state_file}" 2>/dev/null)
     pending=$(jq -r '.canary_pending_id // ""' "${state_file}" 2>/dev/null)
 
     # Per-human pending lock — one canary outstanding at a time.
-    [ -z "${pending}" ] || return 1
+    if [ -n "${pending}" ]; then
+        _hi_canary_increment_skip "${human_id}" pending_held 2>/dev/null || true
+        return 1
+    fi
 
-    [ "${approvals}" -ge "${min_approvals}" ] || return 1
+    if [ "${approvals}" -lt "${min_approvals}" ]; then
+        _hi_canary_increment_skip "${human_id}" below_threshold 2>/dev/null || true
+        return 1
+    fi
+
+    # cooldown_eval_error sentinel: post-`| floor` last_epoch must be a
+    # non-negative integer string. Any other shape means jq couldn't normalize
+    # the on-disk value (corruption, jq missing, partial write). Once-per-
+    # process audit emission, increment counter, refuse to trigger.
+    case "${last_epoch}" in
+        ''|*[!0-9]*)
+            local raw
+            raw=$(jq -r '.canary_last_epoch // ""' "${state_file}" 2>/dev/null)
+            _hi_canary_increment_skip "${human_id}" cooldown_eval_error 2>/dev/null || true
+            _hi_emit_cooldown_eval_error_once "${human_id}" "${raw}"
+            return 1
+            ;;
+    esac
 
     now=$(date +%s)
     elapsed=$((now - last_epoch))
-    [ "${elapsed}" -ge "${cooldown_s}" ] || return 1
+    if [ "${elapsed}" -lt "${cooldown_s}" ]; then
+        _hi_canary_increment_skip "${human_id}" cooldown_active 2>/dev/null || true
+        return 1
+    fi
 
     return 0
 }
@@ -1366,16 +1471,21 @@ _hi_canary_claim_inner() {
     if [ -n "${existing}" ]; then
         return 1
     fi
+    # v3.3.10: cast `now` to integer at every write so consumers that bash-arith
+    # these fields don't choke on jq's float (`now` returns `1777993446.847719`,
+    # which `$(( ... ))` cannot evaluate). Reset .canary_skips on the same write
+    # so skip counters represent skips since the *last* canary fire.
     jq --arg cid "${canary_id}" --arg sid "${session_id}" \
         'del(._hmac) |
          .canary_pending_id = $cid |
          .canary_pending_session_id = $sid |
-         .canary_pending_started_epoch = now |
+         .canary_pending_started_epoch = (now | floor) |
          .canary_pending_msg_id = "" |
          .canary_pending_delivered_epoch = 0 |
          .canary_pending_artifact_hash = "" |
          .canary_approvals_since_last = 0 |
-         .canary_last_epoch = now' \
+         .canary_last_epoch = (now | floor) |
+         .canary_skips = {pending_held:0, below_threshold:0, cooldown_active:0, probability:0, cooldown_eval_error:0}' \
         "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
 }
 
@@ -1405,7 +1515,7 @@ _hi_canary_record_delivery_inner() {
     jq --arg mid "${msg_id}" --arg ah "${artifact_hash}" \
         'del(._hmac) |
          .canary_pending_msg_id = $mid |
-         .canary_pending_delivered_epoch = now |
+         .canary_pending_delivered_epoch = (now | floor) |
          .canary_pending_artifact_hash = $ah' \
         "${state_file}" 2>/dev/null | _hi_sealed_write "${state_file}"
 }
@@ -1500,7 +1610,10 @@ hi_canary_get_pending_started() {
     local human_id="${1:?}"
     local state_file
     state_file=$(_hi_ensure_state "${human_id}")
-    jq -r '.canary_pending_started_epoch // 0' "${state_file}" 2>/dev/null
+    # v3.3.10: cast to int via `| floor` so callers doing bash arithmetic on
+    # the result (lib/canary.sh's age computation) don't choke on legacy
+    # on-disk floats. Same defense as hi_canary_should_trigger:1318.
+    jq -r '.canary_pending_started_epoch // 0 | floor' "${state_file}" 2>/dev/null
 }
 
 # v3.3.7 — getters for delivery-evidence fields.
