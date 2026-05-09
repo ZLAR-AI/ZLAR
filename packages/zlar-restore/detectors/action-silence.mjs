@@ -2,7 +2,7 @@
 //
 // Detects unusual gaps in agent activity WITHIN contiguous activity windows.
 //
-// Key insight (v3.0.4 Cassandra/Fatima): the audit trail spans the entire
+// Key insight (v3.0.4): the audit trail spans the entire
 // session, which includes periods when the human is absent (cleaning house,
 // in a meeting, eating lunch). Those gaps are human-absence, not agent-silence.
 // The detector was monitoring the wrong clock.

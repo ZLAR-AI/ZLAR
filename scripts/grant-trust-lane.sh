@@ -13,7 +13,7 @@
 #   ./scripts/grant-trust-lane.sh <human_id> "<reason>"
 #
 # Example:
-#   ./scripts/grant-trust-lane.sh 7662799203 "Trusted operator — sustained clean canary record"
+#   ./scripts/grant-trust-lane.sh 1000000007 "Trusted operator — sustained clean canary record"
 #
 # To revoke: delete trust_lane_grant from state and set trust_lane=guarded.
 # (No revoke script yet — use jq directly against human state + HMAC reseal.)

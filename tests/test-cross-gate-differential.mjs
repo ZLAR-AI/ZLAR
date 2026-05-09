@@ -5,8 +5,8 @@
 // for the same inputs. This is NOT a test of code review — it is a constructive
 // witness that the two canonicalization functions are behaviorally identical.
 //
-// Number Theorist's framing: both gates must apply the same canonical
-// factorization to the same input. A difference in matched rule or action is a
+// Architectural rule: both gates must apply the same canonical factorization
+// to the same input. A difference in matched rule or action is a
 // canonicalization bug, even if both gates "look correct" in isolation.
 //
 // Architecture:

@@ -4,7 +4,7 @@
 // Tests: v1 creation, signing, verification, cross-format compatibility,
 // tampering detection, payload decoding, edge cases.
 //
-// Viktor's rule: if v1 signing has a bug, something must catch it.
+// v1 signing-bug catcher: if v1 signing has a bug, something must catch it.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { createHash, generateKeyPairSync } from 'node:crypto';

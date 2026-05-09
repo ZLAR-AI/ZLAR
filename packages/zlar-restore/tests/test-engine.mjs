@@ -185,7 +185,7 @@ test('signal vector matches detector count', async () => {
   }
 });
 
-// ── Naveed's convergence rule (v3.0.4) ─────────────────────────────────────
+// ── Multi-detector convergence rule (v3.0.4) ──────────────────────────────
 
 test('active_detectors count present in aggregate', async () => {
   const trace = loadFixture('healthy-session.json');
@@ -194,7 +194,7 @@ test('active_detectors count present in aggregate', async () => {
   assert.ok(result.aggregate.active_detectors >= 0);
 });
 
-test('single high-scoring detector caps at degraded (Naveed rule)', async () => {
+test('single high-scoring detector caps at degraded (convergence rule)', async () => {
   // Even with very low thresholds, a single active detector should
   // not push past degraded. This is the structural fix for the false
   // positive cascade that hit Vincent's production session.
@@ -202,7 +202,7 @@ test('single high-scoring detector caps at degraded (Naveed rule)', async () => 
   // We use the contradiction trace which activates one detector strongly.
   const trace = loadFixture('contradiction-trace.json');
   // Set thresholds very low so the effective score easily crosses at_risk.
-  // Without Naveed's rule, this would recommend at_risk or suspended.
+  // Without the convergence rule, this would recommend at_risk or suspended.
   // With the rule, it should cap at degraded because only 1 detector is active.
   const result = await evaluate(trace, {
     thresholds: { degraded: 0.01, at_risk: 0.02, suspended: 0.03 },

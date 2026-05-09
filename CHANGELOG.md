@@ -46,8 +46,7 @@ relabel — which would let an attacker hide the system's accumulated debt to th
 human — invalidates the claim hash. Default `"probability"` preserves the
 v3.3.10 hash shape on legacy callers that did not set the marker.
 
-Post-hoc calibration (Bayesian discipline from session 40) must filter forced
-canaries — they are not iid samples. The `trigger_reason` field in the audit
+Post-hoc calibration must filter forced canaries — they are not iid samples. The `trigger_reason` field in the audit
 chain makes that filter possible.
 
 ### Status display
@@ -70,8 +69,7 @@ remaining count. The system never displays the human owing it more friction.
 healthy streaks (`0.8^20`); 98.8% of canaries fire by probability. Force is
 unobtrusive in the healthy case and a hard ceiling in the broken case.
 
-A Bayesian recalibration is required for non-developer environments per the
-session 40 mathematicians panel. Current 25 is a prior, not a posterior.
+Recalibration is required for non-developer environments. Current 25 is a prior, not a posterior.
 
 ### `canary_load_config` set-e fragility removed
 
@@ -575,7 +573,7 @@ meantime.
 - pending_lost rate (per-day, alarm if > 1.0)
 
 The 1.0/day threshold is a v3.3.7 prior, not a calibrated value;
-recalibrate per Bayesian round 3 once non-developer production data
+recalibrate once non-developer production data
 exists.
 
 ### Tests
@@ -607,7 +605,7 @@ one free pass on a probe issued under v3.3.6 rules.
   argument acknowledged; ships once production clean-run cycle has
   been observed under hardened evidence model).
 - `bin/zlar canary explain <id>` contestability dump.
-- Threshold recalibration per Bayesian round 3.
+- Threshold recalibration.
 - `bin/zlar-gate:509` hardcoded-chat-id removal — R041 maintenance
   window required.
 - Worker-file ownership model under

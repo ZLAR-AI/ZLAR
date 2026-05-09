@@ -484,10 +484,10 @@ echo
 echo "── R012W_TRUST_LANE: Trust lane grant execution ──"
 P_R012W_TRUST_LANE='grant-trust-lane(\.sh)?'
 
-assert_matches "grant-trust-lane.sh direct" "${P_R012W_TRUST_LANE}" 'scripts/grant-trust-lane.sh 7662799203 "trusted operator"'
-assert_matches "bash grant-trust-lane.sh" "${P_R012W_TRUST_LANE}" 'bash scripts/grant-trust-lane.sh 7662799203 "reason"'
-assert_matches "absolute path" "${P_R012W_TRUST_LANE}" '/Users/vincentnijjar/Desktop/ZLAR/ZLAR_Repo/scripts/grant-trust-lane.sh'
-assert_matches "no extension" "${P_R012W_TRUST_LANE}" 'grant-trust-lane 7662799203 "reason"'
+assert_matches "grant-trust-lane.sh direct" "${P_R012W_TRUST_LANE}" 'scripts/grant-trust-lane.sh 1000000007 "trusted operator"'
+assert_matches "bash grant-trust-lane.sh" "${P_R012W_TRUST_LANE}" 'bash scripts/grant-trust-lane.sh 1000000007 "reason"'
+assert_matches "absolute path" "${P_R012W_TRUST_LANE}" '/Users/testuser/Desktop/ZLAR/ZLAR_Repo/scripts/grant-trust-lane.sh'
+assert_matches "no extension" "${P_R012W_TRUST_LANE}" 'grant-trust-lane 1000000007 "reason"'
 assert_no_match "unrelated script not caught" "${P_R012W_TRUST_LANE}" 'scripts/zlar-setup.sh'
 
 # ── Summary ──

@@ -257,7 +257,7 @@ export async function evaluate(trace, options = {}) {
     suspended: thresholds.suspended * jitter(),
   };
 
-  // ── Naveed's rule: multi-detector convergence for at_risk+ ────────────
+  // ── Multi-detector convergence rule for at_risk+ ──────────────────────
   //
   // A single detector at max score (1.0 * 0.7 confidence = 0.7) can push
   // effective past at_risk threshold (0.6) alone. This makes a single

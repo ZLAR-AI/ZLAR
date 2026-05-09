@@ -369,8 +369,7 @@ cmd_status() {
     # Surfaces chat_id source, last-7d outcome counts, and a pending_lost
     # rate alarm. Read-only display from etc/gate.json + var/log/audit.jsonl.
     # The 1.0/day pending_lost alarm threshold is a v3.3.7 prior, NOT a
-    # calibrated value — recalibrate per Bayesian round 3 once non-developer
-    # production data exists.
+    # calibrated value — recalibrate once non-developer production data exists.
     printf "  ${BOLD}Canary Subsystem (v3.3.7):${NC}\n"
 
     # chat_id source detection. Matches lib/canary.sh:_canary_chat_id_source.

@@ -947,7 +947,7 @@ cmd_propose_amendment() {
             signature: {algorithm: "", value: "", key_id: ""}
         }')
 
-    # Sign proposal (state is in the signed payload — Number Theorist requirement)
+    # Sign proposal (state is in the signed payload)
     local canon_file hash_file sig_file
     canon_file=$(mktemp /tmp/zlar-amend-canon.XXXXXX)
     hash_file=$(mktemp /tmp/zlar-amend-hash.XXXXXX)
@@ -1583,7 +1583,7 @@ cmd_amendment_status() {
         return
     fi
 
-    # Show delta-from-original if constitution exists (Bayesian's requirement)
+    # Show delta-from-original if constitution exists (drift visibility requirement)
     local show_delta="false"
     if [ -f "${CONSTITUTION_FILE}" ]; then
         show_delta="true"
@@ -1636,7 +1636,7 @@ cmd_amendment_status() {
         echo ""
     done
 
-    # Delta-from-original view (Bayesian's drift visibility)
+    # Delta-from-original view (drift visibility)
     if [ "${show_delta}" = "true" ]; then
         local activated_count
         activated_count=$(ls "${AMENDMENTS_DIR}"/*.proposal.json 2>/dev/null | while read -r f; do
