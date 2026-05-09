@@ -48,6 +48,17 @@ CANARY_SCENARIOS_FILE="${ZLAR_CANARY_SCENARIOS_FILE:-${PROJECT_DIR:-.}/etc/canar
 # It watches the run. A clean run earns speed; a broken run restores friction.
 CANARY_CLEAN_RUN_PROMOTION_THRESHOLD="${ZLAR_CANARY_PROMOTION_THRESHOLD:-5}"
 CANARY_AUTO_PROMOTION_ENABLED="${ZLAR_CANARY_AUTO_PROMOTION:-true}"
+# v3.3.11 — Bounded recovery opportunity. After this many approvals since the
+# last canary fire, force a canary trigger (bypasses probability dice only).
+# Force respects pending_held / cooldown_active / cooldown_eval_error / chat_id —
+# those are integrity, not luck. Default 0 = disabled; current behavior preserved.
+# Misconfig where max <= min_approvals_before_trigger silently disables (the
+# probability gate would always fire first below max anyway).
+CANARY_MAX_APPROVALS_FORCE="${ZLAR_CANARY_MAX_APPROVALS_FORCE:-0}"
+# Process-local trigger-reason marker. Set by canary_should_trigger when a fire
+# decision is made; read by canary_send to thread into the artifact_payload and
+# subsequent audit. Either "probability" or "forced_drought_ceiling".
+CANARY_LAST_TRIGGER_REASON=""
 
 # ── Initialization ──
 # v3.3.6: also performs an orphan-pending sweep. A .pending file is "orphan" if
@@ -109,24 +120,50 @@ _canary_sweep_orphan_pending() {
 # ── Load config from gate.json ──
 
 canary_load_config() {
+    # v3.3.11 — every optional-key read uses an explicit `if` block. The older
+    # `[ -n "$_v" ] && X="$_v"` shorthand returns the test's exit code (1 when
+    # the key is absent), and bash `set -e` propagates that out of the
+    # function — fatal to gate hooks that source this file. The pattern was
+    # latently safe pre-v3.3.11 only because every key documented above
+    # happened to be present on the maintainer's box. The trailing
+    # `return 0` is belt-and-braces against future-author churn.
     local gate_config="${1:-${PROJECT_DIR:-.}/etc/gate.json}"
     if [ -f "${gate_config}" ] && command -v jq &>/dev/null; then
         local _v
         _v=$(jq -r '.canary.enabled // empty' "${gate_config}" 2>/dev/null)
-        [ -n "${_v}" ] && CANARY_ENABLED="${_v}"
+        if [ -n "${_v}" ]; then
+            CANARY_ENABLED="${_v}"
+        fi
         _v=$(jq -r '.canary.min_approvals_before_trigger // empty' "${gate_config}" 2>/dev/null)
-        [ -n "${_v}" ] && CANARY_MIN_APPROVALS="${_v}"
+        if [ -n "${_v}" ]; then
+            CANARY_MIN_APPROVALS="${_v}"
+        fi
         _v=$(jq -r '.canary.probability_percent // empty' "${gate_config}" 2>/dev/null)
-        [ -n "${_v}" ] && CANARY_PROBABILITY="${_v}"
+        if [ -n "${_v}" ]; then
+            CANARY_PROBABILITY="${_v}"
+        fi
         _v=$(jq -r '.canary.cooldown_s // empty' "${gate_config}" 2>/dev/null)
-        [ -n "${_v}" ] && CANARY_COOLDOWN_S="${_v}"
+        if [ -n "${_v}" ]; then
+            CANARY_COOLDOWN_S="${_v}"
+        fi
         _v=$(jq -r '.canary.scenarios_file // empty' "${gate_config}" 2>/dev/null)
-        [ -n "${_v}" ] && CANARY_SCENARIOS_FILE="${PROJECT_DIR:-.}/${_v}"
+        if [ -n "${_v}" ]; then
+            CANARY_SCENARIOS_FILE="${PROJECT_DIR:-.}/${_v}"
+        fi
         _v=$(jq -r '.canary.clean_run_promotion_threshold // empty' "${gate_config}" 2>/dev/null)
-        [ -n "${_v}" ] && CANARY_CLEAN_RUN_PROMOTION_THRESHOLD="${_v}"
+        if [ -n "${_v}" ]; then
+            CANARY_CLEAN_RUN_PROMOTION_THRESHOLD="${_v}"
+        fi
         _v=$(jq -r '.canary.auto_promotion_enabled // empty' "${gate_config}" 2>/dev/null)
-        [ -n "${_v}" ] && CANARY_AUTO_PROMOTION_ENABLED="${_v}"
+        if [ -n "${_v}" ]; then
+            CANARY_AUTO_PROMOTION_ENABLED="${_v}"
+        fi
+        _v=$(jq -r '.canary.max_approvals_before_forced_canary // empty' "${gate_config}" 2>/dev/null)
+        if [ -n "${_v}" ]; then
+            CANARY_MAX_APPROVALS_FORCE="${_v}"
+        fi
     fi
+    return 0
 }
 
 # v3.3.7 Canary Evidence Hardening — chat_id source detection.
@@ -227,16 +264,71 @@ canary_should_trigger() {
     # global so the bash gate keeps working without an enforcement-layer edit.
     local human_id="${2:-${TELEGRAM_CHAT_ID:-}}"
 
+    # Reset trigger-reason marker every call. Set on fire, read by canary_send.
+    CANARY_LAST_TRIGGER_REASON=""
+
     [ "${CANARY_ENABLED}" = "true" ] || return 1
     [ -n "${human_id}" ] || return 1
 
     type hi_canary_should_trigger &>/dev/null || return 1
     hi_canary_should_trigger "${human_id}" "${CANARY_MIN_APPROVALS}" "${CANARY_COOLDOWN_S}" || return 1
 
+    # v3.3.11 — Bounded recovery opportunity (forced canary ceiling).
+    #
+    # If the human has accumulated more approvals since the last canary fire
+    # than the configured ceiling, bypass the probability dice. This bounds
+    # friction-without-recovery to a known maximum — the system cannot pay
+    # its own dice failures (or any future trigger-path bug) out of the
+    # human's labor indefinitely. D2 axiom: friction(h, t) ⟹ Evidence(h, t).
+    #
+    # Force respects every structural eligibility check:
+    #   pending_held / cooldown_active / cooldown_eval_error → enforced above
+    #     by hi_canary_should_trigger (we only reach here if those passed).
+    #   chat_id validation → enforced downstream in canary_send.
+    # Only the probability dice gets bypassed — structural eligibility is
+    # integrity, not luck.
+    #
+    # Misconfig handling: non-numeric or zero CANARY_MAX_APPROVALS_FORCE → no
+    # force (current v3.3.10 behavior preserved). max <= min_approvals → silent
+    # no-op (probability gate would have fired below max; force is unreachable).
+    local force_ceiling="${CANARY_MAX_APPROVALS_FORCE:-0}"
+    case "${force_ceiling}" in ''|*[!0-9]*) force_ceiling=0 ;; esac
+    if [ "${force_ceiling}" -gt 0 ] && [ "${force_ceiling}" -gt "${CANARY_MIN_APPROVALS}" ]; then
+        # Resolve state file via _hi_ensure_state so we inherit the canonical
+        # path resolution used everywhere else in human-invariants.sh
+        # (_HI_PROJECT_DIR / ZLAR_HUMAN_STATE_DIR / PROJECT_DIR fallbacks).
+        # _hi_ensure_state is idempotent — no side effects on existing state.
+        local approvals_now state_file
+        state_file=""
+        if type _hi_ensure_state &>/dev/null; then
+            state_file=$(_hi_ensure_state "${human_id}" 2>/dev/null) || state_file=""
+        fi
+        if [ -n "${state_file}" ] && [ -f "${state_file}" ]; then
+            approvals_now=$(jq -r '.canary_approvals_since_last // 0 | floor' "${state_file}" 2>/dev/null || echo 0)
+        else
+            approvals_now=0
+        fi
+        case "${approvals_now}" in ''|*[!0-9]*) approvals_now=0 ;; esac
+        if [ "${approvals_now}" -ge "${force_ceiling}" ]; then
+            CANARY_LAST_TRIGGER_REASON="forced_drought_ceiling"
+            if type emit_event &>/dev/null; then
+                emit_event "canary" "canary_forced_trigger" "info" \
+                    "$(jq -n -c \
+                        --arg hid "${human_id}" \
+                        --argjson approvals "${approvals_now}" \
+                        --argjson ceiling "${force_ceiling}" \
+                        '{human_id:$hid,approvals_since_last:$approvals,ceiling:$ceiling,reason:"forced_drought_ceiling"}')" \
+                    "canary" "info" 0 "canary"
+            fi
+            return 0
+        fi
+    fi
+
     # Probabilistic trigger (RANDOM is 0-32767 in bash)
     local rand
     rand=$((RANDOM % 100))
     if [ "${rand}" -lt "${CANARY_PROBABILITY}" ]; then
+        CANARY_LAST_TRIGGER_REASON="probability"
         return 0
     fi
 
@@ -330,12 +422,20 @@ canary_send() {
     # Artifact contents = canary_id (existing format); the hash is stored
     # in human state alongside msg_id so a tampered or replaced .pending
     # file fails verification at resolve time.
+    #
+    # v3.3.11: trigger_reason is included in the hashed payload so a tampered
+    # "forced_drought_ceiling → probability" relabel (which would let an
+    # attacker hide the system's accumulated debt to the human) invalidates
+    # the claim hash. Default "probability" preserves the v3.3.10 hash shape
+    # whenever canary_send is invoked from a path that did not set the marker.
+    local trigger_reason="${CANARY_LAST_TRIGGER_REASON:-probability}"
     local artifact_payload artifact_hash
     artifact_payload=$(jq -n -c \
         --arg cid "${canary_id}" \
         --arg hid "${human_id}" \
         --arg sid "${session_id}" \
-        '{canary_id:$cid,human_id:$hid,session_id:$sid}')
+        --arg reason "${trigger_reason}" \
+        '{canary_id:$cid,human_id:$hid,session_id:$sid,trigger_reason:$reason}')
     artifact_hash=$(printf '%s' "${artifact_payload}" | _state_hmac_compute "${_HI_HMAC_KEY:-}")
 
     # v3.3.7 A1: locked CAS. If another session already holds the per-human

@@ -481,6 +481,123 @@ hi_canary_claim_pending "human-RST" "cid-RST" "sess-RST"
 SKIPS_AFTER=$(jq -r '.canary_skips.below_threshold // 0' "${TEST_DIR}/var/human-state/human-RST.json" 2>/dev/null)
 assert "TC-30 skip counter reset on claim" "0" "${SKIPS_AFTER}"
 
+# ─── v3.3.11 Bounded Recovery Opportunity ──────────────────────────────────
+# THE INVARIANT: after CANARY_MAX_APPROVALS_FORCE approvals since the last
+# canary fire, the probability gate is bypassed and a canary is forced.
+# Force respects every structural eligibility check (pending / cooldown /
+# cooldown_eval_error / chat_id) — only probability is bypassed. The system
+# cannot pay its own dice failures (or any future trigger-path bug) out of
+# the human's labor indefinitely. D2 axiom: friction(h, t) ⟹ Evidence(h, t).
+
+# ── TC-31 (v3.3.11): force fires at ceiling, bypassing probability dice ──
+# Probability is set to 0 (dice will never fire on its own); ceiling is set
+# to 4. After 4 approvals, should_trigger must return 0 anyway, set the
+# trigger-reason marker to "forced_drought_ceiling", and emit one
+# canary_forced_trigger info audit event.
+echo "TC-31 (v3.3.11): force fires at ceiling, dice off"
+reset_emits
+CANARY_PROBABILITY=0
+CANARY_MAX_APPROVALS_FORCE=4
+hi_record_canary_approval "human-FCEIL"
+hi_record_canary_approval "human-FCEIL"
+hi_record_canary_approval "human-FCEIL"
+hi_record_canary_approval "human-FCEIL"
+result=0
+canary_should_trigger "sess-FCEIL" "human-FCEIL" && result=0 || result=$?
+assert "TC-31 force fires at ceiling=4 with probability=0" "0" "${result}"
+assert "TC-31 trigger_reason set to forced_drought_ceiling" "forced_drought_ceiling" "${CANARY_LAST_TRIGGER_REASON}"
+assert "TC-31 canary_forced_trigger audit emitted (info severity)" "true" "$(emits_contain info)"
+CANARY_PROBABILITY=100
+CANARY_MAX_APPROVALS_FORCE=0
+
+# ── TC-32 (v3.3.11): below ceiling falls through to probability ──
+# Probability=0, ceiling=10, only 3 approvals — neither path fires. Confirms
+# force does NOT short-circuit the probability gate when counter < ceiling.
+echo "TC-32 (v3.3.11): below ceiling → falls through to probability gate"
+reset_emits
+CANARY_PROBABILITY=0
+CANARY_MAX_APPROVALS_FORCE=10
+hi_record_canary_approval "human-FBELOW"
+hi_record_canary_approval "human-FBELOW"
+hi_record_canary_approval "human-FBELOW"
+result=0
+canary_should_trigger "sess-FBELOW" "human-FBELOW" && result=0 || result=$?
+assert "TC-32 below ceiling + probability=0 → no trigger" "1" "${result}"
+assert "TC-32 trigger_reason empty (no fire decision made)" "" "${CANARY_LAST_TRIGGER_REASON}"
+CANARY_PROBABILITY=100
+CANARY_MAX_APPROVALS_FORCE=0
+
+# ── TC-33 (v3.3.11): force respects pending_held lock ──
+# A canary is already in flight for this human. Even if approvals exceed
+# the force ceiling, hi_canary_should_trigger returns 1 first (pending_held)
+# and force is unreachable. Confirms structural eligibility is integrity,
+# not luck — force only bypasses probability, never the pending lock.
+echo "TC-33 (v3.3.11): pending_held blocks force"
+reset_emits
+CANARY_PROBABILITY=0
+CANARY_MAX_APPROVALS_FORCE=3
+hi_canary_claim_pending "human-FPEND" "cid-FPEND-blocking" "sess-FPEND-A"
+# claim_inner reset .canary_approvals_since_last to 0; rebuild past ceiling.
+hi_record_canary_approval "human-FPEND"
+hi_record_canary_approval "human-FPEND"
+hi_record_canary_approval "human-FPEND"
+hi_record_canary_approval "human-FPEND"
+result=0
+canary_should_trigger "sess-FPEND-B" "human-FPEND" && result=0 || result=$?
+assert "TC-33 pending_held blocks force despite counter ≥ ceiling" "1" "${result}"
+assert "TC-33 no force-trigger audit emitted while pending_held" "false" "$(emits_contain info)"
+CANARY_PROBABILITY=100
+CANARY_MAX_APPROVALS_FORCE=0
+
+# ── TC-34 (v3.3.11): force respects cooldown_active ──
+# Counter past ceiling, but cooldown not yet elapsed since the last canary.
+# hi_canary_should_trigger returns 1 (cooldown_active) before force is
+# reached. Confirms force is rate-limited by the existing cooldown gate.
+echo "TC-34 (v3.3.11): cooldown_active blocks force"
+reset_emits
+CANARY_PROBABILITY=0
+CANARY_MAX_APPROVALS_FORCE=3
+hi_record_canary_approval "human-FCD"
+hi_record_canary_approval "human-FCD"
+hi_record_canary_approval "human-FCD"
+hi_record_canary_approval "human-FCD"
+NOW_EPOCH=$(date +%s)
+jq --argjson now "${NOW_EPOCH}" 'del(._hmac) | .canary_last_epoch = $now' \
+    "${TEST_DIR}/var/human-state/human-FCD.json" > "${TEST_DIR}/h.tmp" \
+    && mv "${TEST_DIR}/h.tmp" "${TEST_DIR}/var/human-state/human-FCD.json"
+CANARY_COOLDOWN_S=86400
+result=0
+canary_should_trigger "sess-FCD" "human-FCD" && result=0 || result=$?
+assert "TC-34 cooldown_active blocks force despite counter ≥ ceiling" "1" "${result}"
+assert "TC-34 no force-trigger audit emitted while cooldown_active" "false" "$(emits_contain info)"
+CANARY_COOLDOWN_S=0
+CANARY_PROBABILITY=100
+CANARY_MAX_APPROVALS_FORCE=0
+
+# ── TC-35 (v3.3.11): MAX_APPROVALS_FORCE=0 preserves v3.3.10 behavior ──
+# Backward-compat invariant: shipping with the force feature off (default)
+# must produce identical behavior to v3.3.10 — probability skip path runs
+# and increments the .canary_skips.probability counter. This is what
+# operators on un-updated gate.json files see.
+echo "TC-35 (v3.3.11): MAX_FORCE=0 → identical to v3.3.10"
+reset_emits
+CANARY_PROBABILITY=0
+CANARY_MAX_APPROVALS_FORCE=0
+hi_record_canary_approval "human-FOFF"
+hi_record_canary_approval "human-FOFF"
+hi_record_canary_approval "human-FOFF"
+hi_record_canary_approval "human-FOFF"
+hi_record_canary_approval "human-FOFF"
+hi_record_canary_approval "human-FOFF"
+hi_record_canary_approval "human-FOFF"
+result=0
+canary_should_trigger "sess-FOFF" "human-FOFF" && result=0 || result=$?
+assert "TC-35 disabled: 7 approvals + probability=0 → no trigger" "1" "${result}"
+assert "TC-35 disabled: trigger_reason empty (no fire decision made)" "" "${CANARY_LAST_TRIGGER_REASON}"
+SKIPS_PROB=$(jq -r '.canary_skips.probability // 0' "${TEST_DIR}/var/human-state/human-FOFF.json" 2>/dev/null)
+assert "TC-35 disabled: probability skip counter incremented (v3.3.10 behavior intact)" "1" "${SKIPS_PROB}"
+CANARY_PROBABILITY=100
+
 echo
 if [ "${FAIL}" -gt 0 ]; then
     echo "FAILED ASSERTIONS:"

@@ -1,5 +1,133 @@
 # Changelog
 
+## 3.3.11 — 2026-05-09 — Bounded Recovery Opportunity (forced canary ceiling)
+
+The probability gate is unbounded. A long string of dice misses, or any future
+trigger-path bug like the v3.3.7→v3.3.10 float-arith drought, produces invisible
+friction with no recovery opportunity. Vincent acted on roughly 180 Telegram
+asks since the last canary during the v3.3.7 bug window. That cost was paid out
+of the human's labor, not the system's account. v3.3.11 caps that ceiling.
+
+### Doctrine
+
+After `min_approvals_before_trigger` is reached, roll probability normally. If
+the drought counter reaches `max_approvals_before_forced_canary`, bypass the
+probability gate and force a canary attempt. The system cannot pay its own
+trigger failures out of the human's labor indefinitely. D2 axiom:
+friction(h, t) ⟹ Evidence(h, t).
+
+This does NOT guarantee promotion. It guarantees timely opportunity to
+demonstrate recovery.
+
+### What force bypasses, what force respects
+
+Force bypasses ONLY the probability dice. Every structural eligibility check
+remains binding — those are integrity, not luck:
+
+- pending_held — one canary in flight at a time (D1 invariant; force defers).
+- cooldown_active — minimum elapsed time since last canary (300s default).
+- cooldown_eval_error — sentinel. Never force into a broken state machine.
+- chat_id validation — refuses misdelivery; downstream in canary_send.
+
+Misconfig handling: `max_approvals_before_forced_canary = 0` (default) disables
+force entirely, preserving v3.3.10 behavior. `max <= min_approvals_before_trigger`
+is silently a no-op (probability gate fires below max anyway, force is unreachable).
+
+### Trigger reason in audit and artifact_payload
+
+Force fires emit a single `canary_forced_trigger` info-severity audit event
+with `{human_id, approvals_since_last, ceiling, reason: "forced_drought_ceiling"}`.
+Probability fires do not emit per-call audit (already covered by canary_send and
+the eventual canary_result event).
+
+`canary_send` threads the trigger reason into `artifact_payload` (alongside
+canary_id, human_id, session_id) before HMAC. A tampered "forced → probability"
+relabel — which would let an attacker hide the system's accumulated debt to the
+human — invalidates the claim hash. Default `"probability"` preserves the
+v3.3.10 hash shape on legacy callers that did not set the marker.
+
+Post-hoc calibration (Bayesian discipline from session 40) must filter forced
+canaries — they are not iid samples. The `trigger_reason` field in the audit
+chain makes that filter possible.
+
+### Status display
+
+`bin/zlar status` Canary Subsystem block extended with two lines (only shown
+when `max_approvals_before_forced_canary > 0`):
+
+```
+forced canary ceiling:                     25 approvals
+next forced canary:                        in 19 approvals
+```
+
+Past the ceiling, the second line shows `eligible now` rather than a negative
+remaining count. The system never displays the human owing it more friction.
+
+### Threshold value
+
+`max_approvals_before_forced_canary = 25` is the Vincent's-box default. With
+`probability = 20%` and `min_approvals = 5`, force fires on roughly 1.2% of
+healthy streaks (`0.8^20`); 98.8% of canaries fire by probability. Force is
+unobtrusive in the healthy case and a hard ceiling in the broken case.
+
+A Bayesian recalibration is required for non-developer environments per the
+session 40 mathematicians panel. Current 25 is a prior, not a posterior.
+
+### `canary_load_config` set-e fragility removed
+
+This release also normalizes every optional-key read in `canary_load_config`
+from `[ -n "$_v" ] && X="$_v"` shorthand to explicit `if` blocks, plus a
+trailing `return 0`. The shorthand returns the test's exit code (1 when the
+key is absent), and bash `set -e` propagates that out of the function — fatal
+to gate hooks that source this file.
+
+The bug surfaced during this build: adding the new optional
+`max_approvals_before_forced_canary` key as the function's last expression
+crashed the gate hook on every invocation until the gate was disabled and the
+fix landed. Pre-v3.3.11 the same pattern was latently safe only because every
+key happened to be present on the maintainer's gate.json. Future-author proof.
+
+### Files
+
+- `lib/canary.sh` — force check in `canary_should_trigger`, trigger_reason in
+  `canary_send` artifact_payload, all `canary_load_config` reads normalized,
+  trailing `return 0`. New env override `ZLAR_CANARY_MAX_APPROVALS_FORCE`.
+- `bin/zlar` — status block extended with ceiling + remaining-or-eligible-now.
+- `tests/test-canary.sh` — TC-31..35 (12 new assertions: force fires at
+  ceiling / below ceiling falls through / pending_held blocks / cooldown blocks /
+  MAX_FORCE=0 backward-compat).
+- `etc/gate.json` — `.canary.max_approvals_before_forced_canary: 25`
+  (gitignored; operator config; not in this commit).
+- `VERSION` — 3.3.10 → 3.3.11.
+
+### Tests
+
+81/81 in test-canary (was 69, +12 new). Full suite green:
+test-human-invariants 136/136, test-status-display 12/12, test-gate-uptime
+29/29, test-telegram-config 25/25, test-perimeter-closure 111/111 (one-off
+transient on first run, stable on retry per existing pattern).
+
+### Claim boundary
+
+`bin/zlar-gate` (R041-protected enforcement-layer binary) untouched. No R041
+maintenance window. `mcp-gate/gate.mjs` does NOT carry the force ceiling —
+deferred to a future Phase F bundle alongside v3.3.9 chat_id and v3.3.10
+float-fix MCP-side parity work. CHANGELOG entries for those are explicit;
+v3.3.11 is the third deferred MCP item at the same architectural surface.
+
+### Production observation, this build
+
+The set-e crash window (21:07–21:11 UTC) blocked tools until the gate was
+disabled and `canary_load_config` was repaired. Gate disable + fix + re-enable
+took ~2 minutes once diagnosed. Live during this window: a real probability
+canary fired at 21:06:32 (`CANARY PASSED: 69ffa0d4-...`), Vincent denied,
+clean_run advanced 3/5 → 4/5. Promotion path post-v3.3.10 is alive — one more
+healthy canary closes the v3.3.4 production-validation loop (guarded → fast).
+
+The `approvals_since_last_canary` counter end-of-build was 6 (well below the
+25 ceiling). First forced canary will fire when this counter reaches 25 if no
+probability fire occurs first.
+
 ## 3.3.10 — 2026-05-09 — Canary Trigger Drought Fix + Skip Observability
 
 The canary subsystem stopped firing on Vincent's box after the first canary

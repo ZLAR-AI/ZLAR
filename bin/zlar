@@ -523,6 +523,23 @@ cmd_status() {
         printf "        cooldown_active:                         ${SKIPS_COOLDOWN}\n"
         printf "        probability:                             ${SKIPS_PROBABILITY}\n"
         printf "        cooldown_eval_error:                     ${SKIPS_COOLDOWN_ERR_DISPLAY}\n"
+
+        # v3.3.11 — Bounded recovery opportunity (forced canary ceiling).
+        # Surfaces the configured ceiling and how many approvals remain until
+        # the next forced canary fires. Past-the-ceiling shows "eligible now"
+        # rather than a negative remaining count — the system never displays
+        # the human owing it more friction.
+        CFG_MAX_FORCE=$(jq -r '.canary.max_approvals_before_forced_canary // 0 | floor' "${GATE_JSON}" 2>/dev/null || echo "0")
+        case "${CFG_MAX_FORCE}" in ''|*[!0-9]*) CFG_MAX_FORCE=0 ;; esac
+        if [ "${CFG_MAX_FORCE}" -gt 0 ]; then
+            printf "      forced canary ceiling:                     ${CFG_MAX_FORCE} approvals\n"
+            if [ "${APPROVALS_SINCE}" -ge "${CFG_MAX_FORCE}" ]; then
+                printf "      next forced canary:                        ${GREEN}eligible now${NC}\n"
+            else
+                REMAINING=$((CFG_MAX_FORCE - APPROVALS_SINCE))
+                printf "      next forced canary:                        in ${REMAINING} approvals\n"
+            fi
+        fi
     fi
 
     printf "\n"
