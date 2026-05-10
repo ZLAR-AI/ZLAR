@@ -6,7 +6,7 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12381/badge)](https://www.bestpractices.dev/projects/12381)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/ZLAR-AI/ZLAR/badge)](https://securityscorecards.dev/viewer/?uri=github.com/ZLAR-AI/ZLAR)
 [![GitHub release](https://img.shields.io/github/v/tag/ZLAR-AI/ZLAR?label=release&sort=semver)](https://github.com/ZLAR-AI/ZLAR/releases)
-[![Tests](https://img.shields.io/badge/tests-1499_assertions-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
+[![Tests](https://img.shields.io/badge/tests-1710_assertions-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
 
 **ZLAR is a deny-first policy gate for AI agents.**
 
@@ -52,6 +52,13 @@ Installs in about ten minutes with deny-heavy defaults. Your agent is governed t
 ~/.zlar/bin/zlar status    # see what is governed
 ~/.zlar/bin/zlar telegram  # pair your phone for human approval
 ```
+
+### Install paths
+
+- **Quick install.** `git clone … && bash install.sh`. Deny-heavy defaults, governance running in about ten minutes. Suitable when you trust the source and want a default-safe baseline before you customize.
+- **Inspect-first install.** Clone the repo, read `install.sh` and the policy file at `etc/policies/lt-default.policy.json`, then run the script. The install is short by design so the script is short enough to read end to end.
+- **Source install.** Run from the cloned tree. `bin/zlar-gate` and the adapters do not require the `~/.zlar/` install directory; you can point hooks at the repo paths directly. Useful for development and for operators who want everything under version control.
+- **Agent-assisted, operator-authorized install.** A coding agent helps the operator inspect the repo, check prerequisites, explain what each install phase does, and interpret `zlar doctor` and `zlar status` afterward. The operator runs the install command, or explicitly approves it. This is a workflow, not a separate installer — there is no agent-driven installer that silently installs its own governor.
 
 Getting to a deployment you are ready to stand behind — customizing policy, signing your own constitution, writing agent manifests, tuning operational invariants, wiring standing approvals, auditing your interception surface — is real work. Plan one to two weeks. The install is fast. The deployment is not. Read the install guide before you run it.
 
@@ -335,7 +342,7 @@ bash tests/count-assertions.sh --detail   # also show per-file pass counts
 bash tests/count-assertions.sh --badge    # print shields.io badge URL
 ```
 
-Current state: **42 files, 1499 assertions.** One local environmental failure on macOS (`mcp-gate/test.mjs` — Node `listen()` returns `EPERM` on machines with certain firewall or MDM configurations); CI passes. See [troubleshooting](docs/troubleshooting.md) if the failure appears on your machine.
+Current state: **45 files, 1,710 assertions.** Some local environmental failures on macOS (`mcp-gate/test.mjs` — Node `listen()` returns `EPERM` on machines with certain firewall or MDM configurations); CI passes. See [troubleshooting](docs/troubleshooting.md) if the failure appears on your machine.
 
 Tests require `bash`, `jq`, and an OpenSSL with Ed25519 support (LibreSSL on macOS does not qualify — use `brew install openssl@3` and put it on PATH first). `node` and `python3` are optional; `.mjs` and Python tests skip gracefully if unavailable.
 
@@ -382,7 +389,10 @@ cedar-poc/     Cedar formal policy — base ruleset and per-regulation mappings
 | [006](docs/adr/ADR-006-structural-independence.md) | Structural independence from governed system |
 | [007](docs/adr/ADR-007-receipt-v1-envelope.md) | Receipt v1 envelope format |
 | [008](docs/adr/ADR-008-restorative-governance.md) | Restorative governance — observe, do not enforce |
+| [009](docs/adr/ADR-009-second-authority-law.md) | Second Authority Law |
 | [010](docs/adr/ADR-010-interception-coverage.md) | Interception coverage model |
+| [011](docs/adr/ADR-011-canonical-form-migration.md) | Canonical form migration |
+| [012](docs/adr/ADR-012-hash-chain-hardening.md) | Hash chain and non-repudiation hardening |
 
 ## Further reading
 
