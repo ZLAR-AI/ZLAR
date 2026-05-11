@@ -158,13 +158,19 @@ const tests = [
 let passed = 0;
 let failed = 0;
 
-for (const t of tests) {
+for (const [i, t] of tests.entries()) {
+  // Deterministic per-iteration id reused for resource and its entity uid.
+  // Previously both spots called Date.now() independently; a ms tick between
+  // the two calls produced a resource id with no matching entity, leaving
+  // resource.command unbound and forcing default-deny on whichever R001
+  // case happened to straddle the tick. See triage 2026-05-11.
+  const callId = `call-${i}`;
   const result = isAuthorized({
     principal: { type: 'ZLAR::Agent', id: 'claude-code' },
     action: { type: 'ZLAR::Action', id: 'evaluate' },
     resource: {
       type: 'ZLAR::ToolCall',
-      id: `call-${Date.now()}`,
+      id: callId,
     },
     context: {
       domain: t.domain,
@@ -181,7 +187,7 @@ for (const t of tests) {
         parents: [],
       },
       {
-        uid: { type: 'ZLAR::ToolCall', id: `call-${Date.now()}` },
+        uid: { type: 'ZLAR::ToolCall', id: callId },
         attrs: {
           command: t.command,
           path: '',
