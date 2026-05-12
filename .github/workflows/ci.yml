@@ -111,6 +111,9 @@ jobs:
             exit 1
           fi
 
+      - name: Verify Annex A test vectors from scratch (spec self-test)
+        run: node spec/verify-test-vectors.mjs
+
   proof:
     name: Proof of Enforcement
     runs-on: ubuntu-latest
