@@ -54,7 +54,8 @@ _gate_crash() {
     # Default to PreToolUse if crash happens before hook type is determined.
     local _event="${_GATE_HOOK_EVENT:-PreToolUse}"
     echo '{"hookSpecificOutput":{"hookEventName":"'"${_event}"'","permissionDecision":"deny","permissionDecisionReason":"ZLAR gate crash (line '"${line}"'). All actions blocked."}}'
-    exit 0
+    # R041 contract hardening (2026-05-12): exit 2 alongside JSON deny — belt-and-suspenders.
+    exit 2
 }
 
 # ─── Human Override: First Authority ────────────────────────────────────────
@@ -91,11 +92,21 @@ if [ -f "${HOME}/.claude/.gate-locked" ]; then
     LOCKED_AT=$(cat "${HOME}/.claude/.gate-locked" 2>/dev/null | tr -d '[:space:]')
     printf '{"hookSpecificOutput":{"hookEventName":"%s","permissionDecision":"deny","permissionDecisionReason":"[gate:locked] Gate locked by human at %s. Run '\''zlar unlock'\'' to resume."}}\n' \
         "${EVENT_NAME}" "${LOCKED_AT:-unknown}"
-    exit 0
+    # R041 contract hardening (2026-05-12): exit 2 alongside JSON deny — belt-and-suspenders.
+    exit 2
 fi
 
 # Set when hook event type is determined (before main processing).
 _GATE_HOOK_EVENT="PreToolUse"
+
+# R041 contract hardening (2026-05-12): process-level exit code intent.
+# Response helpers (respond_deny, respond_subagent_deny) set this to 2 when
+# they emit a blocking deny. The script's final `exit` line reads this flag
+# after main() returns and the post-case seal/restore block completes, so
+# Claude Code receives BOTH signals — JSON deny on stdout AND exit code 2.
+# Default 0 (allow / non-deny). Never set this directly outside the helpers
+# and the _gate_crash trap.
+_GATE_EXIT_CODE=0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
@@ -147,7 +158,7 @@ CONSTITUTION_PRESENCE_FILE="${PROJECT_DIR}/var/log/.constitution-last-hash"
 _CONSTITUTION_VALIDATED=""
 AUDIT_SIGNING_KEY="${HOME}/.zlar-signing.key"
 ZLAR_REQUIRE_SIGNED_AUDIT="${ZLAR_REQUIRE_SIGNED_AUDIT:-false}"
-AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+AUDIT_FILE="${ZLAR_AUDIT_FILE:-${PROJECT_DIR}/var/log/audit.jsonl}"
 ZLAR_EMIT_RECEIPTS="${ZLAR_EMIT_RECEIPTS:-false}"
 RECEIPT_FILE="${PROJECT_DIR}/var/log/receipts.jsonl"
 _PREV_RECEIPT_HASH=""
@@ -555,7 +566,7 @@ fi
 # Approval directory for deny-then-retry pattern
 # Claude Code hooks must respond fast — we cannot poll for Telegram responses
 # in-process. Instead: deny immediately, write pending file, check on retry.
-APPROVAL_DIR="${PROJECT_DIR}/var/log/approvals"
+APPROVAL_DIR="${ZLAR_APPROVAL_DIR:-${PROJECT_DIR}/var/log/approvals}"
 
 # Ensure log directories exist
 mkdir -p "$(dirname "${AUDIT_FILE}")" "${SESSION_DIR}" "${APPROVAL_DIR}" 2>/dev/null
@@ -632,6 +643,8 @@ respond_deny() {
     local escaped
     escaped=$(echo "${reason}" | head -c 200 | jq -Rrs '.' | sed 's/^"//;s/"$//')
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[%s] %s"}}\n' "${denied_by}" "${escaped}"
+    # R041 contract hardening (2026-05-12): record blocking-deny intent for end-of-script exit.
+    _GATE_EXIT_CODE=2
 }
 
 respond_subagent_allow() {
@@ -644,6 +657,8 @@ respond_subagent_deny() {
     local escaped
     escaped=$(echo "${reason}" | head -c 200 | jq -Rrs '.' | sed 's/^"//;s/"$//')
     printf '{"hookSpecificOutput":{"hookEventName":"SubagentStart","permissionDecision":"deny","permissionDecisionReason":"[%s] %s"}}\n' "${denied_by}" "${escaped}"
+    # R041 contract hardening (2026-05-12): record blocking-deny intent for end-of-script exit.
+    _GATE_EXIT_CODE=2
 }
 
 # ─── UUID Generation ────────────────────────────────────────────────────────
@@ -1906,7 +1921,7 @@ check_pending_approval() {
     # v2.10.0: Gate no longer deletes callback files — inbox dir is root-owned
     # (agent cannot write, so agent cannot forge). Gate tracks consumed callbacks
     # in a local file to avoid re-processing. Dispatcher handles cleanup.
-    local inbox_dir="/var/run/zlar-tg/inbox/cc"
+    local inbox_dir="${ZLAR_INBOX_DIR:-/var/run/zlar-tg/inbox/cc}"
     local consumed_file="${PROJECT_DIR}/var/log/.consumed-callbacks"
     touch "${consumed_file}" 2>/dev/null || true
     # Prevent unbounded growth
@@ -3044,3 +3059,7 @@ main() {
 
 # Run
 main
+# R041 contract hardening (2026-05-12): exit code reflects the gate's decision.
+# 0 = allow / non-blocking; 2 = blocking deny (alongside JSON deny on stdout).
+# Set by respond_deny / respond_subagent_deny and the _gate_crash trap.
+exit "${_GATE_EXIT_CODE:-0}"

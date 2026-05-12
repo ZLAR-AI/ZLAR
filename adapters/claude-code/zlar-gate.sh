@@ -16,7 +16,8 @@ REAL_HOOK="${ZLAR_PROJECT_DIR}/bin/zlar-gate"
 # Sanity check — fail closed if the gate binary is missing.
 if [ ! -x "${REAL_HOOK}" ]; then
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[gate:missing] ZLAR gate not found at %s — run adapters/claude-code/install.sh to repair"}}\n' "${REAL_HOOK}"
-    exit 0
+    # R041 contract hardening (2026-05-12): exit 2 alongside JSON deny — belt-and-suspenders.
+    exit 2
 fi
 
 # ── Parse .env (DO NOT source — sourcing is a code execution vector) ──
