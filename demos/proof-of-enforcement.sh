@@ -397,7 +397,7 @@ fi
 state_header "5" "Gate crash → ERR trap → deny"
 
 echo -e "    ${DIM}The gate's ERR trap (lines 38-49) catches any unhandled error${RESET}"
-echo -e "    ${DIM}and outputs a valid deny response with exit 0.${RESET}"
+echo -e "    ${DIM}and outputs a valid deny response with exit 2.${RESET}"
 
 # Verify the ERR trap exists in the gate source
 if grep -q 'trap.*_gate_crash.*ERR' "${GATE}"; then
@@ -413,12 +413,12 @@ else
     fail "Crash handler does not output deny"
 fi
 
-# Verify exit 0 (so host framework treats it as valid response, not fail-open)
+# Verify exit 2 (documented blocking-deny signal alongside JSON deny)
 CRASH_EXIT=$(sed -n '/_gate_crash()/,/^}/p' "${GATE}" | grep 'exit' | head -1)
-if echo "${CRASH_EXIT}" | grep -q 'exit 0'; then
-    pass "Crash handler exits 0 — host framework reads deny payload, not fail-open"
+if echo "${CRASH_EXIT}" | grep -q 'exit 2'; then
+    pass "Crash handler exits 2 — host framework receives blocking-deny signal"
 else
-    fail "Crash handler does not exit 0"
+    fail "Crash handler does not exit 2"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -481,7 +481,8 @@ echo -e "    4       Telegram unreachable               ${RED}Blocked${RESET}"
 echo -e "    5       Gate crashes                       ${RED}Blocked${RESET} (ERR trap)"
 echo ""
 
-echo -e "    Tests:   ${TOTAL}"
+TOTAL_CHECKS=$((PASSED + FAILED))
+echo -e "    Checks:  ${TOTAL_CHECKS}"
 echo -e "    Passed:  ${GREEN}${PASSED}${RESET}"
 if [ "${FAILED}" -gt 0 ]; then
     echo -e "    Failed:  ${RED}${FAILED}${RESET}"
