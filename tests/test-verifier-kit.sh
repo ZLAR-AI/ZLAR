@@ -373,6 +373,59 @@ else
     echo "  FAIL T-KIT-15.runtime-over-500ms: ${ELAPSED}ms (CI safety floor 500ms)"
 fi
 
+# ─── T-KIT-16: sample receipt fixture ships in kit ────────────────────────────
+
+echo "  T-KIT-16  examples/sample-receipt.json ships in kit"
+if [ -f "${KIT_DIR}/examples/sample-receipt.json" ]; then
+    assert_eq "T-KIT-16.exists" "1" "1"
+else
+    assert_eq "T-KIT-16.exists" "1" "0"
+fi
+
+# ─── T-KIT-17: README quick-start verify command works as documented ─────────
+
+echo "  T-KIT-17  README sample-receipt verify command works as documented"
+V_OUT="$(cd "${KIT_DIR}" && node verify.mjs examples/sample-receipt.json --pubkey spec/test-key.pub 2>&1)"
+V_EC=$?
+assert_eq "T-KIT-17.exit-zero" "0" "${V_EC}"
+assert_match "T-KIT-17.verdict-VALID" "^VALID" "${V_OUT}"
+
+# ─── T-KIT-18: sample chain fixture ships in kit ─────────────────────────────
+
+echo "  T-KIT-18  examples/sample-chain.jsonl ships in kit"
+if [ -f "${KIT_DIR}/examples/sample-chain.jsonl" ]; then
+    assert_eq "T-KIT-18.exists" "1" "1"
+else
+    assert_eq "T-KIT-18.exists" "1" "0"
+fi
+
+# ─── T-KIT-19: README quick-start chain command works as documented ──────────
+
+echo "  T-KIT-19  README sample-chain walk command works as documented"
+C_OUT="$(cd "${KIT_DIR}" && node verify-chain.mjs examples/sample-chain.jsonl 2>&1)"
+C_EC=$?
+assert_eq "T-KIT-19.exit-zero" "0" "${C_EC}"
+assert_match "T-KIT-19.result-INTACT" "Result: INTACT" "${C_OUT}"
+assert_match "T-KIT-19.events-5" "Chain check: 5 events" "${C_OUT}"
+
+# ─── T-KIT-20: README references the shipped sample paths ────────────────────
+# Regression: catches the case where the Quick start drifts from the
+# fixtures the build actually ships. If the README points at a path the
+# kit no longer produces, the README is wrong before the next hardening
+# run finds out.
+
+echo "  T-KIT-20  README quick start references the shipped sample paths"
+README_TXT="$(cat "${KIT_DIR}/README.md")"
+assert_match "T-KIT-20.receipt-path-in-readme" \
+    "examples/sample-receipt.json --pubkey spec/test-key.pub" \
+    "${README_TXT}"
+assert_match "T-KIT-20.chain-path-in-readme" \
+    "examples/sample-chain.jsonl" \
+    "${README_TXT}"
+assert_match "T-KIT-20.smoke-test-mentions-vectors" \
+    "verify-test-vectors.mjs" \
+    "${README_TXT}"
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 
 echo ""

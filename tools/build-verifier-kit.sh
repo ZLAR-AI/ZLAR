@@ -186,6 +186,14 @@ EOF
 # runtime self-test cross-checks this file against the embedded const.
 cp "${PUBLISHER_PUB}" "${KIT_DIR}/kit-publisher.pub"
 
+# ─── Generate sample fixtures (examples/) ─────────────────────────────────────
+# Two README-quick-start samples ship inside the kit so an outside reader
+# can run verify.mjs and verify-chain.mjs without being handed a receipt or
+# inspecting tests/source.
+
+log "Generating sample fixtures (examples/sample-receipt.json, examples/sample-chain.jsonl)"
+node "${SCRIPT_DIR}/generate-verifier-kit-fixtures.mjs" "${KIT_DIR}"
+
 # ─── Compute MANIFEST.json ────────────────────────────────────────────────────
 
 log "Computing MANIFEST.json"

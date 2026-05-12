@@ -36,12 +36,25 @@ bash tools/build-verifier-kit.sh
 tar xzf dist/zlar-verifier-kit-v0.1.0.tar.gz
 cd zlar-verifier-kit-v0.1.0
 
-# 3. Verify a receipt.
-node verify.mjs path/to/receipt.json --pubkey path/to/signer.pub
+# 3. Smoke test — verify the bundled Annex A vectors. Zero input
+#    required; confirms the kit works end-to-end before any operator
+#    receipt is in hand.
+node verify-test-vectors.mjs
 
-# 4. Walk an audit chain.
-node verify-chain.mjs path/to/audit.jsonl
+# 4. Verify a sample receipt. Ships in the kit (extracted from the
+#    spec at build time); verifies against the bundled spec test key.
+node verify.mjs examples/sample-receipt.json --pubkey spec/test-key.pub
+
+# 5. Walk a sample audit chain. Ships in the kit (5-event synthetic
+#    CC-shape chain).
+node verify-chain.mjs examples/sample-chain.jsonl
 ```
+
+To verify your own receipt or audit chain, substitute their paths
+above. Receipts must be **Governed Action Receipt v1** envelopes;
+the chain walker accepts any CC-shape JSONL where every event carries
+`prev_hash = SHA-256(previous raw line)` and the genesis event's
+`prev_hash` is the literal string `"genesis"`.
 
 ---
 
