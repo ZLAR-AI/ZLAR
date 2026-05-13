@@ -90,9 +90,12 @@ import {
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 const CONFIG = {
+  stdio: false,
   port: 3100,
   upstreamHost: null,
   upstreamPort: null,
+  configFile: null,
+  upstreamServerName: null,
   auditFile: join(PROJECT_DIR, 'var/log/audit.jsonl'),
   policyFile: join(PROJECT_DIR, 'etc/policies/active.policy.json'),
   policyPubkey: join(PROJECT_DIR, 'etc/keys/policy-signing.pub'),
@@ -141,6 +144,8 @@ let CHAT_ID_SOURCE = '';
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   switch (args[i]) {
+    case '--stdio': CONFIG.stdio = true; break;
+    case '--config': CONFIG.configFile = args[++i]; break;
     case '--port': CONFIG.port = parseInt(args[++i]); break;
     case '--upstream': {
       const [host, port] = args[++i].split(':');
@@ -178,8 +183,11 @@ for (let i = 0; i < args.length; i++) {
 
 Usage:
   node gate.mjs --port 3100 --upstream localhost:3200
+  node gate.mjs --stdio --config ./upstreams.json
 
 Options:
+  --stdio                 Run as an MCP stdio server (stdout is JSON-RPC only)
+  --config <path>         Routing config for stdio mode
   --port <port>            Listen port (default: 3100)
   --upstream <host:port>   Upstream MCP server address (required)
   --policy-engine <kind>   Policy engine: json (default), cedar, or both
@@ -191,6 +199,15 @@ Options:
 `);
       process.exit(0);
   }
+}
+
+if (CONFIG.stdio) {
+  // MCP stdio reserves stdout for JSON-RPC frames. Route every operational
+  // log emitted by existing shared code to stderr so startup/policy/audit
+  // chatter cannot corrupt the client protocol stream.
+  console.log = (...parts) => {
+    console.error(...parts);
+  };
 }
 
 // Load Telegram token from .env
@@ -1857,14 +1874,7 @@ async function handleRequest(msg) {
   }
 }
 
-// ─── TCP Proxy Mode ──────────────────────────────────────────────────────────
-
-function startTcpProxy() {
-  if (!CONFIG.upstreamHost || !CONFIG.upstreamPort) {
-    console.error('[gate] --upstream host:port required for TCP mode');
-    process.exit(1);
-  }
-
+function initializeGateRuntime() {
   loadPolicy();
   try {
     if (existsSync(CONFIG.policyFile)) POLICY_MTIME_MS = statSync(CONFIG.policyFile).mtimeMs;
@@ -1904,6 +1914,17 @@ function startTcpProxy() {
   } catch (e) {
     console.error(`[gate] Restore init failed (non-fatal): ${e.message}`);
   }
+}
+
+// ─── TCP Proxy Mode ──────────────────────────────────────────────────────────
+
+function startTcpProxy() {
+  if (!CONFIG.upstreamHost || !CONFIG.upstreamPort) {
+    console.error('[gate] --upstream host:port required for TCP mode');
+    process.exit(1);
+  }
+
+  initializeGateRuntime();
 
   const server = createServer(async (clientSocket) => {
     console.log(`[gate] Client connected`);
@@ -2010,6 +2031,170 @@ function startTcpProxy() {
   });
 }
 
+// ─── Stdio Proxy Mode ────────────────────────────────────────────────────────
+
+function loadStdioRoutingConfig() {
+  if (CONFIG.upstreamHost && CONFIG.upstreamPort) return;
+  if (!CONFIG.configFile) {
+    console.error('[gate] --config <path> required for stdio mode');
+    process.exit(1);
+  }
+
+  let entries;
+  try {
+    const raw = JSON.parse(readFileSync(CONFIG.configFile, 'utf8'));
+    entries = Array.isArray(raw) ? raw : raw?.upstreams;
+  } catch (e) {
+    console.error(`[gate] stdio routing config parse failed: ${e.message}`);
+    process.exit(1);
+  }
+
+  if (!Array.isArray(entries) || entries.length === 0) {
+    console.error('[gate] stdio routing config has no upstream entries');
+    process.exit(1);
+  }
+
+  const upstream = entries.find((entry) => entry?.transport === 'tcp') || entries[0];
+  if (upstream?.transport !== 'tcp' || !upstream.host || !upstream.port) {
+    console.error('[gate] stdio mode currently supports one TCP upstream descriptor');
+    process.exit(1);
+  }
+
+  CONFIG.upstreamServerName = upstream.server_name || 'default';
+  CONFIG.upstreamHost = upstream.host;
+  CONFIG.upstreamPort = parseInt(upstream.port, 10);
+}
+
+function parseStdioMessages(buffer) {
+  const messages = [];
+  const errors = [];
+  const lines = buffer.split('\n');
+  const remaining = lines.pop() || '';
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      messages.push(JSON.parse(trimmed));
+    } catch (e) {
+      errors.push({ line: trimmed, error: e.message });
+    }
+  }
+
+  return { messages, errors, remaining };
+}
+
+function writeStdoutJson(obj) {
+  process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+function parseErrorResponse() {
+  return {
+    jsonrpc: '2.0',
+    id: null,
+    error: { code: -32700, message: '[gate] Parse error: malformed JSON-RPC line' },
+  };
+}
+
+function sealStdioSession(signal) {
+  try {
+    emitEvent('mcp', 'gate.session_sealed', 'allow',
+      { session_id: CONFIG.sessionId, signal, seq_final: SEQ + 1 },
+      'gate.session_sealed', 'info', 0, 'gate');
+  } catch (e) {
+    console.error(`[gate] WARN: session_sealed event failed: ${e.message}`);
+  }
+}
+
+function startStdioProxy() {
+  loadStdioRoutingConfig();
+  initializeGateRuntime();
+
+  const upstream = createConnection(CONFIG.upstreamPort, CONFIG.upstreamHost, () => {
+    console.log(`[gate] Connected to upstream ${CONFIG.upstreamHost}:${CONFIG.upstreamPort}`);
+  });
+
+  upstream.on('data', (data) => {
+    process.stdout.write(data);
+  });
+
+  upstream.on('error', (e) => {
+    console.error(`[gate] Upstream error: ${e.message} — fail-closed`);
+    try {
+      emitEvent('mcp', 'upstream.error', 'deny', { error: e.message },
+        'upstream.error', 'critical', 100, 'gate');
+    } catch {}
+    writeStdoutJson({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32603, message: '[gate] Upstream unavailable — denied (fail-closed)' },
+    });
+  });
+
+  upstream.on('end', () => {
+    process.stdin.pause();
+  });
+
+  emitEvent('mcp', 'gate.start', 'allow',
+    {
+      transport: 'stdio',
+      upstream: `${CONFIG.upstreamHost}:${CONFIG.upstreamPort}`,
+      upstream_server: CONFIG.upstreamServerName,
+      session_id: CONFIG.sessionId,
+    },
+    'gate.start', 'info', 0, 'gate');
+
+  console.log(`[gate] ZLAR MCP Gate stdio mode`);
+  console.log(`[gate] Upstream: ${CONFIG.upstreamHost}:${CONFIG.upstreamPort}`);
+  console.log(`[gate] Policy: ${POLICY_VERSION}`);
+  console.log(`[gate] Audit: ${CONFIG.auditFile}`);
+  console.log(`[gate] Session: ${CONFIG.sessionId}`);
+
+  let stdinBuffer = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', async (data) => {
+    stdinBuffer += data;
+    const { messages, errors, remaining } = parseStdioMessages(stdinBuffer);
+    stdinBuffer = remaining;
+
+    for (const parseError of errors) {
+      try {
+        emitEvent('mcp', 'stdio.parse_error', 'deny',
+          { error: parseError.error, preview: parseError.line.substring(0, 120) },
+          'stdio.parse_error', 'warn', 0, 'gate');
+      } catch {}
+      writeStdoutJson(parseErrorResponse());
+    }
+
+    for (const msg of messages) {
+      if (msg.method) {
+        const result = await handleRequest(msg);
+        if (result.action === 'passthrough') {
+          upstream.write(JSON.stringify(result.msg) + '\n');
+        } else {
+          writeStdoutJson(result.response);
+        }
+      } else {
+        upstream.write(JSON.stringify(msg) + '\n');
+      }
+    }
+  });
+
+  process.stdin.on('end', () => {
+    sealStdioSession('stdin_eof');
+    upstream.end();
+  });
+
+  process.on('SIGINT', () => {
+    sealStdioSession('SIGINT');
+    process.exit(0);
+  });
+  process.on('SIGTERM', () => {
+    sealStdioSession('SIGTERM');
+    process.exit(0);
+  });
+}
+
 // ─── Fail-Closed: Uncaught Exception Handler ────────────────────────────────
 // Any unhandled error → log and deny. The gate must never silently pass through.
 
@@ -2033,9 +2218,11 @@ process.on('unhandledRejection', (reason) => {
 
 // ─── Entry Point ─────────────────────────────────────────────────────────────
 
-if (!CONFIG.upstreamHost) {
+if (CONFIG.stdio) {
+  startStdioProxy();
+} else if (!CONFIG.upstreamHost) {
   console.error('[gate] Specify --upstream host:port');
   process.exit(1);
+} else {
+  startTcpProxy();
 }
-
-startTcpProxy();
