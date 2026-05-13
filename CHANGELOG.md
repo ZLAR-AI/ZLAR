@@ -1,5 +1,60 @@
 # Changelog
 
+## 3.3.13 — 2026-05-13 — Worker Receipt /why for routed MCP
+
+This release extends Worker Receipt + `/why` from the bash gate path to
+routed MCP `tools/call` events, while preserving the existing claim
+boundary: ZLAR covers actions that actually pass through its gates. It
+also includes the MCP routing hardening and ask-card clarity work that
+landed after 3.3.12.
+
+### What changes
+
+- MCP callback inbox bootstrap now creates the MCP callback inbox during
+  source bootstrap/install, so Telegram MCP approvals survive normal boot
+  paths rather than depending on one-time local repair.
+- MCP Telegram ask cards distinguish deny-intended asks from normal asks,
+  making approve/deny intent easier to inspect before tapping.
+- Worker Receipt + `/why` v0.1 now covers governed bash-gate events and
+  routed MCP `tools/call` events.
+- The MCP gate emits Worker Receipts after successful audit append for
+  eligible final MCP decisions: `allow`, `deny`, `authorized`, `denied`,
+  and future literal `timeout`.
+- MCP Worker Receipts use `surface: mcp-gate`, `action.class: MCP tool
+  call`, and a summary of `MCP tool: <tool>`. Raw MCP args are not printed;
+  detail remains represented by hash.
+- `/why` reads a mixed bash + MCP Worker Receipt store by exact event id.
+- Worker Receipt emission remains additive: failures log a warning and do
+  not change the already-computed governance decision.
+
+### What does NOT change
+
+- No broad Codex governance claim. ZLAR does not claim to govern all Codex
+  actions or all agent actions.
+- Unrouted MCP connections, shell/network paths outside the gate, and other
+  unobserved actions remain outside this evidence path.
+- `/contest` and worker self-service contestability are still not
+  implemented.
+- Public website claims are unchanged.
+- Governed Action Receipt signing and audit semantics are not widened by
+  this Worker Receipt side channel.
+- Verifier Kit external-runner material remains private/readied; no
+  external attestation has completed.
+
+### Verification
+
+- CI, CodeQL, and OpenSSF Scorecard are green for the release head.
+- Codex CLI MCP routed through ZLAR has been proven in harness, and the
+  real Telegram MCP approve/deny smoke passed.
+- Isolated bash Worker Receipt smoke passed.
+- Isolated MCP Worker Receipt smoke passed; it proved `surface: mcp-gate`,
+  `action.class: MCP tool call`, tool-name summary, redaction of raw MCP
+  args/fake secret/private path, and no Worker Receipt for operational
+  gate-start audit rows.
+- Regression coverage includes Worker Receipt contract tests, bash live-ish
+  emission tests, MCP adapter conformance, stdio conformance, and receipt
+  verification tests.
+
 ## 3.3.12 — 2026-05-12 — Hook Contract Hardening
 
 Belt-and-suspenders alignment with the documented Claude Code PreToolUse
