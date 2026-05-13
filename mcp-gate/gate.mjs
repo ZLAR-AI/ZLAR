@@ -1395,6 +1395,89 @@ function isDenyLabeledMcpAsk(evaluation, toolName) {
   return /(^|[^a-z0-9])deny([^a-z0-9]|$)/i.test(label);
 }
 
+const TELEGRAM_CARD_SECRET_PATTERNS = [
+  /\bsk-[A-Za-z0-9_-]{6,}\b/g,
+  /\bgh[pousr]_[A-Za-z0-9_]{10,}\b/g,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+  /\bAKIA[0-9A-Z]{12,}\b/g,
+  /\b(?:token|secret|password|api[_-]?key|authorization)=\S+/gi,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{6,}\b/gi,
+];
+
+const TELEGRAM_CARD_PATH_PATTERN = /(?:~(?:\/|[A-Za-z0-9._-]+\/)[^\s'"`;&|,}\]]+|\/Users\/[^\s'"`;&|,}\]]+|\/home\/[^\s'"`;&|,}\]]+|\/private\/[^\s'"`;&|,}\]]+|\/tmp\/[^\s'"`;&|,}\]]+|\/var\/[^\s'"`;&|,}\]]+)/g;
+const TELEGRAM_CARD_SENSITIVE_KEY_PATTERN = /(?:token|secret|password|api[_-]?key|authorization|bearer|credential|private[_-]?key|chat[_-]?id)/i;
+const MARKDOWN_V2_TEXT_CHARS = /([_*\[\]()~`>#+\-=|{}.!])/g;
+
+function collapseTelegramCardText(value) {
+  return String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/ {2,}/g, ' ').trim();
+}
+
+function redactTelegramCardText(value) {
+  let redacted = collapseTelegramCardText(value);
+  for (const pattern of TELEGRAM_CARD_SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, '[REDACTED_SECRET]');
+  }
+  redacted = redacted.replace(TELEGRAM_CARD_PATH_PATTERN, '[REDACTED_PATH]');
+  return redacted;
+}
+
+function escapeMarkdownV2Text(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(MARKDOWN_V2_TEXT_CHARS, '\\$1');
+}
+
+function escapeMarkdownV2Code(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/`/g, '\\`');
+}
+
+function markdownCardContext(value) {
+  return escapeMarkdownV2Text(redactTelegramCardText(String(value ?? '').replace(/[*`]/g, '')));
+}
+
+function summarizeMcpArgValue(value, key = '', depth = 0) {
+  if (TELEGRAM_CARD_SENSITIVE_KEY_PATTERN.test(String(key))) return '[REDACTED_SECRET]';
+  if (value === null) return '[null]';
+  if (value === undefined) return '[undefined]';
+  if (typeof value === 'string') {
+    const redacted = redactTelegramCardText(value);
+    if (redacted.includes('[REDACTED_SECRET]')) return '[REDACTED_SECRET]';
+    if (redacted.includes('[REDACTED_PATH]')) return '[REDACTED_PATH]';
+    return `[string:${value.length}]`;
+  }
+  if (typeof value === 'number') return '[number]';
+  if (typeof value === 'boolean') return '[boolean]';
+  if (Array.isArray(value)) return `[array:${value.length}]`;
+  if (typeof value === 'object') {
+    if (depth >= 2) return '[object]';
+    const entries = Object.entries(value).slice(0, 6).map(([childKey, childValue]) => [
+      childKey,
+      summarizeMcpArgValue(childValue, childKey, depth + 1),
+    ]);
+    const summary = Object.fromEntries(entries);
+    const extra = Object.keys(value).length - entries.length;
+    if (extra > 0) summary.__truncated_keys = extra;
+    return summary;
+  }
+  return `[${typeof value}]`;
+}
+
+function mcpArgsCardPreview(args) {
+  const summary = summarizeMcpArgValue(args);
+  const preview = JSON.stringify(summary);
+  return preview.length > 140 ? `${preview.slice(0, 140)}...` : preview;
+}
+
+function mcpArgsHash(args) {
+  try {
+    return sha256hex(canonicalize(args)).slice(0, 16);
+  } catch {
+    return sha256hex(String(args ?? '')).slice(0, 16);
+  }
+}
+
 async function telegramPreconfirm(rule, riskScore, severity, toolName) {
   if (!CONFIG.telegramToken || !CONFIG.telegramChatId) return 'block'; // fail closed
 
@@ -1479,32 +1562,35 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
   }
 
   const emoji = severity === 'critical' ? '🔴' : severity === 'warn' ? '🟡' : '⚡';
-  const argsPreview = JSON.stringify(args).substring(0, 80) + (JSON.stringify(args).length > 80 ? '…' : '');
-  const consequenceLine = getConsequenceLine(toolName, rule, riskScore);
+  const argsPreview = mcpArgsCardPreview(args);
+  const argsHash = mcpArgsHash(args);
+  const consequenceLine = markdownCardContext(getConsequenceLine(toolName, rule, riskScore));
 
   // Agent intent: .description from Bash tool_input. Shows why the agent ran this.
   const intentRaw = (toolName === 'Bash' && args?.description) ? String(args.description).substring(0, 120) : '';
-  const intentLine = intentRaw ? `\n📋 *Context:* ${intentRaw}` : '';
+  const intentLine = intentRaw ? `\n📋 *Context:* ${markdownCardContext(intentRaw)}` : '';
 
   // Verify hint: policy-authored check prompt for this rule.
-  const verifyLine = verifyHint ? `\n🔍 *Verify:* ${verifyHint}` : '';
+  const verifyLine = verifyHint ? `\n🔍 *Verify:* ${markdownCardContext(verifyHint)}` : '';
 
   // Novelty banner: first use of this tool this session.
-  const noveltyLine = flags.novelty ? `\n🆕 *First use this session* — extra care.` : '';
+  const noveltyLine = flags.novelty ? `\n🆕 ${markdownCardContext('First use this session — extra care.')}` : '';
 
   // Advisory banner: human invariants flagged this ask but we're asking anyway.
   const advisoryLine = flags.advisory
-    ? `\n⚠️ *Advisory:* ${flags.advisory} (routed anyway — you decide)`
+    ? `\n⚠️ *Advisory:* ${markdownCardContext(`${flags.advisory} (routed anyway — you decide)`)}`
     : '';
 
   // Canary tier banner — H14 variance-based escalation (Element E1).
-  const tierBannerLine = flags.tierBanner ? `\n${flags.tierBanner}` : '';
+  const tierBannerLine = flags.tierBanner ? `\n${markdownCardContext(flags.tierBanner)}` : '';
   const cardMarker = flags.denyIntended ? '♦️' : '🔷';
 
   // Message layout mirrors bash gate v2.8.1: consequence first, intent (if present),
   // verify hint (if present), action for context, rule+risk as compact metadata at bottom.
-  const text = `${emoji} ${cardMarker} *${rule}*${tierBannerLine}\n\n${consequenceLine}${intentLine}${verifyLine}${noveltyLine}${advisoryLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${riskScore}/100`;
-  const escapedText = text.replace(/[_\[\]()~>#+=|{}.!-]/g, '\\$&').replace(/\\`/g, '`').replace(/\\\*/g, '*');
+  const escapedRule = escapeMarkdownV2Text(rule);
+  const escapedTool = escapeMarkdownV2Code(toolName);
+  const escapedArgsPreview = escapeMarkdownV2Code(argsPreview);
+  const text = `${emoji} ${cardMarker} *${escapedRule}*${tierBannerLine}\n\n${consequenceLine}${intentLine}${verifyLine}${noveltyLine}${advisoryLine}\n\n*Tool:* \`${escapedTool}\`\n*Args:* \`${escapedArgsPreview}\`\n*Args hash:* \`${argsHash}\`\nRisk ${riskScore}/100`;
 
   const keyboard = {
     inline_keyboard: [[
@@ -1515,7 +1601,7 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
 
   const result = await telegramApi('sendMessage', {
     chat_id: CONFIG.telegramChatId,
-    text: escapedText,
+    text,
     parse_mode: 'MarkdownV2',
     reply_markup: keyboard,
   });
@@ -1524,7 +1610,7 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
   if (!msgId) return 'error';
 
   console.log(`[gate] Telegram ask sent: msg_id=${msgId}, action_id=${actionId}`);
-  emitEvent('mcp', 'ask_sent', 'pending', { tool: toolName, args: argsPreview }, rule, severity, riskScore, 'gate');
+  emitEvent('mcp', 'ask_sent', 'pending', { tool: toolName, args: argsPreview, args_hash: argsHash }, rule, severity, riskScore, 'gate');
 
   // Poll for response via shared inbox
   const inboxDir = process.env.ZLAR_MCP_INBOX_DIR || '/var/run/zlar-tg/inbox/mcp';

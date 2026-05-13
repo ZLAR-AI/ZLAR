@@ -156,6 +156,7 @@ function writePolicy() {
         severity: 'info',
         match: { domain: 'mcp', detail: { tool_name: { eq: 'test.marker_ask' } } },
         risk_score: { irreversibility: 20, consequence: 20, blast_radius: 20 },
+        verify_hint: 'Review! [ticket](stdio)_x > path /Users/operator/private.txt token=stdio-verify-secret-123',
       },
       {
         id: 'SC_TIMEOUT',
@@ -315,6 +316,21 @@ async function startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret }) {
     requests,
     setMode(next) { mode = next; },
   };
+}
+
+function latestMcpAskBody(telegram) {
+  return [...telegram.requests].reverse().find((body) => {
+    const buttons = body?.reply_markup?.inline_keyboard?.[0] || [];
+    return buttons.some((button) => String(button.callback_data || '').startsWith('mcp:approve:'));
+  });
+}
+
+function latestMcpAskText(telegram) {
+  return String(latestMcpAskBody(telegram)?.text || '');
+}
+
+function latestMcpAskCallbacks(telegram) {
+  return latestMcpAskBody(telegram)?.reply_markup?.inline_keyboard?.[0]?.map((button) => button.callback_data) || [];
 }
 
 function writeFastHumanState(dir, humanId) {
@@ -750,7 +766,16 @@ async function runImplementedStdioTests(upstream) {
         jsonrpc: '2.0',
         id: 50,
         method: 'tools/call',
-        params: { name: 'test.marker_ask', arguments: { marker: 'ask-approved' } },
+        params: {
+          name: 'test.marker_ask',
+          arguments: {
+            marker: 'ask-approved',
+            command: 'curl -H "Authorization: Bearer sk-live-stdio-card-secret" https://example.invalid',
+            file_path: '/Users/operator/.ssh/id_rsa',
+            api_key: 'api_key=stdio-secret-123',
+            markdown: '_*[]()~`>#+-=|{}.!',
+          },
+        },
       });
       const resp = await waitForJsonLine(state, (line) => line.id === 50, 9000);
       assert('ask-approved returns upstream result', /test\.marker_ask/.test(resp.result?.content?.[0]?.text || ''));
@@ -759,6 +784,42 @@ async function runImplementedStdioTests(upstream) {
         upstream.state.markerExecutions.includes('test.marker_ask'));
       const askSent = findAudit(auditFile, (event) => event.action === 'ask_sent' && event.outcome === 'pending');
       assert('ask-approved emits ask_sent audit', !!askSent);
+      const askText = latestMcpAskText(telegram);
+      assert('ask-approved card uses blue MCP marker',
+        askText.includes('🔷') && !askText.includes('♦️'),
+        `text=${JSON.stringify(askText)}`);
+      assert('ask-approved card keeps rule id escaped', askText.includes('*SC\\_ASK*'), `text=${JSON.stringify(askText)}`);
+      assert('ask-approved card keeps tool name visible', askText.includes('*Tool:* `test.marker_ask`'), `text=${JSON.stringify(askText)}`);
+      assert('ask-approved card keeps risk visible', askText.includes('Risk 20/100'), `text=${JSON.stringify(askText)}`);
+      assert('ask-approved card includes args hash', /\*Args hash:\* `[a-f0-9]{16}`/.test(askText), `text=${JSON.stringify(askText)}`);
+      assert('ask-approved card redacts synthetic secrets',
+        !askText.includes('sk-live-stdio-card-secret') &&
+        !askText.includes('stdio-secret-123') &&
+        !askText.includes('stdio-verify-secret-123'),
+        `text=${JSON.stringify(askText)}`);
+      assert('ask-approved card redacts private/local paths',
+        !askText.includes('/Users/operator') && !askText.includes('.ssh/id_rsa'),
+        `text=${JSON.stringify(askText)}`);
+      assert('ask-approved card escapes MarkdownV2 special chars in verify hint',
+        askText.includes('Review\\! \\[ticket\\]\\(stdio\\)\\_x \\> path \\[REDACTED\\_PATH\\] \\[REDACTED\\_SECRET\\]'),
+        `text=${JSON.stringify(askText)}`);
+      const askCallbacks = latestMcpAskCallbacks(telegram);
+      assert('ask-approved callback_data approve format unchanged',
+        /^mcp:approve:[0-9a-f]+-[0-9a-f]{32}$/.test(askCallbacks[0] || ''),
+        `callbacks=${JSON.stringify(askCallbacks)}`);
+      assert('ask-approved callback_data deny format unchanged',
+        /^mcp:deny:[0-9a-f]+-[0-9a-f]{32}$/.test(askCallbacks[1] || ''),
+        `callbacks=${JSON.stringify(askCallbacks)}`);
+      assert('ask-approved approve/deny callback_data share action id',
+        String(askCallbacks[0] || '').replace('mcp:approve:', '') === String(askCallbacks[1] || '').replace('mcp:deny:', ''),
+        `callbacks=${JSON.stringify(askCallbacks)}`);
+      assert('ask_sent audit redacts synthetic secrets',
+        !JSON.stringify(askSent?.detail || {}).includes('sk-live-stdio-card-secret') &&
+        !JSON.stringify(askSent?.detail || {}).includes('stdio-secret-123'),
+        `detail=${JSON.stringify(askSent?.detail)}`);
+      assert('ask_sent audit includes args hash',
+        /^[a-f0-9]{16}$/.test(askSent?.detail?.args_hash || ''),
+        `detail=${JSON.stringify(askSent?.detail)}`);
       const authorized = findAudit(auditFile, (event) => event.action === 'test.marker_ask' && event.outcome === 'authorized');
       assert('ask-approved emits authorized audit', !!authorized);
       assertAuditCore('ask-approved', authorized, { agentId, sessionId, rule: 'SC_ASK', authorizer: `human:${humanId}` });
