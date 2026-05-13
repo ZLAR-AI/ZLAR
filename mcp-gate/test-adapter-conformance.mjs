@@ -7,7 +7,7 @@
 
 import { createServer, createConnection } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   cpSync,
   existsSync,
@@ -179,6 +179,16 @@ function writePolicy() {
         risk_score: { irreversibility: 20, consequence: 20, blast_radius: 20 },
       },
       {
+        id: 'AC_LOG',
+        enabled: true,
+        description: 'Adapter conformance log marker',
+        domain: 'mcp',
+        action: 'log',
+        severity: 'info',
+        match: { domain: 'mcp', detail: { tool_name: { eq: 'marker_log' } } },
+        risk_score: { irreversibility: 0, consequence: 0, blast_radius: 0 },
+      },
+      {
         id: 'AC_PC02_PLACEHOLDER',
         enabled: true,
         description: 'Constitution placeholder ask rule that never matches',
@@ -348,6 +358,29 @@ function findAudit(auditFile, predicate) {
   return readAudit(auditFile).find(predicate);
 }
 
+function readWorkerReceipts(workerReceiptFile) {
+  if (!existsSync(workerReceiptFile)) return [];
+  return readFileSync(workerReceiptFile, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+function findWorkerReceipt(workerReceiptFile, predicate) {
+  return readWorkerReceipts(workerReceiptFile).find(predicate);
+}
+
+function whyJson(workerReceiptFile, eventId) {
+  return JSON.parse(execFileSync(process.execPath, [
+    join(REPO_ROOT, 'bin', 'zlar-why'),
+    eventId,
+    '--json',
+  ], {
+    env: { ...process.env, ZLAR_WORKER_RECEIPT_FILE: workerReceiptFile },
+    encoding: 'utf8',
+  }));
+}
+
 async function startGate({
   upstreamPort,
   auditName,
@@ -359,9 +392,11 @@ async function startGate({
   inboxDir = null,
   hmacSecretFile = null,
   humanStateDir = null,
+  workerReceiptFile = null,
 }) {
   const gatePort = await getFreePort();
   const auditFile = join(SCRATCH, `${auditName}.audit.jsonl`);
+  const resolvedWorkerReceiptFile = workerReceiptFile || join(SCRATCH, `${auditName}.worker-receipts.jsonl`);
   const argv = [
     join(TMP_PROJECT, 'mcp-gate', 'gate.mjs'),
     '--port', String(gatePort),
@@ -388,6 +423,7 @@ async function startGate({
     ZLAR_CANARY_MIN_APPROVALS: '999',
     ZLAR_CANARY_COOLDOWN: '999999',
     ZLAR_HUMAN_STATE_HMAC_KEY_FILE: join(SCRATCH, 'no-human-hmac.key'),
+    ZLAR_WORKER_RECEIPT_FILE: resolvedWorkerReceiptFile,
     ...(telegram ? {
       ZLAR_TELEGRAM_TOKEN: 'fake-token',
       ZLAR_TELEGRAM_API_BASE: telegram.url,
@@ -425,7 +461,7 @@ async function startGate({
     });
   });
 
-  return { child, port: gatePort, auditFile, stdout: () => stdout, stderr: () => stderr };
+  return { child, port: gatePort, auditFile, workerReceiptFile: resolvedWorkerReceiptFile, stdout: () => stdout, stderr: () => stderr };
 }
 
 async function stopGate(gate) {
@@ -534,6 +570,8 @@ async function runTests() {
       assertEqual('upstream observed tools/list', 'tools/list', upstream.state.calls.at(-1)?.method);
       assert('non-tools/call did not create policy audit event',
         !findAudit(gate.auditFile, (e) => e.action === 'tools/list'));
+      assert('non-tools/call did not create Worker Receipt',
+        readWorkerReceipts(gate.workerReceiptFile).length === 0);
 
       const allowResp = await sendRpc(gate.port, {
         jsonrpc: '2.0',
@@ -549,6 +587,15 @@ async function runTests() {
       assertEqual('allow audit agent_id', 'adapter-test-agent', allowAudit?.agent_id);
       assertEqual('allow audit session_id', 'adapter-test-session', allowAudit?.session_id);
       assertEqual('allow audit rule', 'AC_ALLOW', allowAudit?.rule);
+      const allowReceipt = findWorkerReceipt(gate.workerReceiptFile, (r) => r.event.id === allowAudit?.id);
+      assert('allow emits Worker Receipt', !!allowReceipt);
+      assertEqual('allow Worker Receipt surface', 'mcp-gate', allowReceipt?.event?.surface);
+      assertEqual('allow Worker Receipt class', 'MCP tool call', allowReceipt?.action?.class);
+      assertEqual('allow Worker Receipt summary', 'MCP tool: marker_allow', allowReceipt?.action?.summary);
+      assert('allow Worker Receipt excludes raw args',
+        !JSON.stringify(allowReceipt).includes('args_preview') && !JSON.stringify(allowReceipt).includes('"marker":"allow"'));
+      const allowWhy = whyJson(gate.workerReceiptFile, allowAudit.id);
+      assertEqual('zlar why reads emitted MCP allow receipt', allowAudit.id, allowWhy?.event?.id);
 
       const beforeDeny = upstream.state.markerExecutions.length;
       const denyResp = await sendRpc(gate.port, {
@@ -565,6 +612,22 @@ async function runTests() {
       assertEqual('deny audit source=mcp-gate', 'mcp-gate', denyAudit?.source);
       assertEqual('deny audit rule', 'AC_DENY', denyAudit?.rule);
       assertEqual('deny audit authorizer=policy', 'policy', denyAudit?.authorizer);
+      const denyReceipt = findWorkerReceipt(gate.workerReceiptFile, (r) => r.event.id === denyAudit?.id);
+      assert('deny emits Worker Receipt', !!denyReceipt);
+      assertEqual('deny Worker Receipt decision', 'Denied by policy', denyReceipt?.decision?.label);
+      assertEqual('deny Worker Receipt summary', 'MCP tool: marker_deny', denyReceipt?.action?.summary);
+
+      const logResp = await sendRpc(gate.port, {
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: { name: 'marker_log', arguments: { marker: 'log' } },
+      });
+      assert('logged tools/call returns upstream result', /marker_log/.test(logResp.result?.content?.[0]?.text || ''));
+      const logAudit = findAudit(gate.auditFile, (e) => e.action === 'marker_log' && e.outcome === 'logged');
+      assert('logged tools/call emits logged audit', !!logAudit);
+      assert('logged audit does not emit Worker Receipt',
+        !findWorkerReceipt(gate.workerReceiptFile, (r) => r.event.id === logAudit?.id));
     });
   }
 
@@ -580,7 +643,7 @@ async function runTests() {
       const before = upstream.state.markerExecutions.length;
       const resp = await sendRpc(gate.port, {
         jsonrpc: '2.0',
-        id: 4,
+        id: 5,
         method: 'tools/call',
         params: { name: 'marker_unmatched', arguments: { marker: 'default-deny' } },
       });
@@ -618,7 +681,7 @@ async function runTests() {
       const before = upstream.state.markerExecutions.length;
       const resp = await sendRpc(gate.port, {
         jsonrpc: '2.0',
-        id: 6,
+        id: 7,
         method: 'tools/call',
         params: { name: 'marker_allow', arguments: { marker: 'manifest-deny' } },
       });
@@ -666,6 +729,8 @@ async function runTests() {
       assert('ask-approved executes upstream after approval', upstream.state.markerExecutions.includes('marker_ask'));
       const askSent = findAudit(gate.auditFile, (e) => e.action === 'ask_sent' && e.outcome === 'pending');
       assert('ask-approved emits ask_sent audit', !!askSent);
+      assert('ask_sent audit does not emit Worker Receipt',
+        !findWorkerReceipt(gate.workerReceiptFile, (r) => r.event.id === askSent?.id));
       const askText = latestMcpAskText(telegram);
       assert('ask-approved card uses blue MCP marker',
         askText.includes('🔷') && !askText.includes('♦️'),
@@ -675,6 +740,11 @@ async function runTests() {
       assertEqual('ask-approved audit source=mcp-gate', 'mcp-gate', authorized?.source);
       assertEqual('ask-approved audit authorizer=human', `human:${humanId}`, authorized?.authorizer);
       assertEqual('ask-approved audit rule', 'AC_ASK', authorized?.rule);
+      const authorizedReceipt = findWorkerReceipt(gate.workerReceiptFile, (r) => r.event.id === authorized?.id);
+      assert('human authorized emits Worker Receipt', !!authorizedReceipt);
+      assertEqual('authorized Worker Receipt decision', 'Authorized by human', authorizedReceipt?.decision?.label);
+      assertEqual('authorized Worker Receipt authorizer', 'human', authorizedReceipt?.decision?.authorizer);
+      assertEqual('authorized Worker Receipt summary', 'MCP tool: marker_ask', authorizedReceipt?.action?.summary);
     });
   }
 
@@ -717,6 +787,11 @@ async function runTests() {
       assertEqual('ask-denied audit source=mcp-gate', 'mcp-gate', denied?.source);
       assertEqual('ask-denied audit authorizer=human', `human:${humanId}`, denied?.authorizer);
       assertEqual('ask-denied audit rule', 'AC_ASK_DENY', denied?.rule);
+      const deniedReceipt = findWorkerReceipt(gate.workerReceiptFile, (r) => r.event.id === denied?.id);
+      assert('human denied emits Worker Receipt', !!deniedReceipt);
+      assertEqual('denied Worker Receipt decision', 'Denied by human', deniedReceipt?.decision?.label);
+      assertEqual('denied Worker Receipt authorizer', 'human', deniedReceipt?.decision?.authorizer);
+      assertEqual('denied Worker Receipt summary', 'MCP tool: marker_ask_deny', deniedReceipt?.action?.summary);
     });
   }
 
@@ -756,6 +831,11 @@ async function runTests() {
       assert('timeout emits gate:timeout audit', !!timeoutAudit);
       assertEqual('timeout audit outcome=denied', 'denied', timeoutAudit?.outcome);
       assertEqual('timeout audit source=mcp-gate', 'mcp-gate', timeoutAudit?.source);
+      const timeoutReceipt = findWorkerReceipt(gate.workerReceiptFile, (r) => r.event.id === timeoutAudit?.id);
+      assert('timeout denial emits Worker Receipt', !!timeoutReceipt);
+      assertEqual('timeout Worker Receipt decision', 'Denied after approval timeout', timeoutReceipt?.decision?.label);
+      assertEqual('timeout Worker Receipt authorizer', 'gate', timeoutReceipt?.decision?.authorizer);
+      assertEqual('timeout Worker Receipt summary', 'MCP tool: marker_timeout', timeoutReceipt?.action?.summary);
     });
   }
 
@@ -779,6 +859,35 @@ async function runTests() {
       assert('upstream unavailable emits upstream.error audit', !!upstreamAudit);
       assertEqual('upstream unavailable audit source=mcp-gate', 'mcp-gate', upstreamAudit?.source);
       assertEqual('upstream unavailable audit authorizer=gate', 'gate', upstreamAudit?.authorizer);
+      assert('upstream.error audit does not emit Worker Receipt',
+        !findWorkerReceipt(gate.workerReceiptFile, (r) => r.event.id === upstreamAudit?.id));
+    });
+  }
+
+  section('Worker Receipt failure isolation');
+  {
+    const upstream = await startFakeUpstream();
+    const badWorkerReceiptPath = join(SCRATCH, 'worker-receipt-as-directory');
+    mkdirSync(badWorkerReceiptPath, { recursive: true });
+    await withGate({
+      upstreamPort: upstream.port,
+      auditName: 'worker-receipt-failure',
+      agentId: 'adapter-wr-failure-agent',
+      sessionId: 'adapter-wr-failure-session',
+      workerReceiptFile: badWorkerReceiptPath,
+    }, async (gate) => {
+      const resp = await sendRpc(gate.port, {
+        jsonrpc: '2.0',
+        id: 14,
+        method: 'tools/call',
+        params: { name: 'marker_allow', arguments: { marker: 'worker-receipt-failure' } },
+      });
+      assert('Worker Receipt append failure does not change allow RPC result',
+        /marker_allow/.test(resp.result?.content?.[0]?.text || ''));
+      assert('Worker Receipt append failure still emits audit',
+        !!findAudit(gate.auditFile, (e) => e.action === 'marker_allow' && e.outcome === 'allow'));
+      assert('Worker Receipt append failure logs warning',
+        gate.stderr().includes('Worker Receipt generation failed'));
     });
   }
 

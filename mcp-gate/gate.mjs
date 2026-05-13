@@ -32,6 +32,12 @@ import {
   sha256hex
 } from '../lib/receipt.mjs';
 
+// Worker Receipt projection (/why explanatory evidence)
+import {
+  projectWorkerReceipt,
+  validateWorkerReceipt,
+} from '../lib/worker-receipt.mjs';
+
 // Multi-canonical Ed25519 verification (see ADR-011)
 import {
   canonicalFormVariants,
@@ -130,6 +136,7 @@ const CONFIG = {
   signingPubkey: join(process.env.HOME || '', '.zlar-signing.pub'),
   receiptFile: join(PROJECT_DIR, 'var/log/receipts.jsonl'),
   emitReceipts: process.env.ZLAR_EMIT_RECEIPTS === 'true',
+  workerReceiptFile: process.env.ZLAR_WORKER_RECEIPT_FILE || join(PROJECT_DIR, 'var/log/worker-receipts.jsonl'),
   // Cedar policy engine (Phase C) — when enabled, Cedar evaluates alongside or instead of JSON
   policyEngine: process.env.ZLAR_POLICY_ENGINE || 'json', // 'json', 'cedar', or 'both'
   host: process.env.ZLAR_MCP_HOST || '127.0.0.1',
@@ -834,6 +841,26 @@ function genId() {
   return `${hexTs}-${rand}`;
 }
 
+function workerReceiptMetadata(event) {
+  const ruleId = String(event?.rule || '');
+  const rule = POLICY?.rules?.find((candidate) => candidate?.id === ruleId);
+  return {
+    ruleDescription: rule?.description || (ruleId === 'default' ? 'Default policy action.' : ''),
+  };
+}
+
+function emitWorkerReceipt(event) {
+  try {
+    const receipt = projectWorkerReceipt(event, workerReceiptMetadata(event));
+    if (!receipt) return;
+    validateWorkerReceipt(receipt);
+    mkdirSync(dirname(CONFIG.workerReceiptFile), { recursive: true, mode: 0o700 });
+    appendFileSync(CONFIG.workerReceiptFile, `${JSON.stringify(receipt)}\n`, { encoding: 'utf8', mode: 0o600 });
+  } catch (e) {
+    console.error(`[gate] WARN: Worker Receipt generation failed: ${e.message}`);
+  }
+}
+
 // emitEvent is intentionally synchronous (DWP-01 defensive note):
 // 1. All operations (readFileSync, createHash, cryptoSign, appendFileSync) are sync
 // 2. Node.js event loop does not yield during synchronous code — no hash-chain
@@ -920,11 +947,17 @@ function emitEvent(domain, action, outcome, detail, rule, severity, riskScore, a
 
   event.signature = signature;
 
+  let auditWriteOk = false;
   try {
     appendFileSync(CONFIG.auditFile, JSON.stringify(event) + '\n');
+    auditWriteOk = true;
   } catch (e) {
     console.error(`[gate] CRITICAL: Failed to write audit event: ${e.message}`);
     if (REQUIRE_SIGNED_AUDIT) throw e;
+  }
+
+  if (auditWriteOk) {
+    emitWorkerReceipt(event);
   }
 
   // Generate receipt only for schema-valid outcomes. Audit-only events
