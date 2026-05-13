@@ -3,7 +3,7 @@
 
   "identity": {
     "agent_id": "zlar:agent:claude-code",
-    "principal": "zlar:human:vince-nijjar",
+    "principal": "zlar:human:operator-1",
     "issued_at": "2026-04-03T09:00:00Z"
   },
 

@@ -2,7 +2,7 @@
   "ratification_version": "0.1.0",
   "manifest_hash": "sha256:...",
   "manifest_agent_id": "zlar:agent:claude-code",
-  "ratified_by": "zlar:human:vince-nijjar",
+  "ratified_by": "zlar:human:operator-1",
   "ratified_at": "2026-04-10T09:00:00Z",
   "evidence_reviewed": [
     "audit_trail: 487 actions, 3 denials, 0 incidents",

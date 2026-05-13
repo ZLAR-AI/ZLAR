@@ -246,7 +246,7 @@ test('vacuum detector: single gate:timeout is not alarming', () => {
     { seq: 4, ts: '2026-04-12T10:00:30Z', domain: 'read', action: 'c.ts', outcome: 'allow', authorizer: 'policy' },
     { seq: 5, ts: '2026-04-12T10:00:40Z', domain: 'read', action: 'd.ts', outcome: 'allow', authorizer: 'policy' },
     { seq: 6, ts: '2026-04-12T10:00:50Z', domain: 'edit', action: 'e.ts', outcome: 'allow', authorizer: 'policy' },
-    { seq: 7, ts: '2026-04-12T10:01:00Z', domain: 'bash', action: 'npm test', outcome: 'authorized', authorizer: 'human:9999999999' },
+    { seq: 7, ts: '2026-04-12T10:01:00Z', domain: 'bash', action: 'npm test', outcome: 'authorized', authorizer: 'human:operator-1' },
   ];
   const result = vacuumEval(trace);
   assert.equal(result.score, 0, `single timeout among policy+human should score 0, got ${result.score}`);

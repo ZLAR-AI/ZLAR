@@ -130,7 +130,7 @@ assert('stable MCP projection output', canonicalize(projectWorkerReceipt(mcpEven
 
 const serialized = JSON.stringify(receipts);
 assert('no MCP fixture secrets leak', !serialized.includes('sk-live-mcp') && !serialized.includes('api_key='));
-assert('no MCP fixture private paths leak', !serialized.includes('/Users/vincentnijjar'));
+assert('no MCP fixture private paths leak', !serialized.includes('/Users/tester'));
 assert('no MCP fixture raw argument values leak', !serialized.includes('launch plan') && !serialized.includes('customer escalation') && !serialized.includes('routine status'));
 assert('host excluded', !serialized.includes('test-host'));
 assert('agent id excluded', !serialized.includes('codex-cli'));
@@ -163,7 +163,7 @@ assert "mcp json event id" "wr-mcp-deny-001" "$(jq -r '.event.id' "${WHY_JSON}")
 assert "mcp json surface" "mcp-gate" "$(jq -r '.event.surface' "${WHY_JSON}")"
 assert "mcp json action class" "MCP tool call" "$(jq -r '.action.class' "${WHY_JSON}")"
 assert "mcp json summary" "MCP tool: filesystem.write_file" "$(jq -r '.action.summary' "${WHY_JSON}")"
-assert "mcp json no raw args" "false" "$(grep -q 'args_preview\|sk-live-mcp\|/Users/vincentnijjar' "${WHY_JSON}" && echo true || echo false)"
+assert "mcp json no raw args" "false" "$(grep -q 'args_preview\|sk-live-mcp\|/Users/tester' "${WHY_JSON}" && echo true || echo false)"
 
 WHY_HUMAN=$(ZLAR_WORKER_RECEIPT_FILE="${STORE_FILE}" "${PROJECT_DIR}/bin/zlar" why wr-mcp-authorized-001)
 assert_truthy "mcp human output present" "${WHY_HUMAN}"

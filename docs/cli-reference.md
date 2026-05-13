@@ -266,7 +266,7 @@ Show the command list with one-line descriptions. Useful when you've forgotten a
 
 ### `zlar telegram`
 
-Interactive setup for Telegram approval. Prompts for bot token and chat ID, writes them to `.env` and `gate.json`.
+Interactive setup for Telegram approval. Prompts for bot token and chat ID, then writes them to local ignored config files (`.env` and `etc/gate.json`). Do not commit real Telegram identifiers.
 
 ```bash
 zlar telegram

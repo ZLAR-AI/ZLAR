@@ -105,7 +105,7 @@ assert('policy version', deny.decision.policy_version === '3.3.12');
 assert('policy key id', deny.decision.policy_key_id === 'policy-key-test');
 assert('human authorizer summarized without chat id', authorized.decision.authorizer === 'human' && !JSON.stringify(authorized).includes('123456789'));
 assert('human channel preserved generically', authorized.decision.approval_channel === 'telegram');
-assert('redacts private path', !JSON.stringify(deny).includes('/Users/vincentnijjar/.ssh/id_rsa'));
+assert('redacts private path', !JSON.stringify(deny).includes('/Users/tester/.ssh/id_rsa'));
 assert('redacts secret token', !JSON.stringify(deny).includes('sk-live-1234567890'));
 assert('redacted summary still explains action class', deny.action.summary.includes('Bash: cat [REDACTED_PATH]'));
 assert('raw audit detail excluded', !Object.prototype.hasOwnProperty.call(deny, 'detail'));

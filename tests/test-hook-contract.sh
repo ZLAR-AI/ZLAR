@@ -170,7 +170,7 @@ echo
 # deterministic deny. Tests the same respond_deny → exit 2 path via a
 # different tool (Edit instead of Bash) and a different rule.
 echo "── TC2: deterministic deny (Edit on enforcement path) ──"
-TC2_INPUT='{"session_id":"test-hook-contract-tc2","hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"/Users/vincentnijjar/Desktop/ZLAR/ZLAR_Repo/bin/zlar-gate","old_string":"_GATE_EXIT_CODE=0","new_string":"_GATE_EXIT_CODE=99"}}'
+TC2_INPUT='{"session_id":"test-hook-contract-tc2","hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"/Users/tester/Desktop/ZLAR/ZLAR_Repo/bin/zlar-gate","old_string":"_GATE_EXIT_CODE=0","new_string":"_GATE_EXIT_CODE=99"}}'
 run_gate "${TC2_INPUT}"
 assert_eq    "TC2 exit code is 2"             "2"     "${RC}"
 assert_jq    "TC2 hookEventName=PreToolUse"   '.hookSpecificOutput.hookEventName'       "PreToolUse" "${OUT}"

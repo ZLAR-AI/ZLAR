@@ -244,11 +244,11 @@ const vGatePrefix = validateSemantics(
   { skipTemporalCheck: true });
 assert('gate:<reason> deny accepted', true, vGatePrefix.valid);
 
-// human:<chat_id> authorized is coherent
+// human:<provenance> authorized is coherent
 const vHumanPrefix = validateSemantics(
-  validPayload({ authorizer: 'human:1234567890', outcome: 'authorized', rule: 'R095' }),
+  validPayload({ authorizer: 'human:operator-1', outcome: 'authorized', rule: 'R095' }),
   { skipTemporalCheck: true });
-assert('human:<id> authorized accepted', true, vHumanPrefix.valid);
+assert('human:<provenance> authorized accepted', true, vHumanPrefix.valid);
 
 // Unknown base still rejected
 const vUnknown = validateSemantics(

@@ -88,7 +88,7 @@ echo "=== live-ish emit_event Worker Receipt append ==="
 MATCHED_RULE="R001"
 MATCHED_RULE_DESCRIPTION="Allow harmless live-ish bash status."
 emit_event "bash" "git status --short" "allow" \
-    '{"command":"git status --short","cwd":"/Users/vincentnijjar/Desktop/ZLAR/ZLAR_Repo"}' \
+    '{"command":"git status --short","cwd":"/Users/tester/Desktop/ZLAR/ZLAR_Repo"}' \
     "R001" "info" 0 "policy"
 
 assert "audit line count after allow" "1" "$(wc -l < "${AUDIT_FILE}" | tr -d ' ')"
@@ -114,8 +114,8 @@ assert "operational/internal/MCP events do not append worker receipt" "${WR_BEFO
 
 MATCHED_RULE="R002"
 MATCHED_RULE_DESCRIPTION="Deny dangerous credential exposure."
-emit_event "bash" "cat /Users/vincentnijjar/.ssh/id_rsa && echo sk-live-1234567890" "deny" \
-    '{"command":"cat /Users/vincentnijjar/.ssh/id_rsa && echo sk-live-1234567890","cwd":"/Users/vincentnijjar/Desktop/ZLAR/ZLAR_Repo"}' \
+emit_event "bash" "cat /Users/tester/.ssh/id_rsa && echo sk-live-1234567890" "deny" \
+    '{"command":"cat /Users/tester/.ssh/id_rsa && echo sk-live-1234567890","cwd":"/Users/tester/Desktop/ZLAR/ZLAR_Repo"}' \
     "R002" "critical" 100 "policy"
 
 DENY_EVENT_ID=$(tail -1 "${AUDIT_FILE}" | jq -r '.id')

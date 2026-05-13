@@ -50,7 +50,7 @@ Installs in about ten minutes with deny-heavy defaults. Your agent is governed t
 ```bash
 ~/.zlar/bin/zlar doctor    # verify everything works
 ~/.zlar/bin/zlar status    # see what is governed
-~/.zlar/bin/zlar telegram  # pair your phone for human approval
+~/.zlar/bin/zlar telegram  # pair your phone via local ignored config
 ```
 
 ### Install paths
