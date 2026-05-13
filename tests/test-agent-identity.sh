@@ -22,6 +22,13 @@ source "${PROJECT_DIR}/lib/agent-identity.sh"
 PASS=0
 FAIL=0
 TOTAL=0
+TEMP_DIR=$(mktemp -d)
+AUDIT_FIXTURE="${TEMP_DIR}/audit.jsonl"
+
+cleanup() {
+    rm -rf "${TEMP_DIR}"
+}
+trap cleanup EXIT
 
 assert() {
     local label="$1" expected="$2" actual="$3"
@@ -74,21 +81,28 @@ echo
 
 echo "Export tests:"
 
+cat > "${AUDIT_FIXTURE}" <<'JSONL'
+{"id":"agent-identity-001","ts":"2026-04-02T00:00:00Z","seq":1,"source":"gate","host":"test-host","user":"tester","agent_id":"claude-code","session_id":"agent-identity-session-1","domain":"bash","action":"git status --short","outcome":"allow","risk_score":5,"detail":{"command":"git status --short","cwd":"/workspace/zlar"},"rule":"R001","policy_version":"2.6.0","severity":"info","prev_hash":"genesis","authorizer":"policy"}
+{"id":"agent-identity-002","ts":"2026-04-02T00:01:00Z","seq":2,"source":"gate","host":"test-host","user":"tester","agent_id":"claude-code","session_id":"agent-identity-session-1","domain":"bash","action":"git push origin main","outcome":"authorized","risk_score":60,"detail":{"command":"git push origin main","cwd":"/workspace/zlar"},"rule":"R014","policy_version":"2.6.0","severity":"warn","prev_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","authorizer":"human:operator-1"}
+{"id":"agent-identity-003","ts":"2026-04-02T00:02:00Z","seq":1,"source":"gate","host":"test-host","user":"tester","agent_id":"test-agent","session_id":"agent-identity-session-2","domain":"read","action":"/workspace/zlar/README.md","outcome":"allow","risk_score":0,"detail":{"path":"/workspace/zlar/README.md"},"rule":"R053","policy_version":"2.6.0","severity":"info","prev_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","authorizer":"policy"}
+{"id":"agent-identity-004","ts":"2026-04-02T00:03:00Z","seq":2,"source":"gate","host":"test-host","user":"tester","agent_id":"test-agent","session_id":"agent-identity-session-2","domain":"bash","action":"sudo rm -rf /tmp/example","outcome":"deny","risk_score":100,"detail":{"command":"sudo rm -rf /tmp/example","cwd":"/workspace/zlar"},"rule":"R003","policy_version":"2.6.0","severity":"critical","prev_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","authorizer":"policy"}
+JSONL
+
 # Raw export
-raw_output=$(bash "${PROJECT_DIR}/bin/zlar-agents-export" 2>/dev/null)
+raw_output=$(ZLAR_AUDIT_FILE="${AUDIT_FIXTURE}" bash "${PROJECT_DIR}/bin/zlar-agents-export" 2>/dev/null)
 raw_count=$(echo "${raw_output}" | jq '.total_agents')
 raw_view=$(echo "${raw_output}" | jq -r '.view')
-assert "raw export has agents" "true" "$([[ ${raw_count} -gt 0 ]] && echo true || echo false)"
+assert "raw export has fixture agents" "2" "${raw_count}"
 assert "raw view label" "raw" "${raw_view}"
 assert "raw has version" "1.0.0" "$(echo "${raw_output}" | jq -r '.version')"
 assert "raw has generated_at" "true" "$(echo "${raw_output}" | jq -r '.generated_at' | grep -q '^20' && echo true || echo false)"
 
 # Production export
-prod_output=$(bash "${PROJECT_DIR}/bin/zlar-agents-export" --production 2>/dev/null)
+prod_output=$(ZLAR_AUDIT_FILE="${AUDIT_FIXTURE}" bash "${PROJECT_DIR}/bin/zlar-agents-export" --production 2>/dev/null)
 prod_count=$(echo "${prod_output}" | jq '.total_agents')
 prod_view=$(echo "${prod_output}" | jq -r '.view')
 assert "production view label" "production" "${prod_view}"
-assert "production filters test agents" "true" "$([[ ${prod_count} -lt ${raw_count} ]] && echo true || echo false)"
+assert "production filters test agents" "1" "${prod_count}"
 
 # Check no test agents in production
 test_in_prod=$(echo "${prod_output}" | jq '[.agents[] | select(.is_test == true)] | length')
