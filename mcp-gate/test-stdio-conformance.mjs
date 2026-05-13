@@ -70,7 +70,6 @@ const GATE_TIMEOUT_S = 2;
 
 const children = [];
 const servers = [];
-let TRANSPORT_GAP_REPORTED = false;
 
 const { publicKey: POLICY_PUBLIC_KEY, privateKey: POLICY_PRIVATE_KEY } = generateKeyPairSync('ed25519');
 
@@ -542,17 +541,7 @@ function assertAuditCore(label, event, {
 
 function assertStdioTransportIndicator(label, event) {
   const transport = event?.transport || event?.detail?.transport || event?.detail?.mcp_transport;
-  if (transport) {
-    assertEqual(`${label} audit transport indicator`, 'stdio', transport);
-    return;
-  }
-  if (!TRANSPORT_GAP_REPORTED) {
-    TRANSPORT_GAP_REPORTED = true;
-    skip(
-      `${label} audit transport indicator`,
-      'design gap: tool-call audit entries do not yet carry transport=stdio; only gate.start does',
-    );
-  }
+  assertEqual(`${label} audit transport indicator`, 'stdio', transport);
 }
 
 async function withStdioGate(optsOrFn, maybeFn) {

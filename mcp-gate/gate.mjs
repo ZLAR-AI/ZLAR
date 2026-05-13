@@ -873,6 +873,7 @@ function emitEvent(domain, action, outcome, detail, rule, severity, riskScore, a
     user: USERNAME,
     agent_id: CONFIG.agentId,
     session_id: CONFIG.sessionId,
+    transport: CONFIG.stdio ? 'stdio' : 'tcp',
     domain,
     action: typeof action === 'string' ? action.substring(0, 200) : String(action),
     outcome,
