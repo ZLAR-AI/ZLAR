@@ -77,7 +77,7 @@ const PASS1_PROMPT = `ZLAR Codex CLI MCP live-smoke Pass 1: allow/deny only.
 Do not use shell commands, filesystem tools, web, browser, computer-use, Desktop, IDE, or any tool except the MCP tools exposed by the ${SERVER_NAME} MCP server.
 First invoke exactly the ${SERVER_NAME} MCP tool named ${TOOL_ALLOW} with arguments {"marker":"marker_allow"}.
 Then invoke exactly the ${SERVER_NAME} MCP tool named ${TOOL_DENY} with arguments {"marker":"marker_deny"}.
-The allow marker is expected to reach upstream.
+The allow marker is expected to reach upstream. If ZLAR novelty-escalates this first-use allow into an ask, the fake human path will approve it.
 The deterministic deny marker is expected to return a structured error from ZLAR and must not reach upstream.
 Do not call any Pass 2 ask marker and do not call any other tool.
 After both calls have been attempted, final answer exactly: PASS1_CALLS_ATTEMPTED.`;
@@ -398,6 +398,7 @@ async function startFakeUpstream() {
 
 function chooseDecision(normalizedText) {
   const lower = normalizedText.toLowerCase();
+  if (lower.includes('marker_allow') || normalizedText.includes('P1_ALLOW')) return 'approve';
   if (lower.includes('marker_ask_approve') || normalizedText.includes('P2_ASK_APPROVE')) return 'approve';
   if (lower.includes('marker_ask_deny') || normalizedText.includes('P2_ASK_DENY')) return 'deny';
   return null;
@@ -731,6 +732,11 @@ function eventMatches(event, { action, outcome, rule }) {
     event?.agent_id === AGENT_ID;
 }
 
+function allowEventMatches(event, { action, rule }) {
+  return eventMatches(event, { action, outcome: 'allow', rule }) ||
+    eventMatches(event, { action, outcome: 'authorized', rule });
+}
+
 function verifyOne(label, condition, detail = '') {
   if (condition) {
     console.log(`PASS: ${label}`);
@@ -760,7 +766,7 @@ function verify(mode = 'all') {
     ok = verifyOne('Pass 1 deterministic deny upstream execution absent',
       !executions.some((entry) => entry.name === TOOL_DENY)) && ok;
     ok = verifyOne('Pass 1 allow audit source/transport/agent',
-      audit.some((event) => eventMatches(event, { action: TOOL_ALLOW, outcome: 'allow', rule: 'P1_ALLOW' }))) && ok;
+      audit.some((event) => allowEventMatches(event, { action: TOOL_ALLOW, rule: 'P1_ALLOW' }))) && ok;
     ok = verifyOne('Pass 1 deterministic deny audit source/transport/agent',
       audit.some((event) => eventMatches(event, { action: TOOL_DENY, outcome: 'deny', rule: 'P1_DENY' }))) && ok;
   }
