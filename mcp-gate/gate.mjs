@@ -1352,6 +1352,15 @@ function getConsequenceLine(toolName, rule, riskScore) {
   return '⚠️ *If wrong:* unreviewed action';
 }
 
+function isDenyLabeledMcpAsk(evaluation, toolName) {
+  const label = [
+    evaluation?.rule,
+    evaluation?.description,
+    toolName,
+  ].filter(Boolean).join(' ');
+  return /(^|[^a-z0-9])deny([^a-z0-9]|$)/i.test(label);
+}
+
 async function telegramPreconfirm(rule, riskScore, severity, toolName) {
   if (!CONFIG.telegramToken || !CONFIG.telegramChatId) return 'block'; // fail closed
 
@@ -1456,10 +1465,11 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
 
   // Canary tier banner — H14 variance-based escalation (Element E1).
   const tierBannerLine = flags.tierBanner ? `\n${flags.tierBanner}` : '';
+  const cardMarker = flags.denyIntended ? '♦️' : '🔷';
 
   // Message layout mirrors bash gate v2.8.1: consequence first, intent (if present),
   // verify hint (if present), action for context, rule+risk as compact metadata at bottom.
-  const text = `${emoji} 🔷 *${rule}*${tierBannerLine}\n\n${consequenceLine}${intentLine}${verifyLine}${noveltyLine}${advisoryLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${riskScore}/100`;
+  const text = `${emoji} ${cardMarker} *${rule}*${tierBannerLine}\n\n${consequenceLine}${intentLine}${verifyLine}${noveltyLine}${advisoryLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${riskScore}/100`;
   const escapedText = text.replace(/[_\[\]()~>#+=|{}.!-]/g, '\\$&').replace(/\\`/g, '`').replace(/\\\*/g, '*');
 
   const keyboard = {
@@ -1792,6 +1802,7 @@ async function handleRequest(msg) {
         novelty: !!evaluation.noveltyEscalated,
         advisory: hiPre.ok ? null : `${hiPre.reason} — ${hiPre.detail}`,
         tierBanner,
+        denyIntended: isDenyLabeledMcpAsk(evaluation, toolName),
       };
       const decision = await telegramAsk(actionId, toolName, args, evaluation.rule, evaluation.riskScore, evaluation.severity, evaluation.verifyHint || '', askFlags);
 

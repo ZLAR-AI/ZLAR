@@ -159,6 +159,16 @@ function writePolicy() {
         risk_score: { irreversibility: 20, consequence: 20, blast_radius: 20 },
       },
       {
+        id: 'AC_ASK_DENY',
+        enabled: true,
+        description: 'Adapter conformance ask deny marker',
+        domain: 'mcp',
+        action: 'ask',
+        severity: 'info',
+        match: { domain: 'mcp', detail: { tool_name: { eq: 'marker_ask_deny' } } },
+        risk_score: { irreversibility: 20, consequence: 20, blast_radius: 20 },
+      },
+      {
         id: 'AC_TIMEOUT',
         enabled: true,
         description: 'Adapter conformance timeout marker',
@@ -248,7 +258,7 @@ async function startFakeUpstream() {
           socket.write(JSON.stringify({
             jsonrpc: '2.0',
             id: msg.id,
-            result: { tools: [{ name: 'marker_allow' }, { name: 'marker_ask' }] },
+            result: { tools: [{ name: 'marker_allow' }, { name: 'marker_ask' }, { name: 'marker_ask_deny' }] },
           }) + '\n');
         } else {
           socket.write(JSON.stringify({
@@ -316,6 +326,14 @@ async function startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret }) {
     requests,
     setMode(next) { mode = next; },
   };
+}
+
+function latestMcpAskText(telegram) {
+  const ask = [...telegram.requests].reverse().find((body) => {
+    const buttons = body?.reply_markup?.inline_keyboard?.[0] || [];
+    return buttons.some((b) => String(b.callback_data || '').startsWith('mcp:approve:'));
+  });
+  return String(ask?.text || '');
 }
 
 function readAudit(auditFile) {
@@ -648,6 +666,10 @@ async function runTests() {
       assert('ask-approved executes upstream after approval', upstream.state.markerExecutions.includes('marker_ask'));
       const askSent = findAudit(gate.auditFile, (e) => e.action === 'ask_sent' && e.outcome === 'pending');
       assert('ask-approved emits ask_sent audit', !!askSent);
+      const askText = latestMcpAskText(telegram);
+      assert('ask-approved card uses blue MCP marker',
+        askText.includes('🔷') && !askText.includes('♦️'),
+        `text=${JSON.stringify(askText)}`);
       const authorized = findAudit(gate.auditFile, (e) => e.action === 'marker_ask' && e.outcome === 'authorized');
       assert('ask-approved emits authorized audit', !!authorized);
       assertEqual('ask-approved audit source=mcp-gate', 'mcp-gate', authorized?.source);
@@ -682,15 +704,19 @@ async function runTests() {
         jsonrpc: '2.0',
         id: 11,
         method: 'tools/call',
-        params: { name: 'marker_ask', arguments: { marker: 'ask-denied' } },
+        params: { name: 'marker_ask_deny', arguments: { marker: 'ask-denied' } },
       }, 9000);
       assert('ask-denied returns JSON-RPC error', !!resp.error);
       assert('ask-denied blocks upstream execution', upstream.state.markerExecutions.length === before);
-      const denied = findAudit(gate.auditFile, (e) => e.action === 'marker_ask' && e.outcome === 'denied');
+      const askText = latestMcpAskText(telegram);
+      assert('ask-denied card uses red MCP marker',
+        askText.includes('♦️') && !askText.includes('🔷'),
+        `text=${JSON.stringify(askText)}`);
+      const denied = findAudit(gate.auditFile, (e) => e.action === 'marker_ask_deny' && e.outcome === 'denied');
       assert('ask-denied emits denied audit', !!denied);
       assertEqual('ask-denied audit source=mcp-gate', 'mcp-gate', denied?.source);
       assertEqual('ask-denied audit authorizer=human', `human:${humanId}`, denied?.authorizer);
-      assertEqual('ask-denied audit rule', 'AC_ASK', denied?.rule);
+      assertEqual('ask-denied audit rule', 'AC_ASK_DENY', denied?.rule);
     });
   }
 
