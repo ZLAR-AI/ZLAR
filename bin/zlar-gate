@@ -161,6 +161,8 @@ ZLAR_REQUIRE_SIGNED_AUDIT="${ZLAR_REQUIRE_SIGNED_AUDIT:-false}"
 AUDIT_FILE="${ZLAR_AUDIT_FILE:-${PROJECT_DIR}/var/log/audit.jsonl}"
 ZLAR_EMIT_RECEIPTS="${ZLAR_EMIT_RECEIPTS:-false}"
 RECEIPT_FILE="${PROJECT_DIR}/var/log/receipts.jsonl"
+WORKER_RECEIPT_FILE="${ZLAR_WORKER_RECEIPT_FILE:-${PROJECT_DIR}/var/log/worker-receipts.jsonl}"
+WORKER_RECEIPT_HELPER="${ZLAR_WORKER_RECEIPT_HELPER:-${PROJECT_DIR}/bin/zlar-worker-receipt}"
 _PREV_RECEIPT_HASH=""
 AVAILABILITY_STATE="${PROJECT_DIR}/var/log/availability.state"
 AWAY_QUEUE="${PROJECT_DIR}/var/log/away-queue.jsonl"
@@ -875,6 +877,51 @@ _emit_receipt() {
     _PREV_RECEIPT_HASH=$(printf '%s' "${signed_receipt}" | jq -S -c '.' | shasum -a 256 | awk '{print $1}')
 }
 
+_emit_worker_receipt() {
+    local event_json="$1"
+    local rule_description="${2:-}"
+    local approval_channel="${3:-none}"
+
+    # Worker Receipts are explanatory evidence. Emission failure must be visible
+    # in gate logs but must not change the already-computed governance decision.
+    if ! command -v node &>/dev/null; then
+        log "WARN: Worker Receipt emission skipped - node not found"
+        return 0
+    fi
+    if [ ! -f "${WORKER_RECEIPT_HELPER}" ]; then
+        log "WARN: Worker Receipt emission skipped - helper missing: ${WORKER_RECEIPT_HELPER}"
+        return 0
+    fi
+
+    mkdir -p "$(dirname "${WORKER_RECEIPT_FILE}")" 2>/dev/null || true
+
+    local _wr_rc=0
+    if command -v flock &>/dev/null; then
+        exec 9>"${WORKER_RECEIPT_FILE}.lock"
+        if flock -w 2 9; then
+            printf '%s' "${event_json}" | node "${WORKER_RECEIPT_HELPER}" \
+                --append "${WORKER_RECEIPT_FILE}" \
+                --rule-description "${rule_description}" \
+                --policy-key-id "${PUBLIC_KEY_ID}" \
+                --approval-channel "${approval_channel}" >/dev/null 2>>"${LOG_FILE}" || _wr_rc=$?
+        else
+            log "WARN: Worker Receipt lock unavailable - skipping emission"
+        fi
+        exec 9>&- 2>/dev/null || true
+    else
+        printf '%s' "${event_json}" | node "${WORKER_RECEIPT_HELPER}" \
+            --append "${WORKER_RECEIPT_FILE}" \
+            --rule-description "${rule_description}" \
+            --policy-key-id "${PUBLIC_KEY_ID}" \
+            --approval-channel "${approval_channel}" >/dev/null 2>>"${LOG_FILE}" || _wr_rc=$?
+    fi
+
+    if [ "${_wr_rc}" -ne 0 ]; then
+        log "WARN: Worker Receipt emission failed for audit event $(printf '%s' "${event_json}" | jq -r '.id // "unknown"' 2>/dev/null || echo unknown)"
+    fi
+    return 0
+}
+
 # ─── Audit Event Emission ──────────────────────────────────────────────────
 
 emit_event() {
@@ -978,12 +1025,33 @@ emit_event() {
     # Append signature to the event
     event=$(echo "${event}" | jq -c --arg sig "${signature}" '. + {signature: $sig}')
 
+    local _audit_write_ok="true"
     if ! echo "${event}" >> "${AUDIT_FILE}" 2>/dev/null; then
         log "CRITICAL: Failed to write audit event — audit trail may be incomplete"
+        _audit_write_ok="false"
     fi
 
     # Release audit lock (Linux flock; macOS has no flock — single-invocation safety via synchronous hooks)
     [ -n "${_audit_lock_fd}" ] && exec 8>&- 2>/dev/null || true
+
+    local _wr_rule_description="${MATCHED_RULE_DESCRIPTION:-}"
+    if [ "${rule}" != "${MATCHED_RULE:-}" ] || [ -z "${_wr_rule_description}" ]; then
+        _wr_rule_description=$(echo "${POLICY_RULES_JSON:-[]}" | jq -r --arg id "${rule}" '.[] | select(.id == $id) | .description' 2>/dev/null | head -n 1)
+        [ -z "${_wr_rule_description}" ] && [ "${rule}" = "default" ] && _wr_rule_description="Default policy action."
+    fi
+
+    local _wr_approval_channel="none"
+    if [[ "${authorizer}" == human:* ]]; then
+        _wr_approval_channel="telegram"
+    elif [[ "${authorizer}" == standing:* ]]; then
+        _wr_approval_channel="standing_approval"
+    elif [[ "${authorizer}" == gate:telegram_* ]] || [[ "${authorizer}" == gate:rate_limit ]] || [[ "${authorizer}" == gate:error ]]; then
+        _wr_approval_channel="telegram"
+    fi
+
+    if [ "${_audit_write_ok}" = "true" ]; then
+        _emit_worker_receipt "${event}" "${_wr_rule_description}" "${_wr_approval_channel}"
+    fi
 
     # Generate receipt if enabled (outside audit lock — receipts are additive)
     if [ "${ZLAR_EMIT_RECEIPTS}" = "true" ]; then
@@ -1530,6 +1598,7 @@ MATCHED_ACTION=""
 MATCHED_SEVERITY=""
 MATCHED_RISK_SCORE=0
 MATCHED_AUDIT="true"
+MATCHED_RULE_DESCRIPTION=""
 MATCHED_VERIFY_HINT=""  # optional human-readable check prompt from the matched rule
 
 evaluate_policy() {
@@ -1541,6 +1610,7 @@ evaluate_policy() {
     MATCHED_SEVERITY="info"
     MATCHED_RISK_SCORE=0
     MATCHED_AUDIT="true"
+    MATCHED_RULE_DESCRIPTION=""
     MATCHED_VERIFY_HINT=""
 
     local rule_count
@@ -1641,6 +1711,7 @@ evaluate_policy() {
     MATCHED_ACTION="${POLICY_DEFAULT_ACTION}"
     MATCHED_RULE="default"
     MATCHED_SEVERITY="warn"
+    MATCHED_RULE_DESCRIPTION="Default policy action."
     return 0
 }
 
@@ -1650,6 +1721,7 @@ _set_matched() {
     MATCHED_ACTION=$(echo "${rule}" | jq -r '.action // "deny"' 2>/dev/null)
     MATCHED_SEVERITY=$(echo "${rule}" | jq -r '.severity // "info"' 2>/dev/null)
     MATCHED_AUDIT=$(echo "${rule}" | jq -r '.audit // true' 2>/dev/null)
+    MATCHED_RULE_DESCRIPTION=$(echo "${rule}" | jq -r '.description // ""' 2>/dev/null)
     MATCHED_VERIFY_HINT=$(echo "${rule}" | jq -r '.verify_hint // ""' 2>/dev/null)
 
     local has_score
