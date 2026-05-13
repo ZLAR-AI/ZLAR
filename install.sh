@@ -253,6 +253,7 @@ fi
 
 # Create install directory structure
 mkdir -p "${INSTALL_DIR}/bin"
+mkdir -p "${INSTALL_DIR}/lib"
 mkdir -p "${INSTALL_DIR}/scripts"
 mkdir -p "${INSTALL_DIR}/adapters/claude-code"
 mkdir -p "${INSTALL_DIR}/adapters/cursor"
@@ -265,6 +266,9 @@ mkdir -p "${INSTALL_DIR}/var/log/sessions"
 cp "${SCRIPT_SOURCE_DIR}/bin/zlar-gate"   "${INSTALL_DIR}/bin/zlar-gate"
 cp "${SCRIPT_SOURCE_DIR}/bin/zlar-policy" "${INSTALL_DIR}/bin/zlar-policy"
 cp "${SCRIPT_SOURCE_DIR}/bin/zlar"     "${INSTALL_DIR}/bin/zlar"
+
+# Copy shared libraries used by the gate, CLI, and Telegram dispatcher.
+cp "${SCRIPT_SOURCE_DIR}/lib/"* "${INSTALL_DIR}/lib/"
 
 # Copy Telegram dispatcher bootstrap sources
 cp "${SCRIPT_SOURCE_DIR}/scripts/zlar-tg-boot.sh" "${INSTALL_DIR}/scripts/zlar-tg-boot.sh"

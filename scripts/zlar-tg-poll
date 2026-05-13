@@ -8,17 +8,38 @@ readonly RUNTIME_DIR="/var/run/zlar-tg"
 readonly PIDFILE="${RUNTIME_DIR}/poll.pid"
 readonly INBOX_DIR="${RUNTIME_DIR}/inbox"
 readonly TOKEN_FILE="${RUNTIME_DIR}/token"
+readonly CHAT_ID_FILE="${RUNTIME_DIR}/chat-id"
 readonly LOG_FILE="/var/log/zlar-tg-poll.log"
 
-# Resolve project root — handle symlinks and /usr/local/bin copies
-_poll_self="$0"
-if command -v readlink &>/dev/null; then
-    _poll_resolved=$(readlink -f "${_poll_self}" 2>/dev/null || readlink "${_poll_self}" 2>/dev/null || echo "${_poll_self}")
+_installed_project_dir() {
+    local admin_user=""
+    if [ -f /etc/zlar/admin-user ]; then
+        admin_user=$(cat /etc/zlar/admin-user 2>/dev/null | tr -d '[:space:]')
+    fi
+    [ -n "${admin_user}" ] || return 1
+    [ "${admin_user}" != "root" ] || return 1
+    [ -d "/Users/${admin_user}/.zlar" ] || return 1
+    printf '%s' "/Users/${admin_user}/.zlar"
+}
+
+# Resolve project root. LaunchDaemon boot exports ZLAR_PROJECT_DIR so the
+# /usr/local/bin dispatcher copy uses the installed ~/.zlar tree for libraries.
+if [ -n "${ZLAR_PROJECT_DIR:-}" ]; then
+    PROJECT_DIR="${ZLAR_PROJECT_DIR}"
 else
-    _poll_resolved="${_poll_self}"
+    _poll_self="$0"
+    if command -v readlink &>/dev/null; then
+        _poll_resolved=$(readlink -f "${_poll_self}" 2>/dev/null || readlink "${_poll_self}" 2>/dev/null || echo "${_poll_self}")
+    else
+        _poll_resolved="${_poll_self}"
+    fi
+    SCRIPT_DIR="$(cd "$(dirname "${_poll_resolved}")" && pwd)"
+    PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+    if [ ! -f "${PROJECT_DIR}/lib/hmac.sh" ]; then
+        _installed_dir="$(_installed_project_dir || true)"
+        [ -n "${_installed_dir}" ] && PROJECT_DIR="${_installed_dir}"
+    fi
 fi
-SCRIPT_DIR="$(cd "$(dirname "${_poll_resolved}")" && pwd)"
-PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 
 # Source shared HMAC library (die not yet defined, so use echo+exit)
 if [ -f "${PROJECT_DIR}/lib/hmac.sh" ]; then
@@ -60,7 +81,14 @@ TELEGRAM_BOT_TOKEN=$(cat "${TOKEN_FILE}" | tr -d '[:space:]')
 zlar_hmac_load_secret
 [ -n "${ZLAR_INBOX_HMAC_SECRET}" ] || die "HMAC secret not loaded (check ${ZLAR_HMAC_SECRET_FILE})"
 
-TELEGRAM_CHAT_ID="${ZLAR_TELEGRAM_CHAT_ID:?ZLAR_TELEGRAM_CHAT_ID must be set — see etc/gate.json configuration}"
+if [ -n "${ZLAR_TELEGRAM_CHAT_ID:-}" ]; then
+    TELEGRAM_CHAT_ID="${ZLAR_TELEGRAM_CHAT_ID}"
+elif [ -f "${CHAT_ID_FILE}" ]; then
+    TELEGRAM_CHAT_ID=$(cat "${CHAT_ID_FILE}" 2>/dev/null | tr -d '[:space:]')
+else
+    TELEGRAM_CHAT_ID=""
+fi
+[ -n "${TELEGRAM_CHAT_ID}" ] || die "Telegram chat_id not configured (boot should load etc/gate.json)"
 
 mkdir -p "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" "${INBOX_DIR}/mcp" 2>/dev/null || true
 chmod 700 "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" "${INBOX_DIR}/mcp" 2>/dev/null || true
