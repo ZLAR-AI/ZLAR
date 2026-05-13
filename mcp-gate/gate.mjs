@@ -48,6 +48,7 @@ import {
 import {
   preAskCheck,
   postResponseCheck,
+  decrementPending,
   recordAskTime,
   recordDecision,
   getCanaryTier,
@@ -1585,6 +1586,26 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
   return 'timeout';
 }
 
+function mcpAskActionHash(msg, toolName, args, rule) {
+  return sha256hex(canonicalize({
+    surface: 'mcp-gate',
+    kind: 'human_ask',
+    session_id: CONFIG.sessionId,
+    request_id: msg?.id ?? null,
+    tool: toolName,
+    args,
+    rule,
+  }));
+}
+
+function cleanupMcpAskPending(humanId, actionHash, reason) {
+  try {
+    decrementPending(humanId, actionHash);
+  } catch (e) {
+    auditInternalError('mcp_ask_pending_cleanup', e, { human_id: humanId, reason });
+  }
+}
+
 // ─── JSON-RPC Message Handling ───────────────────────────────────────────────
 
 function parseMessages(buffer) {
@@ -1784,6 +1805,7 @@ async function handleRequest(msg) {
 
       const humanId = CONFIG.telegramChatId || 'unknown';
       const actionId = genId();
+      const actionHash = mcpAskActionHash(msg, toolName, args, evaluation.rule);
       const canaryTier = getCanaryTier(humanId);
 
       // Tier 2 preconfirm: structural interrupt BEFORE H13 increment and H15 timer.
@@ -1815,7 +1837,7 @@ async function handleRequest(msg) {
       // asks could use that as a denial-of-service on legitimate work.
       // The human is the authority; surface the condition to them and
       // let them judge.
-      const hiPre = preAskCheck(humanId);
+      const hiPre = preAskCheck(humanId, {}, actionHash);
       if (!hiPre.ok) {
         console.log(`[gate] Human invariant ADVISORY: ${hiPre.reason} (${hiPre.detail}) — routing anyway`);
         emitEvent('mcp', toolName, 'logged',
@@ -1842,7 +1864,7 @@ async function handleRequest(msg) {
       switch (decision) {
         case 'allow': {
           // Human invariant post-response checks (H15, H17)
-          const hiPost = postResponseCheck(humanId, evaluation.severity, 'approve', { riskScore: evaluation.riskScore });
+          const hiPost = postResponseCheck(humanId, evaluation.severity, 'approve', { riskScore: evaluation.riskScore }, actionHash);
           if (!hiPost.ok) {
             console.log(`[gate] Human invariant: approval rejected (${hiPost.reason})`);
             emitEvent('mcp', toolName, 'denied', { tool: toolName, reason: `human_${hiPost.reason}`, detail: hiPost.detail },
@@ -1871,7 +1893,7 @@ async function handleRequest(msg) {
 
         case 'deny': {
           // Record denial for H14 rate tracking
-          try { postResponseCheck(humanId, evaluation.severity, 'deny', { riskScore: evaluation.riskScore }); } catch {}
+          try { postResponseCheck(humanId, evaluation.severity, 'deny', { riskScore: evaluation.riskScore }, actionHash); } catch {}
           emitEvent('mcp', toolName, 'denied', { tool: toolName, args_preview: JSON.stringify(args).substring(0, 200) },
             evaluation.rule, evaluation.severity, evaluation.riskScore, `human:${CONFIG.telegramChatId}`);
           return {
@@ -1885,6 +1907,7 @@ async function handleRequest(msg) {
         }
 
         default: // timeout or error
+          cleanupMcpAskPending(humanId, actionHash, decision);
           emitEvent('mcp', toolName, 'denied', { tool: toolName, args_preview: JSON.stringify(args).substring(0, 200) },
             evaluation.rule, evaluation.severity, evaluation.riskScore, `gate:${decision}`);
           return {

@@ -346,6 +346,17 @@ function writeFastHumanState(dir, humanId) {
   }));
 }
 
+function readHumanState(dir, humanId) {
+  return JSON.parse(readFileSync(join(dir, `${humanId}.json`), 'utf8'));
+}
+
+function assertNoPendingAsk(label, dir, humanId) {
+  const state = readHumanState(dir, humanId);
+  assert(`${label} clears H13 pending ask state`,
+    Array.isArray(state.pending) && state.pending.length === 0,
+    `pending=${JSON.stringify(state.pending)}`);
+}
+
 function writeRoutingConfig(upstreamPort, routingConfig = ROUTING_CONFIG) {
   writeFileSync(routingConfig, JSON.stringify([
     {
@@ -752,6 +763,7 @@ async function runImplementedStdioTests(upstream) {
       assert('ask-approved emits authorized audit', !!authorized);
       assertAuditCore('ask-approved', authorized, { agentId, sessionId, rule: 'SC_ASK', authorizer: `human:${humanId}` });
       assertStdioTransportIndicator('ask-approved', authorized);
+      assertNoPendingAsk('ask-approved', humanStateDir, humanId);
     });
   }
 
@@ -791,6 +803,7 @@ async function runImplementedStdioTests(upstream) {
       assert('ask-denied emits denied audit', !!denied);
       assertAuditCore('ask-denied', denied, { agentId, sessionId, rule: 'SC_ASK', authorizer: `human:${humanId}` });
       assertStdioTransportIndicator('ask-denied', denied);
+      assertNoPendingAsk('ask-denied', humanStateDir, humanId);
     });
   }
 
@@ -833,6 +846,7 @@ async function runImplementedStdioTests(upstream) {
       assertEqual('timeout audit outcome=denied', 'denied', timeoutAudit?.outcome);
       assertAuditCore('timeout', timeoutAudit, { agentId, sessionId, rule: 'SC_TIMEOUT', authorizer: 'gate:timeout' });
       assertStdioTransportIndicator('timeout', timeoutAudit);
+      assertNoPendingAsk('timeout', humanStateDir, humanId);
     });
   }
 

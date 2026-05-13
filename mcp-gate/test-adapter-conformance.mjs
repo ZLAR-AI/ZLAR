@@ -288,7 +288,7 @@ async function startFakeUpstream() {
   return { server, port: server.address().port, state };
 }
 
-async function startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret }) {
+async function startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret, failSend = false }) {
   let mode = 'none';
   let messageId = 1000;
   const requests = [];
@@ -303,6 +303,10 @@ async function startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret }) {
       try { body = JSON.parse(raw || '{}'); } catch {}
       requests.push(body);
       res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (failSend) {
+        res.end(JSON.stringify({ ok: false, description: 'synthetic send failure' }));
+        return;
+      }
       res.end(JSON.stringify({ ok: true, result: { message_id: ++messageId } }));
 
       const buttons = body?.reply_markup?.inline_keyboard?.[0] || [];
@@ -368,6 +372,17 @@ function readWorkerReceipts(workerReceiptFile) {
 
 function findWorkerReceipt(workerReceiptFile, predicate) {
   return readWorkerReceipts(workerReceiptFile).find(predicate);
+}
+
+function readHumanState(dir, humanId) {
+  return JSON.parse(readFileSync(join(dir, `${humanId}.json`), 'utf8'));
+}
+
+function assertNoPendingAsk(label, dir, humanId) {
+  const state = readHumanState(dir, humanId);
+  assert(`${label} clears H13 pending ask state`,
+    Array.isArray(state.pending) && state.pending.length === 0,
+    `pending=${JSON.stringify(state.pending)}`);
 }
 
 function whyJson(workerReceiptFile, eventId) {
@@ -745,6 +760,7 @@ async function runTests() {
       assertEqual('authorized Worker Receipt decision', 'Authorized by human', authorizedReceipt?.decision?.label);
       assertEqual('authorized Worker Receipt authorizer', 'human', authorizedReceipt?.decision?.authorizer);
       assertEqual('authorized Worker Receipt summary', 'MCP tool: marker_ask', authorizedReceipt?.action?.summary);
+      assertNoPendingAsk('ask-approved', humanStateDir, humanId);
     });
   }
 
@@ -792,6 +808,7 @@ async function runTests() {
       assertEqual('denied Worker Receipt decision', 'Denied by human', deniedReceipt?.decision?.label);
       assertEqual('denied Worker Receipt authorizer', 'human', deniedReceipt?.decision?.authorizer);
       assertEqual('denied Worker Receipt summary', 'MCP tool: marker_ask_deny', deniedReceipt?.action?.summary);
+      assertNoPendingAsk('ask-denied', humanStateDir, humanId);
     });
   }
 
@@ -836,6 +853,48 @@ async function runTests() {
       assertEqual('timeout Worker Receipt decision', 'Denied after approval timeout', timeoutReceipt?.decision?.label);
       assertEqual('timeout Worker Receipt authorizer', 'gate', timeoutReceipt?.decision?.authorizer);
       assertEqual('timeout Worker Receipt summary', 'MCP tool: marker_timeout', timeoutReceipt?.action?.summary);
+      assertNoPendingAsk('timeout', humanStateDir, humanId);
+    });
+  }
+
+  {
+    const upstream = await startFakeUpstream();
+    const inboxDir = join(SCRATCH, 'inbox-error');
+    const hmacSecretFile = join(SCRATCH, 'inbox-error-secret');
+    const telegram = await startMockTelegram({
+      inboxDir,
+      hmacSecretFile,
+      hmacSecret: 'adapter-hmac-error',
+      failSend: true,
+    });
+    const humanId = 'adapter-human-error';
+    const humanStateDir = join(SCRATCH, 'human-error');
+    writeFastHumanState(humanStateDir, humanId);
+
+    await withGate({
+      upstreamPort: upstream.port,
+      auditName: 'telegram-error',
+      agentId: 'adapter-error-agent',
+      sessionId: 'adapter-error-session',
+      telegram,
+      humanId,
+      inboxDir,
+      hmacSecretFile,
+      humanStateDir,
+    }, async (gate) => {
+      const before = upstream.state.markerExecutions.length;
+      const resp = await sendRpc(gate.port, {
+        jsonrpc: '2.0',
+        id: 13,
+        method: 'tools/call',
+        params: { name: 'marker_ask', arguments: { marker: 'telegram-error' } },
+      }, 7000);
+      assert('Telegram send error returns JSON-RPC error', !!resp.error);
+      assert('Telegram send error blocks upstream execution', upstream.state.markerExecutions.length === before);
+      const errorAudit = findAudit(gate.auditFile, (e) => e.action === 'marker_ask' && e.authorizer === 'gate:error');
+      assert('Telegram send error emits gate:error audit', !!errorAudit);
+      assertEqual('Telegram send error audit outcome=denied', 'denied', errorAudit?.outcome);
+      assertNoPendingAsk('Telegram send error', humanStateDir, humanId);
     });
   }
 
@@ -849,7 +908,7 @@ async function runTests() {
     }, async (gate) => {
       const resp = await sendRpc(gate.port, {
         jsonrpc: '2.0',
-        id: 13,
+        id: 14,
         method: 'tools/call',
         params: { name: 'marker_allow', arguments: { marker: 'upstream-unavailable' } },
       }, 7000);
@@ -878,7 +937,7 @@ async function runTests() {
     }, async (gate) => {
       const resp = await sendRpc(gate.port, {
         jsonrpc: '2.0',
-        id: 14,
+        id: 15,
         method: 'tools/call',
         params: { name: 'marker_allow', arguments: { marker: 'worker-receipt-failure' } },
       });
