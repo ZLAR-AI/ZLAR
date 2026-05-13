@@ -183,6 +183,36 @@ function writePolicy() {
   writeFileSync(POLICY_PATH, JSON.stringify(policy));
 }
 
+function signManifest(manifestObj) {
+  const canonical = JSON.parse(JSON.stringify(manifestObj));
+  canonical.signature = { algorithm: '', value: '', key_id: '' };
+  const hashHex = sha256hex(canonicalize(canonical));
+  const sig = cryptoSign(null, Buffer.from(hashHex, 'utf8'), POLICY_PRIVATE_KEY);
+  return {
+    ...manifestObj,
+    signature: { algorithm: 'Ed25519', value: sig.toString('base64'), key_id: 'adapter-conformance' },
+  };
+}
+
+function writeManifest(name, authority) {
+  const manifestPath = join(SCRATCH, `${name}.manifest.json`);
+  const manifest = signManifest({
+    manifest_version: 'adapter-conformance-1',
+    identity: {
+      agent_id: 'adapter-conformance',
+      principal: 'synthetic-mcp-client',
+      issued_at: '2026-05-13T00:00:00Z',
+    },
+    authority,
+    escalation: { channel: 'test', timeout_seconds: GATE_TIMEOUT_S, timeout_action: 'deny' },
+    sequence: 1,
+    expires: '2099-01-01T00:00:00Z',
+    signature: { algorithm: 'Ed25519', value: '', key_id: '' },
+  });
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  return manifestPath;
+}
+
 async function getFreePort() {
   return new Promise((resolve, reject) => {
     const s = createServer();
@@ -305,6 +335,7 @@ async function startGate({
   auditName,
   agentId,
   sessionId,
+  manifestFile = join(SCRATCH, 'missing-manifest.json'),
   telegram = null,
   humanId = null,
   inboxDir = null,
@@ -320,7 +351,7 @@ async function startGate({
     '--audit-file', auditFile,
     '--policy-file', POLICY_PATH,
     '--policy-pubkey', POLICY_PUB_PATH,
-    '--manifest-file', join(SCRATCH, 'missing-manifest.json'),
+    '--manifest-file', manifestFile,
     '--constitution-presence-file', join(SCRATCH, 'missing-constitution-presence'),
     '--restore-config-file', join(SCRATCH, 'missing-restore-config.json'),
     '--agent-id', agentId,
@@ -516,6 +547,72 @@ async function runTests() {
       assertEqual('deny audit source=mcp-gate', 'mcp-gate', denyAudit?.source);
       assertEqual('deny audit rule', 'AC_DENY', denyAudit?.rule);
       assertEqual('deny audit authorizer=policy', 'policy', denyAudit?.authorizer);
+    });
+  }
+
+  section('Policy and manifest boundary denies');
+  {
+    const upstream = await startFakeUpstream();
+    await withGate({
+      upstreamPort: upstream.port,
+      auditName: 'default-deny',
+      agentId: 'adapter-default-deny-agent',
+      sessionId: 'adapter-default-deny-session',
+    }, async (gate) => {
+      const before = upstream.state.markerExecutions.length;
+      const resp = await sendRpc(gate.port, {
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: { name: 'marker_unmatched', arguments: { marker: 'default-deny' } },
+      });
+      assert('unmatched tool returns JSON-RPC error', !!resp.error);
+      assert('unmatched tool is blocked before upstream execution', upstream.state.markerExecutions.length === before);
+      const defaultAudit = findAudit(gate.auditFile, (e) => e.action === 'marker_unmatched' && e.outcome === 'deny');
+      assert('unmatched tool emits default-deny audit', !!defaultAudit);
+      assertEqual('unmatched audit source=mcp-gate', 'mcp-gate', defaultAudit?.source);
+      assertEqual('unmatched audit rule=default', 'default', defaultAudit?.rule);
+      assertEqual('unmatched audit authorizer=policy', 'policy', defaultAudit?.authorizer);
+    });
+  }
+
+  {
+    const upstream = await startFakeUpstream();
+    const manifestFile = writeManifest('deny-mcp-call', {
+      deny: ['mcp.call'],
+      allow: ['mcp.call'],
+      unmatched_action: 'escalate',
+    });
+
+    await withGate({
+      upstreamPort: upstream.port,
+      auditName: 'manifest-deny',
+      agentId: 'adapter-manifest-agent',
+      sessionId: 'adapter-manifest-session',
+      manifestFile,
+    }, async (gate) => {
+      const listResp = await sendRpc(gate.port, { jsonrpc: '2.0', id: 5, method: 'tools/list', params: {} });
+      assert('manifest fixture leaves non-tools/call pass-through unchanged', Array.isArray(listResp.result?.tools));
+      assertEqual('manifest pass-through observed upstream tools/list', 'tools/list', upstream.state.calls.at(-1)?.method);
+      assert('manifest pass-through does not create policy audit event',
+        !findAudit(gate.auditFile, (e) => e.action === 'tools/list'));
+
+      const before = upstream.state.markerExecutions.length;
+      const resp = await sendRpc(gate.port, {
+        jsonrpc: '2.0',
+        id: 6,
+        method: 'tools/call',
+        params: { name: 'marker_allow', arguments: { marker: 'manifest-deny' } },
+      });
+      assert('manifest deny returns JSON-RPC refusal', !!resp.error);
+      assert('manifest deny error names manifest rule', /manifest:deny/.test(resp.error?.message || ''));
+      assert('manifest deny blocks upstream execution', upstream.state.markerExecutions.length === before);
+      const manifestAudit = findAudit(gate.auditFile, (e) => e.action === 'marker_allow' && e.outcome === 'deny');
+      assert('manifest deny emits audit', !!manifestAudit);
+      assertEqual('manifest deny audit source=mcp-gate', 'mcp-gate', manifestAudit?.source);
+      assertEqual('manifest deny audit rule', 'manifest:deny', manifestAudit?.rule);
+      assertEqual('manifest deny audit authorizer=manifest', 'manifest', manifestAudit?.authorizer);
+      assertEqual('manifest deny audit capability', 'mcp.call', manifestAudit?.detail?.cap);
     });
   }
 
