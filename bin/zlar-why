@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  findWorkerReceiptByEventId,
+  formatWorkerReceiptHuman
+} from '../lib/worker-receipt.mjs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const projectDir = process.env.ZLAR_PROJECT_DIR || dirname(__dirname);
+const defaultStore = join(projectDir, 'var', 'log', 'worker-receipts.jsonl');
+const storePath = process.env.ZLAR_WORKER_RECEIPT_FILE || defaultStore;
+
+function usage() {
+  console.error('Usage: zlar why <event-id> [--json]');
+}
+
+let json = false;
+const positional = [];
+for (const arg of process.argv.slice(2)) {
+  if (arg === '--json') {
+    json = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else if (arg.startsWith('-')) {
+    console.error(`ERROR: Unsupported option for exact-id lookup: ${arg}`);
+    usage();
+    process.exit(2);
+  } else {
+    positional.push(arg);
+  }
+}
+
+if (positional.length !== 1) {
+  console.error('ERROR: zlar why requires exactly one event id.');
+  usage();
+  process.exit(2);
+}
+
+const eventId = positional[0];
+
+if (!existsSync(storePath)) {
+  console.error(`ERROR: Worker Receipt store not found: ${storePath}`);
+  process.exit(1);
+}
+
+try {
+  const receipt = findWorkerReceiptByEventId(storePath, eventId);
+  if (!receipt) {
+    console.error(`ERROR: Worker Receipt not found for event id: ${eventId}`);
+    process.exit(1);
+  }
+  if (json) {
+    process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
+  } else {
+    process.stdout.write(`${formatWorkerReceiptHuman(receipt)}\n`);
+  }
+} catch (err) {
+  console.error(`ERROR: ${err.message}`);
+  process.exit(1);
+}

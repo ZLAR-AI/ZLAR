@@ -7,6 +7,7 @@
 #   zlar doctor     — check installation health (deps, keys, hooks, policy)
 #   zlar reset      — reset human-invariant state (clear stuck pending counters)
 #   zlar audit      — show last 20 audit entries
+#   zlar why        — show a frozen Worker Receipt for an exact event id
 #   zlar policy     — show current policy rules summary
 #   zlar telegram   — configure Telegram approval (upgrade from deny-all)
 #   zlar uninstall  — clean removal
@@ -1269,6 +1270,7 @@ cmd_help() {
     printf "    doctor      Check installation health (deps, keys, hooks, policy)\n"
     printf "    reset       Reset human-invariant state (clear stuck pending counters)\n"
     printf "    audit [n]   Show last n audit entries (default: 20)\n"
+    printf "    why <id>    Show Worker Receipt for exact event id (read-only)\n"
     printf "    policy      Show current policy rules\n"
     printf "    telegram    Set up Telegram approval (upgrade from deny-all)\n"
     printf "    uninstall   Clean removal of ZLAR\n"
@@ -1288,6 +1290,7 @@ case "${COMMAND}" in
     doctor)    cmd_doctor ;;
     reset)     cmd_reset ;;
     audit)     cmd_audit "$@" ;;
+    why)       ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-why" "$@" ;;
     policy)    cmd_policy ;;
     telegram)  cmd_telegram ;;
     uninstall) cmd_uninstall ;;
