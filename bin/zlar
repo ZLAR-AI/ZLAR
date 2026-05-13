@@ -1160,7 +1160,7 @@ cmd_doctor() {
         # Check for token
         local tg_token=""
         if [ -f "${PROJECT_DIR}/.env" ]; then
-            tg_token=$(grep -E '^ZLAR_TELEGRAM_TOKEN=' "${PROJECT_DIR}/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
+            tg_token=$(grep -E '^ZLAR_TELEGRAM_TOKEN=' "${PROJECT_DIR}/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'" || true)
         fi
         [ -z "${tg_token}" ] && tg_token="${ZLAR_TELEGRAM_TOKEN:-}"
 
@@ -1209,6 +1209,29 @@ cmd_doctor() {
             printf "         Fix: see ${BOLD}docs/troubleshooting.md#telegram-callback-listener${NC}\n"
             warnings=$((warnings + 1))
         fi
+
+        # Check callback inbox readability. A root-owned mcp inbox with mode
+        # 700 lets the dispatcher write callbacks but prevents the user-space
+        # MCP gate from reading them.
+        local inbox_base="/var/run/zlar-tg/inbox"
+        local inbox_name
+        printf "    ${BOLD}Callback inboxes${NC}\n"
+        for inbox_name in cc oc mcp; do
+            local inbox_dir="${inbox_base}/${inbox_name}"
+            if [ -d "${inbox_dir}" ]; then
+                if [ -r "${inbox_dir}" ] && [ -x "${inbox_dir}" ]; then
+                    printf "    ${GREEN}OK${NC}  %s inbox readable/searchable\n" "${inbox_name}"
+                else
+                    printf "    ${RED}!!${NC}  %s inbox exists but is not readable/searchable by this user\n" "${inbox_name}"
+                    printf "         Fix: reinstall/re-run ${BOLD}scripts/zlar-tg-boot.sh${NC} as the LaunchDaemon boot script\n"
+                    errors=$((errors + 1))
+                fi
+            else
+                printf "    ${YELLOW}!!${NC}  %s inbox missing\n" "${inbox_name}"
+                printf "         Fix: restart the Telegram dispatcher bootstrap\n"
+                warnings=$((warnings + 1))
+            fi
+        done
     else
         printf "    ${DIM}--${NC}  Telegram disabled (deny-only mode — all blocked actions are instant-denied)\n"
         printf "         Upgrade: ${BOLD}zlar telegram${NC} to enable human approval from your phone\n"

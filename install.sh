@@ -253,6 +253,7 @@ fi
 
 # Create install directory structure
 mkdir -p "${INSTALL_DIR}/bin"
+mkdir -p "${INSTALL_DIR}/scripts"
 mkdir -p "${INSTALL_DIR}/adapters/claude-code"
 mkdir -p "${INSTALL_DIR}/adapters/cursor"
 mkdir -p "${INSTALL_DIR}/adapters/windsurf"
@@ -264,6 +265,10 @@ mkdir -p "${INSTALL_DIR}/var/log/sessions"
 cp "${SCRIPT_SOURCE_DIR}/bin/zlar-gate"   "${INSTALL_DIR}/bin/zlar-gate"
 cp "${SCRIPT_SOURCE_DIR}/bin/zlar-policy" "${INSTALL_DIR}/bin/zlar-policy"
 cp "${SCRIPT_SOURCE_DIR}/bin/zlar"     "${INSTALL_DIR}/bin/zlar"
+
+# Copy Telegram dispatcher bootstrap sources
+cp "${SCRIPT_SOURCE_DIR}/scripts/zlar-tg-boot.sh" "${INSTALL_DIR}/scripts/zlar-tg-boot.sh"
+cp "${SCRIPT_SOURCE_DIR}/scripts/zlar-tg-poll"    "${INSTALL_DIR}/scripts/zlar-tg-poll"
 
 # Copy uninstall script
 cp "${SCRIPT_SOURCE_DIR}/uninstall.sh"    "${INSTALL_DIR}/uninstall.sh"
@@ -291,12 +296,39 @@ printf "%s\n" "${ZLAR_VERSION}" > "${INSTALL_DIR}/VERSION"
 chmod +x "${INSTALL_DIR}/bin/zlar-gate"
 chmod +x "${INSTALL_DIR}/bin/zlar-policy"
 chmod +x "${INSTALL_DIR}/bin/zlar"
+chmod +x "${INSTALL_DIR}/scripts/zlar-tg-boot.sh"
+chmod +x "${INSTALL_DIR}/scripts/zlar-tg-poll"
 chmod +x "${INSTALL_DIR}/adapters/claude-code/hook.sh"
 chmod +x "${INSTALL_DIR}/adapters/cursor/hook.sh"
 chmod +x "${INSTALL_DIR}/adapters/windsurf/hook.sh"
 chmod +x "${INSTALL_DIR}/uninstall.sh"
 
 ok "Core files installed to ${INSTALL_DIR}"
+
+# Deploy the shared Telegram dispatcher entrypoints used by the LaunchDaemon.
+# These are optional until Telegram is configured, so lack of sudo is a warning,
+# not an install failure.
+install_system_script() {
+    local src="$1"
+    local dst="$2"
+    local label="$3"
+
+    if [ "$(id -u)" -eq 0 ]; then
+        cp "${src}" "${dst}"
+        chmod 755 "${dst}"
+        ok "${label}: installed to ${dst}"
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        sudo cp "${src}" "${dst}"
+        sudo chmod 755 "${dst}"
+        ok "${label}: installed to ${dst}"
+    else
+        warn "${label}: not installed to ${dst} (sudo required)"
+        printf "       Run: ${BOLD}sudo cp ${src} ${dst} && sudo chmod 755 ${dst}${NC}\n"
+    fi
+}
+
+install_system_script "${INSTALL_DIR}/scripts/zlar-tg-boot.sh" "/usr/local/bin/zlar-tg-boot.sh" "Telegram boot script"
+install_system_script "${INSTALL_DIR}/scripts/zlar-tg-poll" "/usr/local/bin/zlar-tg-poll" "Telegram dispatcher"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PHASE 5: Generate keys and sign policy
