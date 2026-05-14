@@ -1,5 +1,45 @@
 # Changelog
 
+## 3.3.14 — 2026-05-14 — Post-release hardening
+
+This release candidate packages the local hardening work that landed after
+v3.3.13. It keeps the same public claim boundary: ZLAR governs only
+actions that actually pass through its routed/intercepted gate surfaces.
+
+### What changes
+
+- Public privacy fixtures now use scrubbed placeholder identifiers, keeping
+  regression coverage without carrying realistic chat, user, or token-like
+  values.
+- The broad assertion-count suite now keeps agent identity export and hook
+  contract checks hermetic, so local developer environment and manifest state
+  do not leak into the regression result.
+- MCP terminal outcomes now clean up pending ask state, preventing stale
+  pending entries after final allow, deny, authorized, denied, or timeout
+  decisions.
+- MCP Telegram ask cards now avoid raw argument leakage, tighten
+  MarkdownV2 escaping, and keep denial cards easy to distinguish while
+  preserving the routed MCP decision flow.
+- Telegram dispatcher boot configuration is now plumbed through the
+  generated service wrapper, keeping poller runtime configuration aligned
+  with source-controlled defaults.
+
+### What does NOT change
+
+- No broad Codex, client, or agent governance claim is added.
+- Unrouted MCP connections, direct shell/network paths outside the gate, and
+  other unobserved actions remain outside this evidence path.
+- Public website claims are unchanged.
+- Governed Action Receipt signing semantics and Worker Receipt semantics are
+  not widened by this release candidate.
+
+### Verification
+
+- Local release-candidate verification should include the broad assertion
+  suite, public privacy guard, MCP adapter/stdio/live harness tests,
+  Telegram bootstrap/config/doctor tests, Worker Receipt tests, and
+  `git diff --check`.
+
 ## 3.3.13 — 2026-05-13 — Worker Receipt /why for routed MCP
 
 This release extends Worker Receipt + `/why` from the bash gate path to

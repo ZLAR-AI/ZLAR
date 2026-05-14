@@ -396,8 +396,8 @@ fi
 MANIFEST_LOADED="false"
 MANIFEST_JSON=""
 MANIFEST_HARD_DENY_REASON=""  # Set during load, checked in main() where respond_deny is available
-MANIFEST_FILE="${PROJECT_DIR}/etc/manifest.json"
-MANIFEST_SEQ_FILE="${PROJECT_DIR}/var/log/.manifest-last-seq"
+MANIFEST_FILE="${ZLAR_MANIFEST_FILE:-${PROJECT_DIR}/etc/manifest.json}"
+MANIFEST_SEQ_FILE="${ZLAR_MANIFEST_SEQ_FILE:-${PROJECT_DIR}/var/log/.manifest-last-seq}"
 
 # FIX: Presence detection via seq file — if seq file exists, a manifest was
 # previously loaded. A missing manifest after that = deletion attack, not a
