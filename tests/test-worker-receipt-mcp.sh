@@ -166,9 +166,11 @@ assert "mcp json summary" "MCP tool: filesystem.write_file" "$(jq -r '.action.su
 assert "mcp json no raw args" "false" "$(grep -q 'args_preview\|sk-live-mcp\|/Users/tester' "${WHY_JSON}" && echo true || echo false)"
 
 WHY_HUMAN=$(ZLAR_WORKER_RECEIPT_FILE="${STORE_FILE}" "${PROJECT_DIR}/bin/zlar" why wr-mcp-authorized-001)
+AUTHORIZED_DETAIL_HASH=$(jq -r 'select(.event.id=="wr-mcp-authorized-001") | .action.detail_hash' "${STORE_FILE}")
 assert_truthy "mcp human output present" "${WHY_HUMAN}"
 assert "mcp human output surface" "true" "$(printf '%s' "${WHY_HUMAN}" | grep -q 'Surface: mcp-gate' && echo true || echo false)"
 assert "mcp human output action" "true" "$(printf '%s' "${WHY_HUMAN}" | grep -q 'Action: MCP tool: linear.create_issue' && echo true || echo false)"
+assert "mcp human output action hash" "true" "$(printf '%s' "${WHY_HUMAN}" | grep -q "Action hash: detail=${AUTHORIZED_DETAIL_HASH}" && echo true || echo false)"
 assert "mcp human output decision" "true" "$(printf '%s' "${WHY_HUMAN}" | grep -q 'Decision: Authorized by human' && echo true || echo false)"
 assert "mcp human output limitation" "true" "$(printf '%s' "${WHY_HUMAN}" | grep -q 'MCP tool call routed through the ZLAR MCP gate' && echo true || echo false)"
 assert "mcp human output no raw secret" "false" "$(printf '%s' "${WHY_HUMAN}" | grep -q 'sk-live-mcp\|customer escalation\|123456789' && echo true || echo false)"
