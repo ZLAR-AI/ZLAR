@@ -14,16 +14,18 @@ import {
   closeSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createHmac,
@@ -32,6 +34,12 @@ import {
   sign as cryptoSign,
 } from 'node:crypto';
 import { canonicalize, sha256hex } from '../lib/receipt.mjs';
+import {
+  assertGovernedProfileCoverageReport,
+  assertNoUnsafeCoverageText,
+  buildGovernedProfileCoverageReport,
+  formatGovernedProfileCoverageSummary,
+} from './governed-profile-coverage-report.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -42,7 +50,10 @@ const SERVER_NAME = 'zlar-smoke-cli';
 const HUMAN_ID = 'codex-live-human';
 const AGENT_ID = 'codex-live-smoke';
 const SESSION_ID = `codex-live-smoke-${Math.floor(Date.now() / 1000)}`;
-const SCRATCH = join(tmpdir(), 'zlar-codex-cli-mcp-smoke');
+const SCRATCH_OVERRIDE_ENV = 'ZLAR_CODEX_SMOKE_SCRATCH';
+const DEFAULT_SCRATCH = join(tmpdir(), 'zlar-codex-cli-mcp-smoke');
+const TEST_SCRATCH_PREFIX = 'zlar-codex-smoke-';
+const SCRATCH = resolveScratchRoot(process.env[SCRATCH_OVERRIDE_ENV]);
 const STATE_FILE = join(SCRATCH, 'state.json');
 const READY_FILE = join(SCRATCH, 'ready.json');
 const TMP_PROJECT = join(SCRATCH, 'project');
@@ -50,7 +61,10 @@ const TMP_HOME = join(SCRATCH, 'home');
 const CODEX_PROFILE_HOME = join(SCRATCH, 'codex-home');
 const CODEX_PROFILE_DOTDIR = join(CODEX_PROFILE_HOME, '.codex');
 const PROFILE_REPORT_PATH = join(SCRATCH, 'profile-report.json');
+const COVERAGE_REPORT_JSON_PATH = join(SCRATCH, 'governed-profile-coverage-report.json');
+const COVERAGE_REPORT_TEXT_PATH = join(SCRATCH, 'governed-profile-coverage-report.txt');
 const AUDIT_FILE = join(SCRATCH, 'codex-live-smoke.audit.jsonl');
+const WORKER_RECEIPT_FILE = join(TMP_PROJECT, 'var', 'log', 'worker-receipts.jsonl');
 const ROUTING_CONFIG = join(SCRATCH, 'upstreams.json');
 const WRAPPER_PATH = join(SCRATCH, 'zlar-smoke-cli-wrapper.sh');
 const POLICY_PATH = join(SCRATCH, 'codex-live-smoke.policy.json');
@@ -106,6 +120,7 @@ function usage() {
   node mcp-gate/smoke-codex-cli.mjs setup
   node mcp-gate/smoke-codex-cli.mjs setup --isolated-profile
   node mcp-gate/smoke-codex-cli.mjs verify [pass1|pass2|all]
+  node mcp-gate/smoke-codex-cli.mjs coverage-report
   node mcp-gate/smoke-codex-cli.mjs cleanup
   node mcp-gate/smoke-codex-cli.mjs cleanup --isolated-profile
   node mcp-gate/smoke-codex-cli.mjs dry-run
@@ -124,6 +139,56 @@ Not claimed:
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function pathIsInside(parent, child) {
+  const rel = relative(parent, child);
+  return rel === '' || (rel && !rel.startsWith('..') && !isAbsolute(rel));
+}
+
+function assertNoExistingSymlinkInScratchPath(tmpRoot, scratchPath) {
+  const parts = relative(tmpRoot, scratchPath).split(/[\\/]/).filter(Boolean);
+  let current = tmpRoot;
+  for (const part of parts) {
+    current = join(current, part);
+    if (!existsSync(current)) return;
+    if (lstatSync(current).isSymbolicLink()) {
+      throw new Error(`${SCRATCH_OVERRIDE_ENV} must not contain symlink path components`);
+    }
+  }
+}
+
+function validateScratchPath(candidate, { override = false } = {}) {
+  const tmpRoot = resolve(tmpdir());
+  const realTmpRoot = realpathSync(tmpRoot);
+  const scratchPath = resolve(candidate);
+  const defaultScratch = resolve(DEFAULT_SCRATCH);
+
+  if (!pathIsInside(tmpRoot, scratchPath) || scratchPath === tmpRoot || scratchPath === resolve('/')) {
+    throw new Error(`${SCRATCH_OVERRIDE_ENV} must resolve under the system temp directory`);
+  }
+  if (override && !basename(scratchPath).startsWith(TEST_SCRATCH_PREFIX)) {
+    throw new Error(`${SCRATCH_OVERRIDE_ENV} basename must start with ${TEST_SCRATCH_PREFIX}`);
+  }
+  if (!override && scratchPath !== defaultScratch && !basename(scratchPath).startsWith(TEST_SCRATCH_PREFIX)) {
+    throw new Error('scratch path must be the default harness path or a validated test scratch path');
+  }
+
+  assertNoExistingSymlinkInScratchPath(tmpRoot, scratchPath);
+  if (existsSync(scratchPath) && !pathIsInside(realTmpRoot, realpathSync(scratchPath))) {
+    throw new Error(`${SCRATCH_OVERRIDE_ENV} real path must remain under the system temp directory`);
+  }
+  return scratchPath;
+}
+
+function resolveScratchRoot(overrideValue) {
+  if (!overrideValue) return validateScratchPath(DEFAULT_SCRATCH);
+  return validateScratchPath(overrideValue, { override: true });
+}
+
+function removeScratchRoot() {
+  validateScratchPath(SCRATCH, { override: SCRATCH !== resolve(DEFAULT_SCRATCH) });
+  rmSync(SCRATCH, { recursive: true, force: true });
 }
 
 function runChecked(cmd, args, options = {}) {
@@ -360,6 +425,138 @@ function writeProfileReport(report) {
   assertIsolatedProfileReport(report);
   writeJson(PROFILE_REPORT_PATH, report);
   return PROFILE_REPORT_PATH;
+}
+
+function outputPathUnderScratch(path) {
+  const scratchRoot = resolve(SCRATCH);
+  const resolved = resolve(path);
+  return resolved === scratchRoot || resolved.startsWith(`${scratchRoot}/`);
+}
+
+function assertCoverageOutputPaths(...paths) {
+  for (const path of paths) {
+    if (!outputPathUnderScratch(path)) {
+      throw new Error(`coverage report path must be under scratch output directory: ${path}`);
+    }
+  }
+}
+
+function findAuditEvent(auditEvents, { action, outcomes, rule }) {
+  return auditEvents.find((event) => (
+    event?.source === 'mcp-gate' &&
+    event?.transport === 'stdio' &&
+    event?.action === action &&
+    outcomes.includes(event?.outcome) &&
+    event?.rule === rule
+  )) || null;
+}
+
+function upstreamObserved(upstreamExecutions, toolName) {
+  return upstreamExecutions.some((entry) => entry?.name === toolName);
+}
+
+function buildRoutedMcpProofReportFromScratch({
+  auditEvents = [],
+  upstreamExecutions = [],
+} = {}) {
+  const calls = [
+    {
+      toolName: TOOL_ALLOW,
+      expectedDecision: 'allow',
+      action: TOOL_ALLOW,
+      outcomes: ['allow', 'authorized'],
+      rule: 'P1_ALLOW',
+    },
+    {
+      toolName: TOOL_DENY,
+      expectedDecision: 'deny',
+      action: TOOL_DENY,
+      outcomes: ['deny'],
+      rule: 'P1_DENY',
+    },
+    {
+      toolName: TOOL_ASK_APPROVE,
+      expectedDecision: 'authorized',
+      action: TOOL_ASK_APPROVE,
+      outcomes: ['authorized'],
+      rule: 'P2_ASK_APPROVE',
+    },
+    {
+      toolName: TOOL_ASK_DENY,
+      expectedDecision: 'denied',
+      action: TOOL_ASK_DENY,
+      outcomes: ['denied'],
+      rule: 'P2_ASK_DENY',
+    },
+  ].map((spec) => ({
+    toolName: spec.toolName,
+    expected_decision: spec.expectedDecision,
+    upstream_observed: upstreamObserved(upstreamExecutions, spec.toolName),
+    auditEvent: findAuditEvent(auditEvents, spec),
+  }));
+
+  return { governed_routed_mcp_calls: calls };
+}
+
+function whyByEventIdForReceipts(workerReceipts = []) {
+  const whyByEventId = {};
+  for (const receipt of workerReceipts) {
+    const eventId = receipt?.event?.id;
+    if (eventId) whyByEventId[String(eventId)] = 'available';
+  }
+  return Object.keys(whyByEventId).length > 0 ? whyByEventId : null;
+}
+
+function writeGovernedProfileCoverageReports({
+  profileReport,
+  routedMcpProofReport = null,
+  workerReceipts = [],
+  whyByEventId = null,
+  outputJsonPath = COVERAGE_REPORT_JSON_PATH,
+  outputTextPath = COVERAGE_REPORT_TEXT_PATH,
+  generatedAt = new Date().toISOString(),
+} = {}) {
+  assertCoverageOutputPaths(outputJsonPath, outputTextPath);
+  const report = buildGovernedProfileCoverageReport({
+    profileReport,
+    routedMcpProofReport,
+    workerReceipts,
+    whyByEventId,
+    generatedAt,
+  });
+  assertGovernedProfileCoverageReport(report);
+  const summary = formatGovernedProfileCoverageSummary(report);
+  assertNoUnsafeCoverageText(summary);
+  mkdirSync(dirname(outputJsonPath), { recursive: true });
+  writeJson(outputJsonPath, report);
+  writeFileSync(outputTextPath, `${summary}\n`);
+  return {
+    report,
+    summary,
+    jsonPath: outputJsonPath,
+    textPath: outputTextPath,
+  };
+}
+
+function generateCoverageReport() {
+  if (!existsSync(PROFILE_REPORT_PATH)) {
+    throw new Error(`isolated profile report not found; run setup --isolated-profile first (${PROFILE_REPORT_PATH})`);
+  }
+  const profileReport = readJson(PROFILE_REPORT_PATH);
+  assertIsolatedProfileReport(profileReport);
+  const auditEvents = readJsonl(AUDIT_FILE);
+  const upstreamExecutions = readJsonl(UPSTREAM_EXECUTIONS);
+  const workerReceipts = readJsonl(WORKER_RECEIPT_FILE);
+  const routedMcpProofReport = buildRoutedMcpProofReportFromScratch({
+    auditEvents,
+    upstreamExecutions,
+  });
+  return writeGovernedProfileCoverageReports({
+    profileReport,
+    routedMcpProofReport,
+    workerReceipts,
+    whyByEventId: whyByEventIdForReceipts(workerReceipts),
+  });
 }
 
 function safeMarkerName(toolName) {
@@ -808,10 +1005,13 @@ function buildScratchState({
     sessionId: SESSION_ID,
     humanId: HUMAN_ID,
     auditFile: AUDIT_FILE,
+    workerReceiptFile: WORKER_RECEIPT_FILE,
     markerDir: MARKER_DIR,
     codexProfileHome: isolatedProfile ? CODEX_PROFILE_HOME : null,
     codexProfileDotdir: isolatedProfile ? CODEX_PROFILE_DOTDIR : null,
     profileReportPath: isolatedProfile ? PROFILE_REPORT_PATH : null,
+    coverageReportJsonPath: isolatedProfile ? COVERAGE_REPORT_JSON_PATH : null,
+    coverageReportTextPath: isolatedProfile ? COVERAGE_REPORT_TEXT_PATH : null,
     codexMcpRegistration: {
       listedServerNames: extractCodexMcpServerNames(mcpListAfterAdd),
       configuredMcpServers,
@@ -823,6 +1023,7 @@ function buildScratchState({
       pass2Interactive: interactiveCommand('pass2', { isolatedProfile }),
       pass2Exec: execCommand('pass2', { isolatedProfile }),
       verify: `node ${shellQuote(SCRIPT_PATH)} verify`,
+      coverageReport: `node ${shellQuote(SCRIPT_PATH)} coverage-report`,
       cleanup: `node ${shellQuote(SCRIPT_PATH)} cleanup${isolatedProfile ? ' --isolated-profile' : ''}`,
     },
   };
@@ -890,6 +1091,12 @@ function printOperatorInstructions({ isolatedProfile = false } = {}) {
 
   console.log('\nVerify after both passes:');
   console.log(`  node ${shellQuote(SCRIPT_PATH)} verify`);
+  if (isolatedProfile) {
+    console.log('\nCoverage report after setup or after both passes:');
+    console.log(`  node ${shellQuote(SCRIPT_PATH)} coverage-report`);
+    console.log(`  JSON: ${COVERAGE_REPORT_JSON_PATH}`);
+    console.log(`  Text: ${COVERAGE_REPORT_TEXT_PATH}`);
+  }
   console.log('\nCleanup when done:');
   console.log(`  node ${shellQuote(SCRIPT_PATH)} cleanup${isolatedProfile ? ' --isolated-profile' : ''}`);
 }
@@ -956,7 +1163,7 @@ async function setup({ dryRun = false, isolatedProfile = false } = {}) {
   }
 
   await cleanup({ quiet: true, removeScratchOnly: isolatedProfile });
-  rmSync(SCRATCH, { recursive: true, force: true });
+  removeScratchRoot();
   mkdirSync(SCRATCH, { recursive: true });
   if (isolatedProfile) ensureCodexProfileHome();
   copyGateProject();
@@ -1156,7 +1363,7 @@ async function cleanup({ quiet = false, removeScratchOnly = false } = {}) {
     await killPid(entry.pid);
   }
 
-  rmSync(SCRATCH, { recursive: true, force: true });
+  removeScratchRoot();
 
   if (!quiet) {
     console.log(`Removed temp harness: ${SCRATCH}`);
@@ -1190,6 +1397,8 @@ function status() {
     markerDir: state.markerDir,
     codexProfileHome: state.codexProfileHome || null,
     profileReportPath: state.profileReportPath || null,
+    coverageReportJsonPath: state.coverageReportJsonPath || null,
+    coverageReportTextPath: state.coverageReportTextPath || null,
   }, null, 2));
 }
 
@@ -1208,6 +1417,10 @@ async function main() {
       const mode = arg || 'all';
       if (!['pass1', 'pass2', 'all'].includes(mode)) throw new Error('verify mode must be pass1, pass2, or all');
       verify(mode);
+    } else if (command === 'coverage-report') {
+      const result = generateCoverageReport();
+      console.log(`Coverage report JSON: ${result.jsonPath}`);
+      console.log(`Coverage report text: ${result.textPath}`);
     } else if (command === 'cleanup') {
       await cleanup({ removeScratchOnly: isolatedProfile });
     } else if (command === 'prompt') {
@@ -1230,17 +1443,22 @@ async function main() {
 }
 
 export {
+  COVERAGE_REPORT_JSON_PATH,
+  COVERAGE_REPORT_TEXT_PATH,
   CLAIM_CEILING,
   INTENTIONALLY_UNGOVERNED_SURFACES,
   SERVER_NAME,
+  buildRoutedMcpProofReportFromScratch,
   buildProfileReport,
   buildScratchState,
   assertIsolatedProfileReport,
   configuredServersFromCodex,
   extractCodexMcpServerNames,
+  generateCoverageReport,
   sanitizeMcpTransport,
   transportCommandKind,
   transportLooksDirectFakeUpstream,
+  writeGovernedProfileCoverageReports,
 };
 
 if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {
