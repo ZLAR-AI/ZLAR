@@ -1,5 +1,55 @@
 # Changelog
 
+## 3.3.15 — 2026-05-14 — Routed MCP proof packaging
+
+This release packages the post-v3.3.14 routed-MCP proof stack while keeping
+the same public claim boundary: ZLAR governs only actions that actually pass
+through its routed/intercepted gate surfaces. Safe Codex wording remains:
+"ZLAR can govern Codex CLI-invoked MCP tool calls when those MCP servers are
+routed through ZLAR."
+
+### What changes
+
+- Added an isolated Codex MCP profile smoke harness that uses scratch
+  `HOME`/`CODEX_HOME` state and bounded routed-MCP claim language.
+- Hardened isolated profile checks against direct upstream MCP registration,
+  extra MCP registration, unsafe scratch overrides, and symlink/path
+  traversal.
+- Added a reusable routed-MCP proof harness that exercises a local
+  client-to-ZLAR-MCP-gate-to-fake-upstream path with fake inputs only.
+- Worker Receipt `/why` now shows the action detail hash for governed
+  receipt evidence without exposing raw action contents.
+- Added a Verifier Kit external-runner flow with prepared runner
+  instructions, a result template, a dry-run helper, and privacy-safe
+  handoff tests.
+- Added Governed Profile Coverage Report v0 for conservative coverage
+  reporting over the isolated Codex routed-MCP profile.
+- Wired the `coverage-report` command into the Codex smoke harness.
+- Added Proof Pack Packaging v0 to package existing
+  coverage/report/receipt/verifier evidence into a local manifest and README
+  while summarizing or hashing optional evidence.
+
+### Boundaries and non-claims
+
+- Unrouted client surfaces remain outside this evidence path.
+- Direct non-routed shell, filesystem, browser, app, network,
+  model-reasoning, and final-text surfaces are not claimed as governed by
+  this release.
+- Direct MCP registrations that bypass the ZLAR route remain outside this
+  evidence path.
+- `/contest` is not implemented.
+- External non-Vincent verifier attestation remains prepared/pending.
+- Public website claims are unchanged.
+
+### Verification
+
+- GitHub CI, CodeQL, and OpenSSF Scorecard are green for the release-prep
+  base commit.
+- Local release-prep verification should include Proof Pack Packaging v0,
+  governed profile coverage reporting, routed-MCP proof, Codex profile
+  harness coverage, MCP Worker Receipt, public privacy, and `git diff
+  --check`.
+
 ## 3.3.14 — 2026-05-14 — Post-release hardening
 
 This release candidate packages the local hardening work that landed after
