@@ -47,6 +47,9 @@ const STATE_FILE = join(SCRATCH, 'state.json');
 const READY_FILE = join(SCRATCH, 'ready.json');
 const TMP_PROJECT = join(SCRATCH, 'project');
 const TMP_HOME = join(SCRATCH, 'home');
+const CODEX_PROFILE_HOME = join(SCRATCH, 'codex-home');
+const CODEX_PROFILE_DOTDIR = join(CODEX_PROFILE_HOME, '.codex');
+const PROFILE_REPORT_PATH = join(SCRATCH, 'profile-report.json');
 const AUDIT_FILE = join(SCRATCH, 'codex-live-smoke.audit.jsonl');
 const ROUTING_CONFIG = join(SCRATCH, 'upstreams.json');
 const WRAPPER_PATH = join(SCRATCH, 'zlar-smoke-cli-wrapper.sh');
@@ -66,7 +69,14 @@ const SERVER_STDERR = join(SCRATCH, 'server.stderr.log');
 const GATE_TIMEOUT_S = 8;
 
 const CLAIM_CEILING = 'ZLAR can govern Codex CLI-invoked MCP tool calls when those MCP servers are routed through ZLAR.';
-const NON_CLAIM = 'ZLAR governs Codex broadly.';
+const NON_CLAIM = 'Unrouted Codex surfaces remain outside this smoke harness.';
+const INTENTIONALLY_UNGOVERNED_SURFACES = Object.freeze([
+  'Codex shell commands and filesystem changes outside this routed MCP smoke harness',
+  'Browser, desktop app, and computer-use actions outside this routed MCP smoke harness',
+  'Direct MCP server registrations that bypass the ZLAR MCP gate',
+  'Network calls that do not pass through a ZLAR-routed MCP server',
+  'Model reasoning, planning, memory, and final text outside routed MCP tools/call decisions',
+]);
 
 const TOOL_ALLOW = 'test.marker_allow';
 const TOOL_DENY = 'test.marker_deny';
@@ -94,9 +104,12 @@ After both calls have been attempted, final answer exactly: PASS2_CALLS_ATTEMPTE
 function usage() {
   console.log(`Usage:
   node mcp-gate/smoke-codex-cli.mjs setup
+  node mcp-gate/smoke-codex-cli.mjs setup --isolated-profile
   node mcp-gate/smoke-codex-cli.mjs verify [pass1|pass2|all]
   node mcp-gate/smoke-codex-cli.mjs cleanup
+  node mcp-gate/smoke-codex-cli.mjs cleanup --isolated-profile
   node mcp-gate/smoke-codex-cli.mjs dry-run
+  node mcp-gate/smoke-codex-cli.mjs dry-run --isolated-profile
   node mcp-gate/smoke-codex-cli.mjs prompt pass1|pass2
   node mcp-gate/smoke-codex-cli.mjs status
 
@@ -155,6 +168,157 @@ function readJsonl(path) {
     .split('\n')
     .filter((line) => line.trim())
     .map((line) => JSON.parse(line));
+}
+
+function extractCodexMcpServerNames(stdout) {
+  return String(stdout || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^Name\s+/i.test(line))
+    .filter((line) => !/^No MCP servers/i.test(line))
+    .map((line) => line.split(/\s+/)[0])
+    .filter(Boolean);
+}
+
+function sanitizeMcpTransport(transport) {
+  if (!transport || typeof transport !== 'object') return null;
+  const sanitized = {
+    type: transport.type || null,
+    command: transport.command || null,
+    args: Array.isArray(transport.args) ? transport.args : [],
+    env_keys: [],
+    cwd: transport.cwd || null,
+  };
+  if (transport.env && typeof transport.env === 'object') {
+    sanitized.env_keys = Object.keys(transport.env).sort();
+  } else if (Array.isArray(transport.env_vars)) {
+    sanitized.env_keys = [...transport.env_vars].sort();
+  }
+  return sanitized;
+}
+
+function transportText(server) {
+  return JSON.stringify(server?.transport || {});
+}
+
+function serverLooksZlarRouted(server) {
+  const text = transportText(server);
+  return text.includes(WRAPPER_PATH) || (
+    text.includes('gate.mjs') &&
+    text.includes('--stdio') &&
+    text.includes(ROUTING_CONFIG)
+  );
+}
+
+function serverLooksDirectFakeUpstream(server, upstreamPort) {
+  const text = transportText(server);
+  return text.includes('zlar-smoke-upstream') ||
+    (upstreamPort !== null && upstreamPort !== undefined && text.includes(String(upstreamPort))) ||
+    text.includes(UPSTREAM_CALLS) ||
+    text.includes(UPSTREAM_EXECUTIONS);
+}
+
+function configuredServersFromCodex({ mcpGetAfterAdd, mcpListAfterAdd, upstreamPort }) {
+  const listedNames = extractCodexMcpServerNames(mcpListAfterAdd);
+  const names = listedNames.length > 0 ? listedNames : [mcpGetAfterAdd?.name || SERVER_NAME];
+  return names.map((name) => {
+    const isProofServer = name === (mcpGetAfterAdd?.name || SERVER_NAME);
+    const server = isProofServer ? {
+      name,
+      enabled: mcpGetAfterAdd?.enabled ?? null,
+      transport: sanitizeMcpTransport(mcpGetAfterAdd?.transport),
+    } : {
+      name,
+      enabled: null,
+      transport: null,
+    };
+    return {
+      ...server,
+      zlar_routed: isProofServer && serverLooksZlarRouted(server),
+      direct_fake_upstream_registration: serverLooksDirectFakeUpstream(server, upstreamPort),
+    };
+  });
+}
+
+function buildProfileReport({
+  mcpGetAfterAdd,
+  mcpListAfterAdd = '',
+  upstreamPort = null,
+  sessionId = SESSION_ID,
+} = {}) {
+  const configuredMcpServers = configuredServersFromCodex({
+    mcpGetAfterAdd: mcpGetAfterAdd || { name: SERVER_NAME },
+    mcpListAfterAdd,
+    upstreamPort,
+  });
+
+  return {
+    generated_at: new Date().toISOString(),
+    mode: 'isolated-codex-profile',
+    claim_ceiling: CLAIM_CEILING,
+    configured_mcp_servers: configuredMcpServers,
+    zlar_route: {
+      server_name: SERVER_NAME,
+      transport: 'stdio',
+      wrapper_path: WRAPPER_PATH,
+      gate_script: join(TMP_PROJECT, 'mcp-gate', 'gate.mjs'),
+      gate_args: gateArgs(sessionId).map((arg) => (
+        arg === HUMAN_ID ? 'human:operator-1' : arg
+      )),
+      routing_config: ROUTING_CONFIG,
+      audit_file: AUDIT_FILE,
+      policy_file: POLICY_PATH,
+      agent_id: AGENT_ID,
+      session_id: sessionId,
+      fake_telegram: true,
+      live_telegram: false,
+    },
+    scratch: {
+      root: SCRATCH,
+      codex_home: CODEX_PROFILE_HOME,
+      codex_dotdir: CODEX_PROFILE_DOTDIR,
+      cleanup_command: 'node mcp-gate/smoke-codex-cli.mjs cleanup --isolated-profile',
+    },
+    privacy: {
+      env_values_redacted: true,
+      live_telegram_credential: false,
+      real_chat_id: false,
+      real_human_state_id: false,
+    },
+    intentionally_ungoverned_surfaces: [...INTENTIONALLY_UNGOVERNED_SURFACES],
+    limitations: {
+      worker_receipt_why_scope: 'Worker Receipt /why covers governed bash-gate events and routed MCP tools/call final decisions.',
+      contest: '/contest is not implemented.',
+      external_verifier: 'External non-Vincent verifier attestation has not completed.',
+    },
+  };
+}
+
+function assertIsolatedProfileReport(report) {
+  const servers = report?.configured_mcp_servers || [];
+  if (servers.length !== 1) {
+    throw new Error(`isolated Codex profile must contain exactly one MCP server; found ${servers.length}`);
+  }
+  const [server] = servers;
+  if (server.name !== SERVER_NAME) {
+    throw new Error(`isolated Codex profile server must be ${SERVER_NAME}; found ${server.name || '<none>'}`);
+  }
+  if (!server.zlar_routed) {
+    throw new Error(`${SERVER_NAME} must route through the ZLAR MCP gate wrapper`);
+  }
+  if (server.direct_fake_upstream_registration) {
+    throw new Error('isolated Codex profile must not directly register the fake upstream');
+  }
+  if (report.claim_ceiling !== CLAIM_CEILING) {
+    throw new Error('profile report claim ceiling drifted');
+  }
+}
+
+function writeProfileReport(report) {
+  assertIsolatedProfileReport(report);
+  writeJson(PROFILE_REPORT_PATH, report);
+  return PROFILE_REPORT_PATH;
 }
 
 function safeMarkerName(toolName) {
@@ -564,58 +728,88 @@ function gateEnv(telegramUrl) {
   };
 }
 
+function ensureCodexProfileHome() {
+  mkdirSync(CODEX_PROFILE_DOTDIR, { recursive: true });
+}
+
+function codexProcessEnv({ isolatedProfile = false } = {}) {
+  if (!isolatedProfile) return process.env;
+  ensureCodexProfileHome();
+  return {
+    ...process.env,
+    HOME: CODEX_PROFILE_HOME,
+    CODEX_HOME: CODEX_PROFILE_DOTDIR,
+  };
+}
+
+function codexEnvPrefix({ isolatedProfile = false } = {}) {
+  if (!isolatedProfile) return '';
+  return `env HOME=${shellQuote(CODEX_PROFILE_HOME)} CODEX_HOME=${shellQuote(CODEX_PROFILE_DOTDIR)} `;
+}
+
 function codexPromptCommand(pass) {
   return `node ${shellQuote(SCRIPT_PATH)} prompt ${pass}`;
 }
 
-function interactiveCommand(pass) {
-  return `codex --no-alt-screen -C ${shellQuote(REPO_ROOT)} -s read-only "$(${codexPromptCommand(pass)})"`;
+function interactiveCommand(pass, options = {}) {
+  return `${codexEnvPrefix(options)}codex --no-alt-screen -C ${shellQuote(REPO_ROOT)} -s read-only "$(${codexPromptCommand(pass)})"`;
 }
 
-function execCommand(pass) {
-  return `codex exec -C ${shellQuote(REPO_ROOT)} -s read-only "$(${codexPromptCommand(pass)})"`;
+function execCommand(pass, options = {}) {
+  return `${codexEnvPrefix(options)}codex exec -C ${shellQuote(REPO_ROOT)} -s read-only "$(${codexPromptCommand(pass)})"`;
 }
 
-function printOperatorInstructions() {
+function printOperatorInstructions({ isolatedProfile = false } = {}) {
   console.log('\nClaim ceiling:');
   console.log(`  "${CLAIM_CEILING}"`);
   console.log('\nNot claimed:');
   console.log(`  "${NON_CLAIM}"`);
+  if (isolatedProfile) {
+    console.log('\nIsolated Codex profile:');
+    console.log(`  HOME=${CODEX_PROFILE_HOME}`);
+    console.log(`  CODEX_HOME=${CODEX_PROFILE_DOTDIR}`);
+    console.log(`  Profile report: ${PROFILE_REPORT_PATH}`);
+    console.log('  This mode writes Codex MCP config only inside the scratch profile.');
+  }
   console.log('\nRun Pass 1, then Pass 2. Interactive Codex CLI is recommended because the CLI may prompt for client-side MCP tool permission.');
   console.log('When Codex asks to allow zlar-smoke-cli tools, choose "Allow for this session". That is separate from the ZLAR fake Telegram approval path.');
 
   console.log('\nPass 1 prompt:');
   console.log(PASS1_PROMPT);
   console.log('\nPass 1 interactive command:');
-  console.log(`  ${interactiveCommand('pass1')}`);
+  console.log(`  ${interactiveCommand('pass1', { isolatedProfile })}`);
   console.log('\nPass 1 codex exec command, only if your Codex CLI exposes configured MCP tools to exec mode:');
-  console.log(`  ${execCommand('pass1')}`);
+  console.log(`  ${execCommand('pass1', { isolatedProfile })}`);
 
   console.log('\nPass 2 prompt:');
   console.log(PASS2_PROMPT);
   console.log('\nPass 2 interactive command:');
-  console.log(`  ${interactiveCommand('pass2')}`);
+  console.log(`  ${interactiveCommand('pass2', { isolatedProfile })}`);
   console.log('\nPass 2 codex exec command, only if your Codex CLI exposes configured MCP tools to exec mode:');
-  console.log(`  ${execCommand('pass2')}`);
+  console.log(`  ${execCommand('pass2', { isolatedProfile })}`);
 
   console.log('\nVerify after both passes:');
   console.log(`  node ${shellQuote(SCRIPT_PATH)} verify`);
   console.log('\nCleanup when done:');
-  console.log(`  node ${shellQuote(SCRIPT_PATH)} cleanup`);
+  console.log(`  node ${shellQuote(SCRIPT_PATH)} cleanup${isolatedProfile ? ' --isolated-profile' : ''}`);
 }
 
-function registerCodexMcp(telegramUrl, sessionId) {
-  runOptional('codex', ['mcp', 'remove', SERVER_NAME]);
+function registerCodexMcp(telegramUrl, sessionId, { isolatedProfile = false } = {}) {
+  const env = codexProcessEnv({ isolatedProfile });
+  runOptional('codex', ['mcp', 'remove', SERVER_NAME], { env });
   writeStdioWrapper(sessionId);
 
-  const env = gateEnv(telegramUrl);
+  const serverEnv = gateEnv(telegramUrl);
   const args = ['mcp', 'add', SERVER_NAME];
-  for (const [key, value] of Object.entries(env)) {
+  for (const [key, value] of Object.entries(serverEnv)) {
     args.push('--env', `${key}=${value}`);
   }
   args.push('--', WRAPPER_PATH);
-  runChecked('codex', args);
-  return runChecked('codex', ['mcp', 'get', SERVER_NAME, '--json']).stdout;
+  runChecked('codex', args, { env });
+  return {
+    getStdout: runChecked('codex', ['mcp', 'get', SERVER_NAME, '--json'], { env }).stdout,
+    listStdout: runChecked('codex', ['mcp', 'list'], { env }).stdout,
+  };
 }
 
 async function preflightGate(telegramUrl) {
@@ -653,7 +847,7 @@ async function preflightGate(telegramUrl) {
   };
 }
 
-async function setup({ dryRun = false } = {}) {
+async function setup({ dryRun = false, isolatedProfile = false } = {}) {
   if (!existsSync(join(REPO_ROOT, 'mcp-gate', 'gate.mjs'))) {
     throw new Error(`repo root detection failed: ${REPO_ROOT}`);
   }
@@ -661,9 +855,10 @@ async function setup({ dryRun = false } = {}) {
     throw new Error('codex CLI not found on PATH');
   }
 
-  await cleanup({ quiet: true, removeScratchOnly: false });
+  await cleanup({ quiet: true, removeScratchOnly: isolatedProfile });
   rmSync(SCRATCH, { recursive: true, force: true });
   mkdirSync(SCRATCH, { recursive: true });
+  if (isolatedProfile) ensureCodexProfileHome();
   copyGateProject();
   writeBaseHarnessFiles();
 
@@ -680,11 +875,20 @@ async function setup({ dryRun = false } = {}) {
 
   const ready = await waitForReady();
   writeRoutingConfig(ready.upstreamPort);
-  const mcpGetAfterAdd = registerCodexMcp(ready.telegramUrl, SESSION_ID);
+  const codexRegistration = registerCodexMcp(ready.telegramUrl, SESSION_ID, { isolatedProfile });
   const preflight = await preflightGate(ready.telegramUrl);
+  const mcpGetAfterAdd = JSON.parse(codexRegistration.getStdout);
+  const profileReport = isolatedProfile ? buildProfileReport({
+    mcpGetAfterAdd,
+    mcpListAfterAdd: codexRegistration.listStdout,
+    upstreamPort: ready.upstreamPort,
+    sessionId: SESSION_ID,
+  }) : null;
+  if (profileReport) writeProfileReport(profileReport);
 
   const state = {
     scratch: SCRATCH,
+    isolatedProfile,
     serverName: SERVER_NAME,
     serverPid: ready.pid,
     upstreamPort: ready.upstreamPort,
@@ -696,30 +900,39 @@ async function setup({ dryRun = false } = {}) {
     humanId: HUMAN_ID,
     auditFile: AUDIT_FILE,
     markerDir: MARKER_DIR,
-    mcpGetAfterAdd: JSON.parse(mcpGetAfterAdd),
+    codexProfileHome: isolatedProfile ? CODEX_PROFILE_HOME : null,
+    codexProfileDotdir: isolatedProfile ? CODEX_PROFILE_DOTDIR : null,
+    profileReportPath: isolatedProfile ? PROFILE_REPORT_PATH : null,
+    mcpListAfterAdd: codexRegistration.listStdout,
+    mcpGetAfterAdd,
     preflight,
     commands: {
-      pass1Interactive: interactiveCommand('pass1'),
-      pass1Exec: execCommand('pass1'),
-      pass2Interactive: interactiveCommand('pass2'),
-      pass2Exec: execCommand('pass2'),
+      pass1Interactive: interactiveCommand('pass1', { isolatedProfile }),
+      pass1Exec: execCommand('pass1', { isolatedProfile }),
+      pass2Interactive: interactiveCommand('pass2', { isolatedProfile }),
+      pass2Exec: execCommand('pass2', { isolatedProfile }),
       verify: `node ${shellQuote(SCRIPT_PATH)} verify`,
-      cleanup: `node ${shellQuote(SCRIPT_PATH)} cleanup`,
+      cleanup: `node ${shellQuote(SCRIPT_PATH)} cleanup${isolatedProfile ? ' --isolated-profile' : ''}`,
     },
   };
   writeJson(STATE_FILE, state);
 
-  console.log(`Setup complete for manual Codex CLI MCP smoke.`);
+  console.log(`Setup complete for manual Codex CLI MCP smoke${isolatedProfile ? ' with isolated Codex profile' : ''}.`);
   console.log(`Temp harness: ${SCRATCH}`);
   console.log(`Fake upstream: 127.0.0.1:${ready.upstreamPort}`);
   console.log(`Fake Telegram: ${ready.telegramUrl}`);
   console.log(`Codex MCP server: ${SERVER_NAME}`);
+  if (isolatedProfile) {
+    console.log(`Codex profile HOME: ${CODEX_PROFILE_HOME}`);
+    console.log(`Codex profile CODEX_HOME: ${CODEX_PROFILE_DOTDIR}`);
+    console.log(`Profile report: ${PROFILE_REPORT_PATH}`);
+  }
   console.log(`Preflight: ${preflight.ok ? 'ok' : 'failed'}`);
-  printOperatorInstructions();
+  printOperatorInstructions({ isolatedProfile });
 
   if (dryRun) {
     console.log('\nDry run requested; cleaning up without invoking Codex CLI marker tools.');
-    await cleanup({ quiet: false, removeScratchOnly: false });
+    await cleanup({ quiet: false, removeScratchOnly: isolatedProfile });
   }
 }
 
@@ -885,6 +1098,7 @@ function status() {
   const state = readJson(STATE_FILE);
   console.log(JSON.stringify({
     scratch: state.scratch,
+    isolatedProfile: Boolean(state.isolatedProfile),
     serverName: state.serverName,
     serverPid: state.serverPid,
     serverAlive: processExists(Number(state.serverPid)),
@@ -892,17 +1106,20 @@ function status() {
     telegramUrl: state.telegramUrl,
     auditFile: state.auditFile,
     markerDir: state.markerDir,
+    codexProfileHome: state.codexProfileHome || null,
+    profileReportPath: state.profileReportPath || null,
   }, null, 2));
 }
 
 async function main() {
   const command = process.argv[2] || 'help';
   const arg = process.argv[3] || '';
+  const isolatedProfile = process.argv.includes('--isolated-profile');
   try {
     if (command === 'setup') {
-      await setup({ dryRun: process.argv.includes('--dry-run') });
+      await setup({ dryRun: process.argv.includes('--dry-run'), isolatedProfile });
     } else if (command === 'dry-run') {
-      await setup({ dryRun: true });
+      await setup({ dryRun: true, isolatedProfile });
     } else if (command === 'serve') {
       await serve();
     } else if (command === 'verify') {
@@ -910,7 +1127,7 @@ async function main() {
       if (!['pass1', 'pass2', 'all'].includes(mode)) throw new Error('verify mode must be pass1, pass2, or all');
       verify(mode);
     } else if (command === 'cleanup') {
-      await cleanup();
+      await cleanup({ removeScratchOnly: isolatedProfile });
     } else if (command === 'prompt') {
       if (arg === 'pass1') {
         process.stdout.write(PASS1_PROMPT);
@@ -930,4 +1147,17 @@ async function main() {
   }
 }
 
-main();
+export {
+  CLAIM_CEILING,
+  INTENTIONALLY_UNGOVERNED_SURFACES,
+  SERVER_NAME,
+  buildProfileReport,
+  assertIsolatedProfileReport,
+  configuredServersFromCodex,
+  extractCodexMcpServerNames,
+  sanitizeMcpTransport,
+};
+
+if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {
+  main();
+}
