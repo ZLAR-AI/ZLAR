@@ -426,6 +426,60 @@ assert_match "T-KIT-20.smoke-test-mentions-vectors" \
     "verify-test-vectors.mjs" \
     "${README_TXT}"
 
+# ─── T-KIT-21: external runner files ship in kit ─────────────────────────────
+
+echo "  T-KIT-21  external-runner files ship in kit"
+for shipped_file in EXTERNAL-RUNNER.md EXTERNAL-RUNNER-RESULT-TEMPLATE.md external-runner-dry-run.sh; do
+    if [ -f "${KIT_DIR}/${shipped_file}" ]; then
+        assert_eq "T-KIT-21.${shipped_file}.exists" "1" "1"
+    else
+        assert_eq "T-KIT-21.${shipped_file}.exists" "1" "0"
+    fi
+done
+
+# ─── T-KIT-22: dry-run helper passes with bundled samples only ───────────────
+
+echo "  T-KIT-22  external-runner dry-run passes with bundled samples"
+DRY_OUT="$(cd "${KIT_DIR}" && bash external-runner-dry-run.sh 2>&1)"
+DRY_EC=$?
+assert_eq "T-KIT-22.exit-zero" "0" "${DRY_EC}"
+assert_match "T-KIT-22.result-pass" "^result: PASS" "${DRY_OUT}"
+assert_match "T-KIT-22.boundary" "Not externally attested yet" "${DRY_OUT}"
+
+# ─── T-KIT-23: dry-run helper verifies synthetic engagement bundle ───────────
+
+echo "  T-KIT-23  external-runner dry-run passes with synthetic engagement"
+ENGAGE_DIR="${FIX_DIR}/engagement-bundle"
+mkdir -p "${ENGAGE_DIR}"
+cp "${KIT_DIR}/examples/sample-receipt.json" "${ENGAGE_DIR}/engagement-receipt.json"
+cp "${KIT_DIR}/spec/test-key.pub" "${ENGAGE_DIR}/engagement-pubkey.pub"
+cp "${KIT_DIR}/examples/sample-chain.jsonl" "${ENGAGE_DIR}/engagement-chain.jsonl"
+DRY_OUT="$(cd "${KIT_DIR}" && bash external-runner-dry-run.sh --engagement-dir "${ENGAGE_DIR}" 2>&1)"
+DRY_EC=$?
+assert_eq "T-KIT-23.exit-zero" "0" "${DRY_EC}"
+assert_match "T-KIT-23.result-pass" "^result: PASS" "${DRY_OUT}"
+assert_match "T-KIT-23.engagement-receipt" "engagement-bundle/engagement-receipt.json" "${DRY_OUT}"
+assert_match "T-KIT-23.engagement-chain" "engagement-bundle/engagement-chain.jsonl" "${DRY_OUT}"
+
+# ─── T-KIT-24: runner files stay privacy and claim bounded ───────────────────
+
+echo "  T-KIT-24  external-runner files avoid private paths and broad claims"
+RUNNER_TEXT="$(cat "${KIT_DIR}/EXTERNAL-RUNNER.md" "${KIT_DIR}/EXTERNAL-RUNNER-RESULT-TEMPLATE.md" "${KIT_DIR}/external-runner-dry-run.sh")"
+phrase2() { printf '%s %s' "$1" "$2"; }
+phrase3() { printf '%s %s %s' "$1" "$2" "$3"; }
+GENERIC_PRIVATE_PATH="/Users/tester"
+NUMERIC_HUMAN_PATTERN="human:""[0-9]"
+assert_nomatch "T-KIT-24.no-private-path" "${GENERIC_PRIVATE_PATH}" "${RUNNER_TEXT}"
+assert_nomatch "T-KIT-24.no-numeric-human" "${NUMERIC_HUMAN_PATTERN}" "${RUNNER_TEXT}"
+assert_nomatch "T-KIT-24.no-all-actions" "$(phrase2 "all" "actions")" "${RUNNER_TEXT}"
+assert_nomatch "T-KIT-24.no-every-tool-call" "$(phrase3 "every" "tool" "call")" "${RUNNER_TEXT}"
+assert_nomatch "T-KIT-24.no-governs-codex" "$(phrase2 "governs" "Codex")" "${RUNNER_TEXT}"
+assert_nomatch "T-KIT-24.no-governs-hermes" "$(phrase2 "governs" "Hermes")" "${RUNNER_TEXT}"
+assert_nomatch "T-KIT-24.no-zlar-governs-codex" "$(phrase3 "ZLAR" "governs" "Codex")" "${RUNNER_TEXT}"
+assert_nomatch "T-KIT-24.no-zlar-governs-hermes" "$(phrase3 "ZLAR" "governs" "Hermes")" "${RUNNER_TEXT}"
+assert_nomatch "T-KIT-24.no-external-verification-completed" "$(phrase3 "external" "verification" "completed")" "${RUNNER_TEXT}"
+assert_nomatch "T-KIT-24.no-independently-attested" "$(phrase2 "independently" "attested")" "${RUNNER_TEXT}"
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 
 echo ""
