@@ -183,12 +183,14 @@ function extractCodexMcpServerNames(stdout) {
 
 function sanitizeMcpTransport(transport) {
   if (!transport || typeof transport !== 'object') return null;
+  const knownKeys = new Set(['type', 'command', 'args', 'env', 'env_vars', 'cwd']);
   const sanitized = {
     type: transport.type || null,
     command: transport.command || null,
-    args: Array.isArray(transport.args) ? transport.args : [],
+    args: Array.isArray(transport.args) ? transport.args.map((arg) => String(arg)) : [],
     env_keys: [],
     cwd: transport.cwd || null,
+    additional_keys: Object.keys(transport).filter((key) => !knownKeys.has(key)).sort(),
   };
   if (transport.env && typeof transport.env === 'object') {
     sanitized.env_keys = Object.keys(transport.env).sort();
@@ -198,25 +200,58 @@ function sanitizeMcpTransport(transport) {
   return sanitized;
 }
 
-function transportText(server) {
-  return JSON.stringify(server?.transport || {});
+function stringFragments(value, fragments = []) {
+  if (value === null || value === undefined) return fragments;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    fragments.push(String(value));
+    return fragments;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) stringFragments(item, fragments);
+    return fragments;
+  }
+  if (typeof value === 'object') {
+    for (const [key, nested] of Object.entries(value)) {
+      fragments.push(String(key));
+      stringFragments(nested, fragments);
+    }
+  }
+  return fragments;
+}
+
+function transportArgs(transport) {
+  return Array.isArray(transport?.args) ? transport.args.map((arg) => String(arg)) : [];
+}
+
+function transportCommandKind(transport) {
+  const command = String(transport?.command || '');
+  const args = transportArgs(transport);
+  const gateScript = join(TMP_PROJECT, 'mcp-gate', 'gate.mjs');
+  if (command === WRAPPER_PATH) return 'zlar-wrapper';
+  if (command === process.execPath &&
+      args.includes(gateScript) &&
+      args.includes('--stdio') &&
+      args.includes(ROUTING_CONFIG)) {
+    return 'zlar-gate';
+  }
+  return 'other';
 }
 
 function serverLooksZlarRouted(server) {
-  const text = transportText(server);
-  return text.includes(WRAPPER_PATH) || (
-    text.includes('gate.mjs') &&
-    text.includes('--stdio') &&
-    text.includes(ROUTING_CONFIG)
-  );
+  return ['zlar-wrapper', 'zlar-gate'].includes(transportCommandKind(server?.transport));
 }
 
-function serverLooksDirectFakeUpstream(server, upstreamPort) {
-  const text = transportText(server);
-  return text.includes('zlar-smoke-upstream') ||
-    (upstreamPort !== null && upstreamPort !== undefined && text.includes(String(upstreamPort))) ||
-    text.includes(UPSTREAM_CALLS) ||
-    text.includes(UPSTREAM_EXECUTIONS);
+function transportLooksDirectFakeUpstream(transport, upstreamPort) {
+  const fragments = stringFragments(transport).map((fragment) => fragment.toLowerCase());
+  const upstreamPortText = upstreamPort === null || upstreamPort === undefined ? null : String(upstreamPort);
+  return fragments.some((fragment) => (
+    fragment.includes('zlar-smoke-upstream') ||
+    fragment.includes('fake-upstream') ||
+    fragment.includes('upstream-calls.jsonl') ||
+    fragment.includes('upstream-executions.jsonl') ||
+    (upstreamPortText && fragment === upstreamPortText) ||
+    (upstreamPortText && fragment.includes(`:${upstreamPortText}`))
+  ));
 }
 
 function configuredServersFromCodex({ mcpGetAfterAdd, mcpListAfterAdd, upstreamPort }) {
@@ -224,19 +259,22 @@ function configuredServersFromCodex({ mcpGetAfterAdd, mcpListAfterAdd, upstreamP
   const names = listedNames.length > 0 ? listedNames : [mcpGetAfterAdd?.name || SERVER_NAME];
   return names.map((name) => {
     const isProofServer = name === (mcpGetAfterAdd?.name || SERVER_NAME);
+    const rawTransport = isProofServer ? mcpGetAfterAdd?.transport : null;
     const server = isProofServer ? {
       name,
       enabled: mcpGetAfterAdd?.enabled ?? null,
-      transport: sanitizeMcpTransport(mcpGetAfterAdd?.transport),
+      transport: sanitizeMcpTransport(rawTransport),
     } : {
       name,
       enabled: null,
       transport: null,
     };
+    const commandKind = isProofServer ? transportCommandKind(rawTransport) : 'unknown';
     return {
       ...server,
+      transport_command_kind: commandKind,
       zlar_routed: isProofServer && serverLooksZlarRouted(server),
-      direct_fake_upstream_registration: serverLooksDirectFakeUpstream(server, upstreamPort),
+      direct_fake_upstream_registration: isProofServer && transportLooksDirectFakeUpstream(rawTransport, upstreamPort),
     };
   });
 }
@@ -306,6 +344,9 @@ function assertIsolatedProfileReport(report) {
   }
   if (!server.zlar_routed) {
     throw new Error(`${SERVER_NAME} must route through the ZLAR MCP gate wrapper`);
+  }
+  if (!['zlar-wrapper', 'zlar-gate'].includes(server.transport_command_kind)) {
+    throw new Error(`${SERVER_NAME} transport command must point to the expected ZLAR wrapper/gate path`);
   }
   if (server.direct_fake_upstream_registration) {
     throw new Error('isolated Codex profile must not directly register the fake upstream');
@@ -728,6 +769,65 @@ function gateEnv(telegramUrl) {
   };
 }
 
+function summarizePreflight(preflight) {
+  if (!preflight) return null;
+  const stdout = String(preflight.stdout || '');
+  const stderr = String(preflight.stderr || '');
+  return {
+    ok: Boolean(preflight.ok),
+    initialize_response_observed: stdout.includes('"id":900') && stdout.includes('"result"'),
+    policy_signature_verified: stderr.includes('Policy signature verified'),
+  };
+}
+
+function buildScratchState({
+  ready = {},
+  isolatedProfile = false,
+  codexRegistration = null,
+  mcpGetAfterAdd = null,
+  preflight = null,
+  lifecycle = 'setup-complete',
+} = {}) {
+  const mcpListAfterAdd = codexRegistration?.listStdout || '';
+  const configuredMcpServers = mcpGetAfterAdd ? configuredServersFromCodex({
+    mcpGetAfterAdd,
+    mcpListAfterAdd,
+    upstreamPort: ready.upstreamPort ?? null,
+  }) : [];
+  return {
+    scratch: SCRATCH,
+    lifecycle,
+    isolatedProfile,
+    serverName: SERVER_NAME,
+    serverPid: ready.pid ?? null,
+    upstreamPort: ready.upstreamPort ?? null,
+    telegramUrl: ready.telegramUrl ?? null,
+    repoRoot: REPO_ROOT,
+    scriptPath: SCRIPT_PATH,
+    agentId: AGENT_ID,
+    sessionId: SESSION_ID,
+    humanId: HUMAN_ID,
+    auditFile: AUDIT_FILE,
+    markerDir: MARKER_DIR,
+    codexProfileHome: isolatedProfile ? CODEX_PROFILE_HOME : null,
+    codexProfileDotdir: isolatedProfile ? CODEX_PROFILE_DOTDIR : null,
+    profileReportPath: isolatedProfile ? PROFILE_REPORT_PATH : null,
+    codexMcpRegistration: {
+      listedServerNames: extractCodexMcpServerNames(mcpListAfterAdd),
+      configuredMcpServers,
+    },
+    preflight: summarizePreflight(preflight),
+    commands: {
+      pass1Interactive: interactiveCommand('pass1', { isolatedProfile }),
+      pass1Exec: execCommand('pass1', { isolatedProfile }),
+      pass2Interactive: interactiveCommand('pass2', { isolatedProfile }),
+      pass2Exec: execCommand('pass2', { isolatedProfile }),
+      verify: `node ${shellQuote(SCRIPT_PATH)} verify`,
+      cleanup: `node ${shellQuote(SCRIPT_PATH)} cleanup${isolatedProfile ? ' --isolated-profile' : ''}`,
+    },
+  };
+}
+
 function ensureCodexProfileHome() {
   mkdirSync(CODEX_PROFILE_DOTDIR, { recursive: true });
 }
@@ -872,6 +972,11 @@ async function setup({ dryRun = false, isolatedProfile = false } = {}) {
   server.unref();
   closeSync(stdoutFd);
   closeSync(stderrFd);
+  writeJson(STATE_FILE, buildScratchState({
+    ready: { pid: server.pid },
+    isolatedProfile,
+    lifecycle: 'server-spawned',
+  }));
 
   const ready = await waitForReady();
   writeRoutingConfig(ready.upstreamPort);
@@ -886,36 +991,13 @@ async function setup({ dryRun = false, isolatedProfile = false } = {}) {
   }) : null;
   if (profileReport) writeProfileReport(profileReport);
 
-  const state = {
-    scratch: SCRATCH,
+  writeJson(STATE_FILE, buildScratchState({
+    ready,
     isolatedProfile,
-    serverName: SERVER_NAME,
-    serverPid: ready.pid,
-    upstreamPort: ready.upstreamPort,
-    telegramUrl: ready.telegramUrl,
-    repoRoot: REPO_ROOT,
-    scriptPath: SCRIPT_PATH,
-    agentId: AGENT_ID,
-    sessionId: SESSION_ID,
-    humanId: HUMAN_ID,
-    auditFile: AUDIT_FILE,
-    markerDir: MARKER_DIR,
-    codexProfileHome: isolatedProfile ? CODEX_PROFILE_HOME : null,
-    codexProfileDotdir: isolatedProfile ? CODEX_PROFILE_DOTDIR : null,
-    profileReportPath: isolatedProfile ? PROFILE_REPORT_PATH : null,
-    mcpListAfterAdd: codexRegistration.listStdout,
+    codexRegistration,
     mcpGetAfterAdd,
     preflight,
-    commands: {
-      pass1Interactive: interactiveCommand('pass1', { isolatedProfile }),
-      pass1Exec: execCommand('pass1', { isolatedProfile }),
-      pass2Interactive: interactiveCommand('pass2', { isolatedProfile }),
-      pass2Exec: execCommand('pass2', { isolatedProfile }),
-      verify: `node ${shellQuote(SCRIPT_PATH)} verify`,
-      cleanup: `node ${shellQuote(SCRIPT_PATH)} cleanup${isolatedProfile ? ' --isolated-profile' : ''}`,
-    },
-  };
-  writeJson(STATE_FILE, state);
+  }));
 
   console.log(`Setup complete for manual Codex CLI MCP smoke${isolatedProfile ? ' with isolated Codex profile' : ''}.`);
   console.log(`Temp harness: ${SCRATCH}`);
@@ -1152,10 +1234,13 @@ export {
   INTENTIONALLY_UNGOVERNED_SURFACES,
   SERVER_NAME,
   buildProfileReport,
+  buildScratchState,
   assertIsolatedProfileReport,
   configuredServersFromCodex,
   extractCodexMcpServerNames,
   sanitizeMcpTransport,
+  transportCommandKind,
+  transportLooksDirectFakeUpstream,
 };
 
 if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {
