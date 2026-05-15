@@ -14,15 +14,15 @@
 # Strict mode (bash-3 safe: no pipefail in POSIX sh)
 set -eu
 
-# Read version from the VERSION file if running from a repo clone;
-# fall back to a fixed string only if VERSION cannot be located (curl | bash path
-# will overwrite this when the downloaded tarball is extracted).
+# Read version from the VERSION file if running from a repo clone.
+# In curl | bash mode the version is unknown until the release source is
+# downloaded/cloned, so leave it empty rather than stamping a stale fallback.
 _INSTALL_SELF="${BASH_SOURCE:-$0}"
 _INSTALL_SELF_DIR="$(cd "$(dirname "${_INSTALL_SELF}")" 2>/dev/null && pwd)"
 if [ -f "${_INSTALL_SELF_DIR}/VERSION" ]; then
     ZLAR_VERSION=$(cat "${_INSTALL_SELF_DIR}/VERSION" | tr -d '[:space:]')
 else
-    ZLAR_VERSION="3.0.0"
+    ZLAR_VERSION=""
 fi
 INSTALL_DIR="${HOME}/.zlar"
 
@@ -225,14 +225,19 @@ fi
 if [ -z "${SCRIPT_SOURCE_DIR}" ]; then
     # Download from GitHub release
     GITHUB_REPO="ZLAR-AI/ZLAR"
-    TARBALL_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/zlar-${ZLAR_VERSION}.tar.gz"
-
-    info "Downloading ZLAR v${ZLAR_VERSION}..."
 
     TMPDIR_DL=$(mktemp -d)
     trap "rm -rf '${TMPDIR_DL}'" EXIT
 
-    if curl -fsSL "${TARBALL_URL}" -o "${TMPDIR_DL}/zlar.tar.gz" 2>/dev/null; then
+    if [ -n "${ZLAR_VERSION}" ]; then
+        TARBALL_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/zlar-${ZLAR_VERSION}.tar.gz"
+        info "Downloading ZLAR v${ZLAR_VERSION}..."
+    else
+        TARBALL_URL=""
+        info "Downloading latest ZLAR source..."
+    fi
+
+    if [ -n "${TARBALL_URL}" ] && curl -fsSL "${TARBALL_URL}" -o "${TMPDIR_DL}/zlar.tar.gz" 2>/dev/null; then
         tar xzf "${TMPDIR_DL}/zlar.tar.gz" -C "${TMPDIR_DL}" 2>/dev/null
         SCRIPT_SOURCE_DIR="${TMPDIR_DL}/zlar"
         ok "Downloaded and extracted"
@@ -249,6 +254,15 @@ if [ -z "${SCRIPT_SOURCE_DIR}" ]; then
             exit 1
         fi
     fi
+fi
+
+if [ -z "${ZLAR_VERSION}" ] && [ -f "${SCRIPT_SOURCE_DIR}/VERSION" ]; then
+    ZLAR_VERSION=$(cat "${SCRIPT_SOURCE_DIR}/VERSION" | tr -d '[:space:]')
+fi
+
+if [ -z "${ZLAR_VERSION}" ]; then
+    fail "Cannot determine ZLAR version from ${SCRIPT_SOURCE_DIR}/VERSION"
+    exit 1
 fi
 
 # Create install directory structure

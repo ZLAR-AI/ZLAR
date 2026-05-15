@@ -108,59 +108,85 @@ jq -n '{
   telegram: {enabled: false, chat_id: "", timeout_s: 1}
 }' > "${TEMP_DIR}/etc/gate.json"
 
+GATE_OUTPUT=""
+GATE_STATUS=0
+
+capture_gate() {
+    local input="$1"
+
+    set +e
+    GATE_OUTPUT=$(printf '%s' "${input}" | \
+      PROJECT_DIR="${TEMP_DIR}" ZLAR_PROJECT_DIR="${TEMP_DIR}" \
+      bash "${PROJECT_DIR}/bin/zlar-gate" 2>/dev/null)
+    GATE_STATUS=$?
+    set -e
+}
+
+decision_from_result() {
+    local result="$1"
+    local decision
+
+    decision=$(printf '%s' "${result}" | jq -r '.hookSpecificOutput.permissionDecision // "error"' 2>/dev/null) || decision="error"
+    printf '%s\n' "${decision}"
+}
+
 # Test 1: Safe read command — should be ALLOWED
 echo "  Agent tries: ${B}ls /tmp${N}"
-RESULT1=$(printf '{"tool_name":"Bash","tool_input":{"command":"ls /tmp"},"session_id":"quickstart"}' | \
-  PROJECT_DIR="${TEMP_DIR}" ZLAR_PROJECT_DIR="${TEMP_DIR}" \
-  bash "${PROJECT_DIR}/bin/zlar-gate" 2>/dev/null || echo '{}')
-DECISION1=$(echo "${RESULT1}" | jq -r '.hookSpecificOutput.permissionDecision // "error"' 2>/dev/null)
+capture_gate '{"tool_name":"Bash","tool_input":{"command":"ls /tmp"},"session_id":"quickstart"}'
+RESULT1="${GATE_OUTPUT}"
+STATUS1="${GATE_STATUS}"
+DECISION1=$(decision_from_result "${RESULT1}")
 
-if [ "${DECISION1}" = "allow" ]; then
+if [ "${DECISION1}" = "allow" ] && [ "${STATUS1}" -eq 0 ]; then
     ok "Gate decision: ${G}ALLOW${N} (safe read command, policy rule R001)"
 else
-    fail "Expected allow, got: ${DECISION1}"
+    fail "Expected allow with exit 0, got: ${DECISION1} (exit ${STATUS1})"
+    exit 1
 fi
 
 # Test 2: Recursive delete — should be DENIED
 echo ""
 echo "  Agent tries: ${B}rm -rf /important-data${N}"
-RESULT2=$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf /important-data"},"session_id":"quickstart"}' | \
-  PROJECT_DIR="${TEMP_DIR}" ZLAR_PROJECT_DIR="${TEMP_DIR}" \
-  bash "${PROJECT_DIR}/bin/zlar-gate" 2>/dev/null || echo '{}')
-DECISION2=$(echo "${RESULT2}" | jq -r '.hookSpecificOutput.permissionDecision // "error"' 2>/dev/null)
+capture_gate '{"tool_name":"Bash","tool_input":{"command":"rm -rf /important-data"},"session_id":"quickstart"}'
+RESULT2="${GATE_OUTPUT}"
+STATUS2="${GATE_STATUS}"
+DECISION2=$(decision_from_result "${RESULT2}")
 
-if [ "${DECISION2}" = "deny" ]; then
+if [ "${DECISION2}" = "deny" ] && [ "${STATUS2}" -eq 2 ]; then
     ok "Gate decision: ${R}DENY${N} (recursive delete blocked by R002)"
 else
-    fail "Expected deny, got: ${DECISION2}"
+    fail "Expected deny with exit 2, got: ${DECISION2} (exit ${STATUS2})"
+    exit 1
 fi
 
 # Test 3: File read — should be ALLOWED
 echo ""
 echo "  Agent tries: ${B}Read /etc/hosts${N}"
-RESULT3=$(printf '{"tool_name":"Read","tool_input":{"file_path":"/etc/hosts"},"session_id":"quickstart"}' | \
-  PROJECT_DIR="${TEMP_DIR}" ZLAR_PROJECT_DIR="${TEMP_DIR}" \
-  bash "${PROJECT_DIR}/bin/zlar-gate" 2>/dev/null || echo '{}')
-DECISION3=$(echo "${RESULT3}" | jq -r '.hookSpecificOutput.permissionDecision // "error"' 2>/dev/null)
+capture_gate '{"tool_name":"Read","tool_input":{"file_path":"/etc/hosts"},"session_id":"quickstart"}'
+RESULT3="${GATE_OUTPUT}"
+STATUS3="${GATE_STATUS}"
+DECISION3=$(decision_from_result "${RESULT3}")
 
-if [ "${DECISION3}" = "allow" ]; then
+if [ "${DECISION3}" = "allow" ] && [ "${STATUS3}" -eq 0 ]; then
     ok "Gate decision: ${G}ALLOW${N} (file read, policy rule R053)"
 else
-    fail "Expected allow, got: ${DECISION3}"
+    fail "Expected allow with exit 0, got: ${DECISION3} (exit ${STATUS3})"
+    exit 1
 fi
 
 # Test 4: Privilege escalation — should be DENIED
 echo ""
 echo "  Agent tries: ${B}sudo rm -rf /${N}"
-RESULT4=$(printf '{"tool_name":"Bash","tool_input":{"command":"sudo rm -rf /"},"session_id":"quickstart"}' | \
-  PROJECT_DIR="${TEMP_DIR}" ZLAR_PROJECT_DIR="${TEMP_DIR}" \
-  bash "${PROJECT_DIR}/bin/zlar-gate" 2>/dev/null || echo '{}')
-DECISION4=$(echo "${RESULT4}" | jq -r '.hookSpecificOutput.permissionDecision // "error"' 2>/dev/null)
+capture_gate '{"tool_name":"Bash","tool_input":{"command":"sudo rm -rf /"},"session_id":"quickstart"}'
+RESULT4="${GATE_OUTPUT}"
+STATUS4="${GATE_STATUS}"
+DECISION4=$(decision_from_result "${RESULT4}")
 
-if [ "${DECISION4}" = "deny" ]; then
+if [ "${DECISION4}" = "deny" ] && [ "${STATUS4}" -eq 2 ]; then
     ok "Gate decision: ${R}DENY${N} (privilege escalation blocked by R003)"
 else
-    fail "Expected deny, got: ${DECISION4}"
+    fail "Expected deny with exit 2, got: ${DECISION4} (exit ${STATUS4})"
+    exit 1
 fi
 
 echo ""
