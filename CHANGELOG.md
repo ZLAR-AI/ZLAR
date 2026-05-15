@@ -1,5 +1,35 @@
 # Changelog
 
+## 3.3.16 — 2026-05-15 — Stabilization entrypoint fixes
+
+This release packages the post-v3.3.15 stabilization entrypoint fixes for
+the public install and quickstart paths.
+
+### What changes
+
+- Removed the stale installer fallback that could stamp version 3.0.0 when
+  `VERSION` was unavailable.
+- Preserved local source, versioned release tarball, and GitHub clone
+  fallback behavior while deriving the installed version from the selected
+  source.
+- The installer now fails closed when no source `VERSION` can be determined.
+- Quickstart now treats expected denies as JSON `deny` plus exit code 2 for
+  clean DENY output while preserving failure detection.
+- Added a focused stabilization regression test.
+
+### Boundaries and non-claims
+
+- No public claim boundary changes.
+- No website content changes.
+- No verifier, receipt, routed-MCP, or policy semantics are widened by this
+  release.
+
+### Verification
+
+- Release-prep verification should include public privacy, stabilization
+  script regression checks, quickstart receipt verification, and `git diff
+  --check`.
+
 ## 3.3.15 — 2026-05-14 — Routed MCP proof packaging
 
 This release packages the post-v3.3.14 routed-MCP proof stack while keeping
