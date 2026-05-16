@@ -406,10 +406,10 @@ echo "       bin/zlar-policy sign --input etc/policies/active.policy.json --key 
 echo ""
 
 case "${FRAMEWORK}" in
-    claude-code) echo "    5. Open Claude Code — ZLAR is gating every tool call" ;;
+    claude-code) echo "    5. Open Claude Code — ZLAR is gating configured tool-call surfaces" ;;
     cursor)      echo "    5. Open Cursor — ZLAR is gating shell, read, and MCP actions" ;;
     windsurf)    echo "    5. Open Windsurf — ZLAR is gating command, write, read, and MCP actions" ;;
-    all)         echo "    5. Open any supported editor — ZLAR is gating tool calls across all three" ;;
+    all)         echo "    5. Open any supported editor — ZLAR is gating configured tool-call surfaces across all three" ;;
 esac
 
 echo ""

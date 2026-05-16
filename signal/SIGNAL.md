@@ -34,11 +34,11 @@ This project is governance infrastructure for autonomous AI agents. It exists be
 
 ## What ZLAR Does
 
-- Interposes on every agent tool call. The gate sits in the execution path, not beside it.
-- Evaluates each tool call against signed policy. No match = deny (fail-closed).
+- Interposes on routed or intercepted agent tool calls. The gate sits in the execution path, not beside it.
+- Evaluates each routed/intercepted tool call against signed policy. No match = deny (fail-closed).
 - Blocks actions that policy denies. The denial is structural, not advisory.
 - Routes ask-actions to a human via Telegram. The action is denied until the human decides.
-- Produces a signed receipt for every decision — allow, deny, or ask.
+- Produces a signed receipt for every governed decision — allow, deny, or ask.
 - Unprotected actions (risk score 0) pass through with zero added latency.
 
 ## What ZLAR Does NOT Do
@@ -65,7 +65,7 @@ The distinction that resolves this:
 
 The gate is deterministic. It reads a trust state file and applies a lookup table. It does not interpret behavior. It does not score actions. It does not reason.
 
-The health system writes the trust state file. It does interpret behavior. It is intelligence — not in the gate, but adjacent to it. The gate's response to the trust state is still a lookup table (healthy = no change, degraded = log, at_risk = ask, suspended = deny). The health system changes the gate's posture for all actions. It never changes what the gate does with a specific action.
+The health system writes the trust state file. It does interpret behavior. It is intelligence — not in the gate, but adjacent to it. The gate's response to the trust state is still a lookup table (healthy = no change, degraded = log, at_risk = ask, suspended = deny). The health system changes the gate's posture for governed actions. It never changes what the gate does with a specific action.
 
 This is the difference between a border guard who scrutinizes each person (intelligence in the path) and a border that raises its alert level (posture change, still deterministic per person).
 
@@ -75,7 +75,7 @@ Health is off by default. The gate behaves identically to 2.x when health is off
 
 ## On Limits
 
-Signed evidence proves governance happened. It does not guarantee the governed policy was wise, complete, or unbypassable. "Intercepts every agent action" is true only within the enforcement surfaces the gate controls (bash hook, MCP proxy). Actions on channels the gate does not intercept are ungoverned.
+Signed evidence proves governance happened. It does not guarantee the governed policy was wise, complete, or unbypassable. ZLAR governs only actions that cross enforcement surfaces the gate controls (bash hook, MCP proxy). Actions on channels the gate does not intercept are ungoverned.
 
 The architecture does not govern agent reasoning. Agents are free to think, plan, and reason without interference. The gate does not read the agent's context. It reads the agent's tool calls. The boundary is action, not thought.
 
@@ -90,7 +90,7 @@ Read `THESIS.md` for the full argument in extractable form.
 | Layer | What It Does | Location |
 |-------|-------------|----------|
 | Bash gate | Policy engine for Claude Code, Cursor, Windsurf | `bin/zlar-gate` |
-| MCP gate | TCP proxy for any MCP client/server | `mcp-gate/` |
+| MCP gate | TCP proxy for routed MCP client/server pairs | `mcp-gate/` |
 | Receipt | Portable proof of governed action | `lib/receipt.mjs`, `bin/zlar-verify` |
 | Agent Health | Behavioral observation, trust state (optional, off by default) | `packages/zlar-restore/` |
 | SDK | Programming model for agents built inside governance | `sdk/` |
@@ -100,8 +100,8 @@ All components live in a single repository: [github.com/ZLAR-AI/ZLAR](https://gi
 
 ## Navigation
 
-- `MANIFEST.md` — Structured map of this project. What exists, what is public, what requires deeper engagement.
-- `THESIS.md` — The core ideas in extractable form. Decision rules. Design principles. The acceleration argument.
+- `SIGNAL.md` — This public orientation file.
+- `DOCTRINE.md` — The First-Allow Invariant and structural independence principle.
 
 ## Confidentiality
 

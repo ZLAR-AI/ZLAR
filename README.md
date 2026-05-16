@@ -6,46 +6,40 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12381/badge)](https://www.bestpractices.dev/projects/12381)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/ZLAR-AI/ZLAR/badge)](https://securityscorecards.dev/viewer/?uri=github.com/ZLAR-AI/ZLAR)
 [![GitHub release](https://img.shields.io/github/v/tag/ZLAR-AI/ZLAR?label=release&sort=semver)](https://github.com/ZLAR-AI/ZLAR/releases)
-[![Tests](https://img.shields.io/badge/tests-1710_assertions-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
+[![Tests](https://img.shields.io/badge/tests-61_files_2831_assertions_0_failed-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
 
-**ZLAR is a deny-first policy gate for AI agents.**
+**ZLAR gives humans standing at the moment machine intelligence tries to affect the world.**
 
-It intercepts agent tool calls before they execute, evaluates them against signed policy, routes decisions to humans when required, and produces cryptographic proof that governance happened.
+AI is no longer just generating language. It is generating consequence: file writes, tool calls, MCP requests, workflow triggers, records moved from one system to another. ZLAR is a governed action boundary for operational AI agents. Routed or intercepted actions cross signed, deterministic, human-authored policy before they become consequence.
+
+The lock on the door changes how sleep feels. ZLAR exists for that same shift in AI operations: teams move faster when consequence has structure, evidence, and a human place to stand.
+
+## What ZLAR does
+
+- Places a deterministic policy gate at configured action surfaces.
+- Evaluates each routed or intercepted request against signed policy.
+- Allows, denies, or asks a named human before the action proceeds.
+- Fails closed when policy, keys, adapters, or approval paths are unavailable.
+- Writes signed audit entries and Governed Action Receipts so the decision can be verified later.
 
 **No AI in the enforcement path.** The gate matches patterns against rules. It does not reason about the action. That is the point: the enforcement layer cannot be persuaded because it does not think.
 
-## What it does
+## Install
 
-An AI agent asks to run a command, write a file, call an API. Before that action reaches the real world, ZLAR sees it. The gate classifies the action by domain — bash, file write, file edit, network, MCP tool call — and matches it against an ordered list of rules. Each rule says allow, deny, or ask a human. The first matching rule wins. The architectural default is deny.
-
-When the answer is ask, the gate sends the action to a human on Telegram with enough context to judge: what the agent wants to do, why the policy flagged it, what the consequence would be if the action is wrong. The human taps approve or deny. The agent cannot proceed until the human decides. If the human does not respond, the action is denied. Silence is not consent.
-
-Every decision — allow, deny, or human-authorized — is written to a hash-chained, Ed25519-signed audit trail. A Governed Action Receipt can be generated for any decision: a portable cryptographic proof that this action was evaluated by this policy and decided by this authority at this time. Anyone with the public key can verify it.
-
-## What it is not
-
-- Not a monitoring dashboard that watches after the fact
-- Not an AI that judges whether an action "seems safe"
-- Not a trust scoring system that builds a reputation for agents
-- Not a sandbox at the architectural level — ZLAR governs the decision, not the execution environment. Optional macOS Seatbelt wrapping is available as a containment layer below the gate when `etc/sandbox/` profiles are present
-- Not tied to any model provider — the entity that sells agents cannot credibly govern them
-
-## Coverage model — read this first
-
-ZLAR governs actions that flow through it. Actions that do not flow through it are not governed. This is not a hidden limitation. It is the coverage model, and it is stated here on purpose.
-
-The gate intercepts through hooks (Claude Code PreToolUse) and proxies (MCP gate between client and server). Shell commands spawned by a sub-process the hook does not see, direct network calls through libraries that bypass the proxy, any capability that reaches effect through an un-routed path — those are outside the gate. They must be governed by other layers: sandboxes, network controls, operating system permissions.
-
-ZLAR is the deterministic layer. It is not the only layer a serious deployment needs. The practical mission of a deployment is to make *intercepted* equal to *all*: run the agent in an environment where every consequential capability is exposed only through intercepted surfaces, and block the rest at the sandbox, OS, and network layers. See [ADR-010: Interception Coverage Model](docs/adr/ADR-010-interception-coverage.md) for the full treatment.
-
-## Quick Start
+Inspect-first from a clone:
 
 ```bash
 git clone https://github.com/ZLAR-AI/ZLAR.git
 cd ZLAR && bash install.sh
 ```
 
-Installs in about ten minutes with deny-heavy defaults. Your agent is governed the moment the install completes.
+Downloader path:
+
+```bash
+curl -fsSL https://zlar.ai/install.sh | bash
+```
+
+The installer uses deny-heavy defaults and configures only detected/supported hook surfaces. It does not make unrouted capabilities governed.
 
 ```bash
 ~/.zlar/bin/zlar doctor    # verify everything works
@@ -53,21 +47,73 @@ Installs in about ten minutes with deny-heavy defaults. Your agent is governed t
 ~/.zlar/bin/zlar telegram  # pair your phone via local ignored config
 ```
 
-### Install paths
+Uninstall:
 
-- **Quick install.** `git clone … && bash install.sh`. Deny-heavy defaults, governance running in about ten minutes. Suitable when you trust the source and want a default-safe baseline before you customize.
-- **Inspect-first install.** Clone the repo, read `install.sh` and the policy file at `etc/policies/lt-default.policy.json`, then run the script. The install is short by design so the script is short enough to read end to end.
-- **Source install.** Run from the cloned tree. `bin/zlar-gate` and the adapters do not require the `~/.zlar/` install directory; you can point hooks at the repo paths directly. Useful for development and for operators who want everything under version control.
-- **Agent-assisted, operator-authorized install.** A coding agent helps the operator inspect the repo, check prerequisites, explain what each install phase does, and interpret `zlar doctor` and `zlar status` afterward. The operator runs the install command, or explicitly approves it. This is a workflow, not a separate installer — there is no agent-driven installer that silently installs its own governor.
+```bash
+~/.zlar/bin/zlar uninstall
+# or
+curl -fsSL https://zlar.ai/uninstall.sh | bash
+```
 
-Getting to a deployment you are ready to stand behind — customizing policy, signing your own constitution, writing agent manifests, tuning operational invariants, wiring standing approvals, auditing your interception surface — is real work. Plan one to two weeks. The install is fast. The deployment is not. Read the install guide before you run it.
+The install touches:
+
+- `~/.zlar/` for binaries, adapters, policy, public keys, audit/session state, and local config.
+- `~/.zlar-signing.key` for the local Ed25519 policy signing key, with the public key copied under `~/.zlar/etc/keys/`.
+- Framework hook settings when detected, including Claude Code `~/.claude/settings.json`, Cursor `~/.cursor/hooks.json`, and Windsurf `~/.codeium/windsurf/hooks.json`.
+- `~/.zlar/.env` for optional Telegram approval setup. Telegram is disabled until you configure it.
+- Optional Telegram dispatcher helper scripts under `/usr/local/bin/` when root or non-interactive sudo is available; otherwise the installer prints the manual command and continues.
+
+## Agent-assisted install
+
+If you ask a coding agent to help, point it at [`AGENTS.md`](AGENTS.md) first. The safe workflow is: inspect the repo, explain what files/settings will change, check prerequisites, then have the human run the install command or explicitly approve the exact command. There is no agent-driven installer that should silently install its own governor.
+
+## What gets governed
+
+ZLAR governs routed/intercepted action surfaces only.
+
+- Bash-gate surfaces configured through supported hooks, such as Claude Code PreToolUse and the Cursor/Windsurf adapters.
+- MCP `tools/call` requests when the MCP client is routed through `mcp-gate/gate.mjs`.
+- SDK-wrapped tool calls when agents are built through the ZLAR SDK/daemon path.
+
+Safe Codex wording:
+
+> ZLAR can govern Codex CLI-invoked MCP tool calls when those MCP servers are routed through ZLAR.
+
+## What does not get governed
+
+- Unrouted shell, filesystem, browser, app-control, network, model-reasoning, memory, planning, and final-text surfaces.
+- Direct MCP registrations that bypass the ZLAR route.
+- Subprocesses or sub-runtimes with their own permission model unless their actions cross a ZLAR interception surface.
+- `/contest`; it is not implemented.
+- External non-Vincent verifier attestation; it remains prepared/pending unless that state changes.
+
+Actions that do not flow through ZLAR are not governed by ZLAR. That is the coverage model, not a footnote. A serious deployment makes routed/intercepted surfaces authoritative and blocks the rest with sandbox, OS, network, and platform controls. See [ADR-010: Interception Coverage Model](docs/adr/ADR-010-interception-coverage.md) and [doctrine/SCOPE.md](doctrine/SCOPE.md).
+
+## Proof and receipts
+
+Every governed decision - allow, deny, or human-authorized - is written to a hash-chained, Ed25519-signed audit trail. A Governed Action Receipt can be generated for a decision and verified with the public key.
+
+```bash
+bin/zlar-receipt --last --key ~/.zlar-signing.key --pubkey ~/.zlar-signing.pub
+bin/zlar-verify receipt.json --pubkey key.pub
+```
+
+Start with the public sample: [zlar.ai/proof-pack.html](https://zlar.ai/proof-pack.html). It is fake/scratch evidence for a bounded routed-MCP proof path, not production deployment evidence and not external attestation.
+
+## Deployment path
+
+Local evaluation is quick: install, run `zlar doctor`, inspect `zlar status`, and read the default policy.
+
+Serious deployment is work: customize and sign policy, protect signing keys, protect hook/profile configuration, route MCP through ZLAR, remove or block un-routed capabilities, decide when Telegram or other approval channels are appropriate, and verify receipts/audit trails. The install is fast. Standing behind a deployment is not.
+
+ZLAR keeps humans present while intelligence scales. The repo below is the proof, install, legal/security, and reference surface behind that claim.
 
 Troubleshooting: [`docs/troubleshooting.md`](docs/troubleshooting.md).
 
 ## How it works
 
 ```
-Agent issues tool call (shell command, file write, API request)
+Agent issues routed/intercepted tool call (shell command, file write, API request)
   |
   +-- Gate intercepts at the execution boundary
   |
@@ -89,7 +135,7 @@ Agent issues tool call (shell command, file write, API request)
 Two enforcement surfaces share the same policy and audit trail:
 
 - **Bash gate** (`bin/zlar-gate`) — hooks into Claude Code, Cursor, Windsurf. Pure bash. Zero dependencies beyond jq and openssl.
-- **MCP gate** (`mcp-gate/gate.mjs`) — TCP proxy between any MCP client and server. Intercepts `tools/call` JSON-RPC messages. Per-entry Ed25519 signing, policy signature verification, standing approvals. Evaluates JSON regex policy by default; can evaluate Cedar formal policy when `ZLAR_POLICY_ENGINE=cedar` or `=both`.
+- **MCP gate** (`mcp-gate/gate.mjs`) — TCP proxy between a configured MCP client and upstream server. Intercepts routed `tools/call` JSON-RPC messages. Per-entry Ed25519 signing, policy signature verification, standing approvals. Evaluates JSON regex policy by default; can evaluate Cedar formal policy when `ZLAR_POLICY_ENGINE=cedar` or `=both`.
 
 The agent does not volunteer to be governed. It is governed by architecture.
 
@@ -274,7 +320,7 @@ import { ZlarAgent, ZlarDeniedError } from '@zlar/sdk';
 // There is no code path that produces an ungoverned agent instance.
 const agent = await ZlarAgent.connect({ agentId: 'my-agent' });
 
-// Every tool call evaluates policy before the function runs.
+// Every SDK-wrapped tool call evaluates policy before the function runs.
 const result = await agent.gate('Bash', { command: 'ls -la' }, async () => {
   return execSync('ls -la').toString();
 });
@@ -342,7 +388,7 @@ bash tests/count-assertions.sh --detail   # also show per-file pass counts
 bash tests/count-assertions.sh --badge    # print shields.io badge URL
 ```
 
-Current state: **45 files, 1,710 assertions.** Some local environmental failures on macOS (`mcp-gate/test.mjs` — Node `listen()` returns `EPERM` on machines with certain firewall or MDM configurations); CI passes. See [troubleshooting](docs/troubleshooting.md) if the failure appears on your machine.
+Current state: **61 files, 2831 assertions, 0 failed.** Some local environmental failures on macOS (`mcp-gate/test.mjs` — Node `listen()` returns `EPERM` on machines with certain firewall or MDM configurations); CI passes. See [troubleshooting](docs/troubleshooting.md) if the failure appears on your machine.
 
 Tests require `bash`, `jq`, and an OpenSSL with Ed25519 support (LibreSSL on macOS does not qualify — use `brew install openssl@3` and put it on PATH first). `node` and `python3` are optional; `.mjs` and Python tests skip gracefully if unavailable.
 

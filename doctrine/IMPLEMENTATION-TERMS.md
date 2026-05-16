@@ -10,7 +10,7 @@ If this file and the live repo disagree, the repo wins. Implementation terms dri
 —
 
 zlar-gate
-The bash implementation of the gate. Runs as a Claude Code PreToolUse hook. Lives at the operator workstation and is invoked on every tool call. Shares state with the MCP gate implementation. Source at bin/zlar-gate; the operator-facing variant deployed by the Claude Code adapter is adapters/claude-code/zlar-gate.sh.
+The bash implementation of the gate. Runs as a Claude Code PreToolUse hook. Lives at the operator workstation and is invoked on every Claude Code tool call that reaches that hook. Shares state with the MCP gate implementation. Source at bin/zlar-gate; the operator-facing variant deployed by the Claude Code adapter is adapters/claude-code/zlar-gate.sh.
 
 gate.mjs
 The MCP-side implementation of the gate. Lives at mcp-gate/gate.mjs. Same policy evaluation, same receipt chain, same state store as zlar-gate. Exists to govern MCP-surfaced tools the Claude Code hook cannot reach directly.
@@ -43,7 +43,7 @@ var/receipts/
 Runtime receipt storage on the operator workstation. Not tracked in the repo. Each file is a receipt; filenames sort chronologically. Chain integrity verifiable with bin/zlar-verify.
 
 PreToolUse hook
-The Claude Code extension point where zlar-gate runs. Configured in the operator's Claude Code settings. The hook is called before every tool call and can block, allow, or ask.
+The Claude Code extension point where zlar-gate runs. Configured in the operator's Claude Code settings. The hook is called before each tool call routed through that extension point and can block, allow, or ask.
 
 MCP gate hook
 The analogous extension point for MCP-surfaced tools. Implemented by gate.mjs.

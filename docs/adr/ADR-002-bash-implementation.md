@@ -6,7 +6,7 @@ Author: Vincent Nijjar
 
 ## Context
 
-The enforcement gate runs on every tool call. It must start fast, evaluate fast, and exit fast. It must work on macOS and Linux without additional runtime installation. The gate is a synchronous hook — the agent blocks until the gate returns.
+The enforcement gate runs on each tool call routed through its hook. It must start fast, evaluate fast, and exit fast. It must work on macOS and Linux without additional runtime installation. The gate is a synchronous hook — the agent blocks until the gate returns.
 
 The candidate languages were: bash, Python, Go, Rust, Node.js.
 

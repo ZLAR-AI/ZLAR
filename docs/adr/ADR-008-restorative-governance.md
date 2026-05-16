@@ -40,7 +40,7 @@ Key architectural choices:
 
 ## Alternatives Considered
 
-1. Inline evaluation (run detectors synchronously in the gate). Rejected: adds latency to every tool call, creates a crash risk, and violates the principle that the gate should be fast and deterministic.
+1. Inline evaluation (run detectors synchronously in the gate). Rejected: adds latency to every routed tool call, creates a crash risk, and violates the principle that the gate should be fast and deterministic.
 
 2. AI-based behavioral assessment. Rejected: this is the exact pattern ZLAR exists to prevent. Putting AI in the enforcement path means the governance system can be persuaded. Detectors use statistical heuristics (ratios, temporal clustering, domain set expansion), not reasoning.
 

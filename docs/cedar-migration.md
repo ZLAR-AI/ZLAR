@@ -75,7 +75,7 @@ If you have custom regex patterns that can't be expressed as `like`, keep those 
 
 The `both` mode runs JSON as primary and Cedar as advisory:
 
-1. Both engines evaluate every tool call
+1. Both engines evaluate every routed tool call the gate sees
 2. The JSON result is used for the actual decision
 3. If the engines disagree, a log message records the divergence
 4. Over time, as confidence grows, switch to `cedar` only

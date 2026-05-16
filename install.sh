@@ -15,14 +15,17 @@
 set -eu
 
 # Read version from the VERSION file if running from a repo clone.
-# In curl | bash mode the version is unknown until the release source is
-# downloaded/cloned, so leave it empty rather than stamping a stale fallback.
+# When run via `curl | bash`, the script has no neighboring VERSION file;
+# leave ZLAR_VERSION empty here and resolve it from SCRIPT_SOURCE_DIR/VERSION
+# after Phase 4, once the source is downloaded or cloned.
 _INSTALL_SELF="${BASH_SOURCE:-$0}"
-_INSTALL_SELF_DIR="$(cd "$(dirname "${_INSTALL_SELF}")" 2>/dev/null && pwd)"
-if [ -f "${_INSTALL_SELF_DIR}/VERSION" ]; then
+_INSTALL_SELF_DIR=""
+if [ -n "${_INSTALL_SELF}" ] && [ -f "${_INSTALL_SELF}" ]; then
+    _INSTALL_SELF_DIR="$(cd "$(dirname "${_INSTALL_SELF}")" 2>/dev/null && pwd)"
+fi
+ZLAR_VERSION=""
+if [ -n "${_INSTALL_SELF_DIR}" ] && [ -f "${_INSTALL_SELF_DIR}/VERSION" ]; then
     ZLAR_VERSION=$(cat "${_INSTALL_SELF_DIR}/VERSION" | tr -d '[:space:]')
-else
-    ZLAR_VERSION=""
 fi
 INSTALL_DIR="${HOME}/.zlar"
 
@@ -223,31 +226,39 @@ if [ -f "${SELF_PATH}" ]; then
 fi
 
 if [ -z "${SCRIPT_SOURCE_DIR}" ]; then
-    # Download from GitHub release
     GITHUB_REPO="ZLAR-AI/ZLAR"
 
     TMPDIR_DL=$(mktemp -d)
     trap "rm -rf '${TMPDIR_DL}'" EXIT
 
+    DOWNLOAD_OK=0
     if [ -n "${ZLAR_VERSION}" ]; then
         TARBALL_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/zlar-${ZLAR_VERSION}.tar.gz"
         info "Downloading ZLAR v${ZLAR_VERSION}..."
-    else
-        TARBALL_URL=""
-        info "Downloading latest ZLAR source..."
+        if curl -fsSL "${TARBALL_URL}" -o "${TMPDIR_DL}/zlar.tar.gz" 2>/dev/null; then
+            if tar xzf "${TMPDIR_DL}/zlar.tar.gz" -C "${TMPDIR_DL}" 2>/dev/null; then
+                SCRIPT_SOURCE_DIR="${TMPDIR_DL}/zlar"
+                ok "Downloaded and extracted"
+                DOWNLOAD_OK=1
+            fi
+        fi
     fi
 
-    if [ -n "${TARBALL_URL}" ] && curl -fsSL "${TARBALL_URL}" -o "${TMPDIR_DL}/zlar.tar.gz" 2>/dev/null; then
-        tar xzf "${TMPDIR_DL}/zlar.tar.gz" -C "${TMPDIR_DL}" 2>/dev/null
-        SCRIPT_SOURCE_DIR="${TMPDIR_DL}/zlar"
-        ok "Downloaded and extracted"
-    else
-        # Fallback: clone repo
-        info "Release tarball not found — cloning from GitHub..."
+    if [ "${DOWNLOAD_OK}" -eq 0 ]; then
+        if [ -n "${ZLAR_VERSION}" ]; then
+            info "Release tarball for v${ZLAR_VERSION} not found — cloning from GitHub..."
+        else
+            info "Cloning ZLAR from GitHub..."
+        fi
         if command -v git >/dev/null 2>&1; then
-            git clone --depth 1 "https://github.com/${GITHUB_REPO}.git" "${TMPDIR_DL}/zlar" 2>/dev/null
-            SCRIPT_SOURCE_DIR="${TMPDIR_DL}/zlar"
-            ok "Cloned from GitHub"
+            if git clone --depth 1 "https://github.com/${GITHUB_REPO}.git" "${TMPDIR_DL}/zlar" 2>/dev/null; then
+                SCRIPT_SOURCE_DIR="${TMPDIR_DL}/zlar"
+                ok "Cloned from GitHub"
+            else
+                fail "git clone failed — check network or download manually from:"
+                printf "       https://github.com/${GITHUB_REPO}\n"
+                exit 1
+            fi
         else
             fail "Cannot download ZLAR. Install git or download manually from:"
             printf "       https://github.com/${GITHUB_REPO}\n"
@@ -256,12 +267,16 @@ if [ -z "${SCRIPT_SOURCE_DIR}" ]; then
     fi
 fi
 
-if [ -z "${ZLAR_VERSION}" ] && [ -f "${SCRIPT_SOURCE_DIR}/VERSION" ]; then
+# Authoritative version: read from the source selected above. For local clones
+# this matches the early read; for curl|bash this is the first time
+# ZLAR_VERSION gets set. Missing VERSION means the source is structurally
+# wrong, so abort rather than stamp a wrong version.
+if [ -f "${SCRIPT_SOURCE_DIR}/VERSION" ]; then
     ZLAR_VERSION=$(cat "${SCRIPT_SOURCE_DIR}/VERSION" | tr -d '[:space:]')
 fi
 
 if [ -z "${ZLAR_VERSION}" ]; then
-    fail "Cannot determine ZLAR version from ${SCRIPT_SOURCE_DIR}/VERSION"
+    fail "Source at ${SCRIPT_SOURCE_DIR} has no VERSION file — installation aborted"
     exit 1
 fi
 
@@ -444,8 +459,8 @@ if [ "${HAS_CC}" -eq 1 ]; then
         if [ -f "${CC_SETTINGS}" ]; then
             # Merge into existing settings — append to any existing PreToolUse
             # hooks rather than clobbering them. The earlier `grep -q "zlar"`
-            # guard (line 343) ensures we only reach this branch when no ZLAR
-            # hook already exists, so append is safe without dedup.
+            # guard ensures we only reach this branch when no ZLAR hook
+            # already exists, so append is safe without dedup.
             TEMP=$(mktemp)
             jq --arg cmd "${CC_HOOK}" \
                 '.hooks.PreToolUse = ((.hooks.PreToolUse // []) + [{"matcher":".*","hooks":[{"type":"command","command":$cmd,"timeout":310}]}])' \
@@ -677,7 +692,7 @@ printf "    ${DIM}~/.zlar/bin/zlar uninstall${NC}  — clean removal\n"
 printf "\n"
 printf "  Something not working? Run: ${BOLD}~/.zlar/bin/zlar doctor${NC}\n"
 printf "\n"
-printf "  Open your editor. ZLAR is governing every tool call.\n"
+printf "  Open your editor. ZLAR is governing configured tool-call surfaces.\n"
 printf "\n"
 printf "${BOLD}═══════════════════════════════════════════════════${NC}\n"
 printf "\n"

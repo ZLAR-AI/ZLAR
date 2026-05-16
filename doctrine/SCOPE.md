@@ -19,7 +19,7 @@ The claim applies only to the governed path.
 
 An action is on the governed path when it flows through a ZLAR interception surface before it takes effect. The reference implementation has two such surfaces:
 
-- The bash gate — Claude Code PreToolUse hook. Every tool call the local CC process emits flows through this hook before execution.
+- The bash gate — Claude Code PreToolUse hook. Claude Code tool calls emitted to this hook flow through it before execution.
 - The MCP gate — TCP proxy between MCP client and MCP server. Every MCP tools/call the client issues to this upstream flows through the proxy.
 
 See ADR-010 for the full treatment of what counts as an interception surface and what does not.

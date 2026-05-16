@@ -48,8 +48,8 @@ assert_syntax "quickstart parses" "${QUICKSTART}"
 
 assert_not_contains "installer has no stale fallback version" 'ZLAR_VERSION="3.0.0"' "${INSTALLER}"
 assert_contains "installer leaves unknown version unresolved" 'ZLAR_VERSION=""' "${INSTALLER}"
-assert_contains "installer derives version from selected source" '[ -z "${ZLAR_VERSION}" ] && [ -f "${SCRIPT_SOURCE_DIR}/VERSION" ]' "${INSTALLER}"
-assert_contains "installer fails if source version is missing" 'Cannot determine ZLAR version from ${SCRIPT_SOURCE_DIR}/VERSION' "${INSTALLER}"
+assert_contains "installer derives version from selected source" 'if [ -f "${SCRIPT_SOURCE_DIR}/VERSION" ]; then' "${INSTALLER}"
+assert_contains "installer fails if source version is missing" 'Source at ${SCRIPT_SOURCE_DIR} has no VERSION file' "${INSTALLER}"
 
 assert_not_contains "quickstart does not append fallback JSON after gate" "|| echo '{}'" "${QUICKSTART}"
 assert_contains "quickstart captures gate process status" 'GATE_STATUS=$?' "${QUICKSTART}"

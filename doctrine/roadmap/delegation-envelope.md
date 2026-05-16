@@ -11,7 +11,7 @@ Status: named, shape clear, code not written. This file makes the gap public so 
 
 ZLAR's gate intercepts tool calls made by the local process it is installed in. The gate does not intercept tool calls made by any sub-runtime the local process spawns outside ZLAR's SDK delegation chain.
 
-Concretely: a local Claude Code process with ZLAR installed governs its own tool calls. If that process delegates work to a harness-managed agent running in a separate execution context — any sub-runtime with its own permission model, spawned by the harness rather than by ZLAR's SDK — the sub-runtime's tool calls do not reach the ZLAR hook. The sub-runtime has whatever authority the harness gives it, typically filesystem and network, subject only to the harness's own permission model.
+Concretely: a local Claude Code process with ZLAR installed governs tool calls that reach the installed ZLAR hook. If that process delegates work to a harness-managed agent running in a separate execution context — any sub-runtime with its own permission model, spawned by the harness rather than by ZLAR's SDK — the sub-runtime's tool calls do not reach the ZLAR hook. The sub-runtime has whatever authority the harness gives it, typically filesystem and network, subject only to the harness's own permission model.
 
 From the operator's point of view, the mental model "ZLAR is on, therefore this machine's agent actions are governed" is wider than the actual enforcement perimeter. The perimeter is the local process. Sub-runtimes that run outside the SDK delegation chain are outside the perimeter.
 

@@ -20,7 +20,7 @@ State the coverage model explicitly in the public documentation, in ADR form her
 
 A code path through which an action must pass before it reaches its effect. For the reference implementation:
 
-- The bash gate intercepts Claude Code tool invocations via the PreToolUse hook registered in ~/.claude/hooks.json. Every tool call the client emits flows through this hook before it executes.
+- The bash gate intercepts Claude Code tool invocations via the PreToolUse hook registered in ~/.claude/hooks.json. Tool calls the client emits to that hook flow through it before execution.
 - The MCP gate intercepts MCP tools/call requests by sitting as a proxy between the MCP client and the MCP server. Every MCP tool invocation the client issues to this upstream flows through the proxy.
 - Sub-agent spawns (SubagentStart) are intercepted through the same hook layer and inherit the gate's decision before the sub-agent begins.
 
