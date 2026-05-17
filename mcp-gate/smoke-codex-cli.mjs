@@ -51,6 +51,8 @@ const HUMAN_ID = 'codex-live-human';
 const AGENT_ID = 'codex-live-smoke';
 const SESSION_ID = `codex-live-smoke-${Math.floor(Date.now() / 1000)}`;
 const SCRATCH_OVERRIDE_ENV = 'ZLAR_CODEX_SMOKE_SCRATCH';
+const LIVE_TELEGRAM_TOKEN_ENV = 'ZLAR_CODEX_SMOKE_LIVE_TELEGRAM_TOKEN';
+const LIVE_TELEGRAM_CHAT_ID_ENV = 'ZLAR_CODEX_SMOKE_LIVE_TELEGRAM_CHAT_ID';
 const DEFAULT_SCRATCH = join(tmpdir(), 'zlar-codex-cli-mcp-smoke');
 const TEST_SCRATCH_PREFIX = 'zlar-codex-smoke-';
 const SCRATCH = resolveScratchRoot(process.env[SCRATCH_OVERRIDE_ENV]);
@@ -126,6 +128,7 @@ function usage() {
   console.log(`Usage:
   node mcp-gate/smoke-codex-cli.mjs setup
   node mcp-gate/smoke-codex-cli.mjs setup --isolated-profile
+  node mcp-gate/smoke-codex-cli.mjs setup --isolated-profile --live-telegram
   node mcp-gate/smoke-codex-cli.mjs verify [pass1|pass2|all]
   node mcp-gate/smoke-codex-cli.mjs coverage-report
   node mcp-gate/smoke-codex-cli.mjs cleanup
@@ -142,6 +145,50 @@ Claim ceiling:
 
 Not claimed:
   "${NON_CLAIM}"`);
+}
+
+function assertNumericTelegramChatId(chatId) {
+  if (!/^-?\d+$/.test(String(chatId || '').trim())) {
+    throw new Error(`${LIVE_TELEGRAM_CHAT_ID_ENV} must be a numeric Telegram chat ID, not a bot username`);
+  }
+}
+
+function fakeTelegramRuntime(telegramUrl = null) {
+  return {
+    mode: 'fake',
+    fakeTelegram: true,
+    liveTelegram: false,
+    token: 'fake-token',
+    chatId: HUMAN_ID,
+    apiBase: telegramUrl,
+  };
+}
+
+function liveTelegramRuntimeFromEnv(env = process.env) {
+  const token = String(env[LIVE_TELEGRAM_TOKEN_ENV] || '').trim();
+  const chatId = String(env[LIVE_TELEGRAM_CHAT_ID_ENV] || '').trim();
+  if (!token) {
+    throw new Error(`--live-telegram requires ${LIVE_TELEGRAM_TOKEN_ENV}`);
+  }
+  if (!chatId) {
+    throw new Error(`--live-telegram requires ${LIVE_TELEGRAM_CHAT_ID_ENV}`);
+  }
+  assertNumericTelegramChatId(chatId);
+  return {
+    mode: 'live',
+    fakeTelegram: false,
+    liveTelegram: true,
+    token,
+    chatId,
+    apiBase: null,
+  };
+}
+
+function redactedGateArgs(sessionId, telegramRuntime = fakeTelegramRuntime()) {
+  const runtime = telegramRuntime || fakeTelegramRuntime();
+  return gateArgs(sessionId, runtime).map((arg) => (
+    arg === runtime.chatId ? 'human:operator-1' : arg
+  ));
 }
 
 function shellQuote(value) {
@@ -356,6 +403,7 @@ function buildProfileReport({
   mcpListAfterAdd = '',
   upstreamPort = null,
   sessionId = SESSION_ID,
+  telegramRuntime = fakeTelegramRuntime(),
 } = {}) {
   const configuredMcpServers = configuredServersFromCodex({
     mcpGetAfterAdd: mcpGetAfterAdd || { name: SERVER_NAME },
@@ -373,16 +421,14 @@ function buildProfileReport({
       transport: 'stdio',
       wrapper_path: WRAPPER_PATH,
       gate_script: join(TMP_PROJECT, 'mcp-gate', 'gate.mjs'),
-      gate_args: gateArgs(sessionId).map((arg) => (
-        arg === HUMAN_ID ? 'human:operator-1' : arg
-      )),
+      gate_args: redactedGateArgs(sessionId, telegramRuntime),
       routing_config: ROUTING_CONFIG,
       audit_file: AUDIT_FILE,
       policy_file: POLICY_PATH,
       agent_id: AGENT_ID,
       session_id: sessionId,
-      fake_telegram: true,
-      live_telegram: false,
+      fake_telegram: Boolean(telegramRuntime.fakeTelegram),
+      live_telegram: Boolean(telegramRuntime.liveTelegram),
     },
     scratch: {
       root: SCRATCH,
@@ -392,6 +438,7 @@ function buildProfileReport({
     },
     privacy: {
       env_values_redacted: true,
+      live_telegram_credentials_redacted: Boolean(telegramRuntime.liveTelegram),
       live_telegram_credential: false,
       real_chat_id: false,
       real_human_state_id: false,
@@ -422,6 +469,12 @@ function assertIsolatedProfileReport(report) {
   }
   if (server.direct_fake_upstream_registration) {
     throw new Error('isolated Codex profile must not directly register the fake upstream');
+  }
+  if (report.zlar_route?.live_telegram && report.zlar_route?.fake_telegram) {
+    throw new Error('live isolated proof profile cannot also use fake Telegram');
+  }
+  if (report.zlar_route?.live_telegram && server.transport?.env_keys?.includes('ZLAR_TELEGRAM_API_BASE')) {
+    throw new Error('live isolated proof profile must not use fake Telegram API override');
   }
   if (report.claim_ceiling !== CLAIM_CEILING) {
     throw new Error('profile report claim ceiling drifted');
@@ -886,20 +939,21 @@ async function startFakeTelegram() {
   return server;
 }
 
-async function serve() {
+async function serve({ liveTelegram = false } = {}) {
   const upstream = await startFakeUpstream();
-  const telegram = await startFakeTelegram();
+  const telegram = liveTelegram ? null : await startFakeTelegram();
   const ready = {
     pid: process.pid,
     upstreamPort: upstream.address().port,
-    telegramUrl: `http://127.0.0.1:${telegram.address().port}`,
+    telegramMode: liveTelegram ? 'live' : 'fake',
+    telegramUrl: telegram ? `http://127.0.0.1:${telegram.address().port}` : null,
     readyAt: new Date().toISOString(),
   };
   writeJson(READY_FILE, ready);
 
   const shutdown = () => {
     upstream.close(() => {});
-    telegram.close(() => {});
+    if (telegram) telegram.close(() => {});
     setTimeout(() => process.exit(0), 25).unref();
   };
   process.on('SIGINT', shutdown);
@@ -927,18 +981,20 @@ function writeRoutingConfig(upstreamPort) {
   ]);
 }
 
-function writeStdioWrapper(sessionId = SESSION_ID) {
+function writeStdioWrapper(sessionId = SESSION_ID, telegramRuntime = fakeTelegramRuntime()) {
   const command = [
     process.execPath,
-    ...gateArgs(sessionId),
+    ...gateArgs(sessionId, telegramRuntime),
   ].map(shellQuote).join(' ');
-  writeFileSync(WRAPPER_PATH, `#!/bin/sh
-exec ${command}
-`);
+  const lines = ['#!/bin/sh'];
+  if (telegramRuntime.liveTelegram) lines.push('unset ZLAR_TELEGRAM_API_BASE');
+  lines.push(`exec ${command}`, '');
+  writeFileSync(WRAPPER_PATH, lines.join('\n'));
   chmodSync(WRAPPER_PATH, 0o755);
 }
 
-function gateArgs(sessionId = SESSION_ID) {
+function gateArgs(sessionId = SESSION_ID, telegramRuntime = fakeTelegramRuntime()) {
+  const runtime = telegramRuntime || fakeTelegramRuntime();
   return [
     join(TMP_PROJECT, 'mcp-gate', 'gate.mjs'),
     '--stdio',
@@ -951,18 +1007,21 @@ function gateArgs(sessionId = SESSION_ID) {
     '--restore-config-file', join(SCRATCH, 'missing-restore-config.json'),
     '--agent-id', AGENT_ID,
     '--session-id', sessionId,
-    '--telegram-chat-id', HUMAN_ID,
+    '--telegram-chat-id', runtime.chatId || HUMAN_ID,
     '--canary-state-dir', join(SCRATCH, 'canary'),
     '--cc-inbox-dir', CC_INBOX_DIR,
   ];
 }
 
-function gateEnv(telegramUrl) {
-  return {
+function gateEnv(telegramRuntime = fakeTelegramRuntime()) {
+  const runtime = telegramRuntime || fakeTelegramRuntime();
+  if (!runtime.liveTelegram && !runtime.apiBase) {
+    throw new Error('fake Telegram mode requires a fake Telegram API URL');
+  }
+  const env = {
     HOME: TMP_HOME,
     ZLAR_REQUIRE_SIGNED_AUDIT: 'true',
-    ZLAR_TELEGRAM_TOKEN: 'fake-token',
-    ZLAR_TELEGRAM_API_BASE: telegramUrl,
+    ZLAR_TELEGRAM_TOKEN: runtime.token,
     ZLAR_MCP_INBOX_DIR: MCP_INBOX_DIR,
     ZLAR_CC_INBOX_DIR: CC_INBOX_DIR,
     ZLAR_INBOX_HMAC_SECRET_FILE: HMAC_SECRET_FILE,
@@ -973,6 +1032,18 @@ function gateEnv(telegramUrl) {
     ZLAR_CANARY_PROBABILITY: '0',
     ZLAR_CANARY_COOLDOWN: '999999',
   };
+  if (!runtime.liveTelegram) {
+    env.ZLAR_TELEGRAM_API_BASE = runtime.apiBase;
+  }
+  return env;
+}
+
+function gateProcessEnv(telegramRuntime) {
+  const env = { ...process.env };
+  if (telegramRuntime?.liveTelegram) {
+    delete env.ZLAR_TELEGRAM_API_BASE;
+  }
+  return { ...env, ...gateEnv(telegramRuntime) };
 }
 
 function summarizePreflight(preflight) {
@@ -989,6 +1060,7 @@ function summarizePreflight(preflight) {
 function buildScratchState({
   ready = {},
   isolatedProfile = false,
+  telegramRuntime = fakeTelegramRuntime(ready.telegramUrl || null),
   codexRegistration = null,
   mcpGetAfterAdd = null,
   preflight = null,
@@ -1007,12 +1079,15 @@ function buildScratchState({
     serverName: SERVER_NAME,
     serverPid: ready.pid ?? null,
     upstreamPort: ready.upstreamPort ?? null,
-    telegramUrl: ready.telegramUrl ?? null,
+    telegramMode: telegramRuntime?.mode || ready.telegramMode || 'fake',
+    fakeTelegram: Boolean(telegramRuntime?.fakeTelegram),
+    liveTelegram: Boolean(telegramRuntime?.liveTelegram),
+    telegramUrl: telegramRuntime?.liveTelegram ? null : (ready.telegramUrl ?? null),
     repoRoot: REPO_ROOT,
     scriptPath: SCRIPT_PATH,
     agentId: AGENT_ID,
     sessionId: SESSION_ID,
-    humanId: HUMAN_ID,
+    humanId: telegramRuntime?.liveTelegram ? 'human:operator-1' : HUMAN_ID,
     auditFile: AUDIT_FILE,
     workerReceiptFile: WORKER_RECEIPT_FILE,
     markerDir: MARKER_DIR,
@@ -1071,7 +1146,7 @@ function execCommand(pass, options = {}) {
   return `${codexEnvPrefix(options)}codex exec -C ${shellQuote(REPO_ROOT)} -s read-only "$(${codexPromptCommand(pass)})"`;
 }
 
-function printOperatorInstructions({ isolatedProfile = false } = {}) {
+function printOperatorInstructions({ isolatedProfile = false, liveTelegram = false } = {}) {
   console.log('\nClaim ceiling:');
   console.log(`  "${CLAIM_CEILING}"`);
   console.log('\nNot claimed:');
@@ -1082,6 +1157,15 @@ function printOperatorInstructions({ isolatedProfile = false } = {}) {
     console.log(`  CODEX_HOME=${CODEX_PROFILE_DOTDIR}`);
     console.log(`  Profile report: ${PROFILE_REPORT_PATH}`);
     console.log('  This mode writes Codex MCP config only inside the scratch profile.');
+  }
+  if (liveTelegram) {
+    console.log('\nLive Telegram mode:');
+    console.log(`  Explicit env required: ${LIVE_TELEGRAM_TOKEN_ENV}, ${LIVE_TELEGRAM_CHAT_ID_ENV}`);
+    console.log('  Fake Telegram API override is disabled in the MCP wrapper.');
+    console.log('  Setup registers the isolated MCP server and runs initialize preflight only; it does not call proof tools.');
+  } else {
+    console.log('\nTelegram mode:');
+    console.log('  Fake Telegram is used by default for setup and test runs.');
   }
   console.log('\nRun Pass 1, then Pass 2A, then Pass 2B. Do not run approve and deny proof probes in one Codex prompt.');
   console.log('Interactive Codex CLI is recommended because the CLI may prompt for client-side MCP tool permission.');
@@ -1120,12 +1204,12 @@ function printOperatorInstructions({ isolatedProfile = false } = {}) {
   console.log(`  node ${shellQuote(SCRIPT_PATH)} cleanup${isolatedProfile ? ' --isolated-profile' : ''}`);
 }
 
-function registerCodexMcp(telegramUrl, sessionId, { isolatedProfile = false } = {}) {
+function registerCodexMcp(telegramRuntime, sessionId, { isolatedProfile = false } = {}) {
   const env = codexProcessEnv({ isolatedProfile });
   runOptional('codex', ['mcp', 'remove', SERVER_NAME], { env });
-  writeStdioWrapper(sessionId);
+  writeStdioWrapper(sessionId, telegramRuntime);
 
-  const serverEnv = gateEnv(telegramUrl);
+  const serverEnv = gateEnv(telegramRuntime);
   const args = ['mcp', 'add', SERVER_NAME];
   for (const [key, value] of Object.entries(serverEnv)) {
     args.push('--env', `${key}=${value}`);
@@ -1138,10 +1222,10 @@ function registerCodexMcp(telegramUrl, sessionId, { isolatedProfile = false } = 
   };
 }
 
-async function preflightGate(telegramUrl) {
-  const child = spawn(process.execPath, gateArgs(`${SESSION_ID}-preflight`), {
+async function preflightGate(telegramRuntime) {
+  const child = spawn(process.execPath, gateArgs(`${SESSION_ID}-preflight`, telegramRuntime), {
     cwd: TMP_PROJECT,
-    env: { ...process.env, ...gateEnv(telegramUrl) },
+    env: gateProcessEnv(telegramRuntime),
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -1173,10 +1257,14 @@ async function preflightGate(telegramUrl) {
   };
 }
 
-async function setup({ dryRun = false, isolatedProfile = false } = {}) {
+async function setup({ dryRun = false, isolatedProfile = false, liveTelegram = false } = {}) {
   if (!existsSync(join(REPO_ROOT, 'mcp-gate', 'gate.mjs'))) {
     throw new Error(`repo root detection failed: ${REPO_ROOT}`);
   }
+  if (liveTelegram && !isolatedProfile) {
+    throw new Error('--live-telegram requires --isolated-profile');
+  }
+  const liveTelegramRuntime = liveTelegram ? liveTelegramRuntimeFromEnv(process.env) : null;
   if (runOptional('codex', ['--version']).status !== 0) {
     throw new Error('codex CLI not found on PATH');
   }
@@ -1190,10 +1278,11 @@ async function setup({ dryRun = false, isolatedProfile = false } = {}) {
 
   const stdoutFd = openSync(SERVER_STDOUT, 'a');
   const stderrFd = openSync(SERVER_STDERR, 'a');
-  const server = spawn(process.execPath, [SCRIPT_PATH, 'serve'], {
+  const server = spawn(process.execPath, [SCRIPT_PATH, 'serve', ...(liveTelegram ? ['--live-telegram'] : [])], {
     cwd: REPO_ROOT,
     detached: true,
     stdio: ['ignore', stdoutFd, stderrFd],
+    env: process.env,
   });
   server.unref();
   closeSync(stdoutFd);
@@ -1201,34 +1290,42 @@ async function setup({ dryRun = false, isolatedProfile = false } = {}) {
   writeJson(STATE_FILE, buildScratchState({
     ready: { pid: server.pid },
     isolatedProfile,
+    telegramRuntime: liveTelegramRuntime || fakeTelegramRuntime(null),
     lifecycle: 'server-spawned',
   }));
 
   const ready = await waitForReady();
+  const telegramRuntime = liveTelegram ? liveTelegramRuntime : fakeTelegramRuntime(ready.telegramUrl);
   writeRoutingConfig(ready.upstreamPort);
-  const codexRegistration = registerCodexMcp(ready.telegramUrl, SESSION_ID, { isolatedProfile });
-  const preflight = await preflightGate(ready.telegramUrl);
+  const codexRegistration = registerCodexMcp(telegramRuntime, SESSION_ID, { isolatedProfile });
+  const preflight = await preflightGate(telegramRuntime);
   const mcpGetAfterAdd = JSON.parse(codexRegistration.getStdout);
   const profileReport = isolatedProfile ? buildProfileReport({
     mcpGetAfterAdd,
     mcpListAfterAdd: codexRegistration.listStdout,
     upstreamPort: ready.upstreamPort,
     sessionId: SESSION_ID,
+    telegramRuntime,
   }) : null;
   if (profileReport) writeProfileReport(profileReport);
 
   writeJson(STATE_FILE, buildScratchState({
     ready,
     isolatedProfile,
+    telegramRuntime,
     codexRegistration,
     mcpGetAfterAdd,
     preflight,
   }));
 
-  console.log(`Setup complete for manual Codex CLI MCP smoke${isolatedProfile ? ' with isolated Codex profile' : ''}.`);
+  console.log(`Setup complete for manual Codex CLI MCP smoke${isolatedProfile ? ' with isolated Codex profile' : ''}${liveTelegram ? ' and live Telegram routing' : ''}.`);
   console.log(`Temp harness: ${SCRATCH}`);
   console.log(`Fake upstream: 127.0.0.1:${ready.upstreamPort}`);
-  console.log(`Fake Telegram: ${ready.telegramUrl}`);
+  if (liveTelegram) {
+    console.log('Live Telegram: enabled for later explicit proof probes');
+  } else {
+    console.log(`Fake Telegram: ${ready.telegramUrl}`);
+  }
   console.log(`Codex MCP server: ${SERVER_NAME}`);
   if (isolatedProfile) {
     console.log(`Codex profile HOME: ${CODEX_PROFILE_HOME}`);
@@ -1236,7 +1333,7 @@ async function setup({ dryRun = false, isolatedProfile = false } = {}) {
     console.log(`Profile report: ${PROFILE_REPORT_PATH}`);
   }
   console.log(`Preflight: ${preflight.ok ? 'ok' : 'failed'}`);
-  printOperatorInstructions({ isolatedProfile });
+  printOperatorInstructions({ isolatedProfile, liveTelegram });
 
   if (dryRun) {
     console.log('\nDry run requested; cleaning up without invoking Codex CLI marker tools.');
@@ -1384,7 +1481,9 @@ async function cleanup({ quiet = false, removeScratchOnly = false } = {}) {
     } catch {}
   }
 
-  if (!removeScratchOnly) {
+  if (removeScratchOnly) {
+    runOptional('codex', ['mcp', 'remove', SERVER_NAME], { env: codexProcessEnv({ isolatedProfile: true }) });
+  } else {
     runOptional('codex', ['mcp', 'remove', SERVER_NAME]);
   }
 
@@ -1420,6 +1519,8 @@ function status() {
   console.log(JSON.stringify({
     scratch: state.scratch,
     isolatedProfile: Boolean(state.isolatedProfile),
+    telegramMode: state.telegramMode || null,
+    liveTelegram: Boolean(state.liveTelegram),
     serverName: state.serverName,
     serverPid: state.serverPid,
     serverAlive: processExists(Number(state.serverPid)),
@@ -1438,13 +1539,14 @@ async function main() {
   const command = process.argv[2] || 'help';
   const arg = process.argv[3] || '';
   const isolatedProfile = process.argv.includes('--isolated-profile');
+  const liveTelegram = process.argv.includes('--live-telegram');
   try {
     if (command === 'setup') {
-      await setup({ dryRun: process.argv.includes('--dry-run'), isolatedProfile });
+      await setup({ dryRun: process.argv.includes('--dry-run'), isolatedProfile, liveTelegram });
     } else if (command === 'dry-run') {
-      await setup({ dryRun: true, isolatedProfile });
+      await setup({ dryRun: true, isolatedProfile, liveTelegram });
     } else if (command === 'serve') {
-      await serve();
+      await serve({ liveTelegram });
     } else if (command === 'verify') {
       const mode = arg || 'all';
       if (!['pass1', 'pass2', 'all'].includes(mode)) throw new Error('verify mode must be pass1, pass2, or all');
@@ -1483,14 +1585,18 @@ export {
   COVERAGE_REPORT_TEXT_PATH,
   CLAIM_CEILING,
   INTENTIONALLY_UNGOVERNED_SURFACES,
+  LIVE_TELEGRAM_CHAT_ID_ENV,
+  LIVE_TELEGRAM_TOKEN_ENV,
   SERVER_NAME,
   buildRoutedMcpProofReportFromScratch,
   buildProfileReport,
   buildScratchState,
+  fakeTelegramRuntime,
   assertIsolatedProfileReport,
   configuredServersFromCodex,
   extractCodexMcpServerNames,
   generateCoverageReport,
+  liveTelegramRuntimeFromEnv,
   sanitizeMcpTransport,
   transportCommandKind,
   transportLooksDirectFakeUpstream,

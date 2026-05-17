@@ -22,10 +22,13 @@ import {
 } from './governed-profile-coverage-report.mjs';
 import {
   CLAIM_CEILING,
+  LIVE_TELEGRAM_CHAT_ID_ENV,
+  LIVE_TELEGRAM_TOKEN_ENV,
   SERVER_NAME,
   assertIsolatedProfileReport,
   buildProfileReport,
   buildScratchState,
+  liveTelegramRuntimeFromEnv,
   configuredServersFromCodex,
   extractCodexMcpServerNames,
   sanitizeMcpTransport,
@@ -164,6 +167,66 @@ assert('profile report omits env values', !reportText.includes('SHOULD_NOT_APPEA
 assert('profile report avoids broad Codex claim phrase', !reportText.includes(broadCodexPhrase));
 assert('profile report avoids numeric human identifiers', !/human:[0-9]/.test(reportText));
 
+section('Live Telegram profile guards');
+const liveRuntime = liveTelegramRuntimeFromEnv({
+  [LIVE_TELEGRAM_TOKEN_ENV]: 'fixture-live-telegram-token',
+  [LIVE_TELEGRAM_CHAT_ID_ENV]: '123456789',
+});
+const liveMcpGet = {
+  name: SERVER_NAME,
+  enabled: true,
+  transport: {
+    type: 'stdio',
+    command: wrapperPath,
+    args: [],
+    env: {
+      HOME: join(scratch, 'home'),
+      ZLAR_TELEGRAM_TOKEN: 'SHOULD_NOT_APPEAR',
+    },
+    cwd: null,
+  },
+};
+const liveReport = buildProfileReport({
+  mcpGetAfterAdd: liveMcpGet,
+  mcpListAfterAdd: safeMcpList,
+  upstreamPort,
+  sessionId: 'profile-harness-live-test',
+  telegramRuntime: liveRuntime,
+});
+assertDoesNotThrow('live profile with isolated server does not throw', () => {
+  assertIsolatedProfileReport(liveReport);
+});
+assert('live profile records live Telegram mode', liveReport.zlar_route.live_telegram && !liveReport.zlar_route.fake_telegram);
+assert('live profile redacts numeric chat id from gate args', !JSON.stringify(liveReport.zlar_route.gate_args).includes('123456789'));
+assert('live profile redacts token value from transport', !JSON.stringify(liveReport).includes('SHOULD_NOT_APPEAR'));
+
+const liveWithFakeApiReport = buildProfileReport({
+  mcpGetAfterAdd: {
+    ...liveMcpGet,
+    transport: {
+      ...liveMcpGet.transport,
+      env: {
+        ZLAR_TELEGRAM_TOKEN: 'fixture',
+        ZLAR_TELEGRAM_API_BASE: 'http://127.0.0.1:19999',
+      },
+    },
+  },
+  mcpListAfterAdd: safeMcpList,
+  upstreamPort,
+  sessionId: 'profile-harness-live-test',
+  telegramRuntime: liveRuntime,
+});
+assertThrows('live profile rejects fake Telegram API override', () => {
+  assertIsolatedProfileReport(liveWithFakeApiReport);
+}, 'fake Telegram API');
+
+assertThrows('live Telegram mode requires numeric chat id', () => {
+  liveTelegramRuntimeFromEnv({
+    [LIVE_TELEGRAM_TOKEN_ENV]: 'fixture-live-telegram-token',
+    [LIVE_TELEGRAM_CHAT_ID_ENV]: '@ZLAR_00_bot',
+  });
+}, 'numeric Telegram chat ID');
+
 section('Scratch state safety');
 const state = buildScratchState({
   ready: {
@@ -192,6 +255,14 @@ function reportSurface(report, id) {
 
 function writeJson(path, value) {
   writeFileSync(path, JSON.stringify(value, null, 2));
+}
+
+function readJsonl(path) {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line));
 }
 
 function mcpCoverageEvent({ id, action, outcome, rule, authorizer = 'policy', detail = {} }) {
@@ -391,6 +462,231 @@ exit 99
   assert('coverage outputs omit fake credential fixture', !JSON.stringify(coverageReport).includes(fakeCredentialValue) && !coverageText.includes(fakeCredentialValue));
 } finally {
   rmSync(coverageScratch, { recursive: true, force: true });
+}
+
+section('Live isolated setup command');
+const liveTestRoot = mkdtempSync(join(tmpdir(), 'zlar-codex-smoke-live-test-'));
+const liveScratch = join(liveTestRoot, 'zlar-codex-smoke-live-setup');
+const liveFakeBin = join(liveTestRoot, 'fake-bin');
+const liveOperatorHome = join(liveTestRoot, 'operator-home');
+const liveOperatorCodexHome = join(liveOperatorHome, '.codex');
+const liveFakeCodexLog = join(liveTestRoot, 'fake-codex-log.jsonl');
+const liveFakeCodex = join(liveFakeBin, 'codex');
+mkdirSync(liveFakeBin, { recursive: true });
+mkdirSync(liveOperatorCodexHome, { recursive: true });
+writeJson(join(liveOperatorCodexHome, 'fake-mcp-config.json'), {
+  servers: {
+    inherited_extra: {
+      name: 'inherited_extra',
+      enabled: true,
+      transport: { type: 'stdio', command: 'direct-upstream', args: [], env: {}, cwd: null },
+    },
+  },
+});
+writeFileSync(liveFakeCodex, `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+
+const argv = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+if (logPath) {
+  fs.appendFileSync(logPath, JSON.stringify({
+    argv,
+    env: {
+      HOME: process.env.HOME || '',
+      CODEX_HOME: process.env.CODEX_HOME || '',
+      ZLAR_TELEGRAM_API_BASE: process.env.ZLAR_TELEGRAM_API_BASE || '',
+    },
+  }) + '\\n');
+}
+
+function codexHome() {
+  return process.env.CODEX_HOME || path.join(process.env.HOME || process.cwd(), '.codex');
+}
+
+function configPath() {
+  const home = codexHome();
+  fs.mkdirSync(home, { recursive: true });
+  return path.join(home, 'fake-mcp-config.json');
+}
+
+function loadConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(configPath(), 'utf8'));
+  } catch {
+    return { servers: {} };
+  }
+}
+
+function saveConfig(config) {
+  fs.writeFileSync(configPath(), JSON.stringify(config, null, 2));
+}
+
+if (argv[0] === '--version') {
+  console.log('codex fake 0.0.0');
+  process.exit(0);
+}
+
+if (argv[0] !== 'mcp') {
+  process.exit(99);
+}
+
+const sub = argv[1];
+const config = loadConfig();
+if (sub === 'remove') {
+  delete config.servers[argv[2]];
+  saveConfig(config);
+  process.exit(0);
+}
+
+if (sub === 'add') {
+  const name = argv[2];
+  const env = {};
+  let command = '';
+  let args = [];
+  for (let i = 3; i < argv.length; i += 1) {
+    if (argv[i] === '--env') {
+      const raw = argv[i + 1] || '';
+      const eq = raw.indexOf('=');
+      env[raw.slice(0, eq)] = raw.slice(eq + 1);
+      i += 1;
+    } else if (argv[i] === '--') {
+      command = argv[i + 1] || '';
+      args = argv.slice(i + 2);
+      break;
+    }
+  }
+  config.servers[name] = {
+    name,
+    enabled: true,
+    transport: { type: 'stdio', command, args, env, cwd: null },
+  };
+  saveConfig(config);
+  process.exit(0);
+}
+
+if (sub === 'get') {
+  const server = config.servers[argv[2]];
+  if (!server) process.exit(1);
+  if (argv.includes('--json')) {
+    console.log(JSON.stringify(server));
+  } else {
+    console.log(server.name);
+  }
+  process.exit(0);
+}
+
+if (sub === 'list') {
+  const servers = Object.values(config.servers);
+  if (servers.length === 0) {
+    console.log('No MCP servers configured.');
+  } else {
+    console.log('Name            Command                         Args  Env  Cwd  Status   Auth');
+    for (const server of servers) {
+      console.log(String(server.name) + '  ' + String(server.transport.command || '-') + '  -  -  -  enabled  Unsupported');
+    }
+  }
+  process.exit(0);
+}
+
+process.exit(98);
+`);
+chmodSync(liveFakeCodex, 0o755);
+
+let cleanupResult = null;
+try {
+  const liveEnv = {
+    ...process.env,
+    ZLAR_CODEX_SMOKE_SCRATCH: liveScratch,
+    PATH: `${liveFakeBin}:${process.env.PATH || ''}`,
+    HOME: liveOperatorHome,
+    CODEX_HOME: liveOperatorCodexHome,
+    FAKE_CODEX_LOG: liveFakeCodexLog,
+    [LIVE_TELEGRAM_TOKEN_ENV]: 'fixture-live-telegram-token',
+    [LIVE_TELEGRAM_CHAT_ID_ENV]: '123456789',
+    ZLAR_TELEGRAM_API_BASE: 'http://127.0.0.1:19999',
+  };
+  const setupResult = spawnSync(process.execPath, [
+    join(REPO_ROOT, 'mcp-gate', 'smoke-codex-cli.mjs'),
+    'setup',
+    '--isolated-profile',
+    '--live-telegram',
+  ], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    env: liveEnv,
+    timeout: 15000,
+  });
+  assert('live isolated setup exits 0', setupResult.status === 0, setupResult.stderr || setupResult.stdout);
+  assert('live isolated setup names live mode', setupResult.stdout.includes('Live Telegram: enabled'));
+
+  const liveProfilePath = join(liveScratch, 'profile-report.json');
+  assert('live isolated setup writes profile report', existsSync(liveProfilePath));
+  if (existsSync(liveProfilePath)) {
+    const setupProfile = JSON.parse(readFileSync(liveProfilePath, 'utf8'));
+    assertEqual('live isolated setup has one MCP server', 1, setupProfile.configured_mcp_servers.length);
+    assertEqual('live isolated setup registers only smoke server', SERVER_NAME, setupProfile.configured_mcp_servers[0].name);
+    assert('live isolated setup does not inherit operator MCP server',
+      !JSON.stringify(setupProfile.configured_mcp_servers).includes('inherited_extra'));
+    assert('live isolated setup records live Telegram mode',
+      setupProfile.zlar_route.live_telegram === true && setupProfile.zlar_route.fake_telegram === false);
+    assert('live isolated setup does not register fake Telegram API env',
+      !setupProfile.configured_mcp_servers[0].transport.env_keys.includes('ZLAR_TELEGRAM_API_BASE'));
+  }
+
+  const liveWrapperText = existsSync(join(liveScratch, 'zlar-smoke-cli-wrapper.sh'))
+    ? readFileSync(join(liveScratch, 'zlar-smoke-cli-wrapper.sh'), 'utf8')
+    : '';
+  assert('live wrapper unsets fake Telegram API override', liveWrapperText.includes('unset ZLAR_TELEGRAM_API_BASE'));
+  assert('live setup does not start fake Telegram API server', !existsSync(join(liveScratch, 'telegram-requests.jsonl')));
+  assert('live setup does not run proof tool executions', !existsSync(join(liveScratch, 'upstream-executions.jsonl')));
+  const upstreamCalls = readJsonl(join(liveScratch, 'upstream-calls.jsonl'));
+  assert('live setup preflight never sends tools/call', upstreamCalls.every((entry) => entry.method !== 'tools/call'));
+
+  cleanupResult = spawnSync(process.execPath, [
+    join(REPO_ROOT, 'mcp-gate', 'smoke-codex-cli.mjs'),
+    'cleanup',
+    '--isolated-profile',
+  ], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    env: liveEnv,
+    timeout: 15000,
+  });
+  assert('live isolated cleanup exits 0', cleanupResult.status === 0, cleanupResult.stderr || cleanupResult.stdout);
+  assert('live isolated cleanup removes scratch files', !existsSync(liveScratch));
+  const codexLog = readJsonl(liveFakeCodexLog);
+  assert('cleanup removes temporary MCP registration in isolated profile',
+    codexLog.some((entry) =>
+      entry.argv[0] === 'mcp' &&
+      entry.argv[1] === 'remove' &&
+      entry.argv[2] === SERVER_NAME &&
+      String(entry.env.CODEX_HOME || '').startsWith(join(liveScratch, 'codex-home'))));
+  assert('all MCP registration commands used scratch CODEX_HOME',
+    codexLog
+      .filter((entry) => entry.argv[0] === 'mcp')
+      .every((entry) => String(entry.env.CODEX_HOME || '').startsWith(join(liveScratch, 'codex-home'))));
+} finally {
+  if (cleanupResult === null && existsSync(liveScratch)) {
+    spawnSync(process.execPath, [
+      join(REPO_ROOT, 'mcp-gate', 'smoke-codex-cli.mjs'),
+      'cleanup',
+      '--isolated-profile',
+    ], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ZLAR_CODEX_SMOKE_SCRATCH: liveScratch,
+        PATH: `${liveFakeBin}:${process.env.PATH || ''}`,
+        HOME: liveOperatorHome,
+        CODEX_HOME: liveOperatorCodexHome,
+        FAKE_CODEX_LOG: liveFakeCodexLog,
+      },
+      timeout: 15000,
+    });
+  }
+  rmSync(liveTestRoot, { recursive: true, force: true });
 }
 
 section('Guard failures');
