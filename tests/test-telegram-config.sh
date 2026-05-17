@@ -298,23 +298,26 @@ fi
 echo ""
 echo "TC-LIVE: bin/zlar status displays a coherent Telegram block on this box"
 STATUS_OUT=$("${PROJECT_DIR}/bin/zlar" status 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-if echo "${STATUS_OUT}" | grep -qE '^  Telegram:$'; then
-    if echo "${STATUS_OUT}" | grep -qE 'state: +(● enabled|⛔ fail-closed|○ disabled)'; then
+status_matches() {
+    grep -qE "$1" <<< "${STATUS_OUT}"
+}
+if status_matches '^  Telegram:$'; then
+    if status_matches 'state: +(● enabled|⛔ fail-closed|○ disabled)'; then
         assert_true "Telegram block has a coherent state line" "true"
     else
         assert_true "Telegram block has a coherent state line (no recognized state)" "false"
     fi
-    if echo "${STATUS_OUT}" | grep -qE 'chat_id source: +(gate\.json|env|unconfigured)'; then
+    if status_matches 'chat_id source: +(gate\.json|env|unconfigured)'; then
         assert_true "Telegram block has a chat_id source line" "true"
     else
         assert_true "Telegram block has a chat_id source line" "false"
     fi
-    if echo "${STATUS_OUT}" | grep -qE 'token: +(present|missing)'; then
+    if status_matches 'token: +(present|missing)'; then
         assert_true "Telegram block has a token presence line" "true"
     else
         assert_true "Telegram block has a token presence line" "false"
     fi
-    if echo "${STATUS_OUT}" | grep -qE 'chat_id status: +(valid numeric|missing|invalid:)'; then
+    if status_matches 'chat_id status: +(valid numeric|missing|invalid:)'; then
         assert_true "Telegram block has a chat_id status line" "true"
     else
         assert_true "Telegram block has a chat_id status line" "false"

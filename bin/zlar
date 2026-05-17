@@ -88,6 +88,13 @@ surface_hook_configured() {
     [ -f "${hook_file}" ] && grep -qi "zlar" "${hook_file}" 2>/dev/null
 }
 
+pretooluse_hook_command() {
+    local hook_file="$1"
+    [ -f "${hook_file}" ] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    jq -r '.hooks.PreToolUse[0].hooks[0].command // empty' "${hook_file}" 2>/dev/null
+}
+
 # ─── Gate uptime helper (v3.1.4) ─────────────────────────────────────────────
 # Sourced on demand by commands that record transitions or display streak.
 _GU_LOADED=0
@@ -188,11 +195,26 @@ cmd_status() {
         printf "    Resolved gate state:                         ${GREEN}ON${NC}\n"
     fi
 
-    # Hook target from settings.json — catches misrouted hooks immediately
+    # Hook targets — keep Codex explicit, and label Claude as legacy/current
+    # Claude surface rather than the whole gate truth.
+    CODEX_HOME_DIR="${CODEX_HOME:-${HOME}/.codex}"
+    CODEX_HOOK_FILE="${CODEX_HOME_DIR}/hooks.json"
+    if [ ! -f "${CODEX_HOOK_FILE}" ] && [ -f "${HOME}/.Codex/hooks.json" ]; then
+        CODEX_HOOK_FILE="${HOME}/.Codex/hooks.json"
+    fi
+    CODEX_HOOK_CMD="$(pretooluse_hook_command "${CODEX_HOOK_FILE}" || true)"
+    if [ -n "${CODEX_HOOK_CMD}" ]; then
+        printf "    Codex hook target (PreToolUse):              ${CODEX_HOOK_CMD}\n"
+    else
+        printf "    Codex hook target (PreToolUse):              ${DIM}not configured${NC}\n"
+    fi
+
     SETTINGS_JSON="${HOME}/.claude/settings.json"
-    if [ -f "${SETTINGS_JSON}" ] && command -v jq >/dev/null 2>&1; then
-        HOOK_CMD=$(jq -r '.hooks.PreToolUse[0].hooks[0].command // "(none)"' "${SETTINGS_JSON}" 2>/dev/null || echo "(error)")
-        printf "    Hook target (PreToolUse):                    ${HOOK_CMD}\n"
+    CLAUDE_HOOK_CMD="$(pretooluse_hook_command "${SETTINGS_JSON}" || true)"
+    if [ -n "${CLAUDE_HOOK_CMD}" ]; then
+        printf "    Claude legacy/current hook target:           ${CLAUDE_HOOK_CMD}\n"
+    elif [ -f "${SETTINGS_JSON}" ]; then
+        printf "    Claude legacy/current hook target:           ${DIM}not configured${NC}\n"
     fi
 
     # ─── Uptime / Streak (v3.1.4) ─────────────────────────────────────────
@@ -420,7 +442,7 @@ cmd_status() {
                     elif [ "${LAST_ASK}" -eq 0 ]; then
                         DECISIONS_ZERO_NOTE="  ${DIM}(uninitialized/reset)${NC}"
                     else
-                        DECISIONS_ZERO_NOTE="  ${DIM}(healthy: none today)${NC}"
+                        DECISIONS_ZERO_NOTE="  ${DIM}(none recorded today)${NC}"
                     fi
                 fi
 
@@ -475,7 +497,7 @@ cmd_status() {
                 printf "    Human ID:                                    ${HUMAN_ID_DISPLAY}\n"
                 printf "    Role:                                        live active human route\n"
                 printf "    State date:                                  ${STATE_DATE_DISPLAY}\n"
-                printf "    decisions_today:                             ${DECISIONS_DISPLAY_FINAL}\n"
+                printf "    recorded human decision units today:         ${DECISIONS_DISPLAY_FINAL}  ${DIM}(active Telegram state; approve/deny responses, not total cards)${NC}\n"
                 printf "    pending (ttl-filtered):                      ${PENDING_DISPLAY_FINAL}\n"
                 printf "    response_times:                              ${RESPONSE_TIMES_DISPLAY_FINAL}\n"
                 printf "    last_ask_epoch:                              ${LAST_ASK_REL}\n"
@@ -721,21 +743,22 @@ EOF
         printf "    ${GREEN}●${NC} Codex PreToolUse hook — governed for tool calls emitted to this hook\n"
         printf "       ${DIM}hook: ${CODEX_HOOK_FILE}${NC}\n"
     elif command -v codex >/dev/null 2>&1 || [ -d "${CODEX_HOME_DIR}" ] || [ -d "${HOME}/.Codex" ]; then
-        printf "    ${YELLOW}●${NC} Codex — installed; no ZLAR PreToolUse hook found\n"
+        printf "    ${YELLOW}◇${NC} Codex — installed; no ZLAR PreToolUse hook found\n"
     else
         printf "    ${DIM}○${NC} Codex — not installed\n"
     fi
 
     if command -v codex >/dev/null 2>&1 || [ -d "${CODEX_HOME_DIR}" ] || [ -d "${HOME}/.Codex" ]; then
-        printf "    ${YELLOW}●${NC} Codex routed MCP — not measured by status\n"
-        printf "       ${DIM}Use mcp-gate coverage/proof output before claiming Codex MCP coverage.${NC}\n"
+        printf "    ${YELLOW}◇${NC} Codex routed MCP — not measured by status\n"
+        printf "       ${DIM}ZLAR can govern Codex CLI-invoked MCP tool calls when those MCP servers are routed through ZLAR.${NC}\n"
+        printf "       ${DIM}Status does not measure routing; use mcp-gate coverage/proof output before claiming coverage.${NC}\n"
     fi
 
     # Claude Code
     if surface_hook_configured "${HOME}/.claude/settings.json"; then
         printf "    ${GREEN}●${NC} Claude Code PreToolUse hook — governed for tool calls emitted to this hook\n"
     elif command -v claude >/dev/null 2>&1 || [ -d "${HOME}/.claude" ]; then
-        printf "    ${YELLOW}●${NC} Claude Code — installed; no ZLAR hook found\n"
+        printf "    ${YELLOW}◇${NC} Claude Code — installed; no ZLAR hook found\n"
     else
         printf "    ${DIM}○${NC} Claude Code — not installed\n"
     fi
@@ -744,7 +767,7 @@ EOF
     if surface_hook_configured "${HOME}/.cursor/hooks.json"; then
         printf "    ${GREEN}●${NC} Cursor hook adapter — governed for events emitted to this hook\n"
     elif command -v cursor >/dev/null 2>&1 || [ -d "${HOME}/.cursor" ]; then
-        printf "    ${YELLOW}●${NC} Cursor — installed; no ZLAR hook found\n"
+        printf "    ${YELLOW}◇${NC} Cursor — installed; no ZLAR hook found\n"
     else
         printf "    ${DIM}○${NC} Cursor — not installed\n"
     fi
@@ -753,7 +776,7 @@ EOF
     if surface_hook_configured "${HOME}/.codeium/windsurf/hooks.json"; then
         printf "    ${GREEN}●${NC} Windsurf hook adapter — governed for events emitted to this hook\n"
     elif command -v windsurf >/dev/null 2>&1 || [ -d "${HOME}/.codeium/windsurf" ]; then
-        printf "    ${YELLOW}●${NC} Windsurf — installed; no ZLAR hook found\n"
+        printf "    ${YELLOW}◇${NC} Windsurf — installed; no ZLAR hook found\n"
     else
         printf "    ${DIM}○${NC} Windsurf — not installed\n"
     fi

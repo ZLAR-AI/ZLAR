@@ -241,7 +241,7 @@ assert "open-streak > stored: 'still running' annotation appears" "present" "${g
 
 # The displayed longest must match the open streak's order of magnitude
 # (not the stale stored 100s). Accept [180, 220] for slow runners.
-longest_line=$(printf '%s' "${status_out}" | grep "Longest streak:" | head -1)
+longest_line=$(printf '%s' "${status_out}" | grep "Longest streak since reset:" | head -1)
 case "${longest_line}" in
     *3m*|*4m*) got="open" ;;
     *1m*) got="stale100s" ;;
@@ -290,13 +290,13 @@ jq --argjson s "${streak_start}" --argjson hb "${now}" \
     "${STATE_FILE}" | _gu_sealed_write
 
 status_out=$(gu_status_lines)
-zero_lifetime_note=$(printf '%s' "${status_out}" | grep -c "Stored lifetime counter:.*reset/uninitialized" || true)
+zero_lifetime_note=$(printf '%s' "${status_out}" | grep -c "Stored lifetime counter since reset:.*reset/uninitialized" || true)
 { [ "${zero_lifetime_note}" -ge 1 ]; } && got="present" || got="missing"
 assert "stored lifetime zero classified as reset/uninitialized" "present" "${got}"
 
-zero_longest_note=$(printf '%s' "${status_out}" | grep -c "Stored completed-longest counter:.*healthy" || true)
+zero_longest_note=$(printf '%s' "${status_out}" | grep -c "Stored completed-longest counter since reset:.*no completed streak recorded since reset" || true)
 { [ "${zero_longest_note}" -ge 1 ]; } && got="present" || got="missing"
-assert "stored completed-longest zero classified as healthy after reset" "present" "${got}"
+assert "stored completed-longest zero classified as no completed streak since reset" "present" "${got}"
 
 last_disable_note=$(printf '%s' "${status_out}" | grep -c "Last disable:.*none recorded since uptime state reset" || true)
 { [ "${last_disable_note}" -ge 1 ]; } && got="present" || got="missing"

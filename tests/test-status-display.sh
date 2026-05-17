@@ -12,7 +12,7 @@
 #   counters drop to 0 and the test fails.
 #
 # Bug C — Stale-state badge
-#   bin/zlar showed decisions_today and response_times from yesterday's state
+#   bin/zlar showed human decision units and response_times from yesterday's state
 #   file with no annotation. status is read-only by design; the daily-bound
 #   counters reset only when _hi_ensure_state runs on the next gate write.
 #   This test exercises the freshness comparison directly: state.date vs
@@ -144,8 +144,8 @@ echo
 
 # Reproduce the freshness comparison from bin/zlar around line 226. The badge
 # fires when state.date != today UTC. status itself is read-only; this is the
-# only check that distinguishes "today's 3.3 decisions" from "3-day-old 3.3
-# decisions" without mutating state.
+# only check that distinguishes today's active human decision units from
+# 3-day-old units without mutating state.
 TODAY_UTC=$(date -u +%Y-%m-%d)
 YESTERDAY_UTC=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d "yesterday" +%Y-%m-%d 2>/dev/null || echo "2026-05-08")
 
@@ -206,6 +206,26 @@ assert "status names surfaces it does not measure" "present" "${got}"
 codex_mcp_hits=$(grep -c "Codex routed MCP.*not measured by status" "${PROJECT_DIR}/bin/zlar" || true)
 { [ "${codex_mcp_hits}" -ge 1 ]; } && got="present" || got="missing"
 assert "Codex routed MCP is not overclaimed by status" "present" "${got}"
+
+codex_mcp_boundary_hits=$(grep -c "ZLAR can govern Codex CLI-invoked MCP tool calls when those MCP servers are routed through ZLAR" "${PROJECT_DIR}/bin/zlar" || true)
+{ [ "${codex_mcp_boundary_hits}" -ge 1 ]; } && got="present" || got="missing"
+assert "Codex MCP claim boundary is preserved" "present" "${got}"
+
+codex_mcp_unmeasured_marker_hits=$(grep -c "◇.*Codex routed MCP.*not measured by status" "${PROJECT_DIR}/bin/zlar" || true)
+{ [ "${codex_mcp_unmeasured_marker_hits}" -ge 1 ]; } && got="present" || got="missing"
+assert "Codex routed MCP uses unmeasured marker" "present" "${got}"
+
+codex_hook_hits=$(grep -c "Codex hook target (PreToolUse)" "${PROJECT_DIR}/bin/zlar" || true)
+{ [ "${codex_hook_hits}" -ge 1 ]; } && got="present" || got="missing"
+assert "Gate State names Codex hook target explicitly" "present" "${got}"
+
+claude_legacy_hits=$(grep -c "Claude legacy/current hook target" "${PROJECT_DIR}/bin/zlar" || true)
+{ [ "${claude_legacy_hits}" -ge 1 ]; } && got="present" || got="missing"
+assert "Gate State labels Claude hook as legacy/current Claude surface" "present" "${got}"
+
+human_units_hits=$(grep -c "human decision units today" "${PROJECT_DIR}/bin/zlar" || true)
+{ [ "${human_units_hits}" -ge 1 ]; } && got="present" || got="missing"
+assert "status labels decisions_today as active human decision units" "present" "${got}"
 
 zero_explanation_hits=$(grep -c "zero explanation" "${PROJECT_DIR}/bin/zlar" || true)
 { [ "${zero_explanation_hits}" -ge 1 ]; } && got="present" || got="missing"

@@ -6,7 +6,7 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12381/badge)](https://www.bestpractices.dev/projects/12381)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/ZLAR-AI/ZLAR/badge)](https://securityscorecards.dev/viewer/?uri=github.com/ZLAR-AI/ZLAR)
 [![GitHub release](https://img.shields.io/github/v/tag/ZLAR-AI/ZLAR?label=release&sort=semver)](https://github.com/ZLAR-AI/ZLAR/releases)
-[![Tests](https://img.shields.io/badge/tests-64_files_2986_assertions_0_failed-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
+[![Tests](https://img.shields.io/badge/tests-64_files_2991_assertions_0_failed-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
 
 **ZLAR gives humans standing at the moment machine intelligence tries to affect the world.**
 
@@ -388,7 +388,7 @@ bash tests/count-assertions.sh --detail   # also show per-file pass counts
 bash tests/count-assertions.sh --badge    # print shields.io badge URL
 ```
 
-Current state: **64 files, 2986 assertions, 0 failed.** Some local environmental failures on macOS (`mcp-gate/test.mjs` — Node `listen()` returns `EPERM` on machines with certain firewall or MDM configurations); CI passes. See [troubleshooting](docs/troubleshooting.md) if the failure appears on your machine.
+Current state: **64 files, 2991 assertions, 0 failed.** Some local environmental failures on macOS (`mcp-gate/test.mjs` — Node `listen()` returns `EPERM` on machines with certain firewall or MDM configurations); CI passes. See [troubleshooting](docs/troubleshooting.md) if the failure appears on your machine.
 
 Tests require `bash`, `jq`, and an OpenSSL with Ed25519 support (LibreSSL on macOS does not qualify — use `brew install openssl@3` and put it on PATH first). `node` and `python3` are optional; `.mjs` and Python tests skip gracefully if unavailable.
 

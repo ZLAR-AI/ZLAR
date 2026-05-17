@@ -333,7 +333,7 @@ gu_status_lines() {
         longest_running_annotation="  (current — still running)"
     fi
 
-    printf '    Current streak:                              %s\n' "${current_display}"
+    printf '    Current streak since uptime reset:           %s\n' "${current_display}"
     printf '    Streak started:                              %s\n' "$(gu_format_epoch "${streak_start}")"
 
     local heartbeat_note=""
@@ -351,18 +351,18 @@ gu_status_lines() {
     fi
     printf '    Last heartbeat:                              %s%s\n' "$(gu_format_epoch "${last_hb}")" "${heartbeat_note}"
 
-    printf '    Longest streak:                              %s%s\n' "$(gu_format_duration "${display_longest_sec}")" "${longest_running_annotation}"
+    printf '    Longest streak since reset:                  %s%s\n' "$(gu_format_duration "${display_longest_sec}")" "${longest_running_annotation}"
     if [ "${display_longest_start}" != "0" ] && [ "${display_longest_start}" != "null" ]; then
-        printf '    Longest streak started:                      %s%s\n' "$(gu_format_epoch "${display_longest_start}")" "${longest_running_annotation}"
+        printf '    Longest streak since reset started:          %s%s\n' "$(gu_format_epoch "${display_longest_start}")" "${longest_running_annotation}"
     fi
-    printf '    Lifetime gate-on time:                       %s\n' "$(gu_format_duration "${display_lifetime}")"
+    printf '    Lifetime gate-on time since reset:           %s\n' "$(gu_format_duration "${display_lifetime}")"
     if [ "${state}" = "on" ] && [ "${lifetime_sec}" -eq 0 ] && [ "${current_sec}" -gt 0 ]; then
-        printf '    Stored lifetime counter:                     0 (reset/uninitialized; current streak counted above)\n'
+        printf '    Stored lifetime counter since reset:         0 (reset/uninitialized; current streak counted above)\n'
     elif [ "${lifetime_sec}" -eq 0 ]; then
-        printf '    Stored lifetime counter:                     0 (uninitialized or reset)\n'
+        printf '    Stored lifetime counter since reset:         0 (uninitialized or reset)\n'
     fi
     if [ "${state}" = "on" ] && [ "${longest_sec}" -eq 0 ] && [ "${current_sec}" -gt 0 ]; then
-        printf '    Stored completed-longest counter:            0 (healthy: no completed streak since reset)\n'
+        printf '    Stored completed-longest counter since reset: 0 (no completed streak recorded since reset)\n'
     fi
     printf '    Last enable:                                 %s\n' "$(gu_format_epoch "${last_enable}")"
     local last_disable_note=""
