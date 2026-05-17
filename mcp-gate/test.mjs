@@ -403,7 +403,7 @@ async function runTests() {
   writeFileSync(TEST_HMAC_SECRET_FILE, TEST_HMAC_SECRET);
 
   const TL_SESSION_ID = 'tl-mcp-session-001';
-  const TL_HUMAN_ID   = 'test-mcp-tl-001';
+  const TL_HUMAN_ID   = '1000001001';
   const TL_GATE_PORT  = 3104;
 
   const tlGate = spawn('node', [
@@ -416,6 +416,7 @@ async function runTests() {
     '--manifest-file', TEST_MANIFEST_FILE,
     '--constitution-presence-file', TEST_CONSTITUTION_PRESENCE,
     '--restore-config-file', TEST_RESTORE_CONFIG,
+    '--no-telegram',
     '--telegram-chat-id', TL_HUMAN_ID,
     '--session-id', TL_SESSION_ID,
     '--canary-state-dir', TEST_CANARY_DIR,
@@ -694,7 +695,7 @@ async function runTests() {
   //   SEND-5: captured canary request uses cc:canary: callback shape + 🔷 prefix
 
   const SEND_SESSION_ID  = 'send-test-session-001';
-  const SEND_HUMAN_ID    = 'test-mcp-send-001';
+  const SEND_HUMAN_ID    = '1000002001';
   const SEND_GATE_PORT   = 3105;
   const SEND_TG_PORT     = 8766;
   const SEND_HMAC_SECRET = 'test-send-hmac-secret-01';

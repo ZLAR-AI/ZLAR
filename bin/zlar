@@ -59,6 +59,7 @@ telegram_chat_id_status() {
 telegram_chat_id_display() {
     case "$1" in
         valid_numeric) echo "valid numeric chat_id" ;;
+        missing) echo "missing" ;;
         invalid_bot_username) echo "invalid: bot/usernames are not chat IDs" ;;
         invalid_non_numeric) echo "invalid: chat_id must be numeric" ;;
         *) echo "unconfigured" ;;
