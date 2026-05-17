@@ -43,6 +43,35 @@ if [ -f "${PROJECT_DIR}/VERSION" ]; then
     VERSION=$(cat "${PROJECT_DIR}/VERSION" 2>/dev/null || echo "unknown")
 fi
 
+telegram_chat_id_status() {
+    local chat_id="$1"
+    if [ -z "${chat_id}" ]; then
+        echo "missing"
+    elif [[ "${chat_id}" == @* ]]; then
+        echo "invalid_bot_username"
+    elif [[ "${chat_id}" =~ ^-?[0-9]+$ ]]; then
+        echo "valid_numeric"
+    else
+        echo "invalid_non_numeric"
+    fi
+}
+
+telegram_chat_id_display() {
+    case "$1" in
+        valid_numeric) echo "valid numeric chat_id" ;;
+        invalid_bot_username) echo "invalid: bot/usernames are not chat IDs" ;;
+        invalid_non_numeric) echo "invalid: chat_id must be numeric" ;;
+        *) echo "unconfigured" ;;
+    esac
+}
+
+telegram_token_from_env_file() {
+    local env_file="$1"
+    [ -f "${env_file}" ] || return 1
+    grep -E '^(ZLAR_TELEGRAM_TOKEN|TELEGRAM_BOT_TOKEN)=' "${env_file}" 2>/dev/null | \
+        head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"
+}
+
 # ─── Gate uptime helper (v3.1.4) ─────────────────────────────────────────────
 # Sourced on demand by commands that record transitions or display streak.
 _GU_LOADED=0
@@ -639,6 +668,13 @@ cmd_status() {
         TG_CONFIG_ENABLED=$(jq -r '.telegram.enabled // true' "${GATE_CONFIG}" 2>/dev/null)
     fi
 
+    TG_CHAT_ID_STATUS="missing"
+    if [ "${TG_CHAT_ID_SOURCE}" = "env" ]; then
+        TG_CHAT_ID_STATUS=$(telegram_chat_id_status "${ZLAR_TELEGRAM_CHAT_ID:-}")
+    elif [ "${TG_CHAT_ID_SOURCE}" = "gate.json" ]; then
+        TG_CHAT_ID_STATUS=$(telegram_chat_id_status "${CFG_CHAT_ID:-}")
+    fi
+
     # Composite state. Token-missing reported first (more upstream than chat_id).
     if [ "${TG_CONFIG_ENABLED}" = "false" ]; then
         TG_STATE_DISPLAY="${DIM}○ disabled (config)${NC}"
@@ -646,6 +682,8 @@ cmd_status() {
         TG_STATE_DISPLAY="${RED}⛔ fail-closed (token missing)${NC}"
     elif [ "${TG_CHAT_ID_SOURCE}" = "unconfigured" ]; then
         TG_STATE_DISPLAY="${RED}⛔ fail-closed (chat_id unconfigured)${NC}"
+    elif [ "${TG_CHAT_ID_STATUS}" != "valid_numeric" ]; then
+        TG_STATE_DISPLAY="${RED}⛔ fail-closed (invalid chat_id)${NC}"
     else
         TG_STATE_DISPLAY="${GREEN}● enabled${NC}"
     fi
@@ -662,6 +700,7 @@ cmd_status() {
 
     printf "    state:                                       ${TG_STATE_DISPLAY}\n"
     printf "    chat_id source:                              ${TG_SOURCE_DISPLAY}\n"
+    printf "    chat_id status:                              $(telegram_chat_id_display "${TG_CHAT_ID_STATUS}")\n"
     printf "    token:                                       ${TG_TOKEN_DISPLAY}\n"
 
     printf "\n"
@@ -764,6 +803,20 @@ cmd_telegram() {
         echo "  Skipped. Run 'zlar telegram' again when ready."
         return
     fi
+    case "$(telegram_chat_id_status "${CHAT_ID}")" in
+        valid_numeric) ;;
+        invalid_bot_username)
+            echo ""
+            echo "  ✗ That is a bot/user username, not a numeric chat ID."
+            echo "  Message @userinfobot and enter the numeric chat ID it returns."
+            return 1
+            ;;
+        *)
+            echo ""
+            echo "  ✗ Chat ID must be numeric. Usernames like @ZLAR_00_bot are not valid destinations."
+            return 1
+            ;;
+    esac
 
     # Update .env — preserve existing entries, replace token if present
     if [ -f "${ENV_FILE}" ] && grep -q "ZLAR_TELEGRAM_TOKEN" "${ENV_FILE}" 2>/dev/null; then
@@ -850,6 +903,15 @@ cmd_uninstall() {
 }
 
 cmd_doctor() {
+    local run_live_checks="false"
+    case "${1:-}" in
+        --live) run_live_checks="true" ;;
+        "" ) ;;
+        *)
+            printf "Usage: zlar doctor [--live]\n" >&2
+            return 2
+            ;;
+    esac
     printf "\n${BOLD}ZLAR Doctor${NC} — checking your installation\n\n"
 
     local errors=0
@@ -1082,36 +1144,40 @@ cmd_doctor() {
     else
         printf "    ${GREEN}OK${NC}  Gate executable: ${gate}\n"
 
-        # Live gate tests — may fail if gate is also running as hook (resource contention).
-        # This is expected during normal operation and not an error.
-        local test_allow
-        test_allow=$(printf '{"tool_name":"Read","tool_input":{"file_path":"/tmp/test"},"session_id":"doctor-test-%s"}' "$$" | "${gate}" 2>/dev/null || echo "")
-        if [ -n "${test_allow}" ]; then
-            local allow_decision
-            allow_decision=$(printf '%s' "${test_allow}" | jq -r '.hookSpecificOutput.permissionDecision // "unknown"' 2>/dev/null)
-            if [ "${allow_decision}" = "allow" ]; then
-                printf "    ${GREEN}OK${NC}  Live test: Read -> allow\n"
+        if [ "${run_live_checks}" = "true" ]; then
+            # Live gate tests are opt-in because they execute the gate and may
+            # create audit/session artifacts on governed machines.
+            local test_allow
+            test_allow=$(printf '{"tool_name":"Read","tool_input":{"file_path":"/tmp/test"},"session_id":"doctor-test-%s"}' "$$" | "${gate}" 2>/dev/null || echo "")
+            if [ -n "${test_allow}" ]; then
+                local allow_decision
+                allow_decision=$(printf '%s' "${test_allow}" | jq -r '.hookSpecificOutput.permissionDecision // "unknown"' 2>/dev/null)
+                if [ "${allow_decision}" = "allow" ]; then
+                    printf "    ${GREEN}OK${NC}  Live test: Read -> allow\n"
+                else
+                    printf "    ${YELLOW}!!${NC}  Live test: Read -> ${allow_decision} (expected: allow)\n"
+                    warnings=$((warnings + 1))
+                fi
             else
-                printf "    ${YELLOW}!!${NC}  Live test: Read -> ${allow_decision} (expected: allow)\n"
-                warnings=$((warnings + 1))
+                printf "    ${DIM}--${NC}  Live test skipped (gate busy — this is normal if an agent session is active)\n"
             fi
-        else
-            printf "    ${DIM}--${NC}  Live test skipped (gate busy — this is normal if an agent session is active)\n"
-        fi
 
-        local test_deny
-        test_deny=$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"},"session_id":"doctor-test-%s"}' "$$" | "${gate}" 2>/dev/null || echo "")
-        if [ -n "${test_deny}" ]; then
-            local deny_decision
-            deny_decision=$(printf '%s' "${test_deny}" | jq -r '.hookSpecificOutput.permissionDecision // "unknown"' 2>/dev/null)
-            if [ "${deny_decision}" = "deny" ]; then
-                printf "    ${GREEN}OK${NC}  Live test: rm -rf -> deny\n"
+            local test_deny
+            test_deny=$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"},"session_id":"doctor-test-%s"}' "$$" | "${gate}" 2>/dev/null || echo "")
+            if [ -n "${test_deny}" ]; then
+                local deny_decision
+                deny_decision=$(printf '%s' "${test_deny}" | jq -r '.hookSpecificOutput.permissionDecision // "unknown"' 2>/dev/null)
+                if [ "${deny_decision}" = "deny" ]; then
+                    printf "    ${GREEN}OK${NC}  Live test: rm -rf -> deny\n"
+                else
+                    printf "    ${RED}!!${NC}  Live test: rm -rf -> ${deny_decision} (expected: deny)\n"
+                    errors=$((errors + 1))
+                fi
             else
-                printf "    ${RED}!!${NC}  Live test: rm -rf -> ${deny_decision} (expected: deny)\n"
-                errors=$((errors + 1))
+                printf "    ${DIM}--${NC}  Live test skipped (gate busy)\n"
             fi
         else
-            printf "    ${DIM}--${NC}  Live test skipped (gate busy)\n"
+            printf "    ${DIM}--${NC}  Live gate self-tests skipped by default; run ${BOLD}zlar doctor --live${NC} to execute them\n"
         fi
     fi
 
@@ -1161,15 +1227,29 @@ cmd_doctor() {
         # Check for token
         local tg_token=""
         if [ -f "${PROJECT_DIR}/.env" ]; then
-            tg_token=$(grep -E '^ZLAR_TELEGRAM_TOKEN=' "${PROJECT_DIR}/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'" || true)
+            tg_token=$(telegram_token_from_env_file "${PROJECT_DIR}/.env" || true)
         fi
-        [ -z "${tg_token}" ] && tg_token="${ZLAR_TELEGRAM_TOKEN:-}"
+        [ -z "${tg_token}" ] && tg_token="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
 
         if [ -n "${tg_token}" ]; then
             printf "    ${GREEN}OK${NC}  Telegram enabled, token configured\n"
         else
             printf "    ${RED}!!${NC}  Telegram enabled but no token found\n"
             printf "         Fix: run ${BOLD}zlar telegram${NC} or set ZLAR_TELEGRAM_TOKEN in ${PROJECT_DIR}/.env\n"
+            errors=$((errors + 1))
+        fi
+
+        local tg_chat_id=""
+        if [ -f "${gate_config}" ]; then
+            tg_chat_id=$(jq -r '.telegram.chat_id // ""' "${gate_config}" 2>/dev/null | tr -d '[:space:]')
+        fi
+        local tg_chat_status
+        tg_chat_status=$(telegram_chat_id_status "${tg_chat_id}")
+        if [ "${tg_chat_status}" = "valid_numeric" ]; then
+            printf "    ${GREEN}OK${NC}  Telegram chat_id valid numeric destination\n"
+        else
+            printf "    ${RED}!!${NC}  Telegram chat_id invalid or missing — %s\n" "$(telegram_chat_id_display "${tg_chat_status}")"
+            printf "         Fix: run ${BOLD}zlar telegram${NC} and enter the numeric user/chat ID, not a bot username\n"
             errors=$((errors + 1))
         fi
 
@@ -1287,7 +1367,7 @@ shift 2>/dev/null || true
 
 case "${COMMAND}" in
     status)    cmd_status ;;
-    doctor)    cmd_doctor ;;
+    doctor)    cmd_doctor "$@" ;;
     reset)     cmd_reset ;;
     audit)     cmd_audit "$@" ;;
     why)       ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-why" "$@" ;;

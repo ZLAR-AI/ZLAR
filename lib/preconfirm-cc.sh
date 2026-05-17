@@ -9,7 +9,8 @@
 #
 # telegram_preconfirm_async(action_hash, rule, severity, short_display)
 #   Sends Tier 2 interrupt card and writes pc pending file.
-#   Returns: 0 = sent, 1 = send failed, 2 = no token, 3 = rate limited
+#   Returns: 0 = sent, 1 = send failed, 2 = no token, 3 = rate limited,
+#            4 = Telegram destination invalid/misconfigured
 #
 # Assumed in scope from bin/zlar-gate:
 #   APPROVAL_DIR, TELEGRAM_TOKEN, RATE_LIMIT_FILE, TELEGRAM_FLOOD_GUARD_MS,
@@ -145,6 +146,13 @@ check_preconfirm() {
 
 telegram_preconfirm_async() {
     local action_hash="$1" rule="$2" severity="$3" short_display="$4"
+
+    if type _telegram_dispatch_ready &>/dev/null; then
+        if ! _telegram_dispatch_ready; then
+            log "Tier 2 preconfirm suppressed: Telegram destination invalid"
+            return 4
+        fi
+    fi
 
     if [ -z "${TELEGRAM_TOKEN:-}" ]; then
         log "No Telegram token — cannot send preconfirm"

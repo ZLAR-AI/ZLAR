@@ -66,7 +66,11 @@ _read_gate_chat_id() {
         ''|YOUR_TELEGRAM_CHAT_ID|your_chat_id_here|'<telegram_chat_id>'|'<CHAT_ID>'|TELEGRAM_CHAT_ID)
             return 1
             ;;
+        @*)
+            return 1
+            ;;
     esac
+    [[ "${chat_id}" =~ ^-?[0-9]+$ ]] || return 1
 
     printf '%s' "${chat_id}"
     return 0

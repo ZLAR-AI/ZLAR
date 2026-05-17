@@ -106,14 +106,21 @@ The deterministic deny marker is expected to return a structured error from ZLAR
 Do not call any Pass 2 ask marker and do not call any other tool.
 After both calls have been attempted, final answer exactly: PASS1_CALLS_ATTEMPTED.`;
 
-const PASS2_PROMPT = `ZLAR Codex CLI MCP live-smoke Pass 2: ask approve/deny only.
+const PASS2_APPROVE_PROMPT = `ZLAR Codex CLI MCP live-smoke Pass 2A: ask approve only.
 Do not use shell commands, filesystem tools, web, browser, computer-use, Desktop, IDE, or any tool except the MCP tools exposed by the ${SERVER_NAME} MCP server.
-First invoke exactly the ${SERVER_NAME} MCP tool named ${TOOL_ASK_APPROVE} with arguments {"marker":"marker_ask_approve"}.
-Then invoke exactly the ${SERVER_NAME} MCP tool named ${TOOL_ASK_DENY} with arguments {"marker":"marker_ask_deny"}.
+Invoke exactly the ${SERVER_NAME} MCP tool named ${TOOL_ASK_APPROVE} with arguments {"marker":"marker_ask_approve"}.
+This is a proof probe. The expected human decision is APPROVE.
 The approve ask is expected to reach upstream after human approval.
-The deny ask is expected to return a structured error from ZLAR and must not reach upstream.
 Do not call any Pass 1 allow/deny marker and do not call any other tool.
-After both calls have been attempted, final answer exactly: PASS2_CALLS_ATTEMPTED.`;
+After the call has been attempted, final answer exactly: PASS2_APPROVE_CALL_ATTEMPTED.`;
+
+const PASS2_DENY_PROMPT = `ZLAR Codex CLI MCP live-smoke Pass 2B: ask deny only.
+Do not use shell commands, filesystem tools, web, browser, computer-use, Desktop, IDE, or any tool except the MCP tools exposed by the ${SERVER_NAME} MCP server.
+Invoke exactly the ${SERVER_NAME} MCP tool named ${TOOL_ASK_DENY} with arguments {"marker":"marker_ask_deny"}.
+This is a proof probe. The expected human decision is DENY.
+The deny ask is expected to return a structured error from ZLAR and must not reach upstream.
+Do not call any Pass 1 allow/deny marker, do not call the approve marker, and do not call any other tool.
+After the call has been attempted, final answer exactly: PASS2_DENY_CALL_ATTEMPTED.`;
 
 function usage() {
   console.log(`Usage:
@@ -125,7 +132,7 @@ function usage() {
   node mcp-gate/smoke-codex-cli.mjs cleanup --isolated-profile
   node mcp-gate/smoke-codex-cli.mjs dry-run
   node mcp-gate/smoke-codex-cli.mjs dry-run --isolated-profile
-  node mcp-gate/smoke-codex-cli.mjs prompt pass1|pass2
+  node mcp-gate/smoke-codex-cli.mjs prompt pass1|pass2-approve|pass2-deny
   node mcp-gate/smoke-codex-cli.mjs status
 
 Manual-only smoke. Do not wire this into CI.
@@ -628,6 +635,7 @@ function writePolicy() {
         severity: 'info',
         match: { domain: 'mcp', detail: { tool_name: { eq: TOOL_ASK_APPROVE } } },
         risk_score: { irreversibility: 20, consequence: 20, blast_radius: 20 },
+        proof_probe_expected_decision: 'approve',
       },
       {
         id: 'P2_ASK_DENY',
@@ -638,6 +646,7 @@ function writePolicy() {
         severity: 'info',
         match: { domain: 'mcp', detail: { tool_name: { eq: TOOL_ASK_DENY } } },
         risk_score: { irreversibility: 20, consequence: 20, blast_radius: 20 },
+        proof_probe_expected_decision: 'deny',
       },
     ],
   }, publicKey, privateKey));
@@ -1020,8 +1029,10 @@ function buildScratchState({
     commands: {
       pass1Interactive: interactiveCommand('pass1', { isolatedProfile }),
       pass1Exec: execCommand('pass1', { isolatedProfile }),
-      pass2Interactive: interactiveCommand('pass2', { isolatedProfile }),
-      pass2Exec: execCommand('pass2', { isolatedProfile }),
+      pass2ApproveInteractive: interactiveCommand('pass2-approve', { isolatedProfile }),
+      pass2ApproveExec: execCommand('pass2-approve', { isolatedProfile }),
+      pass2DenyInteractive: interactiveCommand('pass2-deny', { isolatedProfile }),
+      pass2DenyExec: execCommand('pass2-deny', { isolatedProfile }),
       verify: `node ${shellQuote(SCRIPT_PATH)} verify`,
       coverageReport: `node ${shellQuote(SCRIPT_PATH)} coverage-report`,
       cleanup: `node ${shellQuote(SCRIPT_PATH)} cleanup${isolatedProfile ? ' --isolated-profile' : ''}`,
@@ -1072,7 +1083,8 @@ function printOperatorInstructions({ isolatedProfile = false } = {}) {
     console.log(`  Profile report: ${PROFILE_REPORT_PATH}`);
     console.log('  This mode writes Codex MCP config only inside the scratch profile.');
   }
-  console.log('\nRun Pass 1, then Pass 2. Interactive Codex CLI is recommended because the CLI may prompt for client-side MCP tool permission.');
+  console.log('\nRun Pass 1, then Pass 2A, then Pass 2B. Do not run approve and deny proof probes in one Codex prompt.');
+  console.log('Interactive Codex CLI is recommended because the CLI may prompt for client-side MCP tool permission.');
   console.log('When Codex asks to allow zlar-smoke-cli tools, choose "Allow for this session". That is separate from the ZLAR fake Telegram approval path.');
 
   console.log('\nPass 1 prompt:');
@@ -1082,12 +1094,19 @@ function printOperatorInstructions({ isolatedProfile = false } = {}) {
   console.log('\nPass 1 codex exec command, only if your Codex CLI exposes configured MCP tools to exec mode:');
   console.log(`  ${execCommand('pass1', { isolatedProfile })}`);
 
-  console.log('\nPass 2 prompt:');
-  console.log(PASS2_PROMPT);
-  console.log('\nPass 2 interactive command:');
-  console.log(`  ${interactiveCommand('pass2', { isolatedProfile })}`);
-  console.log('\nPass 2 codex exec command, only if your Codex CLI exposes configured MCP tools to exec mode:');
-  console.log(`  ${execCommand('pass2', { isolatedProfile })}`);
+  console.log('\nPass 2A approve prompt:');
+  console.log(PASS2_APPROVE_PROMPT);
+  console.log('\nPass 2A approve interactive command:');
+  console.log(`  ${interactiveCommand('pass2-approve', { isolatedProfile })}`);
+  console.log('\nPass 2A codex exec command, only if your Codex CLI exposes configured MCP tools to exec mode:');
+  console.log(`  ${execCommand('pass2-approve', { isolatedProfile })}`);
+
+  console.log('\nPass 2B deny prompt:');
+  console.log(PASS2_DENY_PROMPT);
+  console.log('\nPass 2B deny interactive command:');
+  console.log(`  ${interactiveCommand('pass2-deny', { isolatedProfile })}`);
+  console.log('\nPass 2B codex exec command, only if your Codex CLI exposes configured MCP tools to exec mode:');
+  console.log(`  ${execCommand('pass2-deny', { isolatedProfile })}`);
 
   console.log('\nVerify after both passes:');
   console.log(`  node ${shellQuote(SCRIPT_PATH)} verify`);
@@ -1255,6 +1274,7 @@ function verify(mode = 'all') {
   const audit = readJsonl(AUDIT_FILE);
   const executions = readJsonl(UPSTREAM_EXECUTIONS);
   const callbacks = readJsonl(TELEGRAM_CALLBACKS);
+  const telegramRequests = readJsonl(TELEGRAM_REQUESTS);
   let ok = true;
 
   const includePass1 = mode === 'all' || mode === 'pass1';
@@ -1288,6 +1308,18 @@ function verify(mode = 'all') {
       callbacks.some((entry) => entry.decision === 'approve' && entry.status === 'written')) && ok;
     ok = verifyOne('Fake Telegram wrote deny callback from normalized MarkdownV2 card',
       callbacks.some((entry) => entry.decision === 'deny' && entry.status === 'written')) && ok;
+    ok = verifyOne('Pass 2A approve Telegram card labels proof probe and expected APPROVE',
+      telegramRequests.some((entry) =>
+        String(entry.normalizedText || '').includes('Proof probe') &&
+        String(entry.normalizedText || '').includes('expected human decision: APPROVE') &&
+        String(entry.normalizedText || '').includes('P2_ASK_APPROVE')),
+    ) && ok;
+    ok = verifyOne('Pass 2B deny Telegram card labels proof probe and expected DENY',
+      telegramRequests.some((entry) =>
+        String(entry.normalizedText || '').includes('Proof probe') &&
+        String(entry.normalizedText || '').includes('expected human decision: DENY') &&
+        String(entry.normalizedText || '').includes('P2_ASK_DENY')),
+    ) && ok;
   }
 
   console.log('\nClaim ceiling:');
@@ -1426,10 +1458,14 @@ async function main() {
     } else if (command === 'prompt') {
       if (arg === 'pass1') {
         process.stdout.write(PASS1_PROMPT);
+      } else if (arg === 'pass2-approve') {
+        process.stdout.write(PASS2_APPROVE_PROMPT);
+      } else if (arg === 'pass2-deny') {
+        process.stdout.write(PASS2_DENY_PROMPT);
       } else if (arg === 'pass2') {
-        process.stdout.write(PASS2_PROMPT);
+        throw new Error('pass2 is split to prevent stacked asks; use pass2-approve, then pass2-deny');
       } else {
-        throw new Error('prompt mode must be pass1 or pass2');
+        throw new Error('prompt mode must be pass1, pass2-approve, or pass2-deny');
       }
     } else if (command === 'status') {
       status();

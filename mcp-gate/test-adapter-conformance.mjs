@@ -76,7 +76,7 @@ function copyGateProject() {
   mkdirSync(join(TMP_PROJECT, 'etc', 'keys'), { recursive: true });
   mkdirSync(join(TMP_PROJECT, 'var', 'log'), { recursive: true });
 
-  writeGateConfig('adapter-human');
+  writeGateConfig('1000000000');
 }
 
 function writeGateConfig(humanId) {
@@ -168,6 +168,28 @@ function writePolicy() {
         severity: 'info',
         match: { domain: 'mcp', detail: { tool_name: { eq: 'marker_ask_deny' } } },
         risk_score: { irreversibility: 20, consequence: 20, blast_radius: 20 },
+      },
+      {
+        id: 'P2_ASK_APPROVE',
+        enabled: true,
+        description: 'Pass 2 proof probe approve marker',
+        domain: 'mcp',
+        action: 'ask',
+        severity: 'info',
+        match: { domain: 'mcp', detail: { tool_name: { eq: 'test.marker_ask_approve' } } },
+        risk_score: { irreversibility: 20, consequence: 20, blast_radius: 20 },
+        proof_probe_expected_decision: 'approve',
+      },
+      {
+        id: 'P2_ASK_DENY',
+        enabled: true,
+        description: 'Pass 2 proof probe deny marker',
+        domain: 'mcp',
+        action: 'ask',
+        severity: 'info',
+        match: { domain: 'mcp', detail: { tool_name: { eq: 'test.marker_ask_deny' } } },
+        risk_score: { irreversibility: 20, consequence: 20, blast_radius: 20 },
+        proof_probe_expected_decision: 'deny',
       },
       {
         id: 'AC_TIMEOUT',
@@ -269,7 +291,15 @@ async function startFakeUpstream() {
           socket.write(JSON.stringify({
             jsonrpc: '2.0',
             id: msg.id,
-            result: { tools: [{ name: 'marker_allow' }, { name: 'marker_ask' }, { name: 'marker_ask_deny' }] },
+            result: {
+              tools: [
+                { name: 'marker_allow' },
+                { name: 'marker_ask' },
+                { name: 'marker_ask_deny' },
+                { name: 'test.marker_ask_approve' },
+                { name: 'test.marker_ask_deny' },
+              ],
+            },
           }) + '\n');
         } else {
           socket.write(JSON.stringify({
@@ -317,7 +347,7 @@ async function startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret, failSen
       if (!chosen) return;
 
       const data = chosen.callback_data;
-      const from = String(body.chat_id || 'adapter-human');
+      const from = String(body.chat_id || '1000000000');
       const cbId = `cb-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const hmac = createHmac('sha256', hmacSecret).update(`${data}|${from}|${cbId}`).digest('base64');
       setTimeout(() => {
@@ -728,7 +758,7 @@ async function runTests() {
     const hmacSecretFile = join(SCRATCH, 'inbox-approve-secret');
     const telegram = await startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret: 'adapter-hmac-approve' });
     telegram.setMode('approve');
-    const humanId = 'adapter-human-approve';
+    const humanId = '1001001001';
     const humanStateDir = join(SCRATCH, 'human-approve');
     writeFastHumanState(humanStateDir, humanId);
 
@@ -768,7 +798,7 @@ async function runTests() {
       assert('ask-approved card uses blue MCP marker',
         askText.includes('🔷') && !askText.includes('♦️'),
         `text=${JSON.stringify(askText)}`);
-      assert('ask-approved card keeps rule id escaped', askText.includes('*AC\\_ASK*'), `text=${JSON.stringify(askText)}`);
+      assert('ask-approved card keeps rule id escaped as metadata', askText.includes('Rule `AC\\_ASK`'), `text=${JSON.stringify(askText)}`);
       assert('ask-approved card keeps tool name visible', askText.includes('*Tool:* `marker_ask`'), `text=${JSON.stringify(askText)}`);
       assert('ask-approved card keeps risk visible', askText.includes('Risk 20/100'), `text=${JSON.stringify(askText)}`);
       assert('ask-approved card includes args hash', /\*Args hash:\* `[a-f0-9]{16}`/.test(askText), `text=${JSON.stringify(askText)}`);
@@ -820,7 +850,7 @@ async function runTests() {
     const hmacSecretFile = join(SCRATCH, 'inbox-deny-secret');
     const telegram = await startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret: 'adapter-hmac-deny' });
     telegram.setMode('deny');
-    const humanId = 'adapter-human-deny';
+    const humanId = '1001001002';
     const humanStateDir = join(SCRATCH, 'human-deny');
     writeFastHumanState(humanStateDir, humanId);
 
@@ -862,6 +892,130 @@ async function runTests() {
     });
   }
 
+  section('Proof probe card labeling');
+  {
+    const upstream = await startFakeUpstream();
+    const inboxDir = join(SCRATCH, 'inbox-proof-approve');
+    const hmacSecretFile = join(SCRATCH, 'inbox-proof-approve-secret');
+    const telegram = await startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret: 'adapter-hmac-proof-approve' });
+    telegram.setMode('approve');
+    const humanId = '1001001005';
+    const humanStateDir = join(SCRATCH, 'human-proof-approve');
+    writeFastHumanState(humanStateDir, humanId);
+
+    await withGate({
+      upstreamPort: upstream.port,
+      auditName: 'proof-approve',
+      agentId: 'adapter-proof-agent',
+      sessionId: 'adapter-proof-approve-session',
+      telegram,
+      humanId,
+      inboxDir,
+      hmacSecretFile,
+      humanStateDir,
+    }, async (gate) => {
+      const resp = await sendRpc(gate.port, {
+        jsonrpc: '2.0',
+        id: 111,
+        method: 'tools/call',
+        params: { name: 'test.marker_ask_approve', arguments: { marker: 'marker_ask_approve' } },
+      }, 9000);
+      assert('proof approve returns upstream result after approval', /test\.marker_ask_approve/.test(resp.result?.content?.[0]?.text || ''));
+      const askText = latestMcpAskText(telegram);
+      assert('proof approve card visibly says proof probe',
+        askText.includes('Proof probe'), `text=${JSON.stringify(askText)}`);
+      assert('proof approve card says expected APPROVE',
+        askText.includes('expected human decision: APPROVE'), `text=${JSON.stringify(askText)}`);
+      assert('proof approve card keeps P2 rule id visible',
+        askText.includes('Rule `P2\\_ASK\\_APPROVE`'), `text=${JSON.stringify(askText)}`);
+      const authorized = findAudit(gate.auditFile, (e) => e.action === 'test.marker_ask_approve' && e.outcome === 'authorized');
+      assert('proof approve emits authorized audit', !!authorized);
+      assertEqual('proof approve audit rule', 'P2_ASK_APPROVE', authorized?.rule);
+      assertNoPendingAsk('proof-approve', humanStateDir, humanId);
+    });
+  }
+
+  {
+    const upstream = await startFakeUpstream();
+    const inboxDir = join(SCRATCH, 'inbox-proof-deny');
+    const hmacSecretFile = join(SCRATCH, 'inbox-proof-deny-secret');
+    const telegram = await startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret: 'adapter-hmac-proof-deny' });
+    telegram.setMode('deny');
+    const humanId = '1001001006';
+    const humanStateDir = join(SCRATCH, 'human-proof-deny');
+    writeFastHumanState(humanStateDir, humanId);
+
+    await withGate({
+      upstreamPort: upstream.port,
+      auditName: 'proof-deny',
+      agentId: 'adapter-proof-agent',
+      sessionId: 'adapter-proof-deny-session',
+      telegram,
+      humanId,
+      inboxDir,
+      hmacSecretFile,
+      humanStateDir,
+    }, async (gate) => {
+      const before = upstream.state.markerExecutions.length;
+      const resp = await sendRpc(gate.port, {
+        jsonrpc: '2.0',
+        id: 112,
+        method: 'tools/call',
+        params: { name: 'test.marker_ask_deny', arguments: { marker: 'marker_ask_deny' } },
+      }, 9000);
+      assert('proof deny returns JSON-RPC error after denial', !!resp.error);
+      assert('proof deny blocks upstream execution', upstream.state.markerExecutions.length === before);
+      const askText = latestMcpAskText(telegram);
+      assert('proof deny card visibly says proof probe',
+        askText.includes('Proof probe'), `text=${JSON.stringify(askText)}`);
+      assert('proof deny card says expected DENY',
+        askText.includes('expected human decision: DENY'), `text=${JSON.stringify(askText)}`);
+      assert('proof deny card keeps P2 rule id visible',
+        askText.includes('Rule `P2\\_ASK\\_DENY`'), `text=${JSON.stringify(askText)}`);
+      const denied = findAudit(gate.auditFile, (e) => e.action === 'test.marker_ask_deny' && e.outcome === 'denied');
+      assert('proof deny emits denied audit', !!denied);
+      assertEqual('proof deny audit rule', 'P2_ASK_DENY', denied?.rule);
+      assertNoPendingAsk('proof-deny', humanStateDir, humanId);
+    });
+  }
+
+  section('Telegram destination config errors');
+  {
+    const upstream = await startFakeUpstream();
+    const inboxDir = join(SCRATCH, 'inbox-invalid-destination');
+    const hmacSecretFile = join(SCRATCH, 'inbox-invalid-destination-secret');
+    const telegram = await startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret: 'adapter-hmac-invalid-destination' });
+    telegram.setMode('approve');
+    const invalidHumanId = '@ZLAR_00_bot';
+
+    await withGate({
+      upstreamPort: upstream.port,
+      auditName: 'invalid-destination',
+      agentId: 'adapter-config-agent',
+      sessionId: 'adapter-invalid-destination-session',
+      telegram,
+      humanId: invalidHumanId,
+      inboxDir,
+      hmacSecretFile,
+    }, async (gate) => {
+      const before = upstream.state.markerExecutions.length;
+      const resp = await sendRpc(gate.port, {
+        jsonrpc: '2.0',
+        id: 113,
+        method: 'tools/call',
+        params: { name: 'marker_ask', arguments: { marker: 'invalid-destination' } },
+      }, 3000);
+      assert('invalid Telegram destination returns config_error', /\[config_error\]/.test(resp.error?.message || ''));
+      assert('invalid Telegram destination blocks upstream execution', upstream.state.markerExecutions.length === before);
+      assert('invalid Telegram destination sends no Telegram request', telegram.requests.length === 0);
+      const configAudit = findAudit(gate.auditFile, (e) => e.action === 'telegram_config_error');
+      assert('invalid Telegram destination emits config_error audit', !!configAudit);
+      assertEqual('invalid Telegram destination audit status', 'invalid_bot_username', configAudit?.detail?.chat_id_status);
+      const denied = findAudit(gate.auditFile, (e) => e.action === 'marker_ask' && e.authorizer === 'gate:telegram_config_error');
+      assert('invalid Telegram destination emits denied action audit', !!denied);
+    });
+  }
+
   section('Timeout and upstream failure');
   {
     const upstream = await startFakeUpstream();
@@ -869,7 +1023,7 @@ async function runTests() {
     const hmacSecretFile = join(SCRATCH, 'inbox-timeout-secret');
     const telegram = await startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret: 'adapter-hmac-timeout' });
     telegram.setMode('none');
-    const humanId = 'adapter-human-timeout';
+    const humanId = '1001001003';
     const humanStateDir = join(SCRATCH, 'human-timeout');
     writeFastHumanState(humanStateDir, humanId);
 
@@ -917,7 +1071,7 @@ async function runTests() {
       hmacSecret: 'adapter-hmac-error',
       failSend: true,
     });
-    const humanId = 'adapter-human-error';
+    const humanId = '1001001004';
     const humanStateDir = join(SCRATCH, 'human-error');
     writeFastHumanState(humanStateDir, humanId);
 

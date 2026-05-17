@@ -13,8 +13,8 @@
 # How it works:
 #   1. After N approvals, the gate probabilistically sends a canary —
 #      a fake dangerous-looking action — to Telegram
-#   2. The canary looks identical to a real ask (plausible tool, rule, risk)
-#   3. The described action is obviously dangerous (exfiltration, deletion, etc.)
+#   2. The canary does not disclose that it is a canary before the decision
+#   3. It remains readable as an ordinary ask: action, consequence, and risk
 #   4. If the human approves → fatigue detected → friction escalated
 #   5. If the human denies → governance healthy → logged
 #   6. After responding, Telegram reveals it was a governance test
@@ -201,33 +201,56 @@ _canary_chat_id_source() {
     return 0
 }
 
-# Returns 0 if chat_id source is acceptable for sending canaries
-# (gate.json or env), 1 otherwise. Audit-emits canary_subsystem_misconfigured
-# the first time per process if the source is bad.
-_CANARY_MISCONFIG_LOGGED=""
-_canary_chat_id_validate() {
-    local source
-    source=$(_canary_chat_id_source)
-    case "${source}" in
-        gate.json|env)
-            return 0
+_canary_chat_id_status() {
+    local value="${1:-}"
+    case "${value}" in
+        '' )
+            echo "missing"
             ;;
-        *)
-            if [ -z "${_CANARY_MISCONFIG_LOGGED}" ]; then
-                _CANARY_MISCONFIG_LOGGED="1"
-                if type log &>/dev/null; then
-                    log "CANARY: chat_id source is '${source}' — refusing to send canaries"
-                fi
-                if type emit_event &>/dev/null; then
-                    emit_event "canary" "canary_subsystem_misconfigured" "warn" \
-                        "$(jq -n -c --arg src "${source}" \
-                            '{chat_id_source:$src,reason:"non_authoritative_source"}')" \
-                        "canary" "warn" 0 "canary"
-                fi
+        @* )
+            echo "invalid_bot_username"
+            ;;
+        YOUR_TELEGRAM_CHAT_ID|your_chat_id_here|'<telegram_chat_id>'|'<CHAT_ID>'|TELEGRAM_CHAT_ID|CHAT_ID|placeholder|PLACEHOLDER|changeme|CHANGE_ME|todo|TODO )
+            echo "invalid_placeholder"
+            ;;
+        * )
+            if [[ "${value}" =~ ^-?[0-9]+$ ]]; then
+                echo "valid_numeric"
+            else
+                echo "invalid_non_numeric"
             fi
-            return 1
             ;;
     esac
+}
+
+# Returns 0 if chat_id source is acceptable for sending canaries
+# (gate.json or env) and the value is a real numeric chat id, 1 otherwise.
+# Audit-emits canary_subsystem_misconfigured the first time per process if
+# the destination is bad.
+_CANARY_MISCONFIG_LOGGED=""
+_canary_chat_id_validate() {
+    local source status
+    source=$(_canary_chat_id_source)
+    status=$(_canary_chat_id_status "${TELEGRAM_CHAT_ID:-}")
+
+    if { [ "${source}" = "gate.json" ] || [ "${source}" = "env" ]; } && \
+       [ "${status}" = "valid_numeric" ]; then
+        return 0
+    fi
+
+    if [ -z "${_CANARY_MISCONFIG_LOGGED}" ]; then
+        _CANARY_MISCONFIG_LOGGED="1"
+        if type log &>/dev/null; then
+            log "CANARY: Telegram destination invalid — source=${source}, status=${status}; refusing to send canaries"
+        fi
+        if type emit_event &>/dev/null; then
+            emit_event "canary" "canary_subsystem_misconfigured" "warn" \
+                "$(jq -n -c --arg src "${source}" --arg status "${status}" \
+                    '{chat_id_source:$src,chat_id_status:$status,reason:"invalid_telegram_destination"}')" \
+                "canary" "warn" 0 "canary"
+        fi
+    fi
+    return 1
 }
 
 # ── Record a human approval (increment per-human counter) ──
@@ -453,20 +476,31 @@ canary_send() {
         fi
     fi
 
-    # Emoji matches real asks — canary must be indistinguishable
+    # Do not disclose the canary before the decision. The card still has to be
+    # readable as an ordinary approval request; the test is judgment, not
+    # decoding opaque rule names.
     local emoji="🔴"
     [ "${severity}" = "warn" ] && emoji="🟡"
 
-    local text="${emoji} 🖥️ *ZLAR Gate*
+    local consequence_line=""
+    if type get_consequence_line &>/dev/null; then
+        consequence_line=$(get_consequence_line "${tool}" "${display_rule}" "${risk}")
+    else
+        consequence_line="⚠️ *If wrong:* high consequence action"
+    fi
 
-*Tool:* \`${tool}\`
+    local text="${emoji} 🖥️ *Approval required*
+
+${consequence_line}
+
 *Action:* \`${display}\`
-*Risk:* ${risk}/100
-*Rule:* ${display_rule}
-*Session:* \`${session_id}\`"
+*Tool:* \`${tool}\`
+Risk ${risk}/100 · Rule \`${display_rule}\` · Session \`${session_id}\`
+
+If this is unclear, deny."
 
     # MarkdownV2 escaping (same as gate's telegram_ask_async)
-    text=$(echo "${text}" | sed 's/[_\[\]()~>#+=|{}.!-]/\\&/g' | sed 's/\\`/`/g' | sed 's/\\\*/*/g')
+    text=$(echo "${text}" | sed 's/[]_*[()~`>#+=|{}.!-]/\\&/g' | sed 's/\\`/`/g' | sed 's/\\\*/*/g')
 
     local keyboard
     keyboard=$(jq -n -c \

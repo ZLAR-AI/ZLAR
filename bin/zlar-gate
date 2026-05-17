@@ -2113,43 +2113,159 @@ get_consequence_line() {
     esac
 }
 
+# Plain-language policy labels for Telegram cards. Rule IDs remain visible, but
+# they should never be the thing a human has to decode under pressure.
+get_rule_plain_label() {
+    local rule="$1" tool_name="$2"
+    case "${rule}" in
+        R012W_EDIT) echo "Governance infrastructure change" ;;
+        R012*)      echo "ZLAR governance path action" ;;
+        R005C)      echo "Interpreter one-liner" ;;
+        R001C)      echo "Sensitive file read" ;;
+        R005*)      echo "Shell or interpreter escape" ;;
+        R003*)      echo "Privilege boundary action" ;;
+        R002*)      echo "File deletion action" ;;
+        R080*)      echo "New agent authority" ;;
+        *)
+            case "${tool_name}" in
+                Bash)  echo "Shell command review" ;;
+                Read)  echo "File read review" ;;
+                Edit)  echo "File edit review" ;;
+                Write) echo "File write review" ;;
+                *)     echo "Approval required" ;;
+            esac
+            ;;
+    esac
+}
+
+proof_probe_expectation() {
+    local rule="${1:-}" tool_name="${2:-}" display="${3:-}"
+    local marker
+    marker=$(printf '%s %s %s' "${rule}" "${tool_name}" "${display}" | tr '[:upper:]' '[:lower:]')
+    case "${marker}" in
+        *p2_ask_approve*|*marker_ask_approve*|*proof_probe_approve*|*proof-probe-approve*)
+            echo "approve"
+            return
+            ;;
+        *p2_ask_deny*|*marker_ask_deny*|*proof_probe_deny*|*proof-probe-deny*)
+            echo "deny"
+            return
+            ;;
+    esac
+
+    local expect="${ZLAR_APPROVAL_PROBE_EXPECT:-${ZLAR_PROOF_PROBE_EXPECTED_DECISION:-}}"
+    case "$(printf '%s' "${expect}" | tr '[:upper:]' '[:lower:]')" in
+        approve|allow|approved) echo "approve" ;;
+        deny|block|denied)      echo "deny" ;;
+        *)                      echo "" ;;
+    esac
+}
+
 # Escape MarkdownV2 special characters. Used by telegram_ask_async and
 # preconfirm-cc.sh (sourced at startup, before first ask).
 _mdv2e() { printf '%s' "$1" | sed 's/\\/\\\\/g' | sed 's/[]_*[()~`>#+=|{}.!-]/\\&/g'; }
 
-# v3.3.9 — Telegram dispatch readiness for general ask path.
-# Mirrors lib/canary.sh:_canary_chat_id_validate. Returns 0 if
-# TELEGRAM_CHAT_ID_SOURCE is authoritative (gate.json or env), 1 otherwise.
-# On first refusal per process, emits a warn audit so a misdeployed gate is
-# visible in the audit trail and bin/zlar status.
-_TELEGRAM_MISCONFIG_LOGGED=""
-_telegram_dispatch_ready() {
-    case "${TELEGRAM_CHAT_ID_SOURCE:-unconfigured}" in
-        gate.json|env)
-            return 0
+telegram_chat_id_status() {
+    local value="${1:-}"
+    case "${value}" in
+        '' )
+            echo "missing"
             ;;
-        *)
-            if [ -z "${_TELEGRAM_MISCONFIG_LOGGED}" ]; then
-                _TELEGRAM_MISCONFIG_LOGGED="1"
-                log "GATE: TELEGRAM_CHAT_ID source '${TELEGRAM_CHAT_ID_SOURCE:-unconfigured}' — refusing to dispatch general ask"
-                emit_event "telegram" "subsystem_misconfigured" "warn" \
-                    "$(jq -n -c --arg src "${TELEGRAM_CHAT_ID_SOURCE:-unconfigured}" \
-                        '{chat_id_source:$src,reason:"non_authoritative_source",subsystem:"general_ask"}')" \
-                    "telegram-config" "warn" 0 "system"
+        @* )
+            echo "invalid_bot_username"
+            ;;
+        YOUR_TELEGRAM_CHAT_ID|your_chat_id_here|'<telegram_chat_id>'|'<CHAT_ID>'|TELEGRAM_CHAT_ID|CHAT_ID|placeholder|PLACEHOLDER|changeme|CHANGE_ME|todo|TODO )
+            echo "invalid_placeholder"
+            ;;
+        * )
+            if [[ "${value}" =~ ^-?[0-9]+$ ]]; then
+                echo "valid_numeric"
+            else
+                echo "invalid_non_numeric"
             fi
-            return 1
             ;;
     esac
+}
+
+telegram_config_error_reason() {
+    local source="${1:-unconfigured}" status="${2:-missing}"
+    case "${status}" in
+        missing)
+            echo "Telegram chat_id missing"
+            ;;
+        invalid_bot_username)
+            echo "Telegram chat_id is a @username, not a numeric chat ID"
+            ;;
+        invalid_placeholder)
+            echo "Telegram chat_id is still a placeholder"
+            ;;
+        invalid_non_numeric)
+            echo "Telegram chat_id must be numeric; user IDs are digits and group IDs may be negative"
+            ;;
+        *)
+            case "${source}" in
+                gate.json|env) echo "Telegram destination invalid" ;;
+                *) echo "Telegram chat_id source is non-authoritative" ;;
+            esac
+            ;;
+    esac
+}
+
+# v3.3.9 — Telegram dispatch readiness for general ask path.
+# Mirrors lib/canary.sh:_canary_chat_id_validate. Returns 0 if
+# TELEGRAM_CHAT_ID_SOURCE is authoritative (gate.json or env) AND the value is
+# a real numeric Telegram chat id, 1 otherwise. On first refusal per process,
+# emits a warn audit so a misdeployed gate is visible in the audit trail and
+# bin/zlar status.
+_TELEGRAM_MISCONFIG_LOGGED=""
+_telegram_dispatch_ready() {
+    local source="${TELEGRAM_CHAT_ID_SOURCE:-unconfigured}"
+    local status
+    status=$(telegram_chat_id_status "${TELEGRAM_CHAT_ID:-}")
+    local source_ok="false"
+    case "${source}" in
+        gate.json|env) source_ok="true" ;;
+    esac
+
+    if [ "${source_ok}" = "true" ] && [ "${status}" = "valid_numeric" ]; then
+        return 0
+    fi
+
+    local reason
+    reason=$(telegram_config_error_reason "${source}" "${status}")
+
+    if [ -z "${_TELEGRAM_MISCONFIG_LOGGED}" ]; then
+        _TELEGRAM_MISCONFIG_LOGGED="1"
+        log "GATE: Telegram destination invalid — source=${source}, status=${status}; refusing to dispatch ask"
+        emit_event "telegram" "config_error" "warn" \
+            "$(jq -n -c --arg src "${source}" --arg status "${status}" --arg reason "${reason}" \
+                '{chat_id_source:$src,chat_id_status:$status,reason:$reason,subsystem:"general_ask"}')" \
+            "telegram-config" "warn" 0 "system"
+    fi
+    return 1
+}
+
+telegram_config_error_message() {
+    local source="${TELEGRAM_CHAT_ID_SOURCE:-unconfigured}" status
+    status=$(telegram_chat_id_status "${TELEGRAM_CHAT_ID:-}")
+    local reason
+    reason=$(telegram_config_error_reason "${source}" "${status}")
+    printf '%s. Set ZLAR_TELEGRAM_CHAT_ID or .telegram.chat_id in etc/gate.json to a numeric Telegram chat ID, then retry.' "${reason}"
+}
+
+_telegram_config_error_emit_and_deny() {
+    emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:telegram_config_error"
+    respond_deny "$(telegram_config_error_message) (rule ${MATCHED_RULE})" "config_error"
 }
 
 # Send Telegram ask and return immediately (non-blocking).
 # Writes pending file for check_pending_approval to find on retry.
 # Returns: 0 = message sent, 1 = send failed, 2 = no token, 3 = rate limited,
-#          4 = chat_id source non-authoritative (v3.3.9)
+#          4 = Telegram destination invalid/misconfigured
 telegram_ask_async() {
     local action_id="$1" tool_name="$2" display="$3" rule="$4" risk_score="$5" severity="$6" action_hash="${7:-}"
 
-    # v3.3.9: refuse to dispatch when chat_id source is non-authoritative.
+    # Refuse to dispatch when chat_id source or value is invalid.
     # Defense-in-depth: the caller path also checks _telegram_dispatch_ready
     # before consuming any human-state budget; this guard ensures the
     # property holds even if telegram_ask_async is called from elsewhere.
@@ -2206,6 +2322,22 @@ telegram_ask_async() {
     # Consequence line — what happens if the human approves the wrong thing
     local consequence_line
     consequence_line=$(get_consequence_line "${tool_name}" "${rule}" "${risk_score}")
+
+    local rule_plain
+    rule_plain=$(get_rule_plain_label "${rule}" "${tool_name}")
+
+    local proof_banner=""
+    local proof_expect
+    proof_expect=$(proof_probe_expectation "${rule}" "${tool_name}" "${display}")
+    if [ -n "${proof_expect}" ]; then
+        if [ "${proof_expect}" = "approve" ]; then
+            proof_banner="
+🧪 *Proof probe* — expected human decision: APPROVE"
+        else
+            proof_banner="
+🧪 *Proof probe* — expected human decision: DENY"
+        fi
+    fi
 
     # Authority type — distinguish single-act from envelope approval
     local authority_type=""
@@ -2272,12 +2404,14 @@ telegram_ask_async() {
     # context, rule+risk as compact metadata at bottom. v2.8.1 restructure —
     # the old layout buried the consequence below the raw command, making the
     # message unreadable at a glance on mobile.
-    local text="${emoji} 🖥️ *$(_mdv2e "${rule}")*${tier_banner}${fatigue_banner}${novelty_banner}${restore_banner}${authority_type}
+    local text="${emoji} 🖥️ *$(_mdv2e "${rule_plain}")*${proof_banner}${tier_banner}${fatigue_banner}${novelty_banner}${restore_banner}${authority_type}
 
 ${consequence_line}${intent_line}${verify_line}
 
 *${action_label}:* \`${short_display}\`
-Risk ${risk_score}/100 · Session \`${short_session}\`"
+Risk ${risk_score}/100 · Rule \`$(_mdv2e "${rule}")\` · Session \`${short_session}\`
+
+If this is unclear, deny\."
 
     # Content variables are pre-escaped via _mdv2e before template assembly.
     # Template formatting markers (* bold, ` code) are in hardcoded strings and
@@ -2478,6 +2612,12 @@ handle_subagent_start() {
             ;;
         *)
             # No approval yet — send Telegram ask and deny immediately
+            if ! _telegram_dispatch_ready; then
+                emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "gate:telegram_config_error"
+                respond_subagent_deny "$(telegram_config_error_message) (rule subagent-launch)" "config_error"
+                return
+            fi
+
             local action_id
             action_id=$(gen_id)
 
@@ -2492,6 +2632,10 @@ handle_subagent_start() {
                 3)
                     emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "gate:rate_limit"
                     respond_subagent_deny "Rate limited — too many approval requests." "rate_limit"
+                    ;;
+                4)
+                    emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "gate:telegram_config_error"
+                    respond_subagent_deny "$(telegram_config_error_message) (rule subagent-launch)" "config_error"
                     ;;
                 *)
                     fail_closed_alert "telegram_unreachable" 2>/dev/null || true
@@ -2939,6 +3083,14 @@ main() {
                             respond_deny "⏳ Still awaiting Telegram approval (rule ${MATCHED_RULE}). Approve on phone, then retry." "pending"
                             ;;
                         *)
+                            # Refuse invalid Telegram destinations before Tier 2
+                            # preconfirm, human invariant pending counters, rate
+                            # limiting, or any Telegram send path.
+                            if ! _telegram_dispatch_ready; then
+                                _telegram_config_error_emit_and_deny
+                                return
+                            fi
+
                             # Tier 2 preconfirm: if canary_tier == 2, send interrupt card before main ask.
                             # PROCEED (state 0) falls through to main ask. BLOCK/timeout (1), waiting (3),
                             # or not-yet-sent (2) skip the main ask path entirely.
@@ -2978,16 +3130,13 @@ main() {
                             fi
 
                             if [ "${_skip_ask}" = "false" ]; then
-                            # v3.3.9 option β: refuse early if Telegram chat_id source is
-                            # non-authoritative. Structural guarantee that no human-state
-                            # budget (pending counter, rate-limit window, ask-time record)
-                            # is consumed when the gate cannot dispatch the ask. Helper
-                            # emits the warn audit once per process. Pattern matches the
-                            # manifest-hard-deny early-out at line 2425: respond_deny +
-                            # return so no further respond_deny fires this invocation.
+                            # Defense-in-depth: the ask path already refused an
+                            # invalid Telegram destination before preconfirm or
+                            # human invariant state. Keep this guard here so a
+                            # future refactor cannot accidentally consume ask
+                            # budget before destination validation.
                             if ! _telegram_dispatch_ready; then
-                                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:telegram_unconfigured"
-                                respond_deny "Telegram chat_id unconfigured. Set ZLAR_TELEGRAM_CHAT_ID env var or .telegram.chat_id in etc/gate.json, then retry. (rule ${MATCHED_RULE})" "config_error"
+                                _telegram_config_error_emit_and_deny
                                 return
                             fi
 
@@ -3054,13 +3203,11 @@ main() {
                                     respond_deny "Rate limited — too many approval requests. Try again shortly." "rate_limit"
                                     ;;
                                 4)
-                                    # v3.3.9: chat_id source non-authoritative. Defense-in-depth:
-                                    # the option β early guard at the start of this _skip_ask
-                                    # block already returns under unconfigured, so this case
-                                    # only fires if telegram_ask_async is called from a path
-                                    # that bypasses the early guard. Operator-actionable deny.
-                                    emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:telegram_unconfigured"
-                                    respond_deny "Telegram chat_id unconfigured. Set ZLAR_TELEGRAM_CHAT_ID env var or .telegram.chat_id in etc/gate.json, then retry. (rule ${MATCHED_RULE})" "config_error"
+                                    # Invalid Telegram destination. Defense-in-depth:
+                                    # the early guard above should return first, so this
+                                    # case only fires if telegram_ask_async is called
+                                    # from a path that bypasses it.
+                                    _telegram_config_error_emit_and_deny
                                     ;;
                                 *)
                                     # Send failed (error) — decrement H13 pending.

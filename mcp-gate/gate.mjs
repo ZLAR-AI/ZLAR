@@ -231,7 +231,7 @@ function loadTelegramToken() {
 }
 
 if (!CONFIG.noTelegram) {
-  CONFIG.telegramToken = process.env.ZLAR_TELEGRAM_TOKEN || loadTelegramToken();
+  CONFIG.telegramToken = process.env.ZLAR_TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN || loadTelegramToken();
 }
 if (!CONFIG.telegramChatId && !CONFIG.noTelegram) {
   // Try loading from gate.json
@@ -479,6 +479,7 @@ function evaluatePolicy(toolName, args) {
       severity: rule.severity || 'info',
       description: rule.description || '',
       verifyHint: rule.verify_hint || '',
+      proofProbeExpectedDecision: rule.proof_probe_expected_decision || rule.proof_probe?.expected_decision || '',
     };
   }
 
@@ -1213,32 +1214,102 @@ function checkCanaryResult(humanId) {
 // bash gate's hardcoded fallback (bin/zlar-gate:509), but it can be
 // missing entirely if gate.json omits .telegram.chat_id and no CLI
 // arg was passed. Source values: "cli" | "gate.json" | "unconfigured".
-function canaryChatIdSource() {
+function telegramChatIdSource() {
   if (!CONFIG.telegramChatId) return 'unconfigured';
   // CHAT_ID_SOURCE is set during initialization (see config-load section).
   // Default 'gate.json' if we cannot tell — that is the historical source.
   return (typeof CHAT_ID_SOURCE !== 'undefined' && CHAT_ID_SOURCE) || 'gate.json';
 }
 
+function canaryChatIdSource() {
+  return telegramChatIdSource();
+}
+
+const TELEGRAM_CHAT_ID_PLACEHOLDERS = new Set([
+  'YOUR_TELEGRAM_CHAT_ID',
+  'your_chat_id_here',
+  '<telegram_chat_id>',
+  '<CHAT_ID>',
+  'TELEGRAM_CHAT_ID',
+  'CHAT_ID',
+  'placeholder',
+  'PLACEHOLDER',
+  'changeme',
+  'CHANGE_ME',
+  'todo',
+  'TODO',
+]);
+
+function telegramChatIdStatus(value = CONFIG.telegramChatId) {
+  const text = String(value ?? '').trim();
+  if (!text) return 'missing';
+  if (text.startsWith('@')) return 'invalid_bot_username';
+  if (TELEGRAM_CHAT_ID_PLACEHOLDERS.has(text)) return 'invalid_placeholder';
+  if (/^-?\d+$/.test(text)) return 'valid_numeric';
+  return 'invalid_non_numeric';
+}
+
+function telegramConfigReason(status, source) {
+  if (status === 'missing') return 'Telegram chat_id missing';
+  if (status === 'invalid_bot_username') return 'Telegram chat_id is a @username, not a numeric chat ID';
+  if (status === 'invalid_placeholder') return 'Telegram chat_id is still a placeholder';
+  if (status === 'invalid_non_numeric') return 'Telegram chat_id must be numeric; user IDs are digits and group IDs may be negative';
+  if (!['cli', 'gate.json', 'env'].includes(source)) return 'Telegram chat_id source is non-authoritative';
+  return 'Telegram destination invalid';
+}
+
+const TELEGRAM_CONFIG_AUDITED = new Set();
+
+function telegramDestinationReadiness(subsystem = 'mcp_ask') {
+  const source = telegramChatIdSource();
+  const status = telegramChatIdStatus();
+  const sourceOk = ['cli', 'gate.json', 'env'].includes(source);
+  return {
+    ok: sourceOk && status === 'valid_numeric',
+    source,
+    status,
+    reason: telegramConfigReason(status, source),
+    subsystem,
+  };
+}
+
+function auditTelegramConfigError(readiness) {
+  const key = `${readiness.subsystem}:${readiness.source}:${readiness.status}`;
+  if (TELEGRAM_CONFIG_AUDITED.has(key)) return;
+  TELEGRAM_CONFIG_AUDITED.add(key);
+  try {
+    emitEvent('mcp', 'telegram_config_error', 'warn', {
+      chat_id_source: readiness.source,
+      chat_id_status: readiness.status,
+      reason: readiness.reason,
+      subsystem: readiness.subsystem,
+    }, 'telegram-config', 'warn', 0, 'system');
+  } catch { /* never let audit failure convert config denial into a crash */ }
+}
+
 async function sendCanary(sessionId, humanId) {
   if (!humanId) return;
-  if (!CONFIG.telegramToken) return;
 
   // v3.3.7 A3: explicit visibility on chat_id misconfiguration. Emit a
   // one-time audit warn if chat_id is unconfigured rather than silently
   // returning.
-  const source = canaryChatIdSource();
-  if (source === 'unconfigured') {
+  const readiness = telegramDestinationReadiness('mcp_canary');
+  if (!readiness.ok) {
     if (!global.__canaryMisconfigLogged) {
       global.__canaryMisconfigLogged = true;
       try {
         emitEvent('mcp', 'canary_subsystem_misconfigured', 'warn',
-          { chat_id_source: source, reason: 'unconfigured' }, 'canary', 'warn', 0, 'canary');
+          {
+            chat_id_source: readiness.source,
+            chat_id_status: readiness.status,
+            reason: readiness.reason,
+          }, 'canary', 'warn', 0, 'canary');
       } catch { /* never let an audit failure abort a no-send path */ }
-      console.log('[gate] CANARY: chat_id unconfigured — refusing to send');
+      console.log(`[gate] CANARY: Telegram destination invalid (${readiness.status}) — refusing to send`);
     }
     return;
   }
+  if (!CONFIG.telegramToken) return;
 
   try {
     let scenario = null;
@@ -1296,10 +1367,9 @@ async function sendCanary(sessionId, humanId) {
     const argsPreview = JSON.stringify(fakeArgs).substring(0, 80)
       + (JSON.stringify(fakeArgs).length > 80 ? '…' : '');
 
-    // Card shape mirrors MCP real ask (telegramAsk) so it is indistinguishable
-    // until after the human responds. 🔷 prefix signals MCP origin in text;
-    // callback data uses cc:canary: so the result lands in inbox/cc.
-    const text = `${emoji} 🔷 *${scenario.display_rule}*\n\n${consequenceLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${scenario.risk}/100`;
+    // Do not disclose the canary before the decision. It must still be readable
+    // as a normal approval request: clear consequence, action, and risk.
+    const text = `${emoji} 🔷 *Approval required*\n\n${consequenceLine}\n\n*MCP:* \`${argsPreview}\`\nRisk ${scenario.risk}/100 · Rule \`${scenario.display_rule}\`\n\nIf this is unclear, deny.`;
     const escapedText = text.replace(/[_\[\]()~>#+=|{}.!-]/g, '\\$&').replace(/\\`/g, '`').replace(/\\\*/g, '*');
 
     const keyboard = {
@@ -1479,6 +1549,12 @@ function mcpArgsHash(args) {
 }
 
 async function telegramPreconfirm(rule, riskScore, severity, toolName) {
+  const readiness = telegramDestinationReadiness('mcp_preconfirm');
+  if (!readiness.ok) {
+    auditTelegramConfigError(readiness);
+    console.error(`[gate] Tier 2 preconfirm blocked: ${readiness.reason}`);
+    return 'block';
+  }
   if (!CONFIG.telegramToken || !CONFIG.telegramChatId) return 'block'; // fail closed
 
   const pcActionId = genId();
@@ -1555,7 +1631,56 @@ async function telegramPreconfirm(rule, riskScore, severity, toolName) {
   return 'timeout';
 }
 
+function plainRuleLabel(rule, toolName) {
+  if (rule === 'R012W_EDIT') return 'Governance infrastructure change';
+  if (rule === 'R005C') return 'Interpreter one-liner';
+  if (rule === 'R001C') return 'Sensitive file read';
+  if (/^R012/.test(rule || '')) return 'ZLAR governance path action';
+  if (/^R005/.test(rule || '')) return 'Shell or interpreter escape';
+  if (/^R003/.test(rule || '')) return 'Privilege boundary action';
+  if (/^R002/.test(rule || '')) return 'File deletion action';
+  if (/^R080/.test(rule || '')) return 'New agent authority';
+  if (toolName === 'Bash') return 'Shell command review';
+  return 'Approval required';
+}
+
+function proofProbeExpectation({ rule = '', toolName = '', args = {}, flags = {} } = {}) {
+  const explicit = String(flags.proofProbeExpectedDecision || '').toLowerCase();
+  if (['approve', 'allow', 'approved'].includes(explicit)) return 'approve';
+  if (['deny', 'block', 'denied'].includes(explicit)) return 'deny';
+
+  const marker = [
+    rule,
+    toolName,
+    args?.marker,
+    args?.proof_probe,
+    args?.proofProbe,
+    args?.expected_decision,
+    args?.expectedDecision,
+  ].filter((v) => v !== undefined && v !== null).join(' ').toLowerCase();
+  if (marker.includes('p2_ask_approve') || marker.includes('marker_ask_approve') ||
+      marker.includes('proof_probe_approve') || marker.includes('proof-probe-approve')) {
+    return 'approve';
+  }
+  if (marker.includes('p2_ask_deny') || marker.includes('marker_ask_deny') ||
+      marker.includes('proof_probe_deny') || marker.includes('proof-probe-deny')) {
+    return 'deny';
+  }
+
+  const raw = String(process.env.ZLAR_APPROVAL_PROBE_EXPECT || process.env.ZLAR_PROOF_PROBE_EXPECTED_DECISION || '').toLowerCase();
+  if (['approve', 'allow', 'approved'].includes(raw)) return 'approve';
+  if (['deny', 'block', 'denied'].includes(raw)) return 'deny';
+  return '';
+}
+
 async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, verifyHint = '', flags = {}) {
+  const readiness = telegramDestinationReadiness('mcp_ask');
+  if (!readiness.ok) {
+    auditTelegramConfigError(readiness);
+    console.error(`[gate] Telegram ask blocked: ${readiness.reason}`);
+    return 'config_error';
+  }
+
   if (!CONFIG.telegramToken || !CONFIG.telegramChatId) {
     console.error('[gate] No Telegram token or chat ID — cannot ask human');
     return 'error';
@@ -1588,9 +1713,14 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
   // Message layout mirrors bash gate v2.8.1: consequence first, intent (if present),
   // verify hint (if present), action for context, rule+risk as compact metadata at bottom.
   const escapedRule = escapeMarkdownV2Text(rule);
+  const escapedRuleLabel = escapeMarkdownV2Text(plainRuleLabel(rule, toolName));
   const escapedTool = escapeMarkdownV2Code(toolName);
   const escapedArgsPreview = escapeMarkdownV2Code(argsPreview);
-  const text = `${emoji} ${cardMarker} *${escapedRule}*${tierBannerLine}\n\n${consequenceLine}${intentLine}${verifyLine}${noveltyLine}${advisoryLine}\n\n*Tool:* \`${escapedTool}\`\n*Args:* \`${escapedArgsPreview}\`\n*Args hash:* \`${argsHash}\`\nRisk ${riskScore}/100`;
+  const proofExpect = proofProbeExpectation({ rule, toolName, args, flags });
+  const proofLine = proofExpect
+    ? `\n🧪 *Proof probe* — expected human decision: ${proofExpect === 'approve' ? 'APPROVE' : 'DENY'}`
+    : '';
+  const text = `${emoji} ${cardMarker} *${escapedRuleLabel}*${proofLine}${tierBannerLine}\n\n${consequenceLine}${intentLine}${verifyLine}${noveltyLine}${advisoryLine}\n\n*Tool:* \`${escapedTool}\`\n*Args:* \`${escapedArgsPreview}\`\n*Args hash:* \`${argsHash}\`\nRisk ${riskScore}/100 · Rule \`${escapedRule}\`\n\nIf this is unclear, deny.`;
 
   const keyboard = {
     inline_keyboard: [[
@@ -1889,7 +2019,29 @@ async function handleRequest(msg) {
         return { action: 'passthrough', msg };
       }
 
-      const humanId = CONFIG.telegramChatId || 'unknown';
+      const readiness = telegramDestinationReadiness('mcp_ask');
+      if (!readiness.ok) {
+        auditTelegramConfigError(readiness);
+        emitEvent('mcp', toolName, 'denied',
+          {
+            tool: toolName,
+            reason: 'telegram_config_error',
+            chat_id_source: readiness.source,
+            chat_id_status: readiness.status,
+            detail: readiness.reason,
+          },
+          evaluation.rule, evaluation.severity, evaluation.riskScore, 'gate:telegram_config_error');
+        return {
+          action: 'deny',
+          response: {
+            jsonrpc: '2.0',
+            id: msg.id,
+            error: { code: -32600, message: `[config_error] ${readiness.reason}. Configure a numeric Telegram chat ID, then retry. (rule ${evaluation.rule})` },
+          },
+        };
+      }
+
+      const humanId = CONFIG.telegramChatId;
       const actionId = genId();
       const actionHash = mcpAskActionHash(msg, toolName, args, evaluation.rule);
       const canaryTier = getCanaryTier(humanId);
@@ -1944,6 +2096,7 @@ async function handleRequest(msg) {
         advisory: hiPre.ok ? null : `${hiPre.reason} — ${hiPre.detail}`,
         tierBanner,
         denyIntended: isDenyLabeledMcpAsk(evaluation, toolName),
+        proofProbeExpectedDecision: evaluation.proofProbeExpectedDecision || '',
       };
       const decision = await telegramAsk(actionId, toolName, args, evaluation.rule, evaluation.riskScore, evaluation.severity, evaluation.verifyHint || '', askFlags);
 
@@ -1988,6 +2141,20 @@ async function handleRequest(msg) {
               jsonrpc: '2.0',
               id: msg.id,
               error: { code: -32600, message: `[human] Denied by human (rule ${evaluation.rule})` },
+            },
+          };
+        }
+
+        case 'config_error': {
+          emitEvent('mcp', toolName, 'denied',
+            { tool: toolName, reason: 'telegram_config_error' },
+            evaluation.rule, evaluation.severity, evaluation.riskScore, 'gate:telegram_config_error');
+          return {
+            action: 'deny',
+            response: {
+              jsonrpc: '2.0',
+              id: msg.id,
+              error: { code: -32600, message: `[config_error] Telegram destination invalid (rule ${evaluation.rule})` },
             },
           };
         }

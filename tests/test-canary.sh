@@ -598,6 +598,22 @@ SKIPS_PROB=$(jq -r '.canary_skips.probability // 0' "${TEST_DIR}/var/human-state
 assert "TC-35 disabled: probability skip counter incremented (v3.3.10 behavior intact)" "1" "${SKIPS_PROB}"
 CANARY_PROBABILITY=100
 
+# ── TC-36: readable ordinary card, no double escape on deny sentence ──
+echo "TC-36: rendered card has readable deny sentence"
+LAST_TG_BODY="${TEST_DIR}/last-canary-body.json"
+telegram_api() {
+    printf '%s' "$2" > "${LAST_TG_BODY}"
+    echo '{"ok":true,"result":{"message_id":4242}}'
+}
+canary_send "sess-readable" "human-readable"
+rendered_text=$(jq -r '.text // ""' "${LAST_TG_BODY}" 2>/dev/null || echo "")
+assert "canary card has one MarkdownV2 escape before deny period" "true" \
+    "$(printf '%s' "${rendered_text}" | grep -Fq 'If this is unclear, deny\.' && echo true || echo false)"
+assert "canary card does not double-escape deny period" "false" \
+    "$(printf '%s' "${rendered_text}" | grep -Fq 'deny\\.' && echo true || echo false)"
+assert "canary card remains undisclosed before decision" "false" \
+    "$(printf '%s' "${rendered_text}" | grep -Fq 'Canary' && echo true || echo false)"
+
 echo
 if [ "${FAIL}" -gt 0 ]; then
     echo "FAILED ASSERTIONS:"
