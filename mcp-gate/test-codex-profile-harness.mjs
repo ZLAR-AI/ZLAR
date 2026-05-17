@@ -630,6 +630,12 @@ try {
       !JSON.stringify(setupProfile.configured_mcp_servers).includes('inherited_extra'));
     assert('live isolated setup records live Telegram mode',
       setupProfile.zlar_route.live_telegram === true && setupProfile.zlar_route.fake_telegram === false);
+    assertEqual('live isolated setup reports MCP callback inbox',
+      join(liveScratch, 'inbox', 'mcp'),
+      setupProfile.zlar_route.mcp_inbox_dir);
+    assertEqual('live isolated setup reports CC callback inbox',
+      join(liveScratch, 'inbox', 'cc'),
+      setupProfile.zlar_route.cc_inbox_dir);
     assert('live isolated setup does not register fake Telegram API env',
       !setupProfile.configured_mcp_servers[0].transport.env_keys.includes('ZLAR_TELEGRAM_API_BASE'));
   }

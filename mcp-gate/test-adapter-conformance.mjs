@@ -319,7 +319,13 @@ async function startFakeUpstream() {
   return { server, port: server.address().port, state };
 }
 
-async function startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret, failSend = false }) {
+async function startMockTelegram({
+  inboxDir,
+  hmacSecretFile,
+  hmacSecret,
+  failSend = false,
+  missingMessageId = false,
+}) {
   let mode = 'none';
   let messageId = 1000;
   const requests = [];
@@ -333,9 +339,18 @@ async function startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret, failSen
       let body = {};
       try { body = JSON.parse(raw || '{}'); } catch {}
       requests.push(body);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
       if (failSend) {
-        res.end(JSON.stringify({ ok: false, description: 'synthetic send failure' }));
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error_code: 500,
+          description: 'synthetic send failure token=adapter-send-secret-123 /Users/operator/private.txt',
+        }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (missingMessageId) {
+        res.end(JSON.stringify({ ok: true, result: { date: 1779045000 } }));
         return;
       }
       res.end(JSON.stringify({ ok: true, result: { message_id: ++messageId } }));
@@ -1052,6 +1067,12 @@ async function runTests() {
       assert('timeout emits gate:timeout audit', !!timeoutAudit);
       assertEqual('timeout audit outcome=denied', 'denied', timeoutAudit?.outcome);
       assertEqual('timeout audit source=mcp-gate', 'mcp-gate', timeoutAudit?.source);
+      const waitTimeoutAudit = findAudit(gate.auditFile, (e) => e.action === 'telegram_wait_timeout');
+      assert('timeout emits distinct telegram_wait_timeout diagnostic', !!waitTimeoutAudit);
+      assertEqual('timeout diagnostic outcome=warn', 'warn', waitTimeoutAudit?.outcome);
+      assertEqual('timeout diagnostic inbox dir', inboxDir, waitTimeoutAudit?.detail?.inbox_dir);
+      assertEqual('timeout diagnostic inbox source', 'env', waitTimeoutAudit?.detail?.inbox_dir_source);
+      assertEqual('timeout diagnostic callback route', 'mcp', waitTimeoutAudit?.detail?.callback_route);
       const timeoutReceipt = findWorkerReceipt(gate.workerReceiptFile, (r) => r.event.id === timeoutAudit?.id);
       assert('timeout denial emits Worker Receipt', !!timeoutReceipt);
       assertEqual('timeout Worker Receipt decision', 'Denied after approval timeout', timeoutReceipt?.decision?.label);
@@ -1098,7 +1119,122 @@ async function runTests() {
       const errorAudit = findAudit(gate.auditFile, (e) => e.action === 'marker_ask' && e.authorizer === 'gate:error');
       assert('Telegram send error emits gate:error audit', !!errorAudit);
       assertEqual('Telegram send error audit outcome=denied', 'denied', errorAudit?.outcome);
+      const sendFailureAudit = findAudit(gate.auditFile, (e) => e.action === 'telegram_send_failed');
+      assert('Telegram send error emits telegram_send_failed diagnostic', !!sendFailureAudit);
+      assertEqual('Telegram send diagnostic outcome=warn', 'warn', sendFailureAudit?.outcome);
+      assertEqual('Telegram send diagnostic HTTP status', 500, sendFailureAudit?.detail?.api?.http_status);
+      assertEqual('Telegram send diagnostic HTTP ok=false', false, sendFailureAudit?.detail?.api?.http_ok);
+      assertEqual('Telegram send diagnostic Telegram ok=false', false, sendFailureAudit?.detail?.api?.telegram_ok);
+      assert('Telegram send diagnostic redacts synthetic secrets',
+        !JSON.stringify(sendFailureAudit?.detail || {}).includes('adapter-send-secret-123') &&
+        !JSON.stringify(sendFailureAudit?.detail || {}).includes('/Users/operator'),
+        `detail=${JSON.stringify(sendFailureAudit?.detail)}`);
       assertNoPendingAsk('Telegram send error', humanStateDir, humanId);
+    });
+  }
+
+  {
+    const upstream = await startFakeUpstream();
+    const inboxDir = join(SCRATCH, 'inbox-missing-message-id');
+    const hmacSecretFile = join(SCRATCH, 'inbox-missing-message-id-secret');
+    const telegram = await startMockTelegram({
+      inboxDir,
+      hmacSecretFile,
+      hmacSecret: 'adapter-hmac-missing-message-id',
+      missingMessageId: true,
+    });
+    const humanId = '1001001007';
+    const humanStateDir = join(SCRATCH, 'human-missing-message-id');
+    writeFastHumanState(humanStateDir, humanId);
+
+    await withGate({
+      upstreamPort: upstream.port,
+      auditName: 'telegram-missing-message-id',
+      agentId: 'adapter-missing-message-id-agent',
+      sessionId: 'adapter-missing-message-id-session',
+      telegram,
+      humanId,
+      inboxDir,
+      hmacSecretFile,
+      humanStateDir,
+    }, async (gate) => {
+      const before = upstream.state.markerExecutions.length;
+      const resp = await sendRpc(gate.port, {
+        jsonrpc: '2.0',
+        id: 131,
+        method: 'tools/call',
+        params: { name: 'marker_ask', arguments: { marker: 'telegram-missing-message-id' } },
+      }, 7000);
+      assert('missing message_id returns JSON-RPC error', !!resp.error);
+      assert('missing message_id blocks upstream execution', upstream.state.markerExecutions.length === before);
+      const missingAudit = findAudit(gate.auditFile, (e) => e.action === 'telegram_message_id_missing');
+      assert('missing message_id emits diagnostic audit', !!missingAudit);
+      assertEqual('missing message_id diagnostic outcome=warn', 'warn', missingAudit?.outcome);
+      assertEqual('missing message_id diagnostic Telegram ok=true', true, missingAudit?.detail?.api?.telegram_ok);
+      assertEqual('missing message_id diagnostic has_message_id=false', false, missingAudit?.detail?.api?.has_message_id);
+      const errorAudit = findAudit(gate.auditFile, (e) => e.action === 'marker_ask' && e.authorizer === 'gate:error');
+      assert('missing message_id emits gate:error action audit', !!errorAudit);
+      assertNoPendingAsk('missing message_id', humanStateDir, humanId);
+    });
+  }
+
+  {
+    const upstream = await startFakeUpstream();
+    const telegramInboxDir = join(SCRATCH, 'inbox-telegram-ok-invalid-gate-inbox');
+    const invalidGateInbox = join(SCRATCH, 'mcp-inbox-is-file');
+    const hmacSecretFile = join(SCRATCH, 'inbox-invalid-gate-inbox-secret');
+    writeFileSync(invalidGateInbox, 'not a directory');
+    const telegram = await startMockTelegram({
+      inboxDir: telegramInboxDir,
+      hmacSecretFile,
+      hmacSecret: 'adapter-hmac-invalid-gate-inbox',
+    });
+    const humanId = '1001001008';
+    const humanStateDir = join(SCRATCH, 'human-invalid-gate-inbox');
+    writeFastHumanState(humanStateDir, humanId);
+
+    await withGate({
+      upstreamPort: upstream.port,
+      auditName: 'telegram-inbox-error',
+      agentId: 'adapter-inbox-error-agent',
+      sessionId: 'adapter-inbox-error-session',
+      telegram,
+      humanId,
+      inboxDir: invalidGateInbox,
+      hmacSecretFile,
+      humanStateDir,
+    }, async (gate) => {
+      const before = upstream.state.markerExecutions.length;
+      const resp = await sendRpc(gate.port, {
+        jsonrpc: '2.0',
+        id: 132,
+        method: 'tools/call',
+        params: {
+          name: 'marker_ask',
+          arguments: {
+            marker: 'telegram-inbox-error',
+            token: 'adapter-inbox-secret-123',
+          },
+        },
+      }, 7000);
+      assert('inbox error returns JSON-RPC error', !!resp.error);
+      assert('inbox error blocks upstream execution', upstream.state.markerExecutions.length === before);
+      const denied = findAudit(gate.auditFile, (e) => e.action === 'marker_ask' && e.authorizer === 'gate:error');
+      assert('inbox error emits gate:error action audit', !!denied);
+      assertEqual('inbox error action outcome=denied', 'denied', denied?.outcome);
+      const inboxAudit = findAudit(gate.auditFile, (e) => e.action === 'telegram_inbox_error');
+      assert('inbox error emits telegram_inbox_error diagnostic', !!inboxAudit);
+      assertEqual('inbox diagnostic outcome=warn', 'warn', inboxAudit?.outcome);
+      assertEqual('inbox diagnostic operation', 'mkdir', inboxAudit?.detail?.operation);
+      assertEqual('inbox diagnostic inbox dir source', 'env', inboxAudit?.detail?.inbox_dir_source);
+      assertEqual('inbox diagnostic callback route', 'mcp', inboxAudit?.detail?.callback_route);
+      assert('inbox diagnostic redacts token/chat/secrets',
+        !JSON.stringify(inboxAudit?.detail || {}).includes('fake-token') &&
+        !JSON.stringify(inboxAudit?.detail || {}).includes(humanId) &&
+        !JSON.stringify(inboxAudit?.detail || {}).includes('adapter-inbox-secret-123') &&
+        !JSON.stringify(inboxAudit?.detail || {}).includes('adapter-hmac-invalid-gate-inbox'),
+        `detail=${JSON.stringify(inboxAudit?.detail)}`);
+      assertNoPendingAsk('inbox error', humanStateDir, humanId);
     });
   }
 

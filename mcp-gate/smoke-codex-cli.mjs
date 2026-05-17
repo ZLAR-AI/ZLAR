@@ -425,6 +425,8 @@ function buildProfileReport({
       routing_config: ROUTING_CONFIG,
       audit_file: AUDIT_FILE,
       policy_file: POLICY_PATH,
+      mcp_inbox_dir: MCP_INBOX_DIR,
+      cc_inbox_dir: CC_INBOX_DIR,
       agent_id: AGENT_ID,
       session_id: sessionId,
       fake_telegram: Boolean(telegramRuntime.fakeTelegram),
@@ -1083,6 +1085,8 @@ function buildScratchState({
     fakeTelegram: Boolean(telegramRuntime?.fakeTelegram),
     liveTelegram: Boolean(telegramRuntime?.liveTelegram),
     telegramUrl: telegramRuntime?.liveTelegram ? null : (ready.telegramUrl ?? null),
+    mcpInboxDir: MCP_INBOX_DIR,
+    ccInboxDir: CC_INBOX_DIR,
     repoRoot: REPO_ROOT,
     scriptPath: SCRIPT_PATH,
     agentId: AGENT_ID,
@@ -1162,6 +1166,8 @@ function printOperatorInstructions({ isolatedProfile = false, liveTelegram = fal
     console.log('\nLive Telegram mode:');
     console.log(`  Explicit env required: ${LIVE_TELEGRAM_TOKEN_ENV}, ${LIVE_TELEGRAM_CHAT_ID_ENV}`);
     console.log('  Fake Telegram API override is disabled in the MCP wrapper.');
+    console.log(`  MCP callback inbox: ${MCP_INBOX_DIR}`);
+    console.log(`  CC callback inbox: ${CC_INBOX_DIR}`);
     console.log('  Setup registers the isolated MCP server and runs initialize preflight only; it does not call proof tools.');
   } else {
     console.log('\nTelegram mode:');

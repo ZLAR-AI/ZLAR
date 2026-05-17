@@ -1417,17 +1417,57 @@ async function sendCanary(sessionId, humanId) {
 // ─── Telegram HITL ───────────────────────────────────────────────────────────
 
 async function telegramApi(method, body) {
-  if (!CONFIG.telegramToken) return null;
+  if (!CONFIG.telegramToken) {
+    return {
+      ok: false,
+      _zlar: {
+        method,
+        http_status: null,
+        http_ok: false,
+        telegram_ok: false,
+        error: 'missing_telegram_token',
+      },
+    };
+  }
   const apiBase = process.env.ZLAR_TELEGRAM_API_BASE || 'https://api.telegram.org';
   try {
     const resp = await fetch(
       `${apiBase}/bot${CONFIG.telegramToken}/${method}`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
     );
-    return await resp.json();
+    let parsed = null;
+    let parseError = '';
+    try {
+      parsed = await resp.json();
+    } catch (e) {
+      parseError = e?.message || String(e);
+    }
+    const bodyObj = parsed && typeof parsed === 'object' ? parsed : { ok: false };
+    return {
+      ...bodyObj,
+      _zlar: {
+        method,
+        http_status: resp.status,
+        http_ok: resp.ok,
+        telegram_ok: bodyObj?.ok === true,
+        response_json: Boolean(parsed && typeof parsed === 'object'),
+        parse_error: parseError ? redactTelegramDiagnosticText(parseError) : '',
+      },
+    };
   } catch (e) {
     console.error(`[gate] Telegram API error: ${e.message}`);
-    return null;
+    return {
+      ok: false,
+      _zlar: {
+        method,
+        http_status: null,
+        http_ok: false,
+        telegram_ok: false,
+        response_json: false,
+        error: 'network_error',
+        message: redactTelegramDiagnosticText(e?.message || String(e)),
+      },
+    };
   }
 }
 
@@ -1489,6 +1529,43 @@ function redactTelegramCardText(value) {
   }
   redacted = redacted.replace(TELEGRAM_CARD_PATH_PATTERN, '[REDACTED_PATH]');
   return redacted;
+}
+
+function redactTelegramDiagnosticText(value) {
+  return redactTelegramCardText(value).substring(0, 240);
+}
+
+function telegramApiDiagnostic(method, result) {
+  const meta = result?._zlar || {};
+  return {
+    method,
+    http_status: Number.isInteger(meta.http_status) ? meta.http_status : null,
+    http_ok: typeof meta.http_ok === 'boolean' ? meta.http_ok : null,
+    telegram_ok: result?.ok === true,
+    error_code: result?.error_code === undefined ? null : String(result.error_code).substring(0, 80),
+    description: redactTelegramDiagnosticText(result?.description || meta.message || meta.error || meta.parse_error || ''),
+    response_json: meta.response_json === undefined ? null : Boolean(meta.response_json),
+    has_result: Boolean(result?.result && typeof result.result === 'object'),
+    has_message_id: Boolean(result?.result?.message_id),
+  };
+}
+
+function mcpInboxDir() {
+  return process.env.ZLAR_MCP_INBOX_DIR || '/var/run/zlar-tg/inbox/mcp';
+}
+
+function mcpInboxDirSource() {
+  return process.env.ZLAR_MCP_INBOX_DIR ? 'env' : 'default';
+}
+
+function emitTelegramAskDiagnostic(action, detail, rule, severity, riskScore) {
+  emitEvent('mcp', action, 'warn', detail, rule, severity, riskScore, 'gate');
+}
+
+function callbackDecisionKind(callbackData) {
+  if (String(callbackData || '').startsWith('mcp:approve:')) return 'approve';
+  if (String(callbackData || '').startsWith('mcp:deny:')) return 'deny';
+  return 'unknown';
 }
 
 function escapeMarkdownV2Text(value) {
@@ -1736,15 +1813,57 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
     reply_markup: keyboard,
   });
 
+  const apiDiagnostic = telegramApiDiagnostic('sendMessage', result);
+  if (result?.ok !== true) {
+    console.error(`[gate] Telegram sendMessage failed: http_status=${apiDiagnostic.http_status ?? 'unknown'} telegram_ok=${apiDiagnostic.telegram_ok}`);
+    emitTelegramAskDiagnostic('telegram_send_failed', {
+      tool: toolName,
+      api: apiDiagnostic,
+    }, rule, severity, riskScore);
+    return 'error';
+  }
+
   const msgId = result?.result?.message_id;
-  if (!msgId) return 'error';
+  if (!msgId) {
+    console.error('[gate] Telegram sendMessage response missing result.message_id');
+    emitTelegramAskDiagnostic('telegram_message_id_missing', {
+      tool: toolName,
+      api: apiDiagnostic,
+    }, rule, severity, riskScore);
+    return 'error';
+  }
+
+  const inboxDir = mcpInboxDir();
+  const inboxSource = mcpInboxDirSource();
 
   console.log(`[gate] Telegram ask sent: msg_id=${msgId}, action_id=${actionId}`);
-  emitEvent('mcp', 'ask_sent', 'pending', { tool: toolName, args: argsPreview, args_hash: argsHash }, rule, severity, riskScore, 'gate');
+  emitEvent('mcp', 'ask_sent', 'pending', {
+    tool: toolName,
+    args: argsPreview,
+    args_hash: argsHash,
+    telegram_message_id_present: true,
+    inbox_dir: inboxDir,
+    inbox_dir_source: inboxSource,
+    callback_route: 'mcp',
+  }, rule, severity, riskScore, 'gate');
 
   // Poll for response via shared inbox
-  const inboxDir = process.env.ZLAR_MCP_INBOX_DIR || '/var/run/zlar-tg/inbox/mcp';
-  execSync(`mkdir -p "${inboxDir}"`, { stdio: 'ignore' });
+  try {
+    mkdirSync(inboxDir, { recursive: true, mode: 0o700 });
+  } catch (e) {
+    const detail = {
+      tool: toolName,
+      operation: 'mkdir',
+      code: e?.code || '',
+      error: redactTelegramDiagnosticText(e?.message || String(e)),
+      inbox_dir: inboxDir,
+      inbox_dir_source: inboxSource,
+      callback_route: 'mcp',
+    };
+    console.error(`[gate] Telegram inbox mkdir failed: ${detail.code || detail.error}`);
+    emitTelegramAskDiagnostic('telegram_inbox_error', detail, rule, severity, riskScore);
+    return 'error';
+  }
 
   const deadline = Date.now() + CONFIG.telegramTimeoutS * 1000;
 
@@ -1763,6 +1882,15 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
           const cbHmac = cb.hmac || '';
 
           if (cbFrom !== CONFIG.telegramChatId) {
+            emitTelegramAskDiagnostic('telegram_callback_ignored', {
+              tool: toolName,
+              reason: 'chat_id_mismatch',
+              decision: callbackDecisionKind(cbData),
+              file,
+              inbox_dir: inboxDir,
+              inbox_dir_source: inboxSource,
+              callback_route: 'mcp',
+            }, rule, severity, riskScore);
             unlinkSync(filePath);
             continue;
           }
@@ -1770,6 +1898,14 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
           // Verify HMAC integrity
           if (!verifyInboxHmac(cbData, cbFrom, cbId, cbHmac)) {
             console.error(`[gate] SECURITY: inbox HMAC mismatch: ${file}`);
+            emitTelegramAskDiagnostic('telegram_callback_hmac_mismatch', {
+              tool: toolName,
+              decision: callbackDecisionKind(cbData),
+              file,
+              inbox_dir: inboxDir,
+              inbox_dir_source: inboxSource,
+              callback_route: 'mcp',
+            }, rule, severity, riskScore);
             unlinkSync(filePath);
             continue;
           }
@@ -1788,17 +1924,41 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
           // fact. A poisoned inbox could otherwise be a silent denial-of-
           // service on callback processing.
           try { unlinkSync(filePath); } catch {}
-          auditInternalError('inbox_file_parse', e, { file });
+          auditInternalError('inbox_file_parse', e, {
+            file,
+            inbox_dir: inboxDir,
+            inbox_dir_source: inboxSource,
+            callback_route: 'mcp',
+          });
         }
       }
     } catch (e) {
-      auditInternalError('inbox_loop_read', e);
+      const detail = {
+        tool: toolName,
+        operation: 'read',
+        code: e?.code || '',
+        error: redactTelegramDiagnosticText(e?.message || String(e)),
+        inbox_dir: inboxDir,
+        inbox_dir_source: inboxSource,
+        callback_route: 'mcp',
+      };
+      console.error(`[gate] Telegram inbox read failed: ${detail.code || detail.error}`);
+      emitTelegramAskDiagnostic('telegram_inbox_error', detail, rule, severity, riskScore);
+      return 'error';
     }
 
     await new Promise(r => setTimeout(r, 1000));
   }
 
   console.log(`[gate] Telegram: TIMED OUT after ${CONFIG.telegramTimeoutS}s`);
+  emitTelegramAskDiagnostic('telegram_wait_timeout', {
+    tool: toolName,
+    waited_s: CONFIG.telegramTimeoutS,
+    telegram_message_id_present: true,
+    inbox_dir: inboxDir,
+    inbox_dir_source: inboxSource,
+    callback_route: 'mcp',
+  }, rule, severity, riskScore);
   return 'timeout';
 }
 

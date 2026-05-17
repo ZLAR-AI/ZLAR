@@ -745,7 +745,7 @@ async function runImplementedStdioTests(upstream) {
     const hmacSecretFile = join(SCRATCH, 'stdio-inbox-approve-secret');
     const telegram = await startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret: 'stdio-hmac-approve' });
     telegram.setMode('approve');
-    const humanId = 'stdio-human-approve';
+    const humanId = '2001001001';
     const humanStateDir = join(SCRATCH, 'stdio-human-approve');
     writeFastHumanState(humanStateDir, humanId);
     const agentId = 'stdio-ask-agent';
@@ -788,7 +788,7 @@ async function runImplementedStdioTests(upstream) {
       assert('ask-approved card uses blue MCP marker',
         askText.includes('🔷') && !askText.includes('♦️'),
         `text=${JSON.stringify(askText)}`);
-      assert('ask-approved card keeps rule id escaped', askText.includes('*SC\\_ASK*'), `text=${JSON.stringify(askText)}`);
+      assert('ask-approved card keeps rule id escaped as metadata', askText.includes('Rule `SC\\_ASK`'), `text=${JSON.stringify(askText)}`);
       assert('ask-approved card keeps tool name visible', askText.includes('*Tool:* `test.marker_ask`'), `text=${JSON.stringify(askText)}`);
       assert('ask-approved card keeps risk visible', askText.includes('Risk 20/100'), `text=${JSON.stringify(askText)}`);
       assert('ask-approved card includes args hash', /\*Args hash:\* `[a-f0-9]{16}`/.test(askText), `text=${JSON.stringify(askText)}`);
@@ -833,7 +833,7 @@ async function runImplementedStdioTests(upstream) {
     const hmacSecretFile = join(SCRATCH, 'stdio-inbox-deny-secret');
     const telegram = await startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret: 'stdio-hmac-deny' });
     telegram.setMode('deny');
-    const humanId = 'stdio-human-deny';
+    const humanId = '2001001002';
     const humanStateDir = join(SCRATCH, 'stdio-human-deny');
     writeFastHumanState(humanStateDir, humanId);
     const agentId = 'stdio-ask-agent';
@@ -874,7 +874,7 @@ async function runImplementedStdioTests(upstream) {
     const hmacSecretFile = join(SCRATCH, 'stdio-inbox-timeout-secret');
     const telegram = await startMockTelegram({ inboxDir, hmacSecretFile, hmacSecret: 'stdio-hmac-timeout' });
     telegram.setMode('none');
-    const humanId = 'stdio-human-timeout';
+    const humanId = '2001001003';
     const humanStateDir = join(SCRATCH, 'stdio-human-timeout');
     writeFastHumanState(humanStateDir, humanId);
     const agentId = 'stdio-timeout-agent';
