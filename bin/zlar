@@ -3,7 +3,7 @@
 # ZLAR — Convenience CLI
 #
 # Usage:
-#   zlar status     — show governed frameworks, policy summary, audit count
+#   zlar status     — show governed surfaces, policy summary, audit count
 #   zlar doctor     — check installation health (deps, keys, hooks, policy)
 #   zlar reset      — reset human-invariant state (clear stuck pending counters)
 #   zlar audit      — show last 20 audit entries
@@ -71,6 +71,21 @@ telegram_token_from_env_file() {
     [ -f "${env_file}" ] || return 1
     grep -E '^(ZLAR_TELEGRAM_TOKEN|TELEGRAM_BOT_TOKEN)=' "${env_file}" 2>/dev/null | \
         head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"
+}
+
+mask_human_id() {
+    local human_id="$1"
+    local human_id_len=${#human_id}
+    if [ "${human_id_len}" -gt 7 ]; then
+        printf '%s***%s' "${human_id:0:1}" "${human_id: -4}"
+    else
+        printf '%s' "${human_id}"
+    fi
+}
+
+surface_hook_configured() {
+    local hook_file="$1"
+    [ -f "${hook_file}" ] && grep -qi "zlar" "${hook_file}" 2>/dev/null
 }
 
 # ─── Gate uptime helper (v3.1.4) ─────────────────────────────────────────────
@@ -203,6 +218,24 @@ cmd_status() {
     HUMAN_STATE_DIR="${PROJECT_DIR}/var/human-state"
     PENDING_CAP="${ZLAR_PENDING_CAP:-5}"
     DAILY_CAP="${ZLAR_DAILY_DECISION_CAP:-80}"
+    ACTIVE_HUMAN_ID=""
+    ACTIVE_HUMAN_SOURCE="unconfigured"
+    ACTIVE_HUMAN_STATUS="missing"
+
+    if [ -n "${ZLAR_TELEGRAM_CHAT_ID:-}" ]; then
+        ACTIVE_HUMAN_ID="${ZLAR_TELEGRAM_CHAT_ID}"
+        ACTIVE_HUMAN_SOURCE="env"
+    elif [ -f "${PROJECT_DIR}/etc/gate.json" ] && command -v jq >/dev/null 2>&1; then
+        ACTIVE_HUMAN_ID=$(jq -r '.telegram.chat_id // empty' "${PROJECT_DIR}/etc/gate.json" 2>/dev/null || echo "")
+        [ -n "${ACTIVE_HUMAN_ID}" ] && ACTIVE_HUMAN_SOURCE="gate.json"
+    fi
+    ACTIVE_HUMAN_STATUS=$(telegram_chat_id_status "${ACTIVE_HUMAN_ID}")
+    if [ "${ACTIVE_HUMAN_STATUS}" = "valid_numeric" ]; then
+        printf "    Active Telegram route:                       %s  (source: %s)\n" "$(mask_human_id "${ACTIVE_HUMAN_ID}")" "${ACTIVE_HUMAN_SOURCE}"
+    else
+        printf "    Active Telegram route:                       ${YELLOW}%s${NC}  (%s)\n" "$(telegram_chat_id_display "${ACTIVE_HUMAN_STATUS}")" "${ACTIVE_HUMAN_SOURCE}"
+    fi
+
     # Promotion threshold from gate.json .canary, default 5 (v3.3.4).
     CR_THRESHOLD=$(jq -r '.canary.clean_run_promotion_threshold // 5' \
         "${PROJECT_DIR}/etc/gate.json" 2>/dev/null || echo "5")
@@ -210,12 +243,38 @@ cmd_status() {
 
     if [ -d "${HUMAN_STATE_DIR}" ] && ls "${HUMAN_STATE_DIR}"/*.json >/dev/null 2>&1; then
         HUMAN_COUNT=0
+        INACTIVE_NUMERIC_COUNT=0
+        TEST_STATE_COUNT=0
+        ACTIVE_STATE_FILE=""
+        if [ "${ACTIVE_HUMAN_STATUS}" = "valid_numeric" ]; then
+            ACTIVE_STATE_FILE="${HUMAN_STATE_DIR}/${ACTIVE_HUMAN_ID}.json"
+        fi
+        HUMAN_STATE_FILES=()
+        if [ -n "${ACTIVE_STATE_FILE}" ] && [ -f "${ACTIVE_STATE_FILE}" ]; then
+            HUMAN_STATE_FILES+=("${ACTIVE_STATE_FILE}")
+        fi
         for state_file in "${HUMAN_STATE_DIR}"/*.json; do
+            [ -f "${state_file}" ] || continue
+            [ -n "${ACTIVE_STATE_FILE}" ] && [ "${state_file}" = "${ACTIVE_STATE_FILE}" ] && continue
+            HUMAN_STATE_FILES+=("${state_file}")
+        done
+
+        for state_file in "${HUMAN_STATE_FILES[@]}"; do
             HUMAN_ID=$(basename "${state_file}" .json)
 
-            # v3.3.5: skip non-numeric human_ids. Telegram chat IDs are
-            # always digits; anything else is a test fixture artifact.
-            case "${HUMAN_ID}" in ''|*[!0-9]*) continue ;; esac
+            # Telegram chat IDs are numeric. Non-numeric files are stale
+            # experiments, smoke fixtures, or bad historical routing state.
+            case "${HUMAN_ID}" in
+                ''|*[!0-9]*)
+                    TEST_STATE_COUNT=$((TEST_STATE_COUNT + 1))
+                    continue
+                    ;;
+            esac
+
+            if [ "${ACTIVE_HUMAN_STATUS}" != "valid_numeric" ] || [ "${HUMAN_ID}" != "${ACTIVE_HUMAN_ID}" ]; then
+                INACTIVE_NUMERIC_COUNT=$((INACTIVE_NUMERIC_COUNT + 1))
+                continue
+            fi
 
             # Visual separator between multiple humans (status expansion fix #4)
             if [ "${HUMAN_COUNT}" -gt 0 ]; then
@@ -226,12 +285,7 @@ cmd_status() {
             # Mask the middle of the human ID for privacy when status output is shared
             # (status expansion fix #6). Telegram chat IDs are typically 9-10 digits;
             # show first char + *** + last 4. Short IDs stay unmasked.
-            HUMAN_ID_LEN=${#HUMAN_ID}
-            if [ "${HUMAN_ID_LEN}" -gt 7 ]; then
-                HUMAN_ID_DISPLAY="${HUMAN_ID:0:1}***${HUMAN_ID: -4}"
-            else
-                HUMAN_ID_DISPLAY="${HUMAN_ID}"
-            fi
+            HUMAN_ID_DISPLAY=$(mask_human_id "${HUMAN_ID}")
 
             if command -v jq >/dev/null 2>&1; then
                 DECISIONS_TODAY=$(jq -r '.decisions_today // 0' "${state_file}" 2>/dev/null || echo "0")
@@ -359,36 +413,91 @@ cmd_status() {
                     DEMOTION_DISPLAY="—"
                 fi
 
+                DECISIONS_ZERO_NOTE=""
+                if [ "${DECISIONS_INT}" -eq 0 ]; then
+                    if [ "${STATE_IS_STALE}" = "true" ]; then
+                        DECISIONS_ZERO_NOTE="  ${YELLOW}(stale zero)${NC}"
+                    elif [ "${LAST_ASK}" -eq 0 ]; then
+                        DECISIONS_ZERO_NOTE="  ${DIM}(uninitialized/reset)${NC}"
+                    else
+                        DECISIONS_ZERO_NOTE="  ${DIM}(healthy: none today)${NC}"
+                    fi
+                fi
+
+                PENDING_ZERO_NOTE=""
+                if [ "${PENDING_COUNT}" -eq 0 ]; then
+                    PENDING_ZERO_NOTE="  ${DIM}(healthy: none pending)${NC}"
+                fi
+
+                RESPONSE_ZERO_NOTE=""
+                if [ "${RESPONSE_TIMES_LEN}" -eq 0 ]; then
+                    if [ "${STATE_IS_STALE}" = "true" ]; then
+                        RESPONSE_ZERO_NOTE="  ${YELLOW}(stale zero)${NC}"
+                    elif [ "${LAST_ASK}" -eq 0 ]; then
+                        RESPONSE_ZERO_NOTE="  ${DIM}(uninitialized/reset)${NC}"
+                    else
+                        RESPONSE_ZERO_NOTE="  ${DIM}(healthy: window empty)${NC}"
+                    fi
+                fi
+
+                CLEAN_RUN_NOTE=""
+                if [ "${CLEAN_RUN_COUNT}" -eq 0 ]; then
+                    if [ -n "${DEMOTION_REASON}" ]; then
+                        CLEAN_RUN_NOTE="  ${DIM}(reset after ${DEMOTION_REASON})${NC}"
+                    elif [ "${LAST_ASK}" -eq 0 ] && [ "${DECISIONS_INT}" -eq 0 ]; then
+                        CLEAN_RUN_NOTE="  ${DIM}(uninitialized/reset)${NC}"
+                    else
+                        CLEAN_RUN_NOTE="  ${DIM}(healthy: no current clean run)${NC}"
+                    fi
+                fi
+
+                CANARY_ZERO_NOTE=""
+                if [ "${CANARY_TIER}" -eq 0 ] && [ "${CANARY_TRIP}" -eq 0 ]; then
+                    CANARY_ZERO_NOTE="  ${DIM}(healthy: no active tier)${NC}"
+                fi
+
                 # v3.3.8: append "(stale)" to daily-bound counters when the
                 # state file's date is not today UTC. The state itself is
                 # not wrong — it just predates the most recent rollover
                 # boundary. Read-only display correction; no state mutation.
                 if [ "${STATE_IS_STALE}" = "true" ]; then
                     STATE_DATE_DISPLAY="${STATE_DATE}  ${YELLOW}(stale — will roll over on next gate call)${NC}"
-                    DECISIONS_DISPLAY_FINAL="${DECISIONS_DISPLAY}  ${YELLOW}(stale)${NC}"
-                    RESPONSE_TIMES_DISPLAY_FINAL="${RESPONSE_TIMES_LEN} entries  ${YELLOW}(stale)${NC}"
+                    DECISIONS_DISPLAY_FINAL="${DECISIONS_DISPLAY}  ${YELLOW}(stale)${NC}${DECISIONS_ZERO_NOTE}"
+                    RESPONSE_TIMES_DISPLAY_FINAL="${RESPONSE_TIMES_LEN} entries  ${YELLOW}(stale)${NC}${RESPONSE_ZERO_NOTE}"
                 else
                     STATE_DATE_DISPLAY="${STATE_DATE}"
-                    DECISIONS_DISPLAY_FINAL="${DECISIONS_DISPLAY}"
-                    RESPONSE_TIMES_DISPLAY_FINAL="${RESPONSE_TIMES_LEN} entries"
+                    DECISIONS_DISPLAY_FINAL="${DECISIONS_DISPLAY}${DECISIONS_ZERO_NOTE}"
+                    RESPONSE_TIMES_DISPLAY_FINAL="${RESPONSE_TIMES_LEN} entries${RESPONSE_ZERO_NOTE}"
                 fi
+                PENDING_DISPLAY_FINAL="${PENDING_DISPLAY}${PENDING_ZERO_NOTE}"
 
+                printf "\n"
                 printf "    Human ID:                                    ${HUMAN_ID_DISPLAY}\n"
+                printf "    Role:                                        live active human route\n"
                 printf "    State date:                                  ${STATE_DATE_DISPLAY}\n"
                 printf "    decisions_today:                             ${DECISIONS_DISPLAY_FINAL}\n"
-                printf "    pending (ttl-filtered):                      ${PENDING_DISPLAY}\n"
+                printf "    pending (ttl-filtered):                      ${PENDING_DISPLAY_FINAL}\n"
                 printf "    response_times:                              ${RESPONSE_TIMES_DISPLAY_FINAL}\n"
                 printf "    last_ask_epoch:                              ${LAST_ASK_REL}\n"
                 printf "    trust_lane:                                  ${LANE_DISPLAY}\n"
                 printf "    trust_lane_grant:                            ${GRANT_DISPLAY}\n"
-                printf "    clean_run:                                   ${CLEAN_RUN_COUNT} / ${CR_THRESHOLD}  (started: ${CR_STARTED_ISO})\n"
-                printf "    canary_tier / trip_count:                    ${CANARY_TIER} / ${CANARY_TRIP}\n"
+                printf "    clean_run:                                   ${CLEAN_RUN_COUNT} / ${CR_THRESHOLD}  (started: ${CR_STARTED_ISO})${CLEAN_RUN_NOTE}\n"
+                printf "    canary_tier / trip_count:                    ${CANARY_TIER} / ${CANARY_TRIP}${CANARY_ZERO_NOTE}\n"
                 printf "    last demotion:                               ${DEMOTION_DISPLAY}\n"
                 printf "    State file:                                  ${HUMAN_STATE_DIR}/${HUMAN_ID_DISPLAY}.json\n"
             else
                 printf "    ${YELLOW}jq not found — install jq to see human state${NC}\n"
             fi
         done
+        if [ "${HUMAN_COUNT}" -eq 0 ]; then
+            printf "    ${YELLOW}No live active human-state file for the current Telegram route${NC}\n"
+        fi
+        if [ "${INACTIVE_NUMERIC_COUNT}" -gt 0 ]; then
+            printf "    Inactive numeric state files:                %s  ${DIM}(not current Telegram route; treated as stale/test)${NC}\n" "${INACTIVE_NUMERIC_COUNT}"
+        fi
+        if [ "${TEST_STATE_COUNT}" -gt 0 ]; then
+            printf "    Test/invalid state files:                    %s  ${DIM}(ignored as humans)${NC}\n" "${TEST_STATE_COUNT}"
+        fi
     else
         printf "    ${DIM}No human state files yet (created lazily on first ask)${NC}\n"
         printf "    State dir: ${HUMAN_STATE_DIR}\n"
@@ -436,8 +545,9 @@ cmd_status() {
         NOW_EPOCH=$(date +%s)
         WEEK_AGO=$((NOW_EPOCH - 7 * 86400))
 
-        # Use jq to filter and count. Tolerant of malformed lines via
-        # `--null-input`-style streaming with try/catch around each entry.
+        # Use one jq pass to filter and count. Tolerant of malformed lines via
+        # raw-line parsing with try/catch around each entry. Do not spawn jq
+        # once per audit row; status must stay usable on real audit logs.
         # Audit format:
         # - .ts is an ISO 8601 string ("2026-05-04T02:24:45Z") emitted by
         #   bin/zlar-gate:emit_event. v3.3.7 A4 incorrectly assumed .ts was
@@ -448,48 +558,63 @@ cmd_status() {
         # - .action is the second arg to emit_event(). v3.3.7 A4 read
         #   .event_type, which doesn't exist; the case branches never
         #   matched. Now reads .action.
-        # Keep the jq invocation simple by streaming with -c and counting
-        # in shell to avoid version-specific jq array semantics.
-        PASSED_COUNT=0
-        FAILED_COUNT=0
-        MISSED_COUNT=0
-        PENDING_LOST_COUNT=0
-        TAMPERED_COUNT=0
-        CLAIM_LOST_COUNT=0
-        ARTIFACT_DESTROYED_COUNT=0
-        while IFS= read -r line; do
-            # Skip if no ts or older than 7d. .ts is ISO 8601 from emit_event;
-            # parse via jq's fromdateiso8601 with a numeric fallback so any
-            # future float-epoch lines also resolve. Malformed lines collapse
-            # to 0 (skipped by the [!0-9] case below).
-            entry_ts_int=$(printf '%s' "${line}" | jq -r '
-                (.ts // 0) as $t
-                | if ($t | type) == "string"
-                  then ($t | try fromdateiso8601 catch 0)
-                  else ($t | floor)
+        CANARY_COUNTS=$(jq -Rn --argjson week_ago "${WEEK_AGO}" '
+            def ts_epoch($t):
+                if ($t | type) == "string"
+                then ($t | try fromdateiso8601 catch 0)
+                else ($t | try floor catch 0)
+                end;
+            reduce inputs as $line (
+                {
+                    passed: 0,
+                    failed: 0,
+                    missed: 0,
+                    pending_lost: 0,
+                    tampered: 0,
+                    claim_lost: 0,
+                    artifact_destroyed: 0
+                };
+                ($line | try fromjson catch null) as $entry
+                | if $entry == null then .
+                  else (ts_epoch($entry.ts // 0)) as $entry_ts
+                  | if ($entry_ts < $week_ago) then .
+                    else ($entry.action // "") as $event
+                    | ($entry.detail.result // "") as $result
+                    | if (($event == "governance_health_check" or $event == "canary_result") and $result == "healthy")
+                      then .passed += 1
+                      elif (($event == "governance_health_check" or $event == "canary_result") and $result == "fatigue_detected")
+                      then .failed += 1
+                      elif (($event == "governance_health_check" or $event == "canary_result") and $result == "expired")
+                      then .missed += 1
+                      elif $event == "canary_pending_lost"
+                      then .pending_lost += 1
+                      elif $event == "canary_pending_tampered"
+                      then .tampered += 1
+                      elif $event == "canary_claim_lost"
+                      then .claim_lost += 1
+                      elif $event == "canary_artifact_destroyed_post_delivery"
+                      then .artifact_destroyed += 1
+                      else .
+                      end
+                    end
                   end
-            ' 2>/dev/null || echo 0)
-            case "${entry_ts_int}" in ''|0|*[!0-9]*) continue ;; esac
-            [ "${entry_ts_int}" -ge "${WEEK_AGO}" ] || continue
-
-            event=$(printf '%s' "${line}" | jq -r '.action // ""' 2>/dev/null || echo "")
-            outcome=$(printf '%s' "${line}" | jq -r '.detail.result // ""' 2>/dev/null || echo "")
-
-            case "${event}" in
-                governance_health_check|canary_result)
-                    case "${outcome}" in
-                        healthy)            PASSED_COUNT=$((PASSED_COUNT + 1)) ;;
-                        fatigue_detected)   FAILED_COUNT=$((FAILED_COUNT + 1)) ;;
-                        expired)            MISSED_COUNT=$((MISSED_COUNT + 1)) ;;
-                    esac
-                    ;;
-                canary_pending_lost)         PENDING_LOST_COUNT=$((PENDING_LOST_COUNT + 1)) ;;
-                canary_pending_tampered)     TAMPERED_COUNT=$((TAMPERED_COUNT + 1)) ;;
-                canary_claim_lost)           CLAIM_LOST_COUNT=$((CLAIM_LOST_COUNT + 1)) ;;
-                canary_artifact_destroyed_post_delivery)
-                                             ARTIFACT_DESTROYED_COUNT=$((ARTIFACT_DESTROYED_COUNT + 1)) ;;
-            esac
-        done < "${AUDIT_FILE}"
+            )
+            | [.passed, .failed, .missed, .pending_lost, .tampered, .claim_lost, .artifact_destroyed]
+            | @tsv
+        ' < "${AUDIT_FILE}" 2>/dev/null || echo "")
+        if [ -n "${CANARY_COUNTS}" ]; then
+            IFS="$(printf '\t')" read -r PASSED_COUNT FAILED_COUNT MISSED_COUNT PENDING_LOST_COUNT TAMPERED_COUNT CLAIM_LOST_COUNT ARTIFACT_DESTROYED_COUNT <<EOF
+${CANARY_COUNTS}
+EOF
+        else
+            PASSED_COUNT=0
+            FAILED_COUNT=0
+            MISSED_COUNT=0
+            PENDING_LOST_COUNT=0
+            TAMPERED_COUNT=0
+            CLAIM_LOST_COUNT=0
+            ARTIFACT_DESTROYED_COUNT=0
+        fi
 
         # pending_lost rate alarm (1.0/day prior, uncalibrated).
         PENDING_LOST_RATE_INT=$((PENDING_LOST_COUNT * 10 / 7))   # x10 for one decimal
@@ -509,6 +634,10 @@ cmd_status() {
         printf "      claim_lost (race losers):                  ${CLAIM_LOST_COUNT}\n"
         printf "      artifact_destroyed_post_delivery:          ${ARTIFACT_DESTROYED_COUNT}\n"
         printf "    pending_lost rate (7d):                      ${RATE_DISPLAY}\n"
+        CANARY_EVENT_TOTAL=$((PASSED_COUNT + FAILED_COUNT + MISSED_COUNT + PENDING_LOST_COUNT + TAMPERED_COUNT + CLAIM_LOST_COUNT + ARTIFACT_DESTROYED_COUNT))
+        if [ "${CANARY_EVENT_TOTAL}" -eq 0 ]; then
+            printf "    zero explanation:                            ${DIM}healthy if no canary fired; otherwise audit has no canary outcome/fault events in the 7d window${NC}\n"
+        fi
     else
         printf "    ${DIM}audit.jsonl missing or jq unavailable — outcome counts unavailable${NC}\n"
     fi
@@ -574,41 +703,70 @@ cmd_status() {
 
     printf "\n"
 
-    # Frameworks
-    printf "  ${BOLD}Frameworks:${NC}\n"
+    # Frameworks / action surfaces. This block names routed/intercepted
+    # surfaces, not brands. Installing a client is not governance.
+    printf "  ${BOLD}Frameworks / Action Surfaces:${NC}\n"
+
+    CODEX_HOME_DIR="${CODEX_HOME:-${HOME}/.codex}"
+    CODEX_HOOK_FILE="${CODEX_HOME_DIR}/hooks.json"
+    if [ ! -f "${CODEX_HOOK_FILE}" ] && [ -f "${HOME}/.Codex/hooks.json" ]; then
+        CODEX_HOOK_FILE="${HOME}/.Codex/hooks.json"
+    fi
+    CODEX_CONFIG_FILE="${CODEX_HOME_DIR}/config.toml"
+    if [ ! -f "${CODEX_CONFIG_FILE}" ] && [ -f "${HOME}/.Codex/config.toml" ]; then
+        CODEX_CONFIG_FILE="${HOME}/.Codex/config.toml"
+    fi
+
+    if surface_hook_configured "${CODEX_HOOK_FILE}"; then
+        printf "    ${GREEN}●${NC} Codex PreToolUse hook — governed for tool calls emitted to this hook\n"
+        printf "       ${DIM}hook: ${CODEX_HOOK_FILE}${NC}\n"
+    elif command -v codex >/dev/null 2>&1 || [ -d "${CODEX_HOME_DIR}" ] || [ -d "${HOME}/.Codex" ]; then
+        printf "    ${YELLOW}●${NC} Codex — installed; no ZLAR PreToolUse hook found\n"
+    else
+        printf "    ${DIM}○${NC} Codex — not installed\n"
+    fi
+
+    if command -v codex >/dev/null 2>&1 || [ -d "${CODEX_HOME_DIR}" ] || [ -d "${HOME}/.Codex" ]; then
+        printf "    ${YELLOW}●${NC} Codex routed MCP — not measured by status\n"
+        printf "       ${DIM}Use mcp-gate coverage/proof output before claiming Codex MCP coverage.${NC}\n"
+    fi
 
     # Claude Code
-    if [ -f "${HOME}/.claude/settings.json" ] && grep -q "zlar" "${HOME}/.claude/settings.json" 2>/dev/null; then
-        printf "    ${GREEN}●${NC} Claude Code — governed\n"
-    elif [ -f "${HOME}/.claude/settings.json" ] && grep -q "zlar" "${HOME}/.claude/settings.json" 2>/dev/null; then
-        printf "    ${YELLOW}●${NC} Claude Code — governed (by Gate or CC, not LT)\n"
+    if surface_hook_configured "${HOME}/.claude/settings.json"; then
+        printf "    ${GREEN}●${NC} Claude Code PreToolUse hook — governed for tool calls emitted to this hook\n"
     elif command -v claude >/dev/null 2>&1 || [ -d "${HOME}/.claude" ]; then
-        printf "    ${RED}●${NC} Claude Code — installed but not governed\n"
+        printf "    ${YELLOW}●${NC} Claude Code — installed; no ZLAR hook found\n"
     else
         printf "    ${DIM}○${NC} Claude Code — not installed\n"
     fi
 
     # Cursor
-    if [ -f "${HOME}/.cursor/hooks.json" ] && grep -q "zlar" "${HOME}/.cursor/hooks.json" 2>/dev/null; then
-        printf "    ${GREEN}●${NC} Cursor — governed\n"
-    elif [ -f "${HOME}/.cursor/hooks.json" ] && grep -q "zlar" "${HOME}/.cursor/hooks.json" 2>/dev/null; then
-        printf "    ${YELLOW}●${NC} Cursor — governed (by Gate, not LT)\n"
+    if surface_hook_configured "${HOME}/.cursor/hooks.json"; then
+        printf "    ${GREEN}●${NC} Cursor hook adapter — governed for events emitted to this hook\n"
     elif command -v cursor >/dev/null 2>&1 || [ -d "${HOME}/.cursor" ]; then
-        printf "    ${RED}●${NC} Cursor — installed but not governed\n"
+        printf "    ${YELLOW}●${NC} Cursor — installed; no ZLAR hook found\n"
     else
         printf "    ${DIM}○${NC} Cursor — not installed\n"
     fi
 
     # Windsurf
-    if [ -f "${HOME}/.codeium/windsurf/hooks.json" ] && grep -q "zlar" "${HOME}/.codeium/windsurf/hooks.json" 2>/dev/null; then
-        printf "    ${GREEN}●${NC} Windsurf — governed\n"
-    elif [ -f "${HOME}/.codeium/windsurf/hooks.json" ] && grep -q "zlar" "${HOME}/.codeium/windsurf/hooks.json" 2>/dev/null; then
-        printf "    ${YELLOW}●${NC} Windsurf — governed (by Gate, not LT)\n"
+    if surface_hook_configured "${HOME}/.codeium/windsurf/hooks.json"; then
+        printf "    ${GREEN}●${NC} Windsurf hook adapter — governed for events emitted to this hook\n"
     elif command -v windsurf >/dev/null 2>&1 || [ -d "${HOME}/.codeium/windsurf" ]; then
-        printf "    ${RED}●${NC} Windsurf — installed but not governed\n"
+        printf "    ${YELLOW}●${NC} Windsurf — installed; no ZLAR hook found\n"
     else
         printf "    ${DIM}○${NC} Windsurf — not installed\n"
     fi
+
+    if [ -f "${CODEX_CONFIG_FILE}" ]; then
+        CODEX_PLUGIN_COUNT=$(grep -c '^\[plugins\.' "${CODEX_CONFIG_FILE}" 2>/dev/null || echo "0")
+        case "${CODEX_PLUGIN_COUNT}" in ''|*[!0-9]*) CODEX_PLUGIN_COUNT=0 ;; esac
+        if [ "${CODEX_PLUGIN_COUNT}" -gt 0 ]; then
+            printf "    ${YELLOW}●${NC} Codex plugins/connectors — %s installed; not a ZLAR governance measurement\n" "${CODEX_PLUGIN_COUNT}"
+        fi
+    fi
+
+    printf "    ${DIM}Not measured by status: unrouted shell/filesystem/browser/app/network/model reasoning/final text, direct MCP, and plugin internals.${NC}\n"
 
     printf "\n"
 
@@ -1347,7 +1505,7 @@ cmd_help() {
     printf "    unlock      Remove lock and resume normal enforcement\n"
     printf "\n"
     printf "  ${BOLD}Commands:${NC}\n"
-    printf "    status      Show governed frameworks, policy summary, audit count\n"
+    printf "    status      Show governed surfaces, policy summary, audit count\n"
     printf "    doctor      Check installation health (deps, keys, hooks, policy)\n"
     printf "    reset       Reset human-invariant state (clear stuck pending counters)\n"
     printf "    audit [n]   Show last n audit entries (default: 20)\n"

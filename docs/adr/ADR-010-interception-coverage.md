@@ -20,9 +20,12 @@ State the coverage model explicitly in the public documentation, in ADR form her
 
 A code path through which an action must pass before it reaches its effect. For the reference implementation:
 
-- The bash gate intercepts Claude Code tool invocations via the PreToolUse hook registered in ~/.claude/hooks.json. Tool calls the client emits to that hook flow through it before execution.
-- The MCP gate intercepts MCP tools/call requests by sitting as a proxy between the MCP client and the MCP server. Every MCP tool invocation the client issues to this upstream flows through the proxy.
+- The bash/hook gate intercepts tool events emitted to a configured ZLAR hook or adapter, such as Codex/Claude-compatible PreToolUse surfaces and Cursor/Windsurf adapters. Only events the client emits to that hook flow through ZLAR before execution.
+- The MCP gate intercepts MCP `tools/call` requests by sitting as a proxy between the MCP client and the MCP server. Only MCP tool invocations routed through this proxy flow through ZLAR.
 - Sub-agent spawns (SubagentStart) are intercepted through the same hook layer and inherit the gate's decision before the sub-agent begins.
+
+A detected client, plugin, connector, or executable is not an interception
+surface by itself. Governance starts at the routed surface, not at install.
 
 ### What is not an interception surface
 
@@ -39,7 +42,7 @@ Anything the agent does that does not route through one of the above. Specifical
 The practical mission of a ZLAR deployment is to make intercepted equal to all. This is a deployment responsibility, not a code responsibility — the gate cannot intercept what is not routed to it. Closing the coverage model means:
 
 1. The agent runs in an environment where all consequential capabilities are exposed only through intercepted surfaces. Remove or block un-routed capabilities at the sandbox layer.
-2. The hook configuration is signed and its integrity is verified before the agent starts. An attacker who can rewrite ~/.claude/hooks.json bypasses ZLAR by disabling the interception surface itself.
+2. The hook/profile configuration is signed and its integrity is verified before the agent starts. An attacker who can rewrite the configured hook or profile bypasses ZLAR by disabling the interception surface itself.
 3. The MCP transport is the only MCP transport the agent can reach. A second, un-proxied MCP connection bypasses the gate even though the agent is "governed."
 4. Layered defenses — network egress controls, syscall filters, OS sandboxing — catch the residual surface ZLAR cannot cover by architectural design.
 

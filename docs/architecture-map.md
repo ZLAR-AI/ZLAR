@@ -4,18 +4,22 @@
 
 This document is the answer to "what does this change actually touch?" — the cross-file dependencies that grep alone is slow to surface. It is updated alongside any architectural change.
 
-**Last updated:** v3.0.0 — April 12, 2026
+**Last updated:** v3.3.17-dev — May 17, 2026
 
 ---
 
 ## Two parallel gate implementations
 
-ZLAR has TWO gates that enforce the same five human invariants on agent activity:
+ZLAR has TWO gate implementations that enforce the same human-invariant machinery
+on action surfaces that are actually routed or intercepted:
 
 | Gate | Implementation | Hooks into | Library sourced |
 |---|---|---|---|
-| **CC gate** | `bin/zlar-gate` (bash) | Claude Code, via `~/.claude/settings.json` PreToolUse | `lib/human-invariants.sh` |
-| **MCP gate** | `mcp-gate/gate.mjs` (Node.js) | MCP server stack | `lib/human-invariants.mjs` |
+| **Bash / hook gate** | `bin/zlar-gate` (bash) | PreToolUse- or adapter-routed tool events, including Codex/Claude-compatible hook surfaces when configured | `lib/human-invariants.sh` |
+| **MCP gate** | `mcp-gate/gate.mjs` (Node.js) | MCP `tools/call` requests only when the MCP client is routed through the ZLAR proxy | `lib/human-invariants.mjs` |
+
+Installing a client is not governance. A surface is governed only when the
+action crosses one of these gates before effect.
 
 **Both implementations share the same state directory: `repo/var/human-state/`.** Per-human JSON files named `<telegram_chat_id>.json`. Both implementations agree on schema. Both update the same files concurrently.
 
@@ -23,15 +27,17 @@ ZLAR has TWO gates that enforce the same five human invariants on agent activity
 
 ---
 
-## The First Authority chain (v2.7.0 overlap period)
+## The First Authority chain
 
-The order in which a Claude Code tool call passes through enforcement layers:
+The order in which a hook-routed tool call passes through enforcement layers:
 
-1. **Claude Code reads `~/.claude/settings.json`** — points the PreToolUse hook at `~/.claude/zlar-gate.sh` (the wrapper).
+1. **The client reads its hook/profile configuration** — for example Codex
+   `~/.codex/hooks.json` or Claude Code `~/.claude/settings.json` — and points
+   the PreToolUse surface at a ZLAR wrapper.
 2. **Wrapper checks `~/.claude/.gate-disabled`** — if present, returns allow immediately. *This is the legacy off-switch path. v2.6.0 had this as the only off-switch.*
 3. **Wrapper does `.env` parsing** for `TELEGRAM_BOT_TOKEN` (also done in step 6; redundant but harmless).
 4. **Wrapper exec's `bin/zlar-gate`** — the real gate binary.
-5. **bin/zlar-gate checks `/etc/zlar/off-flag`** — if present, returns allow immediately. **This is the v2.7.0 structural off-switch** — root-owned, sudoers-NOPASSWD-toggleable, agent cannot reach.
+5. **bin/zlar-gate checks `/etc/zlar/off-flag`** — if present, returns allow immediately. **This is the structural off-switch** — root-owned, sudoers-NOPASSWD-toggleable, agent cannot reach.
 6. **Policy load and signature verification** — `etc/policies/active.policy.json`, verified against `etc/keys/policy-signing.pub`.
 7. **Policy evaluation** — apply rules to the tool call. Rules can return allow / deny / ask.
 8. **Human invariants** — H6 (daily decision cap), H13 (pending queue), H14 (response time variance), H15 (deliberation floor), H17 (authenticity).

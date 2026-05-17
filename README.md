@@ -6,7 +6,7 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12381/badge)](https://www.bestpractices.dev/projects/12381)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/ZLAR-AI/ZLAR/badge)](https://securityscorecards.dev/viewer/?uri=github.com/ZLAR-AI/ZLAR)
 [![GitHub release](https://img.shields.io/github/v/tag/ZLAR-AI/ZLAR?label=release&sort=semver)](https://github.com/ZLAR-AI/ZLAR/releases)
-[![Tests](https://img.shields.io/badge/tests-61_files_2831_assertions_0_failed-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
+[![Tests](https://img.shields.io/badge/tests-64_files_2986_assertions_0_failed-brightgreen)](https://github.com/ZLAR-AI/ZLAR#running-tests)
 
 **ZLAR gives humans standing at the moment machine intelligence tries to affect the world.**
 
@@ -59,7 +59,7 @@ The install touches:
 
 - `~/.zlar/` for binaries, adapters, policy, public keys, audit/session state, and local config.
 - `~/.zlar-signing.key` for the local Ed25519 policy signing key, with the public key copied under `~/.zlar/etc/keys/`.
-- Framework hook settings when detected, including Claude Code `~/.claude/settings.json`, Cursor `~/.cursor/hooks.json`, and Windsurf `~/.codeium/windsurf/hooks.json`.
+- Framework hook/profile settings when detected, including Codex `~/.codex/hooks.json`, Claude Code `~/.claude/settings.json`, Cursor `~/.cursor/hooks.json`, and Windsurf `~/.codeium/windsurf/hooks.json`.
 - `~/.zlar/.env` for optional Telegram approval setup. Telegram is disabled until you configure it.
 - Optional Telegram dispatcher helper scripts under `/usr/local/bin/` when root or non-interactive sudo is available; otherwise the installer prints the manual command and continues.
 
@@ -71,7 +71,7 @@ If you ask a coding agent to help, point it at [`AGENTS.md`](AGENTS.md) first. T
 
 ZLAR governs routed/intercepted action surfaces only.
 
-- Bash-gate surfaces configured through supported hooks, such as Claude Code PreToolUse and the Cursor/Windsurf adapters.
+- Bash-gate surfaces configured through supported hooks/adapters, such as Codex or Claude-compatible PreToolUse and the Cursor/Windsurf adapters.
 - MCP `tools/call` requests when the MCP client is routed through `mcp-gate/gate.mjs`.
 - SDK-wrapped tool calls when agents are built through the ZLAR SDK/daemon path.
 
@@ -134,7 +134,7 @@ Agent issues routed/intercepted tool call (shell command, file write, API reques
 
 Two enforcement surfaces share the same policy and audit trail:
 
-- **Bash gate** (`bin/zlar-gate`) — hooks into Claude Code, Cursor, Windsurf. Pure bash. Zero dependencies beyond jq and openssl.
+- **Bash gate** (`bin/zlar-gate`) — hooks into configured PreToolUse/adapted surfaces such as Codex, Claude Code, Cursor, and Windsurf. Pure bash. Zero dependencies beyond jq and openssl.
 - **MCP gate** (`mcp-gate/gate.mjs`) — TCP proxy between a configured MCP client and upstream server. Intercepts routed `tools/call` JSON-RPC messages. Per-entry Ed25519 signing, policy signature verification, standing approvals. Evaluates JSON regex policy by default; can evaluate Cedar formal policy when `ZLAR_POLICY_ENGINE=cedar` or `=both`.
 
 The agent does not volunteer to be governed. It is governed by architecture.
@@ -366,7 +366,7 @@ Additional regulation mappings are added as customer engagements require them. T
 | **Compliance** | `cedar-poc/` | Base Cedar ruleset and per-regulation mappings. |
 | **Session** | `lib/session-state.sh` | Velocity, loop detection, denial bursts. Thin counters, not reasoning. |
 | **Operational invariants** | `lib/human-invariants.sh` | Protections for the operator: H6, H13, H15, H17. Per-operator state, not per-session. |
-| **Adapters** | `adapters/` | Framework hooks for Claude Code, Cursor, Windsurf. |
+| **Adapters** | `adapters/` | Framework hooks/adapters for routed tool-event surfaces. |
 | **SDK** | `sdk/membrane` | Programming model for agents constructed inside governance. `ZlarAgent.connect()` requires a live daemon at construction. |
 | **SDK** | `sdk/daemon` | Long-lived gate daemon. Unix socket, JSON-RPC 2.0, delegation chain issuer, agent registration. |
 | **SDK** | `sdk/authzen` | OpenID Foundation AuthZEN 1.0 Policy Decision Point. |
@@ -388,7 +388,7 @@ bash tests/count-assertions.sh --detail   # also show per-file pass counts
 bash tests/count-assertions.sh --badge    # print shields.io badge URL
 ```
 
-Current state: **61 files, 2831 assertions, 0 failed.** Some local environmental failures on macOS (`mcp-gate/test.mjs` — Node `listen()` returns `EPERM` on machines with certain firewall or MDM configurations); CI passes. See [troubleshooting](docs/troubleshooting.md) if the failure appears on your machine.
+Current state: **64 files, 2986 assertions, 0 failed.** Some local environmental failures on macOS (`mcp-gate/test.mjs` — Node `listen()` returns `EPERM` on machines with certain firewall or MDM configurations); CI passes. See [troubleshooting](docs/troubleshooting.md) if the failure appears on your machine.
 
 Tests require `bash`, `jq`, and an OpenSSL with Ed25519 support (LibreSSL on macOS does not qualify — use `brew install openssl@3` and put it on PATH first). `node` and `python3` are optional; `.mjs` and Python tests skip gracefully if unavailable.
 
@@ -411,7 +411,7 @@ Run `zlar doctor` after installation to verify all dependencies.
 ```
 bin/           Gate, receipt tools, witness, digest, registry, policy CLI
 lib/           Shared libraries (crypto, session state, agent identity, receipt, operational invariants)
-adapters/      Framework hooks (claude-code, cursor, windsurf)
+adapters/      Framework hooks/adapters (claude-code, cursor, windsurf)
 mcp-gate/      MCP TCP proxy gate (Node.js)
 etc/           Policy, manifests, signing keys, standing approvals, receipt schema
 tests/         Test suites (bash + Node.js + Python)

@@ -183,14 +183,11 @@ gu_record_enable() {
     local state_json
     state_json=$(_gu_load_state)
 
-    # If already on, don't reset the streak — just touch last_enable.
+    # If already on, do not rewrite lifecycle timestamps. `zlar on` is
+    # idempotent; it reports the open streak and leaves the state file alone.
     local state
     state=$(printf '%s' "${state_json}" | jq -r '.state')
     if [ "${state}" = "on" ]; then
-        printf '%s' "${state_json}" | jq -c \
-            --argjson now "${now}" \
-            '.last_enable_at_epoch = $now | .last_heartbeat_epoch = $now' \
-            | _gu_sealed_write
         return 0
     fi
 
@@ -219,11 +216,17 @@ gu_record_disable() {
     longest_start=$(printf '%s' "${state_json}" | jq -r '.longest_streak_start_epoch')
     lifetime_sec=$(printf '%s' "${state_json}" | jq -r '.lifetime_on_seconds')
 
+    # If already off, do not mint a fresh disable timestamp. Repeated `zlar off`
+    # is a no-op; only an on->off transition closes a streak.
+    if [ "${state}" != "on" ]; then
+        return 0
+    fi
+
     local new_longest="${longest_sec}"
     local new_longest_start="${longest_start}"
     local new_lifetime="${lifetime_sec}"
 
-    if [ "${state}" = "on" ] && [ "${streak_start}" -gt 0 ]; then
+    if [ "${streak_start}" -gt 0 ]; then
         # Close at last_hb, not now. Idle time between the last gate invocation
         # and an explicit disable (stepping away, then running `zlar off`) is
         # not active gate use and must not inflate lifetime_on_seconds or
@@ -332,11 +335,43 @@ gu_status_lines() {
 
     printf '    Current streak:                              %s\n' "${current_display}"
     printf '    Streak started:                              %s\n' "$(gu_format_epoch "${streak_start}")"
+
+    local heartbeat_note=""
+    if [ "${state}" = "on" ]; then
+        if [ "${last_hb}" -gt 0 ]; then
+            local heartbeat_age=$(( now - last_hb ))
+            if [ "${heartbeat_age}" -gt "${_GU_STALE_THRESHOLD_SECONDS}" ]; then
+                heartbeat_note="  (stale: no recent gate call; not an off signal)"
+            else
+                heartbeat_note="  (healthy)"
+            fi
+        else
+            heartbeat_note="  (uninitialized)"
+        fi
+    fi
+    printf '    Last heartbeat:                              %s%s\n' "$(gu_format_epoch "${last_hb}")" "${heartbeat_note}"
+
     printf '    Longest streak:                              %s%s\n' "$(gu_format_duration "${display_longest_sec}")" "${longest_running_annotation}"
     if [ "${display_longest_start}" != "0" ] && [ "${display_longest_start}" != "null" ]; then
         printf '    Longest streak started:                      %s%s\n' "$(gu_format_epoch "${display_longest_start}")" "${longest_running_annotation}"
     fi
     printf '    Lifetime gate-on time:                       %s\n' "$(gu_format_duration "${display_lifetime}")"
+    if [ "${state}" = "on" ] && [ "${lifetime_sec}" -eq 0 ] && [ "${current_sec}" -gt 0 ]; then
+        printf '    Stored lifetime counter:                     0 (reset/uninitialized; current streak counted above)\n'
+    elif [ "${lifetime_sec}" -eq 0 ]; then
+        printf '    Stored lifetime counter:                     0 (uninitialized or reset)\n'
+    fi
+    if [ "${state}" = "on" ] && [ "${longest_sec}" -eq 0 ] && [ "${current_sec}" -gt 0 ]; then
+        printf '    Stored completed-longest counter:            0 (healthy: no completed streak since reset)\n'
+    fi
     printf '    Last enable:                                 %s\n' "$(gu_format_epoch "${last_enable}")"
-    printf '    Last disable:                                %s\n' "$(gu_format_epoch "${last_disable}")"
+    local last_disable_note=""
+    if [ "${last_disable}" = "0" ] || [ "${last_disable}" = "null" ]; then
+        if [ "${last_enable}" != "0" ] && [ "${last_enable}" != "null" ]; then
+            last_disable_note="  (none recorded since uptime state reset)"
+        else
+            last_disable_note="  (uninitialized)"
+        fi
+    fi
+    printf '    Last disable:                                %s%s\n' "$(gu_format_epoch "${last_disable}")" "${last_disable_note}"
 }

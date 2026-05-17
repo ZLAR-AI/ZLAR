@@ -131,10 +131,10 @@ echo
 # Defense-in-depth grep: if anyone re-introduces .event_type in the canary
 # parsing block, this test fails on source inspection alone. Keeps the
 # regression off the audit log even if no fixture run is performed.
-event_type_hits=$(grep -cE "^\s+event=\\\$\\(.*\.event_type" "${PROJECT_DIR}/bin/zlar" || true)
+event_type_hits=$(grep -cE "^[^#]*\\.event_type" "${PROJECT_DIR}/bin/zlar" || true)
 assert "bin/zlar canary parser does not read .event_type" "0" "${event_type_hits}"
 
-action_hits=$(grep -cE "^\s+event=\\\$\\(.*\.action" "${PROJECT_DIR}/bin/zlar" || true)
+action_hits=$(grep -c "\.action //" "${PROJECT_DIR}/bin/zlar" || true)
 { [ "${action_hits}" -ge 1 ]; } && got="present" || got="missing"
 assert "bin/zlar canary parser reads .action"            "present" "${got}"
 
@@ -178,6 +178,38 @@ else
     STATE_IS_STALE="false"
 fi
 assert "missing state.date sentinel '?' not flagged stale" "false" "${STATE_IS_STALE}"
+
+echo
+echo "=== Status truth surface — active human, stale/test files, and routed surfaces ==="
+echo
+
+active_route_hits=$(grep -c "Active Telegram route" "${PROJECT_DIR}/bin/zlar" || true)
+{ [ "${active_route_hits}" -ge 1 ]; } && got="present" || got="missing"
+assert "bin/zlar status names the active Telegram route" "present" "${got}"
+
+inactive_state_hits=$(grep -c "Inactive numeric state files" "${PROJECT_DIR}/bin/zlar" || true)
+{ [ "${inactive_state_hits}" -ge 1 ]; } && got="present" || got="missing"
+assert "bin/zlar status distinguishes inactive numeric state files" "present" "${got}"
+
+test_state_hits=$(grep -c "Test/invalid state files" "${PROJECT_DIR}/bin/zlar" || true)
+{ [ "${test_state_hits}" -ge 1 ]; } && got="present" || got="missing"
+assert "bin/zlar status distinguishes test/invalid state files" "present" "${got}"
+
+surface_header_hits=$(grep -c "Frameworks / Action Surfaces" "${PROJECT_DIR}/bin/zlar" || true)
+{ [ "${surface_header_hits}" -ge 1 ]; } && got="present" || got="missing"
+assert "Frameworks block is reframed as action surfaces" "present" "${got}"
+
+not_measured_hits=$(grep -c "Not measured by status" "${PROJECT_DIR}/bin/zlar" || true)
+{ [ "${not_measured_hits}" -ge 1 ]; } && got="present" || got="missing"
+assert "status names surfaces it does not measure" "present" "${got}"
+
+codex_mcp_hits=$(grep -c "Codex routed MCP.*not measured by status" "${PROJECT_DIR}/bin/zlar" || true)
+{ [ "${codex_mcp_hits}" -ge 1 ]; } && got="present" || got="missing"
+assert "Codex routed MCP is not overclaimed by status" "present" "${got}"
+
+zero_explanation_hits=$(grep -c "zero explanation" "${PROJECT_DIR}/bin/zlar" || true)
+{ [ "${zero_explanation_hits}" -ge 1 ]; } && got="present" || got="missing"
+assert "canary all-zero window is explained" "present" "${got}"
 
 echo
 if [ "${FAIL}" -gt 0 ]; then

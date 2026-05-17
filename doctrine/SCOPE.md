@@ -1,7 +1,7 @@
 ZLAR Scope
 What ZLAR governs, what it does not, and what that means for any claim made about it.
 
-Last updated 2026-04-24. Live doctrine.
+Last updated 2026-05-17. Live doctrine.
 
 Scope of this file: the public boundary of ZLAR's governance claim. DNA §11 establishes the scope boundary in one paragraph; this file is the elaboration. If this file and the live signed artifacts disagree, the artifacts win. If this file and DNA disagree on the principle, DNA wins; this file must be corrected.
 
@@ -17,10 +17,14 @@ The claim applies only to the governed path.
 
 2. The governed path
 
-An action is on the governed path when it flows through a ZLAR interception surface before it takes effect. The reference implementation has two such surfaces:
+An action is on the governed path when it flows through a ZLAR interception surface before it takes effect. The reference implementation has two such surface families:
 
-- The bash gate — Claude Code PreToolUse hook. Claude Code tool calls emitted to this hook flow through it before execution.
-- The MCP gate — TCP proxy between MCP client and MCP server. Every MCP tools/call the client issues to this upstream flows through the proxy.
+- The bash/hook gate — PreToolUse- or adapter-routed tool events. Codex, Claude Code, Cursor, or Windsurf are governed only for the events they emit to the configured ZLAR hook or adapter.
+- The MCP gate — proxy between MCP client and MCP server. MCP `tools/call` requests are governed only when that MCP client is routed through the ZLAR proxy.
+
+Client installation is not a governed path. A plugin, connector, browser, shell,
+filesystem, or app-control capability is not governed merely because it exists
+on the workstation.
 
 See ADR-010 for the full treatment of what counts as an interception surface and what does not.
 
@@ -57,8 +61,8 @@ A deployment that does not close these gaps has ZLAR running, not ZLAR governing
 5. Shipping status of scope-related capabilities
 
 Shipped.
-- Bash gate (Claude Code PreToolUse).
-- MCP gate (TCP proxy).
+- Bash/hook gate for configured PreToolUse or adapter-routed events.
+- MCP gate for routed MCP `tools/call` requests.
 - ADR-010 coverage model, public.
 - Fail-closed on every error path.
 - SDK delegation for in-runtime worker spawn.

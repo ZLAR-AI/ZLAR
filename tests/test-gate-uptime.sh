@@ -88,6 +88,32 @@ streak_start_2=$(jq -r '.current_streak_start_epoch' "${STATE_FILE}")
 assert "enable opens new streak" "set" "${got}"
 
 echo
+echo "=== Idempotent on/off does not rewrite lifecycle timestamps ==="
+echo
+
+now=$(date +%s)
+old_enable=$(( now - 120 ))
+old_hb=$(( now - 90 ))
+jq --argjson e "${old_enable}" --argjson hb "${old_hb}" \
+    '.state = "on" | .current_streak_start_epoch = $e | .last_enable_at_epoch = $e | .last_heartbeat_epoch = $hb' \
+    "${STATE_FILE}" | _gu_sealed_write
+
+gu_record_enable
+enable_after_noop=$(jq -r '.last_enable_at_epoch' "${STATE_FILE}")
+hb_after_noop=$(jq -r '.last_heartbeat_epoch' "${STATE_FILE}")
+assert "idempotent enable preserves last_enable_at_epoch" "${old_enable}" "${enable_after_noop}"
+assert "idempotent enable preserves last_heartbeat_epoch" "${old_hb}" "${hb_after_noop}"
+
+old_disable=$(( now - 60 ))
+jq --argjson d "${old_disable}" \
+    '.state = "off" | .current_streak_start_epoch = 0 | .last_disable_at_epoch = $d' \
+    "${STATE_FILE}" | _gu_sealed_write
+
+gu_record_disable
+disable_after_noop=$(jq -r '.last_disable_at_epoch' "${STATE_FILE}")
+assert "idempotent disable preserves last_disable_at_epoch" "${old_disable}" "${disable_after_noop}"
+
+echo
 echo "=== Longest-streak and lifetime accumulation ==="
 echo
 
@@ -252,6 +278,39 @@ status_out=$(gu_status_lines)
 running_count=$(printf '%s' "${status_out}" | grep -c "(current — still running)" || true)
 { [ "${running_count}" -eq 0 ]; } && got="absent" || got="present"
 assert "state=off: no 'still running' annotation regardless of values" "absent" "${got}"
+
+echo
+echo "=== gu_status_lines: reset/uninitialized zero counters are explained ==="
+echo
+
+now=$(date +%s)
+streak_start=$(( now - 120 ))
+jq --argjson s "${streak_start}" --argjson hb "${now}" \
+    '.state = "on" | .current_streak_start_epoch = $s | .last_heartbeat_epoch = $hb | .last_enable_at_epoch = $s | .last_disable_at_epoch = 0 | .longest_streak_seconds = 0 | .longest_streak_start_epoch = 0 | .lifetime_on_seconds = 0' \
+    "${STATE_FILE}" | _gu_sealed_write
+
+status_out=$(gu_status_lines)
+zero_lifetime_note=$(printf '%s' "${status_out}" | grep -c "Stored lifetime counter:.*reset/uninitialized" || true)
+{ [ "${zero_lifetime_note}" -ge 1 ]; } && got="present" || got="missing"
+assert "stored lifetime zero classified as reset/uninitialized" "present" "${got}"
+
+zero_longest_note=$(printf '%s' "${status_out}" | grep -c "Stored completed-longest counter:.*healthy" || true)
+{ [ "${zero_longest_note}" -ge 1 ]; } && got="present" || got="missing"
+assert "stored completed-longest zero classified as healthy after reset" "present" "${got}"
+
+last_disable_note=$(printf '%s' "${status_out}" | grep -c "Last disable:.*none recorded since uptime state reset" || true)
+{ [ "${last_disable_note}" -ge 1 ]; } && got="present" || got="missing"
+assert "zero last_disable classified as none since reset" "present" "${got}"
+
+stale_hb=$(( now - 700 ))
+jq --argjson s "${streak_start}" --argjson hb "${stale_hb}" \
+    '.state = "on" | .current_streak_start_epoch = $s | .last_heartbeat_epoch = $hb | .last_enable_at_epoch = $s | .lifetime_on_seconds = 0' \
+    "${STATE_FILE}" | _gu_sealed_write
+
+status_out=$(gu_status_lines)
+stale_hb_note=$(printf '%s' "${status_out}" | grep -c "Last heartbeat:.*stale: no recent gate call" || true)
+{ [ "${stale_hb_note}" -ge 1 ]; } && got="present" || got="missing"
+assert "stale heartbeat classified as stale not off" "present" "${got}"
 
 echo
 echo "=== Crash-safe write semantics ==="
