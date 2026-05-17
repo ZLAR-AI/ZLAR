@@ -2161,6 +2161,22 @@ proof_probe_expectation() {
     esac
 }
 
+approval_card_requester() {
+    local requester="${AGENT_ID:-}"
+
+    if [ -z "${requester}" ] && [ "${MANIFEST_LOADED:-false}" = "true" ] && [ -n "${MANIFEST_JSON:-}" ] && command -v jq >/dev/null 2>&1; then
+        requester=$(echo "${MANIFEST_JSON}" | jq -r '.identity.agent_id // empty' 2>/dev/null || true)
+    fi
+
+    if [ -z "${requester}" ]; then
+        requester="hook-client"
+    fi
+
+    # Keep the mobile card readable and avoid letting unusual agent ids
+    # dominate the decision surface.
+    printf '%s' "${requester}" | head -c 48
+}
+
 # Escape MarkdownV2 special characters. Used by telegram_ask_async and
 # preconfirm-cc.sh (sourced at startup, before first ask).
 _mdv2e() { printf '%s' "$1" | sed 's/\\/\\\\/g' | sed 's/[]_*[()~`>#+=|{}.!-]/\\&/g'; }
@@ -2399,6 +2415,8 @@ telegram_ask_async() {
     # Session ID: first 8 chars sufficient for identification
     local short_session="${SESSION_ID:-unknown}"
     short_session="${short_session:0:8}"
+    local requester
+    requester=$(approval_card_requester)
 
     # Message layout: consequence first (what you're deciding), then action for
     # context, rule+risk as compact metadata at bottom. v2.8.1 restructure —
@@ -2409,7 +2427,8 @@ telegram_ask_async() {
 ${consequence_line}${intent_line}${verify_line}
 
 *${action_label}:* \`${short_display}\`
-Risk ${risk_score}/100 · Rule \`$(_mdv2e "${rule}")\` · Session \`${short_session}\`
+Risk ${risk_score}/100 · Rule \`$(_mdv2e "${rule}")\`
+Requester \`$(_mdv2e "${requester}")\` · Session \`$(_mdv2e "${short_session}")\`
 
 If this is unclear, deny\."
 

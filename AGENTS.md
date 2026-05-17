@@ -18,6 +18,22 @@ Before recommending install, inspect the repo and explain what will change. In p
 - `LEGAL.md`
 - `doctrine/SCOPE.md`
 
+## Telegram approval pre-announcement protocol
+
+If an agent is about to trigger a tool call, command, or MCP action that is expected to produce a Telegram approval card, the agent must pre-announce it in the chat before making the call. The card is not the explanation. The operator needs enough context to decide whether this specific card belongs to this specific request.
+
+The pre-announcement must include:
+
+- Expected rule id.
+- Expected command, tool, or action.
+- Why approval is needed.
+- Whether the operator should approve or deny.
+- Exact deny rule for anything else: deny any card whose rule id, command/tool/action, requester, or session does not match the pre-announcement.
+
+Example:
+
+> A Telegram approval card is expected for `R012W_EDIT` on `Edit AGENTS.md`. Approve it because I am adding the operator pre-announcement protocol you asked for. Deny any other card, or this card if the rule/action/requester/session differs from this message.
+
 ## What to tell the human before install
 
 Explain that the default install may touch:

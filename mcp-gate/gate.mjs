@@ -1721,6 +1721,17 @@ function plainRuleLabel(rule, toolName) {
   return 'Approval required';
 }
 
+function approvalCardRequester() {
+  const requester = String(CONFIG.agentId || 'mcp-client').substring(0, 48);
+  const session = String(CONFIG.sessionId || 'unknown').substring(0, 8);
+  return {
+    requester,
+    session,
+    escapedRequester: escapeMarkdownV2Code(requester),
+    escapedSession: escapeMarkdownV2Code(session),
+  };
+}
+
 function proofProbeExpectation({ rule = '', toolName = '', args = {}, flags = {} } = {}) {
   const explicit = String(flags.proofProbeExpectedDecision || '').toLowerCase();
   if (['approve', 'allow', 'approved'].includes(explicit)) return 'approve';
@@ -1797,7 +1808,8 @@ async function telegramAsk(actionId, toolName, args, rule, riskScore, severity, 
   const proofLine = proofExpect
     ? `\n🧪 *Proof probe* — expected human decision: ${proofExpect === 'approve' ? 'APPROVE' : 'DENY'}`
     : '';
-  const text = `${emoji} ${cardMarker} *${escapedRuleLabel}*${proofLine}${tierBannerLine}\n\n${consequenceLine}${intentLine}${verifyLine}${noveltyLine}${advisoryLine}\n\n*Tool:* \`${escapedTool}\`\n*Args:* \`${escapedArgsPreview}\`\n*Args hash:* \`${argsHash}\`\nRisk ${riskScore}/100 · Rule \`${escapedRule}\`\n\nIf this is unclear, deny.`;
+  const requester = approvalCardRequester();
+  const text = `${emoji} ${cardMarker} *${escapedRuleLabel}*${proofLine}${tierBannerLine}\n\n${consequenceLine}${intentLine}${verifyLine}${noveltyLine}${advisoryLine}\n\n*Tool:* \`${escapedTool}\`\n*Args:* \`${escapedArgsPreview}\`\n*Args hash:* \`${argsHash}\`\nRisk ${riskScore}/100 · Rule \`${escapedRule}\`\nRequester \`${requester.escapedRequester}\` · Session \`${requester.escapedSession}\`\n\nIf this is unclear, deny.`;
 
   const keyboard = {
     inline_keyboard: [[

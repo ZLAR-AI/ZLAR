@@ -816,6 +816,12 @@ async function runTests() {
       assert('ask-approved card keeps rule id escaped as metadata', askText.includes('Rule `AC\\_ASK`'), `text=${JSON.stringify(askText)}`);
       assert('ask-approved card keeps tool name visible', askText.includes('*Tool:* `marker_ask`'), `text=${JSON.stringify(askText)}`);
       assert('ask-approved card keeps risk visible', askText.includes('Risk 20/100'), `text=${JSON.stringify(askText)}`);
+      assert('ask-approved card names requester agent',
+        askText.includes('Requester `adapter-ask-agent`'),
+        `text=${JSON.stringify(askText)}`);
+      assert('ask-approved card names short session',
+        askText.includes('Session `adapter-`'),
+        `text=${JSON.stringify(askText)}`);
       assert('ask-approved card includes args hash', /\*Args hash:\* `[a-f0-9]{16}`/.test(askText), `text=${JSON.stringify(askText)}`);
       assert('ask-approved card redacts synthetic secrets',
         !askText.includes('sk-live-adapter-card-secret') &&

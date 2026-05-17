@@ -40,11 +40,13 @@ assert_contains "R001C has human-readable label" "Sensitive file read" "${PROJEC
 assert_contains "bash proof probes show expected decision" "expected human decision: APPROVE" "${PROJECT_DIR}/bin/zlar-gate"
 assert_contains "bash proof probes can derive approve from marker" "marker_ask_approve" "${PROJECT_DIR}/bin/zlar-gate"
 assert_contains "bash proof probes can derive deny from marker" "marker_ask_deny" "${PROJECT_DIR}/bin/zlar-gate"
+assert_contains "bash card names requester" 'Requester \`$(_mdv2e "${requester}")\`' "${PROJECT_DIR}/bin/zlar-gate"
 assert_contains "bash card says deny if unclear" "If this is unclear, deny" "${PROJECT_DIR}/bin/zlar-gate"
 
 assert_contains "MCP card has plain rule labels" "plainRuleLabel" "${PROJECT_DIR}/mcp-gate/gate.mjs"
 assert_contains "MCP proof probes show expected decision" "expected human decision:" "${PROJECT_DIR}/mcp-gate/gate.mjs"
 assert_contains "MCP proof probes accept per-rule metadata" "proofProbeExpectedDecision" "${PROJECT_DIR}/mcp-gate/gate.mjs"
+assert_contains "MCP card names requester" 'Requester \`${requester.escapedRequester}\`' "${PROJECT_DIR}/mcp-gate/gate.mjs"
 assert_contains "MCP card says deny if unclear" "If this is unclear, deny" "${PROJECT_DIR}/mcp-gate/gate.mjs"
 
 assert_contains "canary card remains ordinary approval" "*Approval required*" "${PROJECT_DIR}/lib/canary.sh"
