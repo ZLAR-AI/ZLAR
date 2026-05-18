@@ -291,6 +291,56 @@ const fixtures = [
     expected_rule: 'R012I', expected_action: 'allow',
   },
 
+  // ── R012 family — read-only governance inspection (R012R) ──────────────────
+  {
+    desc: 'R012R: sed -n Claude settings read → allow/info',
+    domain: 'bash',
+    detail: { command: "sed -n '1,220p' /Users/testuser/.claude/settings.json", cwd: '' },
+    expected_rule: 'R012R', expected_action: 'allow',
+  },
+  {
+    desc: 'R012R: jq gate config read → allow/info',
+    domain: 'bash',
+    detail: { command: "jq '.telegram' etc/gate.json", cwd: '' },
+    expected_rule: 'R012R', expected_action: 'allow',
+  },
+  {
+    desc: 'R012R: awk print-only policy read → allow/info',
+    domain: 'bash',
+    detail: { command: "awk '/R012/ { print $0 }' etc/policies/active.policy.json", cwd: '' },
+    expected_rule: 'R012R', expected_action: 'allow',
+  },
+  {
+    desc: 'R012R: git status policy read → allow/info',
+    domain: 'bash',
+    detail: { command: 'git status --short etc/policies/active.policy.json', cwd: '' },
+    expected_rule: 'R012R', expected_action: 'allow',
+  },
+  {
+    desc: 'R012R: git log gate read → allow/info',
+    domain: 'bash',
+    detail: { command: 'git log --oneline -- /Users/testuser/Desktop/ZLAR/ZLAR_Repo/bin/zlar-gate', cwd: '' },
+    expected_rule: 'R012R', expected_action: 'allow',
+  },
+  {
+    desc: 'R012R: git show gate read → allow/info',
+    domain: 'bash',
+    detail: { command: 'git show HEAD:/Users/testuser/Desktop/ZLAR/ZLAR_Repo/bin/zlar-gate', cwd: '' },
+    expected_rule: 'R012R', expected_action: 'allow',
+  },
+  {
+    desc: 'R012R: git diff gate read → allow/info',
+    domain: 'bash',
+    detail: { command: 'git diff -- /Users/testuser/Desktop/ZLAR/ZLAR_Repo/bin/zlar-gate', cwd: '' },
+    expected_rule: 'R012R', expected_action: 'allow',
+  },
+  {
+    desc: 'R012R: git blame gate read → allow/info',
+    domain: 'bash',
+    detail: { command: 'git blame /Users/testuser/Desktop/ZLAR/ZLAR_Repo/bin/zlar-gate', cwd: '' },
+    expected_rule: 'R012R', expected_action: 'allow',
+  },
+
   // ── R012 family — trust-state writes (R012W_MODE) ────────────────────────
   {
     desc: 'R012W_MODE: zlar-restore evaluate (bare) → ask/critical',
@@ -342,6 +392,36 @@ const fixtures = [
     desc: 'R012W_EDIT: edit gate hook → ask/critical',
     domain: 'bash',
     detail: { command: 'vim /Users/testuser/.claude/hooks/pre-tool', cwd: '' },
+    expected_rule: 'R012W_EDIT', expected_action: 'ask',
+  },
+  {
+    desc: 'R012W_EDIT: sed -i Claude settings edit → ask/critical',
+    domain: 'bash',
+    detail: { command: "sed -i '' 's/foo/bar/' /Users/testuser/.claude/settings.json", cwd: '' },
+    expected_rule: 'R012W_EDIT', expected_action: 'ask',
+  },
+  {
+    desc: 'R012W_EDIT: redirection to gate path → ask/critical',
+    domain: 'bash',
+    detail: { command: 'cat /tmp/new > /Users/testuser/Desktop/ZLAR/ZLAR_Repo/bin/zlar-gate', cwd: '' },
+    expected_rule: 'R012W_EDIT', expected_action: 'ask',
+  },
+  {
+    desc: 'R012W_EDIT: jq read with redirection to gate path → ask/critical',
+    domain: 'bash',
+    detail: { command: "jq '.telegram' etc/gate.json > /Users/testuser/Desktop/ZLAR/ZLAR_Repo/bin/zlar-gate", cwd: '' },
+    expected_rule: 'R012W_EDIT', expected_action: 'ask',
+  },
+  {
+    desc: 'R012W_EDIT: tee gate path → ask/critical',
+    domain: 'bash',
+    detail: { command: 'tee /Users/testuser/Desktop/ZLAR/ZLAR_Repo/bin/zlar-gate < /tmp/new', cwd: '' },
+    expected_rule: 'R012W_EDIT', expected_action: 'ask',
+  },
+  {
+    desc: 'R012W_EDIT: truncate gate path → ask/critical',
+    domain: 'bash',
+    detail: { command: 'truncate -s 0 /Users/testuser/Desktop/ZLAR/ZLAR_Repo/bin/zlar-gate', cwd: '' },
     expected_rule: 'R012W_EDIT', expected_action: 'ask',
   },
 

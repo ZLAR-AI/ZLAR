@@ -7,7 +7,7 @@
   "signature": {
     "algorithm": "ed25519",
     "public_key": "MCowBQYDK2VwAyEA6LqPZP14SeNzrjKASe4v0ENlEDnXnDcmXgr/dU+k5qs=",
-    "value": "avIeu/5rcvs16DGnLftfMeMLn1VMt/CzsZUyk0eIxxPpLbO+6Wu+c0AyP99myqx/QbUf0KtfFThSsCEivj6rDQ=="
+    "value": "VSB8RmXwue8fJ5vEjMk8S28ROWccAzx8YSafujW3ARv2vQT+DNnML0dPrg5lJKz6g17EVoyUEQdhRwMEw4S2Aw=="
   },
   "default_action": "deny",
   "scoring_thresholds": {
@@ -374,6 +374,33 @@
       }
     },
     {
+      "id": "R012W_EDIT",
+      "enabled": true,
+      "description": "ZLAR enforcement path write — ask human",
+      "domain": "bash",
+      "action": "ask",
+      "severity": "critical",
+      "audit": true,
+      "match": {
+        "detail": {
+          "command": {
+            "regex": "/(bin|etc|config|scripts)/zlar-|/\\.claude/(hooks|settings|\\.gate-disabled)|policy.*\\.json|pf-zlar|pf\\.conf|gate\\.json|/var/log/(audit|gate)"
+          }
+        },
+        "compound_guard": {
+          "command": {
+            "regex": "^\\s*(vi|vim|nano|emacs|code|subl|bbedit|pico|cp|mv|rm|install|truncate)\\b|^\\s*sed\\s+-i\\b|^\\s*perl\\s+-i\\b|(^|\\s)tee(\\s|$)|(^|\\s)[0-9]*>{1,2}|\\bdd\\b.*\\bof=|^\\s*ln\\s+-s"
+          }
+        }
+      },
+      "risk_score": {
+        "irreversibility": 100,
+        "consequence": 100,
+        "blast_radius": 100
+      },
+      "verify_hint": "This writes enforcement policy, gate code, hooks, or governance state. Confirm the specific file and change before approving."
+    },
+    {
       "id": "R012R",
       "enabled": true,
       "description": "Read-only access to ZLAR paths — allowed with audit",
@@ -389,7 +416,7 @@
         },
         "compound_guard": {
           "command": {
-            "regex": "^\\s*(cat|head|tail|less|more|wc|grep|egrep|fgrep|rg|file|stat|ls|diff|md5|shasum|sha256sum|xxd|hexdump|strings)\\b"
+            "regex": "^\\s*(cat|head|tail|less|more|wc|grep|egrep|fgrep|rg|file|stat|ls|diff|md5|shasum|sha256sum|xxd|hexdump|strings|jq)\\b|^\\s*sed\\s+-n\\b|^\\s*git\\s+(status|log|show|diff|blame)\\b|^\\s*awk\\s+'[^']*print[^']*'"
           }
         }
       },
@@ -468,28 +495,6 @@
         "blast_radius": 100
       },
       "verify_hint": "This changes gate enforcement mode or resets human-invariant trust state. Confirm the change is intentional."
-    },
-    {
-      "id": "R012W_EDIT",
-      "enabled": true,
-      "description": "ZLAR enforcement path write — ask human",
-      "domain": "bash",
-      "action": "ask",
-      "severity": "critical",
-      "audit": true,
-      "match": {
-        "detail": {
-          "command": {
-            "regex": "/(bin|etc|config|scripts)/zlar-|/\\.claude/(hooks|settings|\\.gate-disabled)|policy.*\\.json|pf-zlar|pf\\.conf|gate\\.json|/var/log/(audit|gate)"
-          }
-        }
-      },
-      "risk_score": {
-        "irreversibility": 100,
-        "consequence": 100,
-        "blast_radius": 100
-      },
-      "verify_hint": "This edits enforcement policy, gate code, or hooks. Confirm the specific file and change before approving."
     },
     {
       "id": "R012W_TRUST_LANE",
