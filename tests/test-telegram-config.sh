@@ -294,36 +294,37 @@ else
     assert_true "helper shape matches inline replica" "false"
 fi
 
-# ── Live status smoke check (skipped if etc/gate.json absent — CI case) ──
+# ── Status block drift check ──
 echo ""
-echo "TC-LIVE: bin/zlar status displays a coherent Telegram block on this box"
-STATUS_OUT=$("${PROJECT_DIR}/bin/zlar" status 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-status_matches() {
-    grep -qE "$1" <<< "${STATUS_OUT}"
+echo "TC-STATUS: bin/zlar keeps a coherent top-level Telegram status block"
+STATUS_BLOCK=$(sed -n '/# Telegram (v3.3.9/,/# Audit/p' "${PROJECT_DIR}/bin/zlar")
+status_block_contains() {
+    grep -qE "$1" <<< "${STATUS_BLOCK}"
 }
-if status_matches '^  Telegram:$'; then
-    if status_matches 'state: +(● enabled|⛔ fail-closed|○ disabled)'; then
-        assert_true "Telegram block has a coherent state line" "true"
-    else
-        assert_true "Telegram block has a coherent state line (no recognized state)" "false"
-    fi
-    if status_matches 'chat_id source: +(gate\.json|env|unconfigured)'; then
-        assert_true "Telegram block has a chat_id source line" "true"
-    else
-        assert_true "Telegram block has a chat_id source line" "false"
-    fi
-    if status_matches 'token: +(present|missing)'; then
-        assert_true "Telegram block has a token presence line" "true"
-    else
-        assert_true "Telegram block has a token presence line" "false"
-    fi
-    if status_matches 'chat_id status: +(valid numeric|missing|invalid:)'; then
-        assert_true "Telegram block has a chat_id status line" "true"
-    else
-        assert_true "Telegram block has a chat_id status line" "false"
-    fi
+if status_block_contains 'printf "  \$\{BOLD\}Telegram:\$\{NC\}\\n"'; then
+    assert_true "Telegram block has a top-level heading" "true"
 else
-    assert_true "Telegram top-level block present" "false"
+    assert_true "Telegram block has a top-level heading" "false"
+fi
+if status_block_contains 'printf "    state:[[:space:]]+\$\{TG_STATE_DISPLAY\}\\n"'; then
+    assert_true "Telegram block has a coherent state line" "true"
+else
+    assert_true "Telegram block has a coherent state line" "false"
+fi
+if status_block_contains 'printf "    chat_id source:[[:space:]]+\$\{TG_SOURCE_DISPLAY\}\\n"'; then
+    assert_true "Telegram block has a chat_id source line" "true"
+else
+    assert_true "Telegram block has a chat_id source line" "false"
+fi
+if status_block_contains 'printf "    chat_id status:[[:space:]]+\$\(telegram_chat_id_display "\$\{TG_CHAT_ID_STATUS\}"\)\\n"'; then
+    assert_true "Telegram block has a chat_id status line" "true"
+else
+    assert_true "Telegram block has a chat_id status line" "false"
+fi
+if status_block_contains 'printf "    token:[[:space:]]+\$\{TG_TOKEN_DISPLAY\}\\n"'; then
+    assert_true "Telegram block has a token presence line" "true"
+else
+    assert_true "Telegram block has a token presence line" "false"
 fi
 
 # ── Final summary ──
