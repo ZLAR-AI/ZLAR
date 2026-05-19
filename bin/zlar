@@ -1561,7 +1561,7 @@ case "${COMMAND}" in
         touch "$HOME/.claude/.gate-disabled"
         sudo -n touch /etc/zlar/off-flag 2>/dev/null || echo "  (warn: /etc/zlar/off-flag not writable; wrapper path still active)"
         _ensure_gu && gu_record_disable 2>/dev/null || true
-        echo "Gate OFF — Claude unblocked"
+        printf 'ZLAR gate is OFF.\nGoverned tool hooks are unblocked.\nWork done while OFF is not governed by ZLAR.\n'
         ;;
     on)
         _ensure_gu
