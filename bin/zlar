@@ -1533,6 +1533,7 @@ cmd_help() {
     printf "    reset       Reset human-invariant state (clear stuck pending counters)\n"
     printf "    audit [n]   Show last n audit entries (default: 20)\n"
     printf "    why <id>    Show Worker Receipt for exact event id (read-only)\n"
+    printf "    classify    Preflight classify a proposed tool call (read-only)\n"
     printf "    policy      Show current policy rules\n"
     printf "    telegram    Set up Telegram approval (upgrade from deny-all)\n"
     printf "    uninstall   Clean removal of ZLAR\n"
@@ -1553,6 +1554,7 @@ case "${COMMAND}" in
     reset)     cmd_reset ;;
     audit)     cmd_audit "$@" ;;
     why)       ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-why" "$@" ;;
+    classify)  exec "${PROJECT_DIR}/bin/zlar-classify" "$@" ;;
     policy)    cmd_policy ;;
     telegram)  cmd_telegram ;;
     uninstall) cmd_uninstall ;;
