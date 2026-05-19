@@ -18,11 +18,23 @@ Before recommending install, inspect the repo and explain what will change. In p
 - `LEGAL.md`
 - `doctrine/SCOPE.md`
 
-## Telegram approval pre-announcement protocol
+## Operator loop — preflight, pre-announce, reconcile
 
-If an agent is about to trigger a tool call, command, or MCP action that is expected to produce a Telegram approval card, the agent must pre-announce it in the chat before making the call. The card is not the explanation. The operator needs enough context to decide whether this specific card belongs to this specific request.
+Full spec: `docs/operator-loop.md`. The five behaviors below are mandatory before any tool call likely to ask or deny.
 
-The pre-announcement must include:
+### 1. Preflight classify before risky actions
+
+Before any action plausibly governed (any `Bash` touching the repo, any `Write` or `Edit` to repo code, any MCP call routed through ZLAR), run or reason through `zlar classify`:
+
+```bash
+echo '{"tool_name":"Edit","tool_input":{"file_path":"<abs path>","old_string":"a","new_string":"b"}}' | bash bin/zlar-classify
+```
+
+Returns `{"rule_id":"R0XX","action":"allow|ask|deny","domain":"…","severity":"…"}`. This is the floor — runtime modifiers can escalate but never widen.
+
+### 2. Pre-announce in chat
+
+Before any tool call where preflight returns `ask` or `deny`, and before any cluster of writes (even silent ones), state in chat:
 
 - Expected rule id.
 - Expected command, tool, or action.
@@ -32,7 +44,25 @@ The pre-announcement must include:
 
 Example:
 
-> A Telegram approval card is expected for `R012W_EDIT` on `Edit AGENTS.md`. Approve it because I am adding the operator pre-announcement protocol you asked for. Deny any other card, or this card if the rule/action/requester/session differs from this message.
+> A Telegram approval card is expected for `R041E` on `Edit docs/operator-loop.md`. Approve it because I am correcting the G-3 framing. Deny any other card, or this card if the rule/action/requester/session differs from this message.
+
+### 3. Surprise card → stop and reconcile
+
+If a card appears whose rule id, action, or content does not match the pre-announcement — that is a surprise card. Surprise cards are **product evidence**, not normal workflow. They mean the agent's intent and the gate's classification diverged.
+
+When that happens:
+
+1. The operator denies on principle, not on the action's merits.
+2. The session enters reconcile state per `docs/operator-loop.md`.
+3. The agent does not retry through another path. The agent stops, acknowledges the denial, reports what happened, and waits for human direction.
+
+### 4. No bundled shell chains for verification
+
+When one simple command suffices, use one simple command. Do not wrap verification in `sh -c '… | … | …'` — that fires `R005J` (Shell -c invocation, ask critical) and produces an unannounced card. Prefer direct `jq`, `cat`, `wc`, `grep`, etc. If a shell chain is genuinely needed, pre-announce `R005J ask critical`.
+
+### 5. Surprise cards are evidence, not noise
+
+A surprise card means something the agent did not announce reached the gate. Record it. Update preflight, pre-announce, or the policy — not the agent's habit of routing around denials. Path-laundering (denied write → silent edit, denied bash → silent MCP call) destroys human authority over the session; do not do it.
 
 ## What to tell the human before install
 

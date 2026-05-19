@@ -157,9 +157,15 @@ Pre-announce protocol: when about to call `Edit` on `bin/zlar`, the agent states
 
 Until R005E tightens its regex (e.g., anchor to `\beval(\s|$|;|\|)` rather than bare `\beval\b`), agents should avoid putting filenames containing `-eval` into Bash commands. Use the `Read` tool (read-domain) for files whose names contain `eval`.
 
-### G-3: `R005J` reportedly firing on `bash -n` (open question)
+### G-3: `R005J` fires on `sh -c` verification chains (resolved framing)
 
-A prior session note recorded `R005J` firing on `bash -n` (syntax check). R005J's regex is `\b(bash|sh|zsh|dash|ash|ksh)\s+-c\b` — it requires `-c`, not `-n`. Either the report is misremembered or a different rule fired. Worth verifying next time it happens by capturing the audit entry and the exact command string.
+`R005J` matches `\b(bash|sh|zsh|dash|ash|ksh)\s+-c\b` — `ask` severity `critical`. An earlier note framed this as `R005J` "reportedly firing on `bash -n`"; that framing was wrong. The actual trigger was a `sh -c '...'` verification chain — `sh -c` is exactly what R005J catches, and the rule fired correctly.
+
+This is not a gap. It is the loop working as designed: bundling a verification step into `sh -c` produces a surprise card if the agent did not announce it. The remedy lives in the loop, not in the policy:
+
+- For verification, prefer a single direct command (`jq`, `cat`, `wc`, `grep`) over `sh -c '… | … | …'`.
+- If a shell-chain really is needed, pre-announce `R005J ask critical` and let the operator decide.
+- Treat any unannounced `R005J` card as a surprise card and stop per the reconcile rule above.
 
 ---
 
