@@ -158,4 +158,5 @@ console.log(`\n  ${pass} proven, ${fail} failed`);
 console.log(`\n  ${N.toLocaleString()} routine decisions`);
 console.log(`  ${(perCall / 1000).toFixed(3)} µs per decision  (${(nanos / 1e6).toFixed(1)} ms total)`);
 console.log(`  ${allowed.toLocaleString()} allowed · ${asked} human interruptions · ${denied} refused\n`);
+console.log(`  Results: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

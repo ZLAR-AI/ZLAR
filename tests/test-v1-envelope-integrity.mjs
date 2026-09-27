@@ -46,7 +46,7 @@ const records = (p, fn) => {
 
 if (!existsSync(join(KIT, 'verify.mjs'))) {
   console.log('\n  SKIP — no built kit. Run tools/build-verifier-kit.sh first.\n');
-  process.exit(0);
+  process.exit(77);
 }
 
 const work = mkdtempSync(join(tmpdir(), 'v1-envelope-'));
@@ -125,4 +125,5 @@ if (fail === 0) {
   console.log('\n  Behaviour has CHANGED since 2026-08-17. Confirm the change was');
   console.log('  intended, then update these assertions with the reason.\n');
 }
+console.log(`  Results: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

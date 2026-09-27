@@ -153,14 +153,14 @@ run_test() {
         return 0
     fi
 
-    # These suites verify against commits and tags from the private
-    # development history, which this public repository does not contain.
-    # They pass in the private history repository. See
+    # These suites need material this public repository does not contain:
+    # commits and tags from the private development history, or the
+    # founder's private workspace folders next to the repository. See
     # tests/REQUIRES-PRIVATE-HISTORY-SUITES.md.
     if [ -f "${REQUIRES_PRIVATE_HISTORY_TEST_SUITES}" ] && \
        grep -Fqx "${base}" "${REQUIRES_PRIVATE_HISTORY_TEST_SUITES}"; then
         TOTAL_SKIP=$((TOTAL_SKIP + 1))
-        [ "$DETAIL" -eq 1 ] && printf "  SKIP  %-50s (needs private development history)\n" "$file"
+        [ "$DETAIL" -eq 1 ] && printf "  SKIP  %-50s (needs private history or workspace)\n" "$file"
         return 0
     fi
 
@@ -251,5 +251,7 @@ printf "Files: %d   Assertions: %d   Failed: %d   Skipped: %d\n" \
 echo "───────────────────────────────────────────────────"
 if [ "$TOTAL_FAIL" -gt 0 ]; then
     echo "FAILED:${FAILED_FILES}"
+    echo "Known failures on a fresh copy are listed in tests/KNOWN-FAILURES.md."
+    echo "A failure not listed there is new."
     exit 1
 fi

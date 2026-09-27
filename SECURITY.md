@@ -14,11 +14,26 @@ Do not open a public issue for security vulnerabilities.
 
 We credit reporters in the advisory unless they prefer anonymity.
 
+**Publishing your findings.** Breaking ZLAR is welcome, and so is publishing what
+you found, once you've reported it to us privately and it's been fixed or 90 days
+have passed, whichever comes first.
+
+## Where ZLAR lives
+
+The only official source is this repository, github.com/ZLAR-AI/ZLAR, with the
+website at [zlar.ai](https://zlar.ai). ZLAR has never offered a Windows installer
+or a `.exe` file. A repository elsewhere that uses the ZLAR name and asks you to
+download and run something is an impersonation and may be malware. Please report
+it to security@zlar.ai.
+
 ## Supported Versions
 
 The latest version on the main line is supported. Please report against it.
 
 ## Security Design Principles
+
+Most of what follows describes ZLAR's first design, the checkpoint that sits next
+to the AI. The force field's own properties are in [cyan/README.md](cyan/README.md).
 
 1. **Fail closed on protected paths.** If a routed/intercepted gate invocation cannot be evaluated safely, that invocation is denied. There is no `--permissive` flag. ([ADR-003](docs/adr/ADR-003-fail-closed.md))
 2. **No intelligence in the enforcement path.** The gate pattern-matches against signed rules. It does not reason, interpret, or form opinions. ([ADR-001](docs/adr/ADR-001-deterministic-enforcement.md))
@@ -40,7 +55,7 @@ ZLAR protects the human decision-maker:
 
 - **Decision fatigue** — H6 enforces a daily decision cap (default: 80). When the cap is reached, the gate stops routing to the human. The system is under-resourced, not the human.
 - **Rubber-stamping / response-pattern drift** — H14 monitors response-time variance in a rolling window and fires a health warning when the pattern suggests review may no longer be meaningful.
-- **Rushed approval** — H15 enforces a deliberation floor per risk class (critical: 30s, warn: 10s, info: 3s). Approvals faster than the floor are rejected. The human must review again.
+- **Rushed approval** — H15 sets a deliberation floor per risk class (critical: 30s, warn: 10s, info: 3s). A critical approval faster than the floor is rejected, and the human must review again. For warn and info, a faster approval goes through and is recorded as a signal for H14, because forced waiting on routine asks trains people to wait and then tap.
 - **Automated impersonation** — H17 rejects sub-second responses as possible automation. A human cannot read, comprehend, and decide in under 2 seconds.
 - **Queue overload** — H13 tracks pending decisions. When the queue exceeds capacity, the system is under-resourced and logs a warning.
 
@@ -55,8 +70,7 @@ ZLAR does not protect against:
 
 - Core gate: zero external dependencies (bash, jq, openssl — all system packages).
 - MCP gate: zero npm dependencies (Node.js built-ins only).
-- CI: ShellCheck, JSON validation, CodeQL scanning.
-- Dependabot enabled for GitHub Actions.
+- CI: ShellCheck, JSON validation and CodeQL scanning are configured in `.github/workflows/`. Automatic runs are switched off for now.
 
 ## Cryptographic Choices
 

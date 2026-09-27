@@ -1,9 +1,16 @@
 Human-Attention Canary
-Roadmap note. Design, not yet shipped. Constitutional-adjacent. Implementation requires separate review.
 
-Last updated 2026-04-24. Live roadmap doctrine.
+**Status: built.** This design note was written on 2026-04-24. Its elements were
+built on 2026-04-25 and 2026-04-26 in ZLAR's first design (the checkpoint next to
+the AI): the tiered deliberation floor (Element A), the alert instead of a lockout
+(Element B), the rule split by effect (Element C), the receipt fields (Element D),
+and the visible canary tiers with the preconfirm flow (Elements E1 and E2). The
+code is in `lib/human-invariants.sh`, `lib/canary.sh` and `bin/zlar-gate`. ZLAR's
+newer design, the force field, does not yet have its own version of these
+protections.
 
-Status: named, designed, constitutional-compliance verified, code not written. This roadmap note records current design intent; it does not authorize policy, constitution, or gate behavior changes. Any future Claude or maintainer reading this file should not treat it as permission to implement or as proof the canary already exists. Implementation is a separate session, a separate review, and a separate approval.
+The note below is kept as written, including its original "not shipped" status in
+section 10, as the record of the design.
 
 —
 

@@ -47,14 +47,44 @@ public/thin verifier artifacts is available at:
 
     LICENSES/Apache-2.0-prior-public.txt
 
-Verifier-Kit / Thin Public Artifact Boundary
---------------------------------------------
+Open Checking Tools (Apache License 2.0)
+----------------------------------------
 
-Some verifier-kit or thin public proof artifacts may be intentionally packaged
-under Apache-2.0 or another explicitly named license. Those artifacts must name
-their own license boundary. They do not change the license of the current
-private-core source tree, and the current private-core source tree does not
-automatically change their license.
+So that anyone can check ZLAR's records without trusting ZLAR, the files listed
+below are licensed under the Apache License 2.0, not under the terms above. The
+license text is at LICENSES/Apache-2.0-prior-public.txt.
+
+The checking tool, and the verifier kit that tools/build-verifier-kit.sh builds
+from these files:
+
+    tools/verifier-kit-src/
+    tools/build-verifier-kit.sh
+    bin/zlar-verify
+    lib/receipt.mjs
+    lib/canonicalize.mjs
+    lib/semantic-validator.mjs
+    lib/sig-verify.mjs
+    lib/downstream-recognition-rule.mjs
+    lib/issuer-status-proof.mjs
+
+The written rules:
+
+    spec/governed-action-receipt-v1.md
+    spec/CONFORMANCE.md
+    spec/verify-test-vectors.mjs
+    spec/test-key.pub
+    spec/trusted-receipt-issuers-v1.schema.json
+    spec/trusted-receipt-issuers-v2.schema.json
+    docs/canonicalization-spec.md
+
+The force field's record format and its check:
+
+    cyan/receipt.mjs
+    cyan/canonical.mjs
+
+Everything else in this repository, including the force field itself, remains
+under the terms above. Later versions of the files listed here are covered by
+this section while they remain listed.
 
 No Support Or Release Promise
 -----------------------------

@@ -7,3 +7,6 @@ test-current-machine-approval-request-preview.mjs
 test-current-machine-governance-preview.mjs
 test-future-installer-retired-source-residue-cleanup-v0.mjs
 test-legacy-runtime-v1-e3-source-disposition-overlay-v0.mjs
+test-zlar-owned-runner-cli.sh
+test-zlar-source-transport-movement-report.mjs
+test-zlar-source-transport-preflight.mjs

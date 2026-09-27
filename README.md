@@ -101,8 +101,9 @@ most persuasive AI ever built.
 
 Each key is issued for an exact purpose, either one action or a set budget, and it
 can't be stretched to cover anything bigger. Copy it all you like: a copy can never
-do more than the original was allowed to, and a one-time key works only once. To a
-thief, a spent key is worth nothing.
+do more than the original was allowed to, and a one-time key works only once. (Today
+that holds at a single checkpoint. Two checkpoints guarding the same thing is a
+known break, listed below.) To a thief, a spent key is worth nothing.
 
 The protected thing signs its own record of what it allowed and what it refused,
 each entry chained to the one before, so an entry removed or altered afterwards
@@ -116,31 +117,6 @@ asking.
 
 The properties every ZLAR key follows are written down in
 [ZLAR's Principles](PRINCIPLES.md).
-
----
-
-## If I'm right about this
-
-If I'm right, this is a very big deal.
-
-People keep the two powers that matter most: the power to say **no** (a veto) and
-the power to say **yes** (consent). No machine picks up either one by accident,
-however capable it becomes.
-
-The worst an AI can do shrinks to the size of the key you handed it, not the size
-of the intelligence holding it. And once the worst case has a size, you can
-finally say yes to a lot more.
-
-A farmer in Malawi and a farmer in Manitoba get the same deal: let the AI run the
-irrigation, the orders, the paperwork and the insurance claims, at full speed.
-The one thing it can't do without them is sell the farm.
-
-That's the road to abundance. Not holding AI back, but letting it go, because the
-few doors that matter only open for the people who live behind them.
-
-It doesn't change as things get bigger. The same rule protects one bank account
-or a billion of them, one small program or something far smarter than us. No one
-has to hold a master switch. Every house keeps its own keys.
 
 ---
 
@@ -196,7 +172,8 @@ This is the honest gap between the idea and the code. It's also the work.
   the owner declared in advance. Catching combinations nobody thought to declare,
   or combinations spread across different houses, isn't solved.
 - **One key, two doors.** This is a known break. In testing, one key worked at two
-  separate checkpoints guarding the same thing, and it needs closing.
+  separate checkpoints guarding the same thing, and it needs closing. You can watch
+  it happen: `node cyan/test-cyan-negative-vectors.mjs` reports it on purpose.
 - **Renewal in practice.** In the reference code every key must expire, and an
   expired key simply stops, with no cancel message needed. Renewing keys smoothly
   on a real system isn't built. It's what makes the whole thing hold when people
@@ -221,12 +198,44 @@ requests, not rushed, not tricked, not impersonated. Some early checks exist
 ([`lib/human-invariants.sh`](lib/human-invariants.sh)), but most of the thinking
 is still ahead.
 
-**The houses**
+---
 
-A force field only works if the owner of the thing installs it. Engineers can
-build a perfect one, but they can't make a bank, a hospital or a payments network
-put it in. If you own or run something worth protecting, you're who we most want
-to meet.
+## The piece we can't build alone
+
+Every real thing ZLAR protects today is mine: one action on my own computer, and
+this repository. The next proof needs a real system that someone else owns, where
+they hold the keys: a payment flow, a software release pipeline, a record store.
+
+Engineers can build a perfect force field, but only the owner of the thing can
+install it. If you own or run something worth protecting, you're who we most want
+to meet. Reply on the issue
+[Bring a real system to protect](https://github.com/ZLAR-AI/ZLAR/issues?q=%22Bring+a+real+system+to+protect%22),
+or write to **hello@zlar.ai** for anything that shouldn't be said in public.
+
+---
+
+## If I'm right about this
+
+If I'm right, this is a very big deal.
+
+People keep the two powers that matter most: the power to say **no** (a veto) and
+the power to say **yes** (consent). No machine picks up either one by accident,
+however capable it becomes.
+
+The worst an AI can do shrinks to the size of the key you handed it, not the size
+of the intelligence holding it. And once the worst case has a size, you can
+finally say yes to a lot more.
+
+A farmer in Malawi and a farmer in Manitoba get the same deal: let the AI run the
+irrigation, the orders, the paperwork and the insurance claims, at full speed.
+The one thing it can't do without them is sell the farm.
+
+That's the road to abundance. Not holding AI back, but letting it go, because the
+few doors that matter only open for the people who live behind them.
+
+It doesn't change as things get bigger. The same rule protects one bank account
+or a billion of them, one small program or something far smarter than us. No one
+has to hold a master switch. Every house keeps its own keys.
 
 ---
 
@@ -276,8 +285,15 @@ Found a security problem? Report it privately through [SECURITY.md](SECURITY.md)
 Want your AI to explain this repository to you? Point it here. There's a reading
 guide written for AI in [AGENTS.md](AGENTS.md).
 
+**Where ZLAR lives:** only in this repository, github.com/ZLAR-AI/ZLAR, and at
+[zlar.ai](https://zlar.ai). ZLAR has never offered a Windows installer or a `.exe`
+file. Anything else using the name, especially a copy that asks you to download
+and run something, isn't us. Please report it to **security@zlar.ai**.
+
 **About the license:** read it, download it, run it, try to break it: all
-welcome, and the [LICENSE](LICENSE) says so. Using it for real work, building
+welcome, and the [LICENSE](LICENSE) says so. The tools that check ZLAR's records,
+and the written rules they check against, are open under Apache 2.0: anyone may
+use them for anything. Using it for real work, building
 products on it, or passing on changed copies needs a written yes from us. Write
 to **hello@zlar.ai**.
 

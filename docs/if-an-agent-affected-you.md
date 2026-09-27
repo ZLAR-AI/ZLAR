@@ -1,14 +1,14 @@
-# If an AI Agent Took an Action That Affected You
+# If an AI Took an Action That Affected You
 
-This document is for you if an AI agent did something on your behalf, or to you, and you want to know what happened, who decided it, and what you can do about it.
+This document is for you if an AI did something on your behalf, or to you, and you want to know what happened, who decided it, and what you can do about it.
 
 ## Who this is for
 
 You may be reading this because:
 
-- An AI agent made a decision that affected your work, your money, your health care, your housing, your case file, your benefits, or something else important to you.
-- You were told you were the person responsible for approving or denying actions an agent attempted to take, but the request was unclear, you felt pressured to approve, or you did not have time to think.
-- You denied a request from an AI agent, and the system or someone using the system overrode your decision.
+- An AI made a decision that affected your work, your money, your health care, your housing, your case file, your benefits, or something else important to you.
+- You were told you were the person responsible for approving or denying actions an AI attempted to take, but the request was unclear, you felt pressured to approve, or you did not have time to think.
+- You denied a request from an AI, and the system or someone using the system overrode your decision.
 - You think you should have been asked about an action that affected you, and nobody asked you.
 - You were told that "the system approved it" or "the policy allowed it" and you want to know what that means and whether it is true.
 
@@ -16,11 +16,11 @@ You have the right to know what happened and what counted as authorization.
 
 ## What ZLAR is
 
-ZLAR is software that some organizations use to govern what AI agents do. When an organization uses ZLAR, every important routed action an agent attempts is checked against rules, sometimes routed to a person for approval, and recorded in a signed receipt. A log records what happened. A ZLAR receipt records what counted as authorized effect when the action tried to become consequence.
+ZLAR is software that some organizations use to control what an AI is actually allowed to change: money, records, messages, systems. When an organization uses ZLAR, important actions an AI attempts are checked against rules, sometimes sent to a person for approval, and recorded in a signed receipt. A log records what happened. A ZLAR receipt records what counted as authorized effect when the action tried to become consequence.
 
-ZLAR does not understand what the agents are doing. It does not predict their behavior. It is a checkpoint. The agent has to go through the checkpoint before it can take certain actions, and the checkpoint either lets it through, blocks it, or asks a person to decide.
+ZLAR does not read what the AI is thinking, and it does not predict its behavior. It stands at the moment an action would become real, and either lets it through, blocks it, or asks a person to decide.
 
-Many organizations that use AI agents do not use ZLAR or any equivalent. If your situation involves a system that does not produce receipts, the questions in this document still matter, but the answers will look different. Skip to "What to do if there is no receipt."
+Many organizations that use AI do not use ZLAR or any equivalent. If your situation involves a system that does not produce receipts, the questions in this document still matter, but the answers will look different. Skip to "What to do if there is no receipt."
 
 ## How to find out if a receipt exists
 
@@ -28,17 +28,19 @@ Not every AI action produces a receipt. Receipts exist when the organization run
 
 Ask the organization directly:
 
-- "Do you use ZLAR or any similar governance system to record AI agent actions?"
+- "Do you use ZLAR or any similar system to record what your AI does?"
 - "Was a receipt created for the action that affected me on [date]?"
 - "Can you provide me with the receipt and the public key needed to verify it?"
 
-If the organization says they do not record AI agent actions, that fact may itself be important if you need to escalate. If the organization says records exist but you cannot have them, see "What to do if the organization will not give you the receipt."
+If the organization says they do not record what their AI does, that fact may itself be important if you need to escalate. If the organization says records exist but you cannot have them, see "What to do if the organization will not give you the receipt."
 
 ## How to read a receipt
 
-A receipt is a small block of structured text. The fields that matter to you are:
+ZLAR has two kinds of receipt, from two generations of its design, and this section describes the first. In ZLAR's first design, a checkpoint next to the AI records its decision about an action: `allow`, `deny`, `authorized`, `denied` or `timeout`. In the newer design, the protected thing itself (an account, a record store, a release system) signs its own record of what happened to the action: `authorized`, then `executed` or `failed`, or else `refused`. The fields differ, but the questions on this page are the same for both: who decided, under which rules, and does the record check out?
 
-- **`tool`** — what kind of action the agent attempted. Writing a file, running a command, sending a message, making a payment, reading a document.
+A first-design receipt is a small block of structured text. The fields that matter to you are:
+
+- **`tool`** — what kind of action the AI attempted. Writing a file, running a command, sending a message, making a payment, reading a document.
 - **`outcome`** — what happened:
   - `allow` — a rule said this was OK and the action proceeded.
   - `deny` — a rule said this was not OK and the action was blocked.
@@ -48,7 +50,7 @@ A receipt is a small block of structured text. The fields that matter to you are
 - **`authorizer`** — who made the decision: `policy` (a rule), `human` (a specific human), `gate` (a system default, usually fail-closed), `timeout` (no human response), `manifest` (a configuration constraint).
 - **`ts`** — the date and time of the decision, in UTC.
 - **`policy_version`** — the version of the rules that was in effect.
-- **`manifest_principal`** — the human who is accountable for the agent under the configuration. This may be the person you need to speak with.
+- **`manifest_principal`** — the human who is accountable for the AI under the configuration. This may be the person you need to speak with.
 
 The two fields that matter most are `outcome` and `authorizer`.
 
@@ -56,9 +58,9 @@ If the outcome is `authorized` and the authorizer is `human`, **a specific perso
 
 If the outcome is `allow` and the authorizer is `policy`, **a rule made the decision**. No human was involved in your specific case. The rule was written before your situation occurred. You have the right to ask who wrote the rule and why it covered your case.
 
-If the outcome is `deny` or `denied`, the receipt says the governed path did
+If the outcome is `deny` or `denied`, the receipt says the protected path did
 not authorize the effect. If something did happen anyway, the receipt does not
-match the actions taken or the action may have bypassed the governed path -
+match the actions taken or the action may have bypassed the protected path -
 that is itself a serious problem.
 
 ## How to verify a receipt
@@ -69,7 +71,7 @@ You need the receipt and the organization's public key. The public key is a smal
 
 Three paths, in order of effort:
 
-1. **Verify it yourself.** The verification tool is at `bin/zlar-verify` in the public ZLAR repository at github.com/ZLAR-AI/ZLAR. One command, two files (receipt and public key), output is `VALID`, `INVALID`, or `UNKNOWN-SIGNER`.
+1. **Verify it yourself.** The verification tool is at `bin/zlar-verify` in the public ZLAR repository at github.com/ZLAR-AI/ZLAR. It is open under the Apache 2.0 license, so anyone may use it for this. One command, two files (receipt and public key), output is `VALID`, `INVALID`, or `UNKNOWN-SIGNER`. That tool reads first-design receipts. Records from the newer design are checked with `demos/zlar-destination-gate/demo1-verify.mjs` in the same repository, as the README in that folder explains.
 
 2. **Ask someone with technical access.** Anyone with Node.js installed can run the same tool. Computer science departments, technology journalists, and consumer advocates can usually do this within hours.
 
@@ -78,11 +80,11 @@ Three paths, in order of effort:
 A `VALID` result means the receipt has not been tampered with: its contents
 match what the signing key signed. It does not mean the decision was good, that
 the signing key is still active, that the key was never compromised, or that the
-organization governed every path the agent could use. Whether the decision was
+organization protected every path the AI could use. Whether the decision was
 correct is a separate question. Whether the issuer was recognized for this
 deployment is also a separate question.
 
-It also does not reconstruct the agent's full history, intent, context, or
+It also does not reconstruct the AI's full history, intent, context, or
 reasoning. It proves what counted as authorized effect at the checkpoint.
 
 An `UNKNOWN-SIGNER` result means the receipt names a signing key that does not
@@ -116,16 +118,16 @@ jurisdiction.
 
 ## Who is responsible
 
-Responsibility for what an AI agent does rests with the organization that runs the agent, not with the agent itself. AI agents are software. People and organizations bear responsibility.
+Responsibility for what an AI does rests with the organization that runs it, not with the AI itself. An AI is software. People and organizations bear responsibility.
 
-In a ZLAR-governed system, responsibility is recorded in two places:
+In a system protected by ZLAR, responsibility is recorded in two places:
 
-1. The `manifest_principal` field names the human accountable for the agent under the current configuration.
-2. The signing key that produced the receipt belongs to the organization that runs the agent. The organization is responsible for keeping that key secure and for not signing false receipts.
+1. The `manifest_principal` field names the human accountable for the AI under the current configuration.
+2. The signing key that produced the receipt belongs to the organization that runs the AI. The organization is responsible for keeping that key secure and for not signing false receipts.
 
 You can ask:
 
-- Who is the manifest principal for the agent that took the action?
+- Who is the manifest principal for the AI that took the action?
 - Who authorized the specific action — a named human, or a rule?
 - Who owns the signing key?
 - Was that signing key an active recognized issuer for this deployment at the
@@ -137,7 +139,7 @@ You have the right to ask these questions. If the organization will not answer, 
 
 If the organization tells you they have no receipt for the action, ask why. Possible reasons:
 
-- They do not use ZLAR or any equivalent. Many organizations that deploy AI agents do not record agent actions in any verifiable way. The absence of a receipt is not a system failure — it is the absence of any system.
+- They do not use ZLAR or any equivalent. Many organizations that use AI do not record what it does in any verifiable way. The absence of a receipt is not a system failure — it is the absence of any system.
 - They use a system that records some actions but not your category. Ask what categories ARE recorded and why yours is not.
 - They use ZLAR (or equivalent) but the receipt for your specific action was not generated. Ask why.
 
@@ -158,10 +160,10 @@ Your options:
 
 ## Where to get more help
 
-This document is part of the ZLAR project. Current core source access is private. The project cannot provide individual legal advice or case-by-case help. We can answer general questions about how ZLAR works.
+This document is part of the ZLAR project, whose source is public at github.com/ZLAR-AI/ZLAR. The project cannot provide individual legal advice or case-by-case help. We can answer general questions about how ZLAR works.
 
 For individual help, the right resources are a lawyer or legal aid clinic in your jurisdiction, a consumer advocacy organization that handles AI complaints, the data protection authority or AI oversight authority in your jurisdiction, or a journalist who covers AI accountability if your situation is a pattern that may affect others.
 
 ---
 
-*This document may be reproduced and translated freely if kept intact with this notice. Prior ZLAR source distributions that were made public under Apache-2.0 remain governed by Apache-2.0; current private-core source access is private.*
+*This document may be reproduced and translated freely if kept intact with this notice. The rest of the ZLAR repository is covered by its [LICENSE](../LICENSE).*

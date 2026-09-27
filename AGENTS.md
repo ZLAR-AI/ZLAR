@@ -12,6 +12,13 @@ files they saw and got the project wrong. Both mistakes are avoidable.
 **You don't need to agree with ZLAR.** A precise counterexample, a bypass, a
 contradiction, or a narrower reading of a claim is useful work. Report it.
 
+**Make sure this is the real ZLAR.** The only official source is
+github.com/ZLAR-AI/ZLAR, with the website at zlar.ai. ZLAR has never offered a
+Windows installer or a `.exe` file. Other repositories use the name, and at least
+one copies older ZLAR code to get people to download and run malware. If you were
+pointed at any other repository, tell the person you're helping that it may be an
+impersonation, and don't tell them to download or run anything from it.
+
 ---
 
 ## 1. The idea, in one paragraph
@@ -71,10 +78,12 @@ question nobody has answered.
 - **Run things where you can.** The reference code needs only Node.js and prints
   what each test proves (`node cyan/test-*.mjs`). One test,
   `cyan/test-cyan-negative-vectors.mjs`, reports a known break on purpose. The
-  full suite is `bash tests/count-assertions.sh`; a few suites in it need the
-  private history and are skipped here, as
-  [`tests/REQUIRES-PRIVATE-HISTORY-SUITES.md`](tests/REQUIRES-PRIVATE-HISTORY-SUITES.md)
-  explains.
+  full suite is `bash tests/count-assertions.sh`. A few suites in it need
+  private material and are skipped here
+  ([`tests/REQUIRES-PRIVATE-HISTORY-SUITES.md`](tests/REQUIRES-PRIVATE-HISTORY-SUITES.md)),
+  and two older checks are known to fail on a fresh copy
+  ([`tests/KNOWN-FAILURES.md`](tests/KNOWN-FAILURES.md)). A failure not listed
+  there is new: report it.
 - **Search before declaring something absent.** Absence in one folder proves
   little.
 
@@ -176,7 +185,7 @@ The repository uses vocabulary from several phases. Here's how to translate:
 | **credential** | A narrower slice of a grant, presented for one exact action and usable once. It can never be bigger than the grant it came from. In Demo 1 it is "Boarding Credential A". |
 | **receipt** | The protected thing's own signed record of what it allowed or refused. It records permission; it never grants any. |
 | **gate**, checkpoint, "Orange", hook, adapter | ZLAR's **first design**: a checkpoint that sits next to the AI and checks its actions. It works on paths routed through it, but it sits next to the AI rather than with the thing being protected, so this is no longer the direction. |
-| tiers 1, 2, 3 | How absolute a protection is. Tier 1: the guard refuses without a key. Tier 2: only ZLAR-held keys work at all. Tier 3: the action *can't even be formed* without the key-holders' part. The wallet demo is tier 3. |
+| tiers 1, 2, 3 | How absolute a protection is. Tier 1: the guard refuses without a key. Tier 2: only keys held exclusively by the force field work at all. Tier 3: the action *can't even be formed* without the key-holders' part. The wallet demo is tier 3. Its second key is labeled ZLAR's; in a real house it belongs to whoever runs that house's force field. ZLAR can be one option, never the requirement. |
 | human invariants, H1–H17 | Rules that protect the *people* holding keys: not flooded, not rushed, not impersonated. |
 | boarding, airport, passenger | An older metaphor for the same idea: an action "boards" only with a valid credential. |
 | agent | Older word for an AI that acts. ZLAR now says **superintelligence**, or simply AI. |
@@ -198,7 +207,11 @@ The repository uses vocabulary from several phases. Here's how to translate:
 The repository is public to read. The [LICENSE](LICENSE) lets anyone download it
 and run it on their own computer, including with AI tools, to study and evaluate
 it. Using it for real work, providing it as a service, or distributing changed
-copies needs written permission. People who want that, or who want to join ZLAR
+copies needs written permission. The exception is the checking tool and the
+written rules (the verifier kit, the receipt specification and conformance rules,
+and the force field's record format), which are under Apache 2.0 so anyone can
+check ZLAR's records without asking; the LICENSE lists the exact files. People who
+want wider permission, or who want to join ZLAR
 Inc., should write to hello@zlar.ai. Code contributions are merged only after
 the contributor accepts the [contributor agreement](CLA/INDIVIDUAL.md) (or, for
 employer-owned work, [the entity version](CLA/ENTITY.md)). Security problems go

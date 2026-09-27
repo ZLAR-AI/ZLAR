@@ -19,7 +19,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAILS=0
-check() { if [ "$1" = "$2" ]; then echo "  PASS  $3"; else echo "  FAIL  $3 (got=$1 want=$2)"; FAILS=$((FAILS+1)); fi; }
+check() { if [ "$1" = "$2" ]; then echo "  PASS  $3"; PASSES=$((${PASSES:-0}+1)); else echo "  FAIL  $3 (got=$1 want=$2)"; FAILS=$((FAILS+1)); fi; }
 
 # ── F1: an approval must bind the exact task, and spend itself ──────────────
 echo "Boarding authority binds the operation, not its class"
@@ -84,4 +84,5 @@ rm -rf "${APPROVAL_DIR}"
 
 
 echo
+echo "Results: ${PASSES:-0} passed, ${FAILS} failed"
 [ "${FAILS}" = 0 ] && { echo "ALL PASS"; exit 0; } || { echo "${FAILS} FAILED"; exit 1; }

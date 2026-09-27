@@ -44,7 +44,7 @@ if [ -f /etc/zlar/off-flag ]; then
     echo "SKIP: /etc/zlar/off-flag is present — gate is globally off." >&2
     echo "SKIP: This test validates the gate's enforcement contract." >&2
     echo "SKIP: Run 'zlar on' to re-enable enforcement, then re-run this test." >&2
-    exit 2
+    exit 77  # the harness counts 77 as skipped, not failed
 fi
 
 TEST_DIR=$(mktemp -d)

@@ -112,7 +112,7 @@ directly on live protocol work.
 - Public website language is proof evidence.
 - Draft strategy is product doctrine.
 - Meristem proof-chain progress is ZLAR production authority.
-- ZLAR is sovereign infrastructure outside a recognized authority domain.
+- ZLAR operates as sovereign infrastructure outside a recognized authority domain.
 - Side doors are closed unless the deployment actually blocks or routes them.
 
 ## D5 — Language decisions

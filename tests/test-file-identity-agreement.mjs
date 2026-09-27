@@ -149,4 +149,5 @@ if (hazards > 0) {
   console.log('  consumer did not expect — the defect class of ADR-011 and of the');
   console.log('  2026-08-16 token. Fix the producer, not the pin.\n');
 }
+console.log(`  Results: ${pass} passed, ${fail + hazards} failed`);
 process.exit(fail === 0 && hazards === 0 ? 0 : 1);
