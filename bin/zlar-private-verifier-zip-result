@@ -1,0 +1,138 @@
+#!/usr/bin/env node
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import {
+  assertNoUnsafePrivateVerifierZipResultText,
+  buildPrivateVerifierZipResultVerification,
+  formatPrivateVerifierZipResultVerification,
+} from '../lib/private-verifier-zip-result.mjs';
+
+const PROJECT_DIR = fileURLToPath(new URL('..', import.meta.url));
+const SAMPLE_PATH = `${PROJECT_DIR}/tests/fixtures/private-verifier-zip-result-v1.json`;
+
+function usage() {
+  console.error('Usage: zlar private-verifier-zip-result verify (--input <file|->|--sample) [--evidence-dir <dir>] [--require-target <repo>@<commit>] [--require-returned-zip-sha <sha256>] [--require-source-zip-sha <sha256>] [--require-recomputed-evidence] [--json]');
+  console.error('Validates a private personally connected outside-machine ZIP-snapshot verifier result without public attestation.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function readInput(path) {
+  if (path === '-') {
+    return readFileSync(0, 'utf8');
+  }
+  if (!existsSync(path)) {
+    die(`input file not found: ${path}`, 2);
+  }
+  return readFileSync(path, 'utf8');
+}
+
+function parseJson(text, label) {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    die(`${label} is not valid JSON: ${err.message}`, 2);
+  }
+}
+
+const args = process.argv.slice(2);
+if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  usage();
+  process.exit(args.length === 0 ? 2 : 0);
+}
+
+const command = args.shift();
+if (command !== 'verify') {
+  usage();
+  die('unsupported private-verifier-zip-result command.', 2);
+}
+
+let inputPath = '';
+let sample = false;
+let evidenceDir = '';
+let asJson = false;
+let requireTarget = '';
+let requireReturnedZipSha = '';
+let requireSourceZipSha = '';
+let requireRecomputedEvidence = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--input') {
+    if (inputPath || sample) {
+      usage();
+      die('verify accepts only one input source.', 2);
+    }
+    inputPath = args[++i] || '';
+    if (!inputPath) {
+      usage();
+      die('--input requires <file|->.', 2);
+    }
+  } else if (arg === '--sample') {
+    if (inputPath || sample) {
+      usage();
+      die('verify accepts only one input source.', 2);
+    }
+    sample = true;
+  } else if (arg === '--evidence-dir') {
+    evidenceDir = args[++i] || '';
+    if (!evidenceDir) {
+      usage();
+      die('--evidence-dir requires <dir>.', 2);
+    }
+  } else if (arg === '--require-target') {
+    requireTarget = args[++i] || '';
+    if (!requireTarget) {
+      usage();
+      die('--require-target requires <repo>@<commit>.', 2);
+    }
+  } else if (arg === '--require-returned-zip-sha') {
+    requireReturnedZipSha = args[++i] || '';
+    if (!requireReturnedZipSha) {
+      usage();
+      die('--require-returned-zip-sha requires <sha256>.', 2);
+    }
+  } else if (arg === '--require-source-zip-sha') {
+    requireSourceZipSha = args[++i] || '';
+    if (!requireSourceZipSha) {
+      usage();
+      die('--require-source-zip-sha requires <sha256>.', 2);
+    }
+  } else if (arg === '--require-recomputed-evidence') {
+    requireRecomputedEvidence = true;
+  } else if (arg === '--json') {
+    asJson = true;
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (!inputPath && !sample) {
+  usage();
+  die('verify requires --input <file|-> or --sample.', 2);
+}
+
+const sourcePath = sample ? SAMPLE_PATH : inputPath;
+try {
+  const resultText = readInput(sourcePath);
+  const report = parseJson(resultText, sourcePath);
+  const verification = buildPrivateVerifierZipResultVerification(report, {
+    evidenceDir,
+    resultText,
+    requireTarget,
+    requireReturnedZipSha,
+    requireSourceZipSha,
+    requireRecomputedEvidence,
+  });
+  const output = asJson
+    ? `${JSON.stringify(verification, null, 2)}\n`
+    : formatPrivateVerifierZipResultVerification(verification);
+  assertNoUnsafePrivateVerifierZipResultText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(`Private verifier ZIP result verification failed: ${err.message}`);
+}

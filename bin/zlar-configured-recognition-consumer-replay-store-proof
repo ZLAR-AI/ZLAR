@@ -1,0 +1,54 @@
+#!/usr/bin/env node
+import {
+  assertConfiguredRecognitionConsumerReplayStoreProof,
+  assertNoUnsafeConfiguredRecognitionReplayStoreProofText,
+  formatConfiguredRecognitionConsumerReplayStoreProof,
+  runConfiguredRecognitionConsumerReplayStoreProof,
+} from '../lib/zlar-configured-recognition-consumer-replay-store-proof.mjs';
+
+function usage() {
+  return `Usage: zlar configured-recognition-consumer-replay-store-proof [--json]
+
+Runs a local no-secret fixture proof for configured-recognition consumer
+replay-store persistence and immediate replay refusal. This command uses
+built-in fake data only. It does not read credentials, call GitHub, use live
+receipts, write source, touch hooks/config, or prove production durability.
+
+Options:
+  --json   Print the proof report as JSON.
+  --help   Show this help.
+`;
+}
+
+async function main(argv = process.argv.slice(2)) {
+  const json = argv.includes('--json');
+  const help = argv.includes('--help') || argv.includes('-h');
+  const unsupported = argv.filter((arg) => !['--json', '--help', '-h'].includes(arg));
+  if (unsupported.length > 0) {
+    throw new Error('unsupported argument');
+  }
+  if (help) {
+    process.stdout.write(usage());
+    return;
+  }
+  const report = await runConfiguredRecognitionConsumerReplayStoreProof();
+  assertConfiguredRecognitionConsumerReplayStoreProof(report);
+  const output = json
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatConfiguredRecognitionConsumerReplayStoreProof(report);
+  assertNoUnsafeConfiguredRecognitionReplayStoreProofText(output);
+  process.stdout.write(output);
+}
+
+try {
+  await main();
+} catch (err) {
+  const message = err?.message || 'configured recognition replay-store proof failed';
+  try {
+    assertNoUnsafeConfiguredRecognitionReplayStoreProofText(message);
+    process.stderr.write(`${message}\n`);
+  } catch {
+    process.stderr.write('configured recognition replay-store proof failed; sensitive text suppressed\n');
+  }
+  process.exit(1);
+}

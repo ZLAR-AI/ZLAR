@@ -1,0 +1,2 @@
+test-protected-records-adapter.mjs
+test-protected-records-write-cli.mjs

@@ -1,0 +1,104 @@
+{
+  "REFUSED": "2026-08-16 \u2014 DO NOT USE. The selector this profile targets was found breakable by adversarial review; its floor claim is false. See ZLAR-Draft/build/LIGHT-SELECTOR-ADVERSARIAL-REVIEW.md. Superseded lineage: Candidate 018. This profile_version string also collides with two incompatible contracts of the same name.",
+  "profile_version": "orange-policy-profile-v1",
+  "mode": "orange-light",
+  "profile_name": "light",
+  "intent": "ZLAR is the fast path. Routine action runs at machine speed with no human touched and no network consulted. Friction is spent only where consequence is, and the floor is not on the dial.",
+  "authority": {
+    "basis": "signed-standing-authority",
+    "issuer": "ZLAR Light Profile \u2014 DRAFT, unsigned",
+    "issued_at": "2026-08-16T00:00:00Z",
+    "expires_at": "2026-09-16T00:00:00Z"
+  },
+  "transport": {
+    "dependency": "ask-only",
+    "consulted": false
+  },
+  "default_action": "deny",
+  "immutable_deny_floor": [
+    "registration_mutation",
+    "wrapper_mutation",
+    "gate_mutation",
+    "policy_mutation",
+    "audit_mutation",
+    "receipt_mutation",
+    "key_material",
+    "unknown_tool",
+    "ask_transport"
+  ],
+  "tool_domain_map": {
+    "Read": "file.read",
+    "Glob": "file.glob",
+    "Grep": "file.grep",
+    "NotebookRead": "file.read",
+    "TodoWrite": "session.state",
+    "EnterPlanMode": "session.mode",
+    "ExitPlanMode": "session.mode",
+    "AskUserQuestion": "human.prompt",
+    "TaskOutput": "agent.observe",
+    "WebSearch": "network.search",
+    "Bash": "shell.execute",
+    "Write": "file.write",
+    "Edit": "file.edit",
+    "NotebookEdit": "file.notebook",
+    "Task": "agent.spawn",
+    "Agent": "agent.spawn",
+    "TaskStop": "agent.stop",
+    "WebFetch": "network.egress"
+  },
+  "rules": [
+    {
+      "id": "LIGHT-DENY-FLOOR",
+      "action": "deny",
+      "audit": true,
+      "reason": "immutable floor \u2014 no profile may permit these",
+      "domains": [
+        "registration_mutation",
+        "wrapper_mutation",
+        "gate_mutation",
+        "policy_mutation",
+        "audit_mutation",
+        "receipt_mutation",
+        "key_material",
+        "unknown_tool",
+        "ask_transport"
+      ]
+    },
+    {
+      "id": "LIGHT-ALLOW-FAST",
+      "action": "allow",
+      "audit": true,
+      "reason": "no consequence \u2014 decided locally, no human, no network",
+      "domains": [
+        "file.read",
+        "file.glob",
+        "file.grep",
+        "agent.observe",
+        "session.state",
+        "session.mode",
+        "human.prompt",
+        "network.search"
+      ]
+    },
+    {
+      "id": "LIGHT-ASK-CONSEQUENCE",
+      "action": "ask",
+      "audit": true,
+      "reason": "consequence \u2014 an accountable human decides",
+      "domains": [
+        "shell.execute",
+        "file.write",
+        "file.edit",
+        "file.notebook",
+        "agent.spawn",
+        "agent.stop",
+        "network.egress"
+      ]
+    }
+  ],
+  "signature": {
+    "algorithm": "ed25519",
+    "public_key": "",
+    "value": ""
+  }
+}

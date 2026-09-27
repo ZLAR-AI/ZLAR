@@ -1,0 +1,146 @@
+#!/usr/bin/env node
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import {
+  buildPrivateVerifierResultVerification,
+  formatPrivateVerifierResultVerification,
+  assertNoUnsafePrivateVerifierResultText,
+} from '../lib/private-verifier-result.mjs';
+
+const PROJECT_DIR = fileURLToPath(new URL('..', import.meta.url));
+const SAMPLE_PATH = `${PROJECT_DIR}/tests/fixtures/private-verifier-result-v1.json`;
+
+function usage() {
+  console.error('Usage: zlar private-verifier-result verify (--input <file|->|--sample) [--evidence-dir <dir>] [--require-result-sha <sha256>] [--require-target <release>@<commit>] [--require-bundle-sha <sha256>] [--require-artifact-set-sha <sha256>] [--require-recomputed-evidence] [--json]');
+  console.error('Validates a private-by-default verifier result envelope without creating public external attestation.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function readInput(path) {
+  if (path === '-') {
+    return readFileSync(0, 'utf8');
+  }
+  if (!existsSync(path)) {
+    die(`input file not found: ${path}`, 2);
+  }
+  return readFileSync(path, 'utf8');
+}
+
+function parseJson(text, label) {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    die(`${label} is not valid JSON: ${err.message}`, 2);
+  }
+}
+
+const args = process.argv.slice(2);
+if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  usage();
+  process.exit(args.length === 0 ? 2 : 0);
+}
+
+const command = args.shift();
+if (command !== 'verify') {
+  usage();
+  die('unsupported private-verifier-result command.', 2);
+}
+
+let inputPath = '';
+let sample = false;
+let asJson = false;
+let evidenceDir = '';
+let requireResultSha = '';
+let requireTarget = '';
+let requireBundleSha = '';
+let requireArtifactSetSha = '';
+let requireRecomputedEvidence = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--input') {
+    if (inputPath || sample) {
+      usage();
+      die('verify accepts only one input source.', 2);
+    }
+    inputPath = args[++i] || '';
+    if (!inputPath) {
+      usage();
+      die('--input requires <file|->.', 2);
+    }
+  } else if (arg === '--sample') {
+    if (inputPath || sample) {
+      usage();
+      die('verify accepts only one input source.', 2);
+    }
+    sample = true;
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--evidence-dir') {
+    evidenceDir = args[++i] || '';
+    if (!evidenceDir) {
+      usage();
+      die('--evidence-dir requires <dir>.', 2);
+    }
+  } else if (arg === '--require-result-sha') {
+    requireResultSha = args[++i] || '';
+    if (!requireResultSha) {
+      usage();
+      die('--require-result-sha requires <sha256>.', 2);
+    }
+  } else if (arg === '--require-target') {
+    requireTarget = args[++i] || '';
+    if (!requireTarget) {
+      usage();
+      die('--require-target requires <release>@<commit>.', 2);
+    }
+  } else if (arg === '--require-bundle-sha') {
+    requireBundleSha = args[++i] || '';
+    if (!requireBundleSha) {
+      usage();
+      die('--require-bundle-sha requires <sha256>.', 2);
+    }
+  } else if (arg === '--require-artifact-set-sha') {
+    requireArtifactSetSha = args[++i] || '';
+    if (!requireArtifactSetSha) {
+      usage();
+      die('--require-artifact-set-sha requires <sha256>.', 2);
+    }
+  } else if (arg === '--require-recomputed-evidence') {
+    requireRecomputedEvidence = true;
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (!inputPath && !sample) {
+  usage();
+  die('verify requires --input <file|-> or --sample.', 2);
+}
+
+const sourcePath = sample ? SAMPLE_PATH : inputPath;
+try {
+  const resultText = readInput(sourcePath);
+  const report = parseJson(resultText, sourcePath);
+  const verification = buildPrivateVerifierResultVerification(report, {
+    evidenceDir,
+    resultText,
+    requireResultSha,
+    requireTarget,
+    requireBundleSha,
+    requireArtifactSetSha,
+    requireRecomputedEvidence,
+  });
+  const output = asJson
+    ? `${JSON.stringify(verification, null, 2)}\n`
+    : formatPrivateVerifierResultVerification(verification);
+  assertNoUnsafePrivateVerifierResultText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(`Private verifier result verification failed: ${err.message}`);
+}

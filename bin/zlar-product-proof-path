@@ -1,0 +1,21 @@
+#!/usr/bin/env node
+
+const RETIREMENT_REASON = 'product_proof_path_fresh_generation_retired';
+
+function usage() {
+  process.stderr.write(
+    'Usage: zlar product-proof-path [--help]\n' +
+    'Fresh Product Proof Path generation is permanently retired.\n' +
+    'Historical report consumers remain verification-only and non-current.\n',
+  );
+}
+
+if (process.argv.slice(2).some((arg) => arg === '--help' || arg === '-h')) {
+  usage();
+  process.exit(0);
+}
+
+process.stderr.write(
+  `ERROR: Product Proof Path generation refused: ${RETIREMENT_REASON}\n`,
+);
+process.exitCode = 1;

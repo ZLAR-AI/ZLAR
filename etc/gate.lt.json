@@ -1,0 +1,30 @@
+{
+  "policy_file": "etc/policies/active.policy.json",
+  "policy_pubkey": "etc/keys/policy-signing.pub",
+  "audit_file": "var/log/audit.jsonl",
+  "log_file": "var/log/gate.log",
+  "signature_required": true,
+  "availability": {
+    "state_file": "var/log/availability.state",
+    "default_mode": "active",
+    "away_auto_allow_threshold": 30,
+    "away_queue_file": "var/log/away-queue.jsonl",
+    "away_halt_on_critical": true,
+    "away_notify_on_return": true
+  },
+  "karma": {
+    "state_file": "var/log/karma.json",
+    "thresholds_file": "var/log/karma-thresholds.json"
+  },
+  "journal": {
+    "file": "var/log/journal.jsonl"
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token_env": "ZLAR_TELEGRAM_TOKEN",
+    "chat_id": "",
+    "timeout_s": 1,
+    "debounce_ms": 800,
+    "flood_guard_ms": 1500
+  }
+}

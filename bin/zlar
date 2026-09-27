@@ -1,0 +1,2077 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR — Convenience CLI
+#
+# Usage:
+#   zlar status     — show governed surfaces, policy summary, audit count
+#   zlar doctor     — check installation health (deps, keys, hooks, policy)
+#   zlar reset      — reset human-invariant state (clear stuck pending counters)
+#   zlar audit      — show last 20 audit entries
+#   zlar why        — show a frozen Worker Receipt for an exact event id
+#   zlar run        — run one command through the ZLAR-owned runner surface
+#   zlar coverage   — build a fixture-input governed surface coverage map
+#   zlar consequence-lifecycle
+#                    — map one terminal-chain fixture lifecycle without claiming closure
+#   zlar agent-passenger-lab
+#                    — run local fixture governed-crossing passenger lab
+#   zlar coverage-evidence
+#                    — assemble supplied event-scoped coverage evidence
+#   zlar downstream-recognition
+#                    — evaluate supplied receipt recognition evidence
+#   zlar downstream-refusal-proof
+#                    — run hermetic downstream refusal proof
+#   zlar human-authorization-proof
+#                    — run hermetic simulated-human authorization proof
+#   zlar approval-transport-proof
+#                    — run hermetic channel-neutral approval transport proof
+#   zlar current-machine-approval-packet
+#                    — verify selected-surface approval packet completeness
+#   zlar current-machine-approval-intake
+#                    — run explicit-packet pre-authority intake gate
+#   zlar current-machine-approval-request-preview
+#                    — verify intake report before authority request preview
+#   zlar current-machine-governance-preview
+#                    — compose local no-write current-machine preview receipt
+#   zlar verifier-env
+#                    — check external verifier workstation prerequisites
+#   zlar verifier-kit-reproducibility
+#                    — prove verifier kit same-key source-build archive determinism
+#   zlar private-verifier-result
+#                    — validate private-by-default verifier result envelopes
+#   zlar private-verifier-readiness
+#                    — build or verify local private no-send verifier-readiness packets
+#   zlar public-artifact-verifier-result
+#                    — validate public-artifact verifier reply envelopes
+#   zlar live-trust-registry-state
+#                    — validate no-secret live-shaped trust registry state contracts
+#   zlar private-verifier-zip-result
+#                    — validate private outside-machine ZIP-snapshot verifier results
+#   zlar issuer-status-proof
+#                    — run hermetic issuer status proof
+#   zlar runner-receipt-issuer-recognition-proof
+#                    — run hermetic zlar run receipt issuer-recognition proof
+#   zlar configured-recognition-consumer-replay-store-proof
+#                    — run local configured-recognition replay-store proof
+#   zlar source-transport-preflight
+#                    — validate no-secret source movement preflight packet
+#   zlar source-transport-proof
+#                    — verify no-secret source movement reports/contracts
+#   zlar source-bridge-window
+#                    — validate no-secret time-boxed source bridge window authority
+#   zlar protected-records-proof
+#                    — refuse retired fresh E1 terminal-proof generation
+#   zlar protected-records-local-boarding-proof
+#                    — run local in-memory protected records boarding proof
+#   zlar claude-code-hook-contract-replay-proof
+#                    — run local Claude-shaped hook-contract replay proof
+#   zlar protected-records-service-proof
+#                    — refuse retired fresh downstream-service proof generation
+#   zlar protected-records-service-preflight
+#                    — verify exact historical service-preflight artifacts
+#   zlar protected-records-runtime-service
+#                    — refuse the retired legacy runtime-service direct entry surface
+#   zlar protected-records-replacement-crossing-v2
+#                    — execute one exact replacement crossing and pin its artifact set
+#   zlar protected-records-replacement-artifact-set-v2
+#                    — verify a pinned replacement artifact set without reexecution
+#   zlar protected-records-runtime-profile-preflight
+#                    — positive generation currently refuses before proof execution
+#   zlar protected-records-runtime-profile-proof
+#                    — positive generation currently refuses before scratch creation
+#   zlar protected-records-runtime-local-activation
+#                    — positive generation currently refuses before activation output
+#   zlar protected-records-runtime-profile-installation
+#                    — positive generation currently refuses before install-root creation
+#   zlar protected-records-installed-runtime-profile-preflight
+#                    — read-only preflight explicit installed runtime profile selection
+#   zlar protected-records-active-persistent-profile-preflight
+#                    — source-only preflight for future active persistent profile install
+#   zlar protected-records-active-persistent-profile-live-installation
+#                    — read status; install/closeout currently refuse before root mutation
+#   zlar protected-records-active-persistent-profile-action-crossing
+#                    — currently refuses before active-root or proof-target handling
+#   zlar protected-records-installed-runtime-profile-recognition-proof
+#                    — verify historical artifact; positive generation currently refuses
+#   zlar protected-records-installed-runtime-profile-service-proof
+#                    — verify historical artifact; positive generation currently refuses
+#   zlar protected-records-installed-runtime-profile-terminal-chain
+#                    — verify historical artifact; positive generation currently refuses
+#   zlar protected-records-one-terminal-deployment-profile
+#                    — positive generation currently refuses before bridge execution
+#   zlar protected-records-named-deployment-profile-readiness
+#                    — run local no-secret named deployment-profile rehearsal readiness report
+#   zlar protected-records-named-deployment-profile-real-boundary
+#                    — refuse before root/config/target creation without named authority
+#   zlar local-proof-pack
+#                    — verify historical artifact; fresh run currently refuses
+#   zlar proof-smoke — current refusal probe; v1 schema is historical
+#   zlar north-star-readiness
+#                    — current fixture-rightful composition refuses
+#   zlar policy     — show current policy rules summary
+#   zlar telegram   — configure Telegram approval (upgrade from deny-all)
+#   zlar uninstall  — clean removal
+#   zlar version    — show version
+#   zlar help       — show this help
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+# Resolve symlink to find real script location (handles /usr/local/bin/zlar -> repo)
+_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "${_SOURCE}" ]; do
+    _DIR="$(cd -P "$(/usr/bin/dirname "${_SOURCE}")" && pwd)"
+    _SOURCE="$(/usr/bin/readlink "${_SOURCE}")"
+    [[ "${_SOURCE}" != /* ]] && _SOURCE="${_DIR}/${_SOURCE}"
+done
+SCRIPT_DIR="$(cd -P "$(/usr/bin/dirname "${_SOURCE}")" && pwd)"
+PROJECT_DIR="$(/usr/bin/dirname "${SCRIPT_DIR}")"
+unset _SOURCE _DIR
+
+# Colors
+if [ -t 1 ]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; BOLD=''; DIM=''; NC=''
+fi
+
+# ─── Version ─────────────────────────────────────────────────────────────────
+
+VERSION="unknown"
+if [ -f "${PROJECT_DIR}/VERSION" ]; then
+    VERSION=$(cat "${PROJECT_DIR}/VERSION" 2>/dev/null || echo "unknown")
+fi
+
+telegram_chat_id_status() {
+    local chat_id="$1"
+    if [ -z "${chat_id}" ]; then
+        echo "missing"
+    elif [[ "${chat_id}" == @* ]]; then
+        echo "invalid_bot_username"
+    elif [[ "${chat_id}" =~ ^-?[0-9]+$ ]]; then
+        echo "valid_numeric"
+    else
+        echo "invalid_non_numeric"
+    fi
+}
+
+telegram_chat_id_display() {
+    case "$1" in
+        valid_numeric) echo "valid numeric chat_id" ;;
+        missing) echo "missing" ;;
+        invalid_bot_username) echo "invalid: bot/usernames are not chat IDs" ;;
+        invalid_non_numeric) echo "invalid: chat_id must be numeric" ;;
+        *) echo "unconfigured" ;;
+    esac
+}
+
+telegram_token_from_env_file() {
+    local env_file="$1"
+    [ -f "${env_file}" ] || return 1
+    grep -E '^(ZLAR_TELEGRAM_TOKEN|TELEGRAM_BOT_TOKEN)=' "${env_file}" 2>/dev/null | \
+        head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"
+}
+
+mask_human_id() {
+    local human_id="$1"
+    local human_id_len=${#human_id}
+    if [ "${human_id_len}" -gt 7 ]; then
+        printf '%s***%s' "${human_id:0:1}" "${human_id: -4}"
+    else
+        printf '%s' "${human_id}"
+    fi
+}
+
+surface_hook_configured() {
+    local hook_file="$1"
+    [ -f "${hook_file}" ] && grep -qi "zlar" "${hook_file}" 2>/dev/null
+}
+
+pretooluse_hook_command() {
+    local hook_file="$1"
+    [ -f "${hook_file}" ] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    jq -r '.hooks.PreToolUse[0].hooks[0].command // empty' "${hook_file}" 2>/dev/null
+}
+
+codex_hook_reality_probe() {
+    CODEX_HOOK_REALITY_STATUS="not_configured"
+    CODEX_HOOK_REALITY_LABEL="not configured"
+    CODEX_HOOK_REALITY_FILE=""
+    CODEX_HOOK_REALITY_COMMAND=""
+    CODEX_HOOK_REALITY_TARGET=""
+    CODEX_HOOK_REALITY_PROJECT_DIR=""
+    CODEX_HOOK_REALITY_GATE=""
+
+    command -v jq >/dev/null 2>&1 || {
+        CODEX_HOOK_REALITY_STATUS="unknown"
+        CODEX_HOOK_REALITY_LABEL="unknown: jq unavailable"
+        return 0
+    }
+
+    local codex_home_dir="${CODEX_HOME:-${HOME}/.codex}"
+    local candidate_file hook_command
+    for candidate_file in \
+        "${codex_home_dir}/settings.json" \
+        "${HOME}/.Codex/settings.json" \
+        "${codex_home_dir}/hooks.json" \
+        "${HOME}/.Codex/hooks.json"
+    do
+        [ -f "${candidate_file}" ] || continue
+        while IFS= read -r hook_command; do
+            [ -n "${hook_command}" ] || continue
+            CODEX_HOOK_REALITY_FILE="${candidate_file}"
+            CODEX_HOOK_REALITY_COMMAND="${hook_command}"
+            break 2
+        done < <(jq -r '.hooks.PreToolUse[]?.hooks[]?.command? // empty' "${candidate_file}" 2>/dev/null || true)
+    done
+
+    if [ -z "${CODEX_HOOK_REALITY_COMMAND}" ]; then
+        return 0
+    fi
+
+    if [[ "${CODEX_HOOK_REALITY_COMMAND}" != *zlar* ]]; then
+        CODEX_HOOK_REALITY_STATUS="non_zlar_hook"
+        CODEX_HOOK_REALITY_LABEL="configured, but not a ZLAR hook"
+        return 0
+    fi
+
+    # Best-effort command target extraction. ZLAR-generated hook commands use
+    # simple absolute paths or "bash /path/to/wrapper"; paths with spaces are
+    # intentionally not treated as verified.
+    local first_word second_word hook_target
+    read -r first_word second_word _ <<< "${CODEX_HOOK_REALITY_COMMAND}"
+    case "${first_word}" in
+        bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh|*/bash|*/sh|*/zsh)
+            hook_target="${second_word:-}"
+            ;;
+        *)
+            hook_target="${first_word:-}"
+            ;;
+    esac
+    CODEX_HOOK_REALITY_TARGET="${hook_target}"
+
+    if [ -z "${hook_target}" ]; then
+        CODEX_HOOK_REALITY_STATUS="target_missing"
+        CODEX_HOOK_REALITY_LABEL="configured but hook command target is empty"
+        return 0
+    fi
+    if [ ! -e "${hook_target}" ]; then
+        CODEX_HOOK_REALITY_STATUS="target_missing"
+        CODEX_HOOK_REALITY_LABEL="configured but hook command target is missing"
+        return 0
+    fi
+    if [ ! -x "${hook_target}" ]; then
+        CODEX_HOOK_REALITY_STATUS="target_not_executable"
+        CODEX_HOOK_REALITY_LABEL="configured but hook command target is not executable"
+        return 0
+    fi
+
+    local wrapper_project_dir=""
+    wrapper_project_dir=$(grep -E '^ZLAR_PROJECT_DIR=' "${hook_target}" 2>/dev/null | head -1 | cut -d= -f2- || true)
+    wrapper_project_dir="${wrapper_project_dir%\"}"
+    wrapper_project_dir="${wrapper_project_dir#\"}"
+    wrapper_project_dir="${wrapper_project_dir%\'}"
+    wrapper_project_dir="${wrapper_project_dir#\'}"
+    CODEX_HOOK_REALITY_PROJECT_DIR="${wrapper_project_dir}"
+
+    local resolved_gate=""
+    if [ -n "${wrapper_project_dir}" ]; then
+        resolved_gate="${wrapper_project_dir}/bin/zlar-gate"
+    elif [ "$(basename "${hook_target}")" = "zlar-gate" ]; then
+        resolved_gate="${hook_target}"
+    fi
+    CODEX_HOOK_REALITY_GATE="${resolved_gate}"
+
+    if [ -n "${wrapper_project_dir}" ] && [ "${wrapper_project_dir}" != "${PROJECT_DIR}" ]; then
+        CODEX_HOOK_REALITY_STATUS="stale_project"
+        if [ -x "${resolved_gate}" ]; then
+            CODEX_HOOK_REALITY_LABEL="configured but wrapper points to a different ZLAR repo"
+        else
+            CODEX_HOOK_REALITY_LABEL="configured but wrapper points to a missing/stale ZLAR repo"
+        fi
+        return 0
+    fi
+
+    if [ -n "${resolved_gate}" ] && [ ! -x "${resolved_gate}" ]; then
+        CODEX_HOOK_REALITY_STATUS="gate_missing"
+        CODEX_HOOK_REALITY_LABEL="configured but resolved gate is missing or not executable"
+        return 0
+    fi
+
+    if [ -n "${resolved_gate}" ]; then
+        CODEX_HOOK_REALITY_STATUS="configured_current"
+        CODEX_HOOK_REALITY_LABEL="configured to current gate; current invocation not observed by status"
+        return 0
+    fi
+
+    CODEX_HOOK_REALITY_STATUS="configured_unverified"
+    CODEX_HOOK_REALITY_LABEL="configured ZLAR hook target exists; resolved gate not verified"
+}
+
+# ─── Gate uptime helper (v3.1.4) ─────────────────────────────────────────────
+# Sourced on demand by commands that record transitions or display streak.
+_GU_LOADED=0
+_ensure_gu() {
+    [ "${_GU_LOADED}" = "1" ] && return 0
+    export _GU_PROJECT_DIR="${PROJECT_DIR}"
+    # shellcheck source=../lib/gate-uptime.sh
+    if [ -f "${PROJECT_DIR}/lib/gate-uptime.sh" ]; then
+        source "${PROJECT_DIR}/lib/gate-uptime.sh"
+        _GU_LOADED=1
+    fi
+}
+
+# ─── Commands ────────────────────────────────────────────────────────────────
+
+cmd_version() {
+    echo "ZLAR v${VERSION}"
+    echo "Location: ${PROJECT_DIR}"
+}
+
+cmd_reset() {
+    # v2.7.0: reset human-invariant state (clear stuck pending counters).
+    # Back up existing files to /tmp before removing. _hi_ensure_state in
+    # lib/human-invariants.sh auto-recreates on next gate invocation.
+    local state_dir="${PROJECT_DIR}/var/human-state"
+    local backup_dir="/tmp/zlar-state-backup-$(date +%Y%m%d-%H%M%S)"
+    if [ ! -d "${state_dir}" ]; then
+        printf "${YELLOW}Human state directory not found:${NC} ${state_dir}\n"
+        exit 1
+    fi
+    if ls "${state_dir}"/*.json >/dev/null 2>&1; then
+        mkdir -p "${backup_dir}"
+        cp -p "${state_dir}"/*.json "${backup_dir}/"
+        rm -f "${state_dir}"/*.json
+        printf "${GREEN}Human state reset${NC} — backed up to ${backup_dir}\n"
+        printf "  ${DIM}state files will recreate on next gate invocation${NC}\n"
+    else
+        printf "${BLUE}Human state already clean${NC} (no .json files in ${state_dir})\n"
+    fi
+}
+
+cmd_status() {
+    printf "\n${BOLD}ZLAR Status${NC}\n\n"
+
+    # Version
+    printf "  ${BOLD}Version:${NC}  ${VERSION}\n"
+    printf "  ${BOLD}Install:${NC}  ${PROJECT_DIR}\n\n"
+
+    # ─── Gate State (v2.7.0) ──────────────────────────────────────────────
+    printf "  ${BOLD}Gate State:${NC}\n"
+
+    # Wrapper flag — legacy off-switch path. Current install-managed wrappers
+    # do not treat this as load-bearing, but older installed wrappers may.
+    WRAPPER_FLAG="${HOME}/.claude/.gate-disabled"
+    if [ -f "${WRAPPER_FLAG}" ]; then
+        WRAPPER_MTIME=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "${WRAPPER_FLAG}" 2>/dev/null || echo "?")
+        printf "    Wrapper flag (~/.claude/.gate-disabled):    ${YELLOW}present${NC} (${WRAPPER_MTIME})\n"
+        WRAPPER_OFF=yes
+    else
+        printf "    Wrapper flag (~/.claude/.gate-disabled):    ${DIM}absent${NC}\n"
+        WRAPPER_OFF=no
+    fi
+
+    # Structural flag — v2.7.0 First Authority off-switch (root-owned, agent-unreachable)
+    STRUCT_FLAG="/etc/zlar/off-flag"
+    if [ -f "${STRUCT_FLAG}" ]; then
+        STRUCT_MTIME=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "${STRUCT_FLAG}" 2>/dev/null || echo "?")
+        printf "    Structural flag (/etc/zlar/off-flag):       ${YELLOW}present${NC} (${STRUCT_MTIME})\n"
+        STRUCT_OFF=yes
+    else
+        printf "    Structural flag (/etc/zlar/off-flag):       ${DIM}absent${NC}\n"
+        STRUCT_OFF=no
+    fi
+
+    # Lock flag — human-set intentional fail-closed (zlar lock)
+    LOCK_FLAG="${HOME}/.claude/.gate-locked"
+    if [ -f "${LOCK_FLAG}" ]; then
+        LOCK_TIME=$(cat "${LOCK_FLAG}" 2>/dev/null | tr -d '[:space:]')
+        printf "    Lock flag (~/.claude/.gate-locked):          ${RED}LOCKED${NC} (${LOCK_TIME:-unknown})\n"
+        GATE_LOCKED=yes
+    else
+        printf "    Lock flag (~/.claude/.gate-locked):          ${DIM}absent${NC}\n"
+        GATE_LOCKED=no
+    fi
+
+    # Resolved gate state. The structural flag is load-bearing for the current
+    # install-managed wrapper; the legacy wrapper flag is informational unless
+    # an older wrapper still checks it.
+    if [ "${STRUCT_OFF}" = "yes" ]; then
+        if [ "${WRAPPER_OFF}" = "yes" ]; then
+            RESOLVED_REASON="structural flag; legacy wrapper flag also present"
+        else
+            RESOLVED_REASON="structural flag"
+        fi
+        printf "    Resolved gate state:                         ${YELLOW}OFF${NC} (${RESOLVED_REASON})\n"
+    elif [ "${GATE_LOCKED}" = "yes" ]; then
+        printf "    Resolved gate state:                         ${RED}🔒 LOCKED${NC} — all actions denied, no Telegram routing\n"
+    elif [ "${WRAPPER_OFF}" = "yes" ]; then
+        printf "    Resolved gate state:                         ${YELLOW}LEGACY FLAG ONLY${NC} — current install-managed gate may still enforce\n"
+    else
+        printf "    Resolved gate state:                         ${GREEN}ON${NC}\n"
+    fi
+
+    # Hook targets — keep Codex explicit, and label Claude as legacy/current
+    # Claude surface rather than the whole gate truth.
+    codex_hook_reality_probe
+    if [ -n "${CODEX_HOOK_REALITY_COMMAND}" ]; then
+        printf "    Codex hook target (PreToolUse):              ${CODEX_HOOK_REALITY_COMMAND}\n"
+    else
+        printf "    Codex hook target (PreToolUse):              ${DIM}not configured${NC}\n"
+    fi
+    printf "    Codex hook reality:                          %s\n" "${CODEX_HOOK_REALITY_LABEL}"
+    if [ "${CODEX_HOOK_REALITY_STATUS}" != "configured_current" ]; then
+        printf "    Codex interception:                          ${YELLOW}not verified by gate state${NC}\n"
+    else
+        printf "    Codex interception:                          ${YELLOW}configured route only; current invocation not observed by status${NC}\n"
+    fi
+
+    SETTINGS_JSON="${HOME}/.claude/settings.json"
+    CLAUDE_HOOK_CMD="$(pretooluse_hook_command "${SETTINGS_JSON}" || true)"
+    if [ -n "${CLAUDE_HOOK_CMD}" ]; then
+        printf "    Claude legacy/current hook target:           ${CLAUDE_HOOK_CMD}\n"
+    elif [ -f "${SETTINGS_JSON}" ]; then
+        printf "    Claude legacy/current hook target:           ${DIM}not configured${NC}\n"
+    fi
+
+    # ─── Uptime / Streak (v3.1.4) ─────────────────────────────────────────
+    # Visible cost of disabling: how long has the gate been on, what is the
+    # longest stretch on record, what is the lifetime total. The numbers do
+    # the work — no coaching text.
+    if _ensure_gu; then
+        printf "\n"
+        printf "  ${BOLD}Uptime:${NC}\n"
+        gu_status_lines
+    fi
+
+    printf "\n"
+
+    # ─── Human Invariant State (v3.3.5 truth refresh) ─────────────────────
+    # Reads canonical fields directly from the per-human state file:
+    # decisions_today (float, v2.8.1+), response_times (v2.9.0+, replaces
+    # approvals_recent), trust_lane and clean_run state (v3.3.0/v3.3.4),
+    # canary tiers (v3.2.0). Skips non-numeric human_ids so test fixtures
+    # left in var/human-state/ don't surface as humans.
+    printf "  ${BOLD}Human Invariant State:${NC}\n"
+
+    HUMAN_STATE_DIR="${PROJECT_DIR}/var/human-state"
+    PENDING_CAP="${ZLAR_PENDING_CAP:-5}"
+    DAILY_CAP="${ZLAR_DAILY_DECISION_CAP:-80}"
+    ACTIVE_HUMAN_ID=""
+    ACTIVE_HUMAN_SOURCE="unconfigured"
+    ACTIVE_HUMAN_STATUS="missing"
+
+    if [ -n "${ZLAR_TELEGRAM_CHAT_ID:-}" ]; then
+        ACTIVE_HUMAN_ID="${ZLAR_TELEGRAM_CHAT_ID}"
+        ACTIVE_HUMAN_SOURCE="env"
+    elif [ -f "${PROJECT_DIR}/etc/gate.json" ] && command -v jq >/dev/null 2>&1; then
+        ACTIVE_HUMAN_ID=$(jq -r '.telegram.chat_id // empty' "${PROJECT_DIR}/etc/gate.json" 2>/dev/null || echo "")
+        [ -n "${ACTIVE_HUMAN_ID}" ] && ACTIVE_HUMAN_SOURCE="gate.json"
+    fi
+    ACTIVE_HUMAN_STATUS=$(telegram_chat_id_status "${ACTIVE_HUMAN_ID}")
+    if [ "${ACTIVE_HUMAN_STATUS}" = "valid_numeric" ]; then
+        printf "    Active Telegram route:                       %s  (source: %s)\n" "$(mask_human_id "${ACTIVE_HUMAN_ID}")" "${ACTIVE_HUMAN_SOURCE}"
+    else
+        printf "    Active Telegram route:                       ${YELLOW}%s${NC}  (%s)\n" "$(telegram_chat_id_display "${ACTIVE_HUMAN_STATUS}")" "${ACTIVE_HUMAN_SOURCE}"
+    fi
+
+    # Promotion threshold from gate.json .canary, default 5 (v3.3.4).
+    CR_THRESHOLD=$(jq -r '.canary.clean_run_promotion_threshold // 5' \
+        "${PROJECT_DIR}/etc/gate.json" 2>/dev/null || echo "5")
+    case "${CR_THRESHOLD}" in ''|*[!0-9]*) CR_THRESHOLD=5 ;; esac
+
+    if [ -d "${HUMAN_STATE_DIR}" ] && ls "${HUMAN_STATE_DIR}"/*.json >/dev/null 2>&1; then
+        HUMAN_COUNT=0
+        INACTIVE_NUMERIC_COUNT=0
+        TEST_STATE_COUNT=0
+        ACTIVE_STATE_FILE=""
+        if [ "${ACTIVE_HUMAN_STATUS}" = "valid_numeric" ]; then
+            ACTIVE_STATE_FILE="${HUMAN_STATE_DIR}/${ACTIVE_HUMAN_ID}.json"
+        fi
+        HUMAN_STATE_FILES=()
+        if [ -n "${ACTIVE_STATE_FILE}" ] && [ -f "${ACTIVE_STATE_FILE}" ]; then
+            HUMAN_STATE_FILES+=("${ACTIVE_STATE_FILE}")
+        fi
+        for state_file in "${HUMAN_STATE_DIR}"/*.json; do
+            [ -f "${state_file}" ] || continue
+            [ -n "${ACTIVE_STATE_FILE}" ] && [ "${state_file}" = "${ACTIVE_STATE_FILE}" ] && continue
+            HUMAN_STATE_FILES+=("${state_file}")
+        done
+
+        for state_file in "${HUMAN_STATE_FILES[@]}"; do
+            HUMAN_ID=$(basename "${state_file}" .json)
+
+            # Telegram chat IDs are numeric. Non-numeric files are stale
+            # experiments, smoke fixtures, or bad historical routing state.
+            case "${HUMAN_ID}" in
+                ''|*[!0-9]*)
+                    TEST_STATE_COUNT=$((TEST_STATE_COUNT + 1))
+                    continue
+                    ;;
+            esac
+
+            if [ "${ACTIVE_HUMAN_STATUS}" != "valid_numeric" ] || [ "${HUMAN_ID}" != "${ACTIVE_HUMAN_ID}" ]; then
+                INACTIVE_NUMERIC_COUNT=$((INACTIVE_NUMERIC_COUNT + 1))
+                continue
+            fi
+
+            # Visual separator between multiple humans (status expansion fix #4)
+            if [ "${HUMAN_COUNT}" -gt 0 ]; then
+                printf "\n"
+            fi
+            HUMAN_COUNT=$((HUMAN_COUNT + 1))
+
+            # Mask the middle of the human ID for privacy when status output is shared
+            # (status expansion fix #6). Telegram chat IDs are typically 9-10 digits;
+            # show first char + *** + last 4. Short IDs stay unmasked.
+            HUMAN_ID_DISPLAY=$(mask_human_id "${HUMAN_ID}")
+
+            if command -v jq >/dev/null 2>&1; then
+                DECISIONS_TODAY=$(jq -r '.decisions_today // 0' "${state_file}" 2>/dev/null || echo "0")
+                # v2.8.0: pending is now an array of {action_hash, ts}. Count
+                # only entries whose ts is within HI_PENDING_TTL so stale
+                # orphans don't inflate the display. Fall back to legacy
+                # pending_count scalar if the file predates migration.
+                PENDING_TTL="${ZLAR_PENDING_TTL:-1800}"
+                PENDING_NOW=$(date +%s)
+                PENDING_COUNT=$(jq -r \
+                    --argjson now "${PENDING_NOW}" \
+                    --argjson ttl "${PENDING_TTL}" \
+                    'if (.pending | type) == "array"
+                     then ([.pending[] | select($now - .ts < $ttl)] | length)
+                     else (.pending_count // 0)
+                     end' \
+                    "${state_file}" 2>/dev/null || echo "0")
+                # v3.3.5: response_times replaces approvals_recent (renamed
+                # at v2.9.0 — H14 switched to response-time variance).
+                RESPONSE_TIMES_LEN=$(jq -r '.response_times // [] | length' "${state_file}" 2>/dev/null || echo "0")
+                LAST_ASK=$(jq -r '.last_ask_epoch // 0' "${state_file}" 2>/dev/null || echo "0")
+                STATE_DATE=$(jq -r '.date // "?"' "${state_file}" 2>/dev/null || echo "?")
+
+                # v3.3.8: stale-state annotation. Daily-bound counters
+                # (decisions_today, response_times) are wiped on UTC
+                # rollover, but only by _hi_ensure_state on a gate write.
+                # status is read-only; if no gate call has fired since UTC
+                # midnight, the file still shows yesterday's values. Mark
+                # them stale so the operator does not misread day-old
+                # counters as today's activity.
+                TODAY_UTC=$(date -u +%Y-%m-%d)
+                if [ "${STATE_DATE}" != "${TODAY_UTC}" ] && [ "${STATE_DATE}" != "?" ]; then
+                    STATE_IS_STALE="true"
+                else
+                    STATE_IS_STALE="false"
+                fi
+
+                # v3.3.0 Trust Lane + v3.3.4 clean-run fields
+                TRUST_LANE=$(jq -r '.trust_lane // "guarded"' "${state_file}" 2>/dev/null || echo "guarded")
+                GRANT_SOURCE=$(jq -r '.trust_lane_grant.source // ""' "${state_file}" 2>/dev/null || echo "")
+                CLEAN_RUN_COUNT=$(jq -r '.clean_run_count // 0' "${state_file}" 2>/dev/null || echo "0")
+                CLEAN_RUN_STARTED=$(jq -r '.clean_run_started_epoch // 0' "${state_file}" 2>/dev/null || echo "0")
+                CANARY_TIER=$(jq -r '.canary_tier // 0' "${state_file}" 2>/dev/null || echo "0")
+                CANARY_TRIP=$(jq -r '.canary_trip_count // 0' "${state_file}" 2>/dev/null || echo "0")
+                DEMOTION_REASON=$(jq -r '.trust_lane_demotion.reason // ""' "${state_file}" 2>/dev/null || echo "")
+                DEMOTION_TS=$(jq -r '.trust_lane_demotion.ts // 0' "${state_file}" 2>/dev/null || echo "0")
+
+                # Numeric validation. DECISIONS_TODAY is a float since v2.8.1
+                # (risk-weighted), so the regex must allow a single decimal
+                # point. Other counters stay integer.
+                case "${PENDING_COUNT}" in ''|*[!0-9]*) PENDING_COUNT=0 ;; esac
+                case "${DECISIONS_TODAY}" in ''|*[!0-9.]*|.|*.*.*) DECISIONS_TODAY=0 ;; esac
+                case "${LAST_ASK}" in ''|*[!0-9]*) LAST_ASK=0 ;; esac
+                case "${RESPONSE_TIMES_LEN}" in ''|*[!0-9]*) RESPONSE_TIMES_LEN=0 ;; esac
+                case "${CLEAN_RUN_COUNT}" in ''|*[!0-9]*) CLEAN_RUN_COUNT=0 ;; esac
+                # clean_run_started_epoch is stored as float (jq's now()).
+                case "${CLEAN_RUN_STARTED}" in ''|*[!0-9.]*) CLEAN_RUN_STARTED=0 ;; esac
+                case "${CANARY_TIER}" in ''|*[!0-9]*) CANARY_TIER=0 ;; esac
+                case "${CANARY_TRIP}" in ''|*[!0-9]*) CANARY_TRIP=0 ;; esac
+                case "${DEMOTION_TS}" in ''|*[!0-9.]*) DEMOTION_TS=0 ;; esac
+
+                # Color pending count if over cap
+                if [ "${PENDING_COUNT}" -gt "${PENDING_CAP}" ]; then
+                    PENDING_DISPLAY="${RED}${PENDING_COUNT}${NC} / ${PENDING_CAP}  ${RED}⚠ OVER CAP${NC}"
+                else
+                    PENDING_DISPLAY="${PENDING_COUNT} / ${PENDING_CAP}"
+                fi
+
+                # Color decisions_today if over 80% of cap. DECISIONS_TODAY
+                # is a float; truncate to integer for the bash comparison
+                # but keep the float value in the display.
+                DECISIONS_THRESHOLD=$((DAILY_CAP * 80 / 100))
+                DECISIONS_INT="${DECISIONS_TODAY%%.*}"
+                case "${DECISIONS_INT}" in ''|*[!0-9]*) DECISIONS_INT=0 ;; esac
+                if [ "${DECISIONS_INT}" -gt "${DECISIONS_THRESHOLD}" ]; then
+                    DECISIONS_DISPLAY="${YELLOW}${DECISIONS_TODAY}${NC} / ${DAILY_CAP}"
+                else
+                    DECISIONS_DISPLAY="${DECISIONS_TODAY} / ${DAILY_CAP}"
+                fi
+
+                # Format last_ask_epoch as relative time
+                if [ "${LAST_ASK}" -gt 0 ]; then
+                    NOW=$(date +%s)
+                    AGO=$((NOW - LAST_ASK))
+                    if [ "${AGO}" -lt 60 ]; then
+                        LAST_ASK_REL="${AGO}s ago"
+                    elif [ "${AGO}" -lt 3600 ]; then
+                        LAST_ASK_REL="$((AGO / 60))m ago"
+                    elif [ "${AGO}" -lt 86400 ]; then
+                        LAST_ASK_REL="$((AGO / 3600))h ago"
+                    else
+                        LAST_ASK_REL="$((AGO / 86400))d ago"
+                    fi
+                else
+                    LAST_ASK_REL="never"
+                fi
+
+                # Trust Lane display block (v3.3.5).
+                # Lane color: fast=green, guarded=yellow (default), slow=red.
+                case "${TRUST_LANE}" in
+                    fast)    LANE_DISPLAY="${GREEN}fast${NC}" ;;
+                    slow)    LANE_DISPLAY="${RED}slow${NC}" ;;
+                    *)       LANE_DISPLAY="${YELLOW}guarded${NC}" ;;
+                esac
+                if [ -n "${GRANT_SOURCE}" ]; then
+                    GRANT_DISPLAY="present (source: ${GRANT_SOURCE})"
+                else
+                    GRANT_DISPLAY="none"
+                fi
+                # Truncate clean_run_started_epoch to int for date conversion.
+                CR_STARTED_INT="${CLEAN_RUN_STARTED%%.*}"
+                case "${CR_STARTED_INT}" in ''|*[!0-9]*) CR_STARTED_INT=0 ;; esac
+                if [ "${CR_STARTED_INT}" -gt 0 ]; then
+                    CR_STARTED_ISO=$(date -u -r "${CR_STARTED_INT}" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "${CR_STARTED_INT}")
+                else
+                    CR_STARTED_ISO="—"
+                fi
+                # Truncate trust_lane_demotion.ts to int for date conversion.
+                DEMOTION_TS_INT="${DEMOTION_TS%%.*}"
+                case "${DEMOTION_TS_INT}" in ''|*[!0-9]*) DEMOTION_TS_INT=0 ;; esac
+                if [ -n "${DEMOTION_REASON}" ] && [ "${DEMOTION_TS_INT}" -gt 0 ]; then
+                    DEMOTION_ISO=$(date -u -r "${DEMOTION_TS_INT}" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "${DEMOTION_TS_INT}")
+                    DEMOTION_DISPLAY="${DEMOTION_REASON} @ ${DEMOTION_ISO}"
+                else
+                    DEMOTION_DISPLAY="—"
+                fi
+
+                DECISIONS_ZERO_NOTE=""
+                if [ "${DECISIONS_INT}" -eq 0 ]; then
+                    if [ "${STATE_IS_STALE}" = "true" ]; then
+                        DECISIONS_ZERO_NOTE="  ${YELLOW}(stale zero)${NC}"
+                    elif [ "${LAST_ASK}" -eq 0 ]; then
+                        DECISIONS_ZERO_NOTE="  ${DIM}(uninitialized/reset)${NC}"
+                    else
+                        DECISIONS_ZERO_NOTE="  ${DIM}(none recorded today)${NC}"
+                    fi
+                fi
+
+                PENDING_ZERO_NOTE=""
+                if [ "${PENDING_COUNT}" -eq 0 ]; then
+                    PENDING_ZERO_NOTE="  ${DIM}(healthy: none pending)${NC}"
+                fi
+
+                RESPONSE_ZERO_NOTE=""
+                if [ "${RESPONSE_TIMES_LEN}" -eq 0 ]; then
+                    if [ "${STATE_IS_STALE}" = "true" ]; then
+                        RESPONSE_ZERO_NOTE="  ${YELLOW}(stale zero)${NC}"
+                    elif [ "${LAST_ASK}" -eq 0 ]; then
+                        RESPONSE_ZERO_NOTE="  ${DIM}(uninitialized/reset)${NC}"
+                    else
+                        RESPONSE_ZERO_NOTE="  ${DIM}(healthy: window empty)${NC}"
+                    fi
+                fi
+
+                CLEAN_RUN_NOTE=""
+                if [ "${CLEAN_RUN_COUNT}" -eq 0 ]; then
+                    if [ -n "${DEMOTION_REASON}" ]; then
+                        CLEAN_RUN_NOTE="  ${DIM}(reset after ${DEMOTION_REASON})${NC}"
+                    elif [ "${LAST_ASK}" -eq 0 ] && [ "${DECISIONS_INT}" -eq 0 ]; then
+                        CLEAN_RUN_NOTE="  ${DIM}(uninitialized/reset)${NC}"
+                    else
+                        CLEAN_RUN_NOTE="  ${DIM}(healthy: no current clean run)${NC}"
+                    fi
+                fi
+
+                CANARY_ZERO_NOTE=""
+                if [ "${CANARY_TIER}" -eq 0 ] && [ "${CANARY_TRIP}" -eq 0 ]; then
+                    CANARY_ZERO_NOTE="  ${DIM}(healthy: no active tier)${NC}"
+                fi
+
+                # v3.3.8: append "(stale)" to daily-bound counters when the
+                # state file's date is not today UTC. The state itself is
+                # not wrong — it just predates the most recent rollover
+                # boundary. Read-only display correction; no state mutation.
+                if [ "${STATE_IS_STALE}" = "true" ]; then
+                    STATE_DATE_DISPLAY="${STATE_DATE}  ${YELLOW}(stale — will roll over on next gate call)${NC}"
+                    DECISIONS_DISPLAY_FINAL="${DECISIONS_DISPLAY}  ${YELLOW}(stale)${NC}${DECISIONS_ZERO_NOTE}"
+                    RESPONSE_TIMES_DISPLAY_FINAL="${RESPONSE_TIMES_LEN} entries  ${YELLOW}(stale)${NC}${RESPONSE_ZERO_NOTE}"
+                else
+                    STATE_DATE_DISPLAY="${STATE_DATE}"
+                    DECISIONS_DISPLAY_FINAL="${DECISIONS_DISPLAY}${DECISIONS_ZERO_NOTE}"
+                    RESPONSE_TIMES_DISPLAY_FINAL="${RESPONSE_TIMES_LEN} entries${RESPONSE_ZERO_NOTE}"
+                fi
+                PENDING_DISPLAY_FINAL="${PENDING_DISPLAY}${PENDING_ZERO_NOTE}"
+
+                printf "\n"
+                printf "    Human ID:                                    ${HUMAN_ID_DISPLAY}\n"
+                printf "    Role:                                        live active human route\n"
+                printf "    State date:                                  ${STATE_DATE_DISPLAY}\n"
+                printf "    recorded human decision units today:         ${DECISIONS_DISPLAY_FINAL}  ${DIM}(active Telegram state; approve/deny responses, not total cards)${NC}\n"
+                printf "    pending (ttl-filtered):                      ${PENDING_DISPLAY_FINAL}\n"
+                printf "    response_times:                              ${RESPONSE_TIMES_DISPLAY_FINAL}\n"
+                printf "    last_ask_epoch:                              ${LAST_ASK_REL}\n"
+                printf "    trust_lane:                                  ${LANE_DISPLAY}\n"
+                printf "    trust_lane_grant:                            ${GRANT_DISPLAY}\n"
+                printf "    clean_run:                                   ${CLEAN_RUN_COUNT} / ${CR_THRESHOLD}  (started: ${CR_STARTED_ISO})${CLEAN_RUN_NOTE}\n"
+                printf "    canary_tier / trip_count:                    ${CANARY_TIER} / ${CANARY_TRIP}${CANARY_ZERO_NOTE}\n"
+                printf "    last demotion:                               ${DEMOTION_DISPLAY}\n"
+                printf "    State file:                                  ${HUMAN_STATE_DIR}/${HUMAN_ID_DISPLAY}.json\n"
+            else
+                printf "    ${YELLOW}jq not found — install jq to see human state${NC}\n"
+            fi
+        done
+        if [ "${HUMAN_COUNT}" -eq 0 ]; then
+            printf "    ${YELLOW}No live active human-state file for the current Telegram route${NC}\n"
+        fi
+        if [ "${INACTIVE_NUMERIC_COUNT}" -gt 0 ]; then
+            printf "    Inactive numeric state files:                %s  ${DIM}(not current Telegram route; treated as stale/test)${NC}\n" "${INACTIVE_NUMERIC_COUNT}"
+        fi
+        if [ "${TEST_STATE_COUNT}" -gt 0 ]; then
+            printf "    Test/invalid state files:                    %s  ${DIM}(ignored as humans)${NC}\n" "${TEST_STATE_COUNT}"
+        fi
+    else
+        printf "    ${DIM}No human state files yet (created lazily on first ask)${NC}\n"
+        printf "    State dir: ${HUMAN_STATE_DIR}\n"
+    fi
+
+    printf "\n"
+
+    # ─── Canary Subsystem (v3.3.7 Canary Evidence Hardening) ──────────────
+    # Surfaces chat_id source, last-7d outcome counts, and a pending_lost
+    # rate alarm. Read-only display from etc/gate.json + var/log/audit.jsonl.
+    # The 1.0/day pending_lost alarm threshold is a v3.3.7 prior, NOT a
+    # calibrated value — recalibrate once non-developer production data exists.
+    printf "  ${BOLD}Canary Subsystem (v3.3.7):${NC}\n"
+
+    # chat_id source detection. Matches lib/canary.sh:_canary_chat_id_source.
+    GATE_JSON="${PROJECT_DIR}/etc/gate.json"
+    CANARY_CHAT_ID_SOURCE="unconfigured"
+    if [ -f "${GATE_JSON}" ] && command -v jq >/dev/null 2>&1; then
+        CFG_CHAT_ID=$(jq -r '.telegram.chat_id // empty' "${GATE_JSON}" 2>/dev/null)
+        if [ -n "${CFG_CHAT_ID}" ]; then
+            CANARY_CHAT_ID_SOURCE="gate.json"
+        fi
+    fi
+    if [ "${CANARY_CHAT_ID_SOURCE}" = "unconfigured" ] && [ -n "${ZLAR_TELEGRAM_CHAT_ID:-}" ]; then
+        CANARY_CHAT_ID_SOURCE="env"
+    fi
+
+    case "${CANARY_CHAT_ID_SOURCE}" in
+        gate.json|env)
+            CANARY_STATE_DISPLAY="${GREEN}enabled${NC}"
+            CANARY_SOURCE_DISPLAY="${CANARY_CHAT_ID_SOURCE}"
+            ;;
+        *)
+            CANARY_STATE_DISPLAY="${RED}misconfigured${NC} (canaries refuse to send)"
+            CANARY_SOURCE_DISPLAY="${YELLOW}${CANARY_CHAT_ID_SOURCE}${NC}"
+            ;;
+    esac
+
+    printf "    state:                                       ${CANARY_STATE_DISPLAY}\n"
+    printf "    chat_id source:                              ${CANARY_SOURCE_DISPLAY}\n"
+
+    # 7d outcome counts from audit.jsonl. Tolerant of missing file.
+    AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+    if [ -f "${AUDIT_FILE}" ] && command -v jq >/dev/null 2>&1; then
+        NOW_EPOCH=$(date +%s)
+        WEEK_AGO=$((NOW_EPOCH - 7 * 86400))
+
+        # Use one jq pass to filter and count. Tolerant of malformed lines via
+        # raw-line parsing with try/catch around each entry. Do not spawn jq
+        # once per audit row; status must stay usable on real audit logs.
+        # Audit format:
+        # - .ts is an ISO 8601 string ("2026-05-04T02:24:45Z") emitted by
+        #   bin/zlar-gate:emit_event. v3.3.7 A4 incorrectly assumed .ts was
+        #   epoch seconds, so the integer-strip + [!0-9] case kicked every
+        #   line into "skipped" and the loop counted nothing. v3.3.8 parses
+        #   ISO 8601 via jq's fromdateiso8601, with a graceful fall back to
+        #   numeric for any future float-epoch lines.
+        # - .action is the second arg to emit_event(). v3.3.7 A4 read
+        #   .event_type, which doesn't exist; the case branches never
+        #   matched. Now reads .action.
+        CANARY_COUNTS=$(jq -Rrn --argjson week_ago "${WEEK_AGO}" '
+            def ts_epoch($t):
+                if ($t | type) == "string"
+                then ($t | try fromdateiso8601 catch 0)
+                else ($t | try floor catch 0)
+                end;
+            reduce inputs as $line (
+                {
+                    passed: 0,
+                    failed: 0,
+                    missed: 0,
+                    pending_lost: 0,
+                    tampered: 0,
+                    claim_lost: 0,
+                    artifact_destroyed: 0
+                };
+                ($line | try fromjson catch null) as $entry
+                | if $entry == null then .
+                  else (ts_epoch($entry.ts // 0)) as $entry_ts
+                  | if ($entry_ts < $week_ago) then .
+                    else ($entry.action // "") as $event
+                    | ($entry.detail.result // "") as $result
+                    | if (($event == "governance_health_check" or $event == "canary_result") and $result == "healthy")
+                      then .passed += 1
+                      elif (($event == "governance_health_check" or $event == "canary_result") and $result == "fatigue_detected")
+                      then .failed += 1
+                      elif (($event == "governance_health_check" or $event == "canary_result") and $result == "expired")
+                      then .missed += 1
+                      elif $event == "canary_pending_lost"
+                      then .pending_lost += 1
+                      elif $event == "canary_pending_tampered"
+                      then .tampered += 1
+                      elif $event == "canary_claim_lost"
+                      then .claim_lost += 1
+                      elif $event == "canary_artifact_destroyed_post_delivery"
+                      then .artifact_destroyed += 1
+                      else .
+                      end
+                    end
+                  end
+            )
+            | [.passed, .failed, .missed, .pending_lost, .tampered, .claim_lost, .artifact_destroyed]
+            | @tsv
+        ' < "${AUDIT_FILE}" 2>/dev/null || echo "")
+        if [ -n "${CANARY_COUNTS}" ]; then
+            IFS="$(printf '\t')" read -r PASSED_COUNT FAILED_COUNT MISSED_COUNT PENDING_LOST_COUNT TAMPERED_COUNT CLAIM_LOST_COUNT ARTIFACT_DESTROYED_COUNT <<EOF
+${CANARY_COUNTS}
+EOF
+        else
+            PASSED_COUNT=0
+            FAILED_COUNT=0
+            MISSED_COUNT=0
+            PENDING_LOST_COUNT=0
+            TAMPERED_COUNT=0
+            CLAIM_LOST_COUNT=0
+            ARTIFACT_DESTROYED_COUNT=0
+        fi
+
+        # pending_lost rate alarm (1.0/day prior, uncalibrated).
+        PENDING_LOST_RATE_INT=$((PENDING_LOST_COUNT * 10 / 7))   # x10 for one decimal
+        PENDING_LOST_RATE_DISPLAY=$(awk -v c="${PENDING_LOST_COUNT}" 'BEGIN { printf "%.2f", c / 7.0 }')
+        if [ "${PENDING_LOST_RATE_INT}" -gt 10 ]; then
+            RATE_DISPLAY="${RED}${PENDING_LOST_RATE_DISPLAY}/day${NC}  ${RED}⚠ ABOVE PRIOR THRESHOLD${NC}"
+        else
+            RATE_DISPLAY="${PENDING_LOST_RATE_DISPLAY}/day"
+        fi
+
+        printf "    last 7 days\n"
+        printf "      passed:                                    ${PASSED_COUNT}\n"
+        printf "      failed:                                    ${FAILED_COUNT}\n"
+        printf "      missed:                                    ${MISSED_COUNT}\n"
+        printf "      pending_lost:                              ${PENDING_LOST_COUNT}\n"
+        printf "      pending_tampered:                          ${TAMPERED_COUNT}\n"
+        printf "      claim_lost (race losers):                  ${CLAIM_LOST_COUNT}\n"
+        printf "      artifact_destroyed_post_delivery:          ${ARTIFACT_DESTROYED_COUNT}\n"
+        printf "    pending_lost rate (7d):                      ${RATE_DISPLAY}\n"
+        CANARY_EVENT_TOTAL=$((PASSED_COUNT + FAILED_COUNT + MISSED_COUNT + PENDING_LOST_COUNT + TAMPERED_COUNT + CLAIM_LOST_COUNT + ARTIFACT_DESTROYED_COUNT))
+        if [ "${CANARY_EVENT_TOTAL}" -eq 0 ]; then
+            printf "    zero explanation:                            ${DIM}healthy if no canary fired; otherwise audit has no canary outcome/fault events in the 7d window${NC}\n"
+        fi
+    else
+        printf "    ${DIM}audit.jsonl missing or jq unavailable — outcome counts unavailable${NC}\n"
+    fi
+
+    # v3.3.10 — trigger eligibility surface. Per-human state, not audit-derived.
+    # Surfaces "why no canary has fired" so a drought (like the v3.3.7→v3.3.10
+    # float-bash-arith bug that produced 0/71 fires over 4.6 days) is visible
+    # before any threshold tuning. Skip counters reset on canary claim.
+    # Reuse CFG_CHAT_ID extracted earlier from gate.json (v3.3.7 chat_id source
+    # detection block). bin/zlar status runs without the gate's runtime env, so
+    # TELEGRAM_CHAT_ID is not exported here — the gate-config form is the only
+    # reliable source for "who is the operator on this box."
+    HUMAN_ID="${CFG_CHAT_ID:-${ZLAR_TELEGRAM_CHAT_ID:-}}"
+    HUMAN_STATE_FILE="${PROJECT_DIR}/var/human-state/${HUMAN_ID}.json"
+    if [ -n "${HUMAN_ID}" ] && [ -f "${HUMAN_STATE_FILE}" ] && command -v jq >/dev/null 2>&1; then
+        APPROVALS_SINCE=$(jq -r '.canary_approvals_since_last // 0' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        case "${APPROVALS_SINCE}" in ''|*[!0-9]*) APPROVALS_SINCE=0 ;; esac
+        LAST_CANARY_EPOCH=$(jq -r '.canary_last_epoch // 0 | floor' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        case "${LAST_CANARY_EPOCH}" in ''|*[!0-9]*) LAST_CANARY_EPOCH=0 ;; esac
+        if [ "${LAST_CANARY_EPOCH}" -gt 0 ]; then
+            LAST_CANARY_ISO=$(jq -nr --argjson e "${LAST_CANARY_EPOCH}" '$e | gmtime | strftime("%Y-%m-%dT%H:%M:%SZ")' 2>/dev/null || echo "?")
+        else
+            LAST_CANARY_ISO="never"
+        fi
+        SKIPS_PENDING=$(jq -r '.canary_skips.pending_held // 0' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        SKIPS_BELOW=$(jq -r '.canary_skips.below_threshold // 0' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        SKIPS_COOLDOWN=$(jq -r '.canary_skips.cooldown_active // 0' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        SKIPS_PROBABILITY=$(jq -r '.canary_skips.probability // 0' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        SKIPS_COOLDOWN_ERR=$(jq -r '.canary_skips.cooldown_eval_error // 0' "${HUMAN_STATE_FILE}" 2>/dev/null || echo "0")
+        case "${SKIPS_COOLDOWN_ERR}" in ''|*[!0-9]*) SKIPS_COOLDOWN_ERR=0 ;; esac
+        if [ "${SKIPS_COOLDOWN_ERR}" -gt 0 ]; then
+            SKIPS_COOLDOWN_ERR_DISPLAY="${RED}${SKIPS_COOLDOWN_ERR}${NC}  ${RED}⚠ REGRESSION SENTINEL${NC}"
+        else
+            SKIPS_COOLDOWN_ERR_DISPLAY="${SKIPS_COOLDOWN_ERR}"
+        fi
+        printf "    trigger eligibility (per-human state)\n"
+        printf "      approvals_since_last_canary:               ${APPROVALS_SINCE}\n"
+        printf "      last_canary_iso:                           ${LAST_CANARY_ISO}\n"
+        printf "      skips since last canary fire\n"
+        printf "        pending_held:                            ${SKIPS_PENDING}\n"
+        printf "        below_threshold:                         ${SKIPS_BELOW}\n"
+        printf "        cooldown_active:                         ${SKIPS_COOLDOWN}\n"
+        printf "        probability:                             ${SKIPS_PROBABILITY}\n"
+        printf "        cooldown_eval_error:                     ${SKIPS_COOLDOWN_ERR_DISPLAY}\n"
+
+        # v3.3.11 — Bounded recovery opportunity (forced canary ceiling).
+        # Surfaces the configured ceiling and how many approvals remain until
+        # the next forced canary fires. Past-the-ceiling shows "eligible now"
+        # rather than a negative remaining count — the system never displays
+        # the human owing it more friction.
+        CFG_MAX_FORCE=$(jq -r '.canary.max_approvals_before_forced_canary // 0 | floor' "${GATE_JSON}" 2>/dev/null || echo "0")
+        case "${CFG_MAX_FORCE}" in ''|*[!0-9]*) CFG_MAX_FORCE=0 ;; esac
+        if [ "${CFG_MAX_FORCE}" -gt 0 ]; then
+            printf "      forced canary ceiling:                     ${CFG_MAX_FORCE} approvals\n"
+            if [ "${APPROVALS_SINCE}" -ge "${CFG_MAX_FORCE}" ]; then
+                printf "      next forced canary:                        ${GREEN}eligible now${NC}\n"
+            else
+                REMAINING=$((CFG_MAX_FORCE - APPROVALS_SINCE))
+                printf "      next forced canary:                        in ${REMAINING} approvals\n"
+            fi
+        fi
+    fi
+
+    printf "\n"
+
+    # Frameworks / action surfaces. This block names routed/intercepted
+    # surfaces, not brands. Installing a client is not governance.
+    printf "  ${BOLD}Frameworks / Action Surfaces:${NC}\n"
+
+    CODEX_HOME_DIR="${CODEX_HOME:-${HOME}/.codex}"
+    CODEX_CONFIG_FILE="${CODEX_HOME_DIR}/config.toml"
+    if [ ! -f "${CODEX_CONFIG_FILE}" ] && [ -f "${HOME}/.Codex/config.toml" ]; then
+        CODEX_CONFIG_FILE="${HOME}/.Codex/config.toml"
+    fi
+
+    codex_hook_reality_probe
+    case "${CODEX_HOOK_REALITY_STATUS}" in
+        configured_current)
+            printf "    ${GREEN}●${NC} Codex PreToolUse hook — configured to current gate; current invocation not measured by status\n"
+            printf "       ${DIM}hook: ${CODEX_HOOK_REALITY_FILE}${NC}\n"
+            ;;
+        stale_project|target_missing|target_not_executable|gate_missing)
+            printf "    ${YELLOW}◇${NC} Codex PreToolUse hook — configured but not usable; not governed for this session\n"
+            printf "       ${DIM}%s${NC}\n" "${CODEX_HOOK_REALITY_LABEL}"
+            ;;
+        configured_unverified|non_zlar_hook|unknown)
+            printf "    ${YELLOW}◇${NC} Codex PreToolUse hook — %s\n" "${CODEX_HOOK_REALITY_LABEL}"
+            ;;
+        not_configured)
+            if command -v codex >/dev/null 2>&1 || [ -d "${CODEX_HOME_DIR}" ] || [ -d "${HOME}/.Codex" ]; then
+                printf "    ${YELLOW}◇${NC} Codex — installed; no ZLAR PreToolUse hook found\n"
+            else
+                printf "    ${DIM}○${NC} Codex — not installed\n"
+            fi
+            ;;
+        *)
+            printf "    ${YELLOW}◇${NC} Codex PreToolUse hook — %s\n" "${CODEX_HOOK_REALITY_LABEL}"
+            ;;
+    esac
+
+    if command -v codex >/dev/null 2>&1 || [ -d "${CODEX_HOME_DIR}" ] || [ -d "${HOME}/.Codex" ]; then
+        printf "    ${YELLOW}◇${NC} Codex routed MCP — not measured by status\n"
+        printf "       ${DIM}ZLAR can govern Codex CLI-invoked MCP tool calls when those MCP servers are routed through ZLAR.${NC}\n"
+        printf "       ${DIM}Status does not measure routing; use mcp-gate coverage/proof output before claiming coverage.${NC}\n"
+    fi
+
+    # Claude Code
+    if surface_hook_configured "${HOME}/.claude/settings.json"; then
+        printf "    ${GREEN}●${NC} Claude Code PreToolUse hook — configured; verify target freshness before claiming current route\n"
+    elif command -v claude >/dev/null 2>&1 || [ -d "${HOME}/.claude" ]; then
+        printf "    ${YELLOW}◇${NC} Claude Code — installed; no ZLAR hook found\n"
+    else
+        printf "    ${DIM}○${NC} Claude Code — not installed\n"
+    fi
+
+    # Cursor
+    if surface_hook_configured "${HOME}/.cursor/hooks.json"; then
+        printf "    ${GREEN}●${NC} Cursor hook adapter — configured; verify target freshness before claiming current route\n"
+    elif command -v cursor >/dev/null 2>&1 || [ -d "${HOME}/.cursor" ]; then
+        printf "    ${YELLOW}◇${NC} Cursor — installed; no ZLAR hook found\n"
+    else
+        printf "    ${DIM}○${NC} Cursor — not installed\n"
+    fi
+
+    # Windsurf
+    if surface_hook_configured "${HOME}/.codeium/windsurf/hooks.json"; then
+        printf "    ${GREEN}●${NC} Windsurf hook adapter — configured; verify target freshness before claiming current route\n"
+    elif command -v windsurf >/dev/null 2>&1 || [ -d "${HOME}/.codeium/windsurf" ]; then
+        printf "    ${YELLOW}◇${NC} Windsurf — installed; no ZLAR hook found\n"
+    else
+        printf "    ${DIM}○${NC} Windsurf — not installed\n"
+    fi
+
+    if [ -f "${CODEX_CONFIG_FILE}" ]; then
+        CODEX_PLUGIN_COUNT=$(grep -c '^\[plugins\.' "${CODEX_CONFIG_FILE}" 2>/dev/null || echo "0")
+        case "${CODEX_PLUGIN_COUNT}" in ''|*[!0-9]*) CODEX_PLUGIN_COUNT=0 ;; esac
+        if [ "${CODEX_PLUGIN_COUNT}" -gt 0 ]; then
+            printf "    ${YELLOW}●${NC} Codex plugins/connectors — %s installed; not a ZLAR governance measurement\n" "${CODEX_PLUGIN_COUNT}"
+        fi
+    fi
+
+    printf "    ${DIM}Not measured by status: unrouted shell/filesystem/browser/app/network/model reasoning/final text, direct MCP, and plugin internals.${NC}\n"
+
+    printf "\n"
+
+    # Policy
+    printf "  ${BOLD}Policy:${NC}\n"
+    POLICY_FILE="${PROJECT_DIR}/etc/policies/active.policy.json"
+    if [ -f "${POLICY_FILE}" ] && command -v jq >/dev/null 2>&1; then
+        RULE_COUNT=$(jq '.rules | length' "${POLICY_FILE}" 2>/dev/null || echo "?")
+        ALLOW_COUNT=$(jq '[.rules[] | select(.action == "allow")] | length' "${POLICY_FILE}" 2>/dev/null || echo "?")
+        DENY_COUNT=$(jq '[.rules[] | select(.action == "deny")] | length' "${POLICY_FILE}" 2>/dev/null || echo "?")
+        DEFAULT_ACTION=$(jq -r '.default_action // "deny"' "${POLICY_FILE}" 2>/dev/null || echo "deny")
+        printf "    ${RULE_COUNT} rules (${ALLOW_COUNT} allow, ${DENY_COUNT} deny, default: ${DEFAULT_ACTION})\n"
+
+        # Signature status
+        SIG_VALUE=$(jq -r '.signature.value // ""' "${POLICY_FILE}" 2>/dev/null)
+        if [ -n "${SIG_VALUE}" ] && [ "${SIG_VALUE}" != "SIGNED_AT_INSTALL" ]; then
+            printf "    ${GREEN}●${NC} Signed\n"
+        else
+            printf "    ${RED}●${NC} Unsigned\n"
+        fi
+    else
+        printf "    ${RED}●${NC} No active policy found\n"
+    fi
+
+    printf "\n"
+
+    # Telegram (v3.3.9 — three-state truth: state composes token presence
+    # with chat_id source authority. "Enabled" requires both. The old
+    # ●/○-style "Enabled — denied actions get sent for approval" line was
+    # deleted in v3.3.9 because it claimed dispatch capability without
+    # checking either, which masked misdeployed gates.
+    printf "  ${BOLD}Telegram:${NC}\n"
+    GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
+
+    # chat_id source detection — matches lib/canary.sh:_canary_chat_id_source
+    # and bin/zlar-gate's TELEGRAM_CHAT_ID_SOURCE resolution.
+    TG_CHAT_ID_SOURCE="unconfigured"
+    if [ -n "${ZLAR_TELEGRAM_CHAT_ID:-}" ]; then
+        TG_CHAT_ID_SOURCE="env"
+    elif [ -f "${GATE_CONFIG}" ] && command -v jq >/dev/null 2>&1; then
+        CFG_CHAT_ID=$(jq -r '.telegram.chat_id // empty' "${GATE_CONFIG}" 2>/dev/null)
+        if [ -n "${CFG_CHAT_ID}" ]; then
+            TG_CHAT_ID_SOURCE="gate.json"
+        fi
+    fi
+
+    # Token presence — env > .env file (matches bin/zlar-gate's _load_env).
+    TG_TOKEN_PRESENT="missing"
+    if [ -n "${ZLAR_TELEGRAM_TOKEN:-}" ] || [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+        TG_TOKEN_PRESENT="present"
+    elif [ -f "${PROJECT_DIR}/.env" ] && grep -qE "^(TELEGRAM_BOT_TOKEN|ZLAR_TELEGRAM_TOKEN)=" "${PROJECT_DIR}/.env" 2>/dev/null; then
+        TG_TOKEN_PRESENT="present"
+    fi
+
+    # Operator-explicit disable in gate.json overrides everything else.
+    TG_CONFIG_ENABLED="true"
+    if [ -f "${GATE_CONFIG}" ] && command -v jq >/dev/null 2>&1; then
+        TG_CONFIG_ENABLED=$(jq -r '.telegram.enabled // true' "${GATE_CONFIG}" 2>/dev/null)
+    fi
+
+    TG_CHAT_ID_STATUS="missing"
+    if [ "${TG_CHAT_ID_SOURCE}" = "env" ]; then
+        TG_CHAT_ID_STATUS=$(telegram_chat_id_status "${ZLAR_TELEGRAM_CHAT_ID:-}")
+    elif [ "${TG_CHAT_ID_SOURCE}" = "gate.json" ]; then
+        TG_CHAT_ID_STATUS=$(telegram_chat_id_status "${CFG_CHAT_ID:-}")
+    fi
+
+    # Composite state. Token-missing reported first (more upstream than chat_id).
+    if [ "${TG_CONFIG_ENABLED}" = "false" ]; then
+        TG_STATE_DISPLAY="${DIM}○ disabled (config)${NC}"
+    elif [ "${TG_TOKEN_PRESENT}" = "missing" ]; then
+        TG_STATE_DISPLAY="${RED}⛔ fail-closed (token missing)${NC}"
+    elif [ "${TG_CHAT_ID_SOURCE}" = "unconfigured" ]; then
+        TG_STATE_DISPLAY="${RED}⛔ fail-closed (chat_id unconfigured)${NC}"
+    elif [ "${TG_CHAT_ID_STATUS}" != "valid_numeric" ]; then
+        TG_STATE_DISPLAY="${RED}⛔ fail-closed (invalid chat_id)${NC}"
+    else
+        TG_STATE_DISPLAY="${GREEN}● enabled${NC}"
+    fi
+
+    case "${TG_CHAT_ID_SOURCE}" in
+        gate.json|env) TG_SOURCE_DISPLAY="${TG_CHAT_ID_SOURCE}" ;;
+        *)             TG_SOURCE_DISPLAY="${YELLOW}${TG_CHAT_ID_SOURCE}${NC}" ;;
+    esac
+
+    case "${TG_TOKEN_PRESENT}" in
+        present) TG_TOKEN_DISPLAY="${TG_TOKEN_PRESENT}" ;;
+        missing) TG_TOKEN_DISPLAY="${YELLOW}${TG_TOKEN_PRESENT}${NC}" ;;
+    esac
+
+    printf "    state:                                       ${TG_STATE_DISPLAY}\n"
+    printf "    chat_id source:                              ${TG_SOURCE_DISPLAY}\n"
+    printf "    chat_id status:                              $(telegram_chat_id_display "${TG_CHAT_ID_STATUS}")\n"
+    printf "    token:                                       ${TG_TOKEN_DISPLAY}\n"
+
+    printf "\n"
+
+    # Audit
+    printf "  ${BOLD}Audit:${NC}\n"
+    AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+    if [ -f "${AUDIT_FILE}" ]; then
+        AUDIT_COUNT=$(wc -l < "${AUDIT_FILE}" 2>/dev/null | tr -d ' ')
+        printf "    ${AUDIT_COUNT} decisions logged\n"
+        if [ "${AUDIT_COUNT}" -gt 0 ]; then
+            LAST_TS=$(tail -1 "${AUDIT_FILE}" | jq -r '.timestamp // ""' 2>/dev/null)
+            if [ -n "${LAST_TS}" ]; then
+                printf "    Last: ${LAST_TS}\n"
+            fi
+        fi
+    else
+        printf "    No audit entries yet\n"
+    fi
+
+    printf "\n"
+}
+
+cmd_audit() {
+    AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+    LINES="${1:-20}"
+
+    if [ ! -f "${AUDIT_FILE}" ]; then
+        echo "No audit entries yet."
+        return
+    fi
+
+    printf "\n${BOLD}Last ${LINES} audit entries:${NC}\n\n"
+
+    tail -n "${LINES}" "${AUDIT_FILE}" | while IFS= read -r line; do
+        TS=$(printf '%s' "${line}" | jq -r '.timestamp // ""' 2>/dev/null)
+        TOOL=$(printf '%s' "${line}" | jq -r '.tool_name // ""' 2>/dev/null)
+        DECISION=$(printf '%s' "${line}" | jq -r '.decision // ""' 2>/dev/null)
+        RULE=$(printf '%s' "${line}" | jq -r '.rule_id // ""' 2>/dev/null)
+
+        case "${DECISION}" in
+            allow) COLOR="${GREEN}" ;;
+            deny)  COLOR="${RED}" ;;
+            *)     COLOR="${YELLOW}" ;;
+        esac
+
+        printf "  ${DIM}${TS}${NC}  ${COLOR}%-5s${NC}  %-20s  ${DIM}${RULE}${NC}\n" "${DECISION}" "${TOOL}"
+    done
+
+    TOTAL=$(wc -l < "${AUDIT_FILE}" | tr -d ' ')
+    printf "\n  ${DIM}Total: ${TOTAL} entries${NC}\n\n"
+}
+
+cmd_policy() {
+    POLICY_FILE="${PROJECT_DIR}/etc/policies/active.policy.json"
+
+    if [ ! -f "${POLICY_FILE}" ]; then
+        echo "No active policy found."
+        return
+    fi
+
+    printf "\n${BOLD}ZLAR Policy Summary${NC}\n\n"
+
+    jq -r '.rules[] | "  \(.action | if . == "allow" then "  ✓ allow" elif . == "deny" then "  ✗ deny " else "  ? \(.)" end)  \(.id)  \(.description)"' \
+        "${POLICY_FILE}" 2>/dev/null
+
+    printf "\n  ${DIM}Default action: $(jq -r '.default_action // "deny"' "${POLICY_FILE}" 2>/dev/null)${NC}\n"
+    printf "  ${DIM}Policy file: ${POLICY_FILE}${NC}\n\n"
+}
+
+cmd_telegram() {
+    GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
+    ENV_FILE="${PROJECT_DIR}/.env"
+
+    printf "\n${BOLD}ZLAR — Telegram Setup${NC}\n\n"
+    printf "  Telegram lets you approve or deny blocked actions from your phone.\n"
+    printf "  Instead of instant-deny, the agent waits for your decision.\n\n"
+
+    printf "  ${BOLD}Step 1:${NC} Create a Telegram bot\n"
+    printf "    1. Open Telegram, message @BotFather\n"
+    printf "    2. Send /newbot, follow the prompts\n"
+    printf "    3. Copy the bot token\n\n"
+
+    printf "  ${BOLD}Step 2:${NC} Get your chat ID\n"
+    printf "    1. Message @userinfobot on Telegram\n"
+    printf "    2. It replies with your chat ID (a number)\n\n"
+
+    printf "  ${BOLD}Step 3:${NC} Enter your credentials\n\n"
+
+    read -p "  Bot token (or press Enter to skip): " BOT_TOKEN
+    if [ -z "${BOT_TOKEN}" ]; then
+        echo ""
+        echo "  Skipped. Run 'zlar telegram' again when ready."
+        return
+    fi
+
+    read -p "  Chat ID: " CHAT_ID
+    if [ -z "${CHAT_ID}" ]; then
+        echo ""
+        echo "  Skipped. Run 'zlar telegram' again when ready."
+        return
+    fi
+    case "$(telegram_chat_id_status "${CHAT_ID}")" in
+        valid_numeric) ;;
+        invalid_bot_username)
+            echo ""
+            echo "  ✗ That is a bot/user username, not a numeric chat ID."
+            echo "  Message @userinfobot and enter the numeric chat ID it returns."
+            return 1
+            ;;
+        *)
+            echo ""
+            echo "  ✗ Chat ID must be numeric. Usernames like @ZLAR_00_bot are not valid destinations."
+            return 1
+            ;;
+    esac
+
+    # Update .env — preserve existing entries, replace token if present
+    if [ -f "${ENV_FILE}" ] && grep -q "ZLAR_TELEGRAM_TOKEN" "${ENV_FILE}" 2>/dev/null; then
+        # Replace existing token line
+        TEMP_ENV=$(mktemp)
+        sed "s|^ZLAR_TELEGRAM_TOKEN=.*|ZLAR_TELEGRAM_TOKEN=${BOT_TOKEN}|" "${ENV_FILE}" > "${TEMP_ENV}"
+        # Also uncomment if it was commented out
+        sed -i.bak "s|^#.*ZLAR_TELEGRAM_TOKEN=.*|ZLAR_TELEGRAM_TOKEN=${BOT_TOKEN}|" "${TEMP_ENV}" 2>/dev/null
+        rm -f "${TEMP_ENV}.bak"
+        mv "${TEMP_ENV}" "${ENV_FILE}"
+    else
+        # Append to existing .env or create new
+        printf "ZLAR_TELEGRAM_TOKEN=%s\n" "${BOT_TOKEN}" >> "${ENV_FILE}"
+    fi
+    chmod 600 "${ENV_FILE}"
+    echo "  ✓ Token saved to ${ENV_FILE} (mode 600)"
+
+    # Update gate.json — enable Telegram, set chat ID, set reasonable timeout
+    TEMP=$(mktemp)
+    jq --arg cid "${CHAT_ID}" \
+        '.telegram.enabled = true | .telegram.chat_id = $cid | .telegram.timeout_s = 300' \
+        "${GATE_CONFIG}" > "${TEMP}" 2>/dev/null
+    if [ -s "${TEMP}" ]; then
+        mv "${TEMP}" "${GATE_CONFIG}"
+        echo "  ✓ Telegram enabled in gate config"
+    else
+        rm -f "${TEMP}"
+        echo "  ✗ Could not update gate config — edit ${GATE_CONFIG} manually"
+        return
+    fi
+
+    # Update policy — convert deny → ask for rules that make sense
+    POLICY_FILE="${PROJECT_DIR}/etc/policies/active.policy.json"
+    TEMP2=$(mktemp)
+    jq '
+        .rules = [.rules[] |
+            if .id == "R016" or .id == "R014" or .id == "R017" or
+               .id == "R019" or .id == "R020" or .id == "R031" or
+               .id == "R090" or .id == "R100"
+            then .action = "ask"
+            else .
+            end
+        ]
+    ' "${POLICY_FILE}" > "${TEMP2}" 2>/dev/null
+    if [ -s "${TEMP2}" ]; then
+        mv "${TEMP2}" "${POLICY_FILE}"
+        echo "  ✓ Policy updated — deny → ask for reviewable actions"
+
+        # Re-sign policy
+        if [ -f "${HOME}/.zlar-signing.key" ]; then
+            "${PROJECT_DIR}/bin/zlar-policy" sign \
+                --input "${POLICY_FILE}" \
+                --key "${HOME}/.zlar-signing.key" 2>/dev/null
+            echo "  ✓ Policy re-signed"
+        else
+            echo "  ⚠ Could not re-sign policy — run: zlar-policy sign --input ${POLICY_FILE} --key ~/.zlar-signing.key"
+        fi
+    else
+        rm -f "${TEMP2}"
+        echo "  ✗ Could not update policy — edit ${POLICY_FILE} manually"
+    fi
+
+    # Test Telegram connection
+    printf "\n  Testing Telegram connection...\n"
+    RESULT=$(curl -s --connect-timeout 5 "https://api.telegram.org/bot${BOT_TOKEN}/getMe" 2>/dev/null || echo "")
+    if printf '%s' "${RESULT}" | jq -r '.ok' 2>/dev/null | grep -q "true"; then
+        BOT_NAME=$(printf '%s' "${RESULT}" | jq -r '.result.username // "unknown"' 2>/dev/null)
+        echo "  ✓ Connected to @${BOT_NAME}"
+    else
+        echo "  ✗ Could not connect — check your bot token"
+    fi
+
+    printf "\n  ${BOLD}Done.${NC} Blocked actions will now be sent to Telegram for your approval.\n\n"
+}
+
+cmd_uninstall() {
+    UNINSTALL_SCRIPT="${PROJECT_DIR}/uninstall.sh"
+    if [ -f "${UNINSTALL_SCRIPT}" ]; then
+        bash "${UNINSTALL_SCRIPT}"
+    else
+        echo "Uninstall script not found at ${UNINSTALL_SCRIPT}"
+        echo "To remove manually: rm -rf ${PROJECT_DIR}"
+    fi
+}
+
+cmd_doctor() {
+    local run_live_checks="false"
+    case "${1:-}" in
+        --live) run_live_checks="true" ;;
+        "" ) ;;
+        *)
+            printf "Usage: zlar doctor [--live]\n" >&2
+            return 2
+            ;;
+    esac
+    printf "\n${BOLD}ZLAR Doctor${NC} — checking your installation\n\n"
+
+    local errors=0
+    local warnings=0
+
+    # ── 1. Dependencies ──────────────────────────────────────────────────────
+
+    printf "  ${BOLD}Dependencies${NC}\n"
+
+    # bash version. The gate is covered on macOS system bash 3.2 and modern
+    # Linux bash in CI; do not require bash 4+ unless the source starts using
+    # bash-4-only features.
+    local bash_major bash_minor
+    bash_major=$(printf '%s' "${BASH_VERSION:-0.0}" | cut -d. -f1)
+    bash_minor=$(printf '%s' "${BASH_VERSION:-0.0}" | cut -d. -f2)
+    case "${bash_major}" in ''|*[!0-9]*) bash_major=0 ;; esac
+    case "${bash_minor}" in ''|*[!0-9]*) bash_minor=0 ;; esac
+    if [ "${bash_major}" -gt 3 ] 2>/dev/null || { [ "${bash_major}" -eq 3 ] 2>/dev/null && [ "${bash_minor}" -ge 2 ] 2>/dev/null; }; then
+        printf "    ${GREEN}OK${NC}  bash ${BASH_VERSION} (3.2+ supported for gate)\n"
+    else
+        printf "    ${RED}!!${NC}  bash ${BASH_VERSION:-unknown} — gate supports bash 3.2+\n"
+        case "$(uname -s)" in
+            Darwin) printf "         Fix: ${BOLD}brew install bash${NC} or upgrade to macOS system bash 3.2+\n" ;;
+            Linux)  printf "         Fix: ${BOLD}sudo apt install bash${NC} or upgrade bash to 3.2+\n" ;;
+        esac
+        errors=$((errors + 1))
+    fi
+
+    # jq
+    if command -v jq >/dev/null 2>&1; then
+        printf "    ${GREEN}OK${NC}  jq $(jq --version 2>/dev/null || echo 'installed')\n"
+    else
+        printf "    ${RED}!!${NC}  jq not found — required for policy evaluation\n"
+        case "$(uname -s)" in
+            Darwin) printf "         Fix: ${BOLD}brew install jq${NC}\n" ;;
+            Linux)  printf "         Fix: ${BOLD}sudo apt install jq${NC}\n" ;;
+        esac
+        errors=$((errors + 1))
+    fi
+
+    # openssl
+    if command -v openssl >/dev/null 2>&1; then
+        local ssl_ver
+        ssl_ver=$(openssl version 2>/dev/null | head -1 || echo "unknown")
+        printf "    ${GREEN}OK${NC}  openssl (${ssl_ver})\n"
+
+        # Ed25519 support
+        if openssl genpkey -algorithm ed25519 -out /dev/null 2>/dev/null; then
+            printf "    ${GREEN}OK${NC}  Ed25519 signing supported\n"
+        else
+            printf "    ${RED}!!${NC}  Ed25519 not supported by this openssl\n"
+            case "$(uname -s)" in
+                Darwin) printf "         Fix: ${BOLD}brew install openssl@3${NC} and ensure it's on PATH\n" ;;
+                Linux)  printf "         Fix: upgrade openssl to 1.1.1+ for Ed25519\n" ;;
+            esac
+            errors=$((errors + 1))
+        fi
+    else
+        printf "    ${RED}!!${NC}  openssl not found — required for signing\n"
+        errors=$((errors + 1))
+    fi
+
+    # Node.js (optional, for MCP gate and receipt verification)
+    if command -v node >/dev/null 2>&1; then
+        local node_ver
+        node_ver=$(node --version 2>/dev/null || echo "unknown")
+        local node_major
+        node_major=$(echo "${node_ver}" | sed 's/v//' | cut -d. -f1)
+        if [ "${node_major}" -ge 18 ] 2>/dev/null; then
+            printf "    ${GREEN}OK${NC}  node ${node_ver} (18+ for MCP gate)\n"
+        else
+            printf "    ${YELLOW}!!${NC}  node ${node_ver} — MCP gate needs 18+\n"
+            warnings=$((warnings + 1))
+        fi
+    else
+        printf "    ${DIM}--${NC}  node not found (optional — needed for MCP gate and receipt verification)\n"
+    fi
+
+    printf "\n"
+
+    # ── 2. Signing Keys ──────────────────────────────────────────────────────
+
+    printf "  ${BOLD}Signing Keys${NC}\n"
+
+    local privkey="${HOME}/.zlar-signing.key"
+    local pubkey="${PROJECT_DIR}/etc/keys/policy-signing.pub"
+
+    if [ -f "${privkey}" ]; then
+        local privkey_perms
+        privkey_perms=$(stat -f '%A' "${privkey}" 2>/dev/null || stat -c '%a' "${privkey}" 2>/dev/null || echo "unknown")
+        if [ "${privkey_perms}" = "600" ]; then
+            printf "    ${GREEN}OK${NC}  Private key: ${privkey} (mode 600)\n"
+        else
+            printf "    ${YELLOW}!!${NC}  Private key: ${privkey} (mode ${privkey_perms} — should be 600)\n"
+            printf "         Fix: ${BOLD}chmod 600 ${privkey}${NC}\n"
+            warnings=$((warnings + 1))
+        fi
+    else
+        printf "    ${RED}!!${NC}  Private key not found: ${privkey}\n"
+        printf "         Fix: ${BOLD}openssl genpkey -algorithm ed25519 -out ${privkey} && chmod 600 ${privkey}${NC}\n"
+        errors=$((errors + 1))
+    fi
+
+    if [ -f "${pubkey}" ]; then
+        printf "    ${GREEN}OK${NC}  Public key: ${pubkey}\n"
+    else
+        printf "    ${RED}!!${NC}  Public key not found: ${pubkey}\n"
+        if [ -f "${privkey}" ]; then
+            printf "         Fix: ${BOLD}openssl pkey -in ${privkey} -pubout -out ${pubkey}${NC}\n"
+        fi
+        errors=$((errors + 1))
+    fi
+
+    # Key pair match test
+    if [ -f "${privkey}" ] && [ -f "${pubkey}" ]; then
+        local test_data="zlar-doctor-test"
+        local tmpdir
+        tmpdir=$(mktemp -d)
+        printf '%s' "${test_data}" | openssl dgst -sha256 -binary > "${tmpdir}/input.hash" 2>/dev/null || true
+        if [ -s "${tmpdir}/input.hash" ] && \
+           openssl pkeyutl -sign -inkey "${privkey}" -rawin -in "${tmpdir}/input.hash" -out "${tmpdir}/sig" 2>/dev/null && \
+           openssl pkeyutl -verify -pubin -inkey "${pubkey}" -rawin -sigfile "${tmpdir}/sig" -in "${tmpdir}/input.hash" >/dev/null 2>&1; then
+            printf "    ${GREEN}OK${NC}  Key pair matches (sign/verify test passed)\n"
+        else
+            printf "    ${RED}!!${NC}  Key pair mismatch — private and public keys don't correspond\n"
+            printf "         Fix: ${BOLD}openssl pkey -in ${privkey} -pubout -out ${pubkey}${NC}\n"
+            errors=$((errors + 1))
+        fi
+        rm -rf "${tmpdir}"
+    fi
+
+    printf "\n"
+
+    # ── 3. Policy ────────────────────────────────────────────────────────────
+
+    printf "  ${BOLD}Policy${NC}\n"
+
+    local policy="${PROJECT_DIR}/etc/policies/active.policy.json"
+    if [ -f "${policy}" ]; then
+        local rule_count
+        rule_count=$(jq '.rules | length' "${policy}" 2>/dev/null || echo "?")
+        printf "    ${GREEN}OK${NC}  Active policy: ${rule_count} rules\n"
+
+        # Signature check
+        local sig_value
+        sig_value=$(jq -r '.signature.value // ""' "${policy}" 2>/dev/null)
+        if [ -n "${sig_value}" ] && [ "${sig_value}" != "SIGNED_AT_INSTALL" ] && [ "${sig_value}" != "unsigned" ]; then
+            # Verify signature if pubkey exists
+            if [ -f "${pubkey}" ] && [ -x "${PROJECT_DIR}/bin/zlar-policy" ]; then
+                if "${PROJECT_DIR}/bin/zlar-policy" verify --input "${policy}" --pubkey "${pubkey}" >/dev/null 2>&1; then
+                    printf "    ${GREEN}OK${NC}  Policy signature valid\n"
+                else
+                    printf "    ${RED}!!${NC}  Policy signature INVALID — policy may have been tampered with\n"
+                    printf "         Fix: ${BOLD}${PROJECT_DIR}/bin/zlar-policy sign --input ${policy} --key ${privkey}${NC}\n"
+                    errors=$((errors + 1))
+                fi
+            else
+                printf "    ${YELLOW}!!${NC}  Policy is signed but cannot verify (pubkey or zlar-policy missing)\n"
+                warnings=$((warnings + 1))
+            fi
+        else
+            printf "    ${YELLOW}!!${NC}  Policy is not signed\n"
+            printf "         Fix: ${BOLD}${PROJECT_DIR}/bin/zlar-policy sign --input ${policy} --key ${privkey}${NC}\n"
+            warnings=$((warnings + 1))
+        fi
+    else
+        printf "    ${RED}!!${NC}  No active policy found at ${policy}\n"
+        errors=$((errors + 1))
+    fi
+
+    printf "\n"
+
+    # ── 4. Hook Configuration ────────────────────────────────────────────────
+
+    printf "  ${BOLD}Hook Configuration${NC}\n"
+
+    local hooks_found=0
+
+    # Codex
+    codex_hook_reality_probe
+    local codex_home_dir="${CODEX_HOME:-${HOME}/.codex}"
+    if [ "${CODEX_HOOK_REALITY_STATUS}" = "configured_current" ]; then
+        printf "    ${GREEN}OK${NC}  Codex: PreToolUse hook resolves to current gate\n"
+        hooks_found=$((hooks_found + 1))
+    elif [ "${CODEX_HOOK_REALITY_STATUS}" = "not_configured" ]; then
+        if command -v codex >/dev/null 2>&1 || [ -d "${codex_home_dir}" ] || [ -d "${HOME}/.Codex" ]; then
+            printf "    ${RED}!!${NC}  Codex: installed but no ZLAR PreToolUse hook found\n"
+            printf "         Fix: verify the ${BOLD}Codex hook path manually${NC}; install.sh manages Claude Code, Cursor, and Windsurf hook profiles\n"
+            errors=$((errors + 1))
+        else
+            printf "    ${DIM}--${NC}  Codex: not installed\n"
+        fi
+    elif [ "${CODEX_HOOK_REALITY_STATUS}" = "stale_project" ] || \
+         [ "${CODEX_HOOK_REALITY_STATUS}" = "target_missing" ] || \
+         [ "${CODEX_HOOK_REALITY_STATUS}" = "target_not_executable" ] || \
+         [ "${CODEX_HOOK_REALITY_STATUS}" = "gate_missing" ]; then
+        printf "    ${RED}!!${NC}  Codex: %s\n" "${CODEX_HOOK_REALITY_LABEL}"
+        [ -n "${CODEX_HOOK_REALITY_FILE}" ] && printf "         Hook file: %s\n" "${CODEX_HOOK_REALITY_FILE}"
+        [ -n "${CODEX_HOOK_REALITY_COMMAND}" ] && printf "         Command: %s\n" "${CODEX_HOOK_REALITY_COMMAND}"
+        printf "         Fix: repair the Codex hook target with explicit hook/config authority; install.sh manages Claude Code, Cursor, and Windsurf hook profiles\n"
+        errors=$((errors + 1))
+    else
+        printf "    ${YELLOW}!!${NC}  Codex: %s\n" "${CODEX_HOOK_REALITY_LABEL}"
+        warnings=$((warnings + 1))
+    fi
+    printf "         Note: doctor verifies configuration, not that this invocation crossed the hook\n"
+
+    # Claude Code
+    local cc_settings="${HOME}/.claude/settings.json"
+    if [ -f "${cc_settings}" ] && grep -q "zlar" "${cc_settings}" 2>/dev/null; then
+        printf "    ${GREEN}OK${NC}  Claude Code: hooks configured\n"
+        hooks_found=$((hooks_found + 1))
+    elif command -v claude >/dev/null 2>&1 || [ -d "${HOME}/.claude" ]; then
+        printf "    ${RED}!!${NC}  Claude Code: installed but no ZLAR hooks\n"
+        printf "         Fix: run ${BOLD}bash install.sh${NC} or add PreToolUse hook manually\n"
+        errors=$((errors + 1))
+    else
+        printf "    ${DIM}--${NC}  Claude Code: not installed\n"
+    fi
+
+    # Cursor
+    local cursor_hooks="${HOME}/.cursor/hooks.json"
+    if [ -f "${cursor_hooks}" ] && grep -q "zlar" "${cursor_hooks}" 2>/dev/null; then
+        printf "    ${GREEN}OK${NC}  Cursor: hooks configured\n"
+        hooks_found=$((hooks_found + 1))
+    elif command -v cursor >/dev/null 2>&1 || [ -d "${HOME}/.cursor" ]; then
+        printf "    ${YELLOW}!!${NC}  Cursor: installed but no ZLAR hooks\n"
+        warnings=$((warnings + 1))
+    else
+        printf "    ${DIM}--${NC}  Cursor: not installed\n"
+    fi
+
+    # Windsurf
+    local ws_hooks="${HOME}/.codeium/windsurf/hooks.json"
+    if [ -f "${ws_hooks}" ] && grep -q "zlar" "${ws_hooks}" 2>/dev/null; then
+        printf "    ${GREEN}OK${NC}  Windsurf: hooks configured\n"
+        hooks_found=$((hooks_found + 1))
+    elif command -v windsurf >/dev/null 2>&1 || [ -d "${HOME}/.codeium/windsurf" ]; then
+        printf "    ${YELLOW}!!${NC}  Windsurf: installed but no ZLAR hooks\n"
+        warnings=$((warnings + 1))
+    else
+        printf "    ${DIM}--${NC}  Windsurf: not installed\n"
+    fi
+
+    if [ "${hooks_found}" -eq 0 ]; then
+        printf "\n    ${YELLOW}!!${NC}  No frameworks have ZLAR hooks configured\n"
+        printf "         The gate has nothing to govern until hooks are installed.\n"
+        warnings=$((warnings + 1))
+    fi
+
+    printf "\n"
+
+    # ── 5. Gate Self-Test ────────────────────────────────────────────────────
+
+    printf "  ${BOLD}Gate Self-Test${NC}\n"
+
+    local gate="${PROJECT_DIR}/bin/zlar-gate"
+    if [ ! -x "${gate}" ]; then
+        printf "    ${RED}!!${NC}  Gate not found or not executable: ${gate}\n"
+        errors=$((errors + 1))
+    else
+        printf "    ${GREEN}OK${NC}  Gate executable: ${gate}\n"
+
+        if [ "${run_live_checks}" = "true" ]; then
+            # Live gate tests are opt-in because they execute the gate and may
+            # create audit/session artifacts on governed machines.
+            local test_allow
+            test_allow=$(printf '{"tool_name":"Read","tool_input":{"file_path":"/tmp/test"},"session_id":"doctor-test-%s"}' "$$" | "${gate}" 2>/dev/null || echo "")
+            if [ -n "${test_allow}" ]; then
+                local allow_decision
+                allow_decision=$(printf '%s' "${test_allow}" | jq -r '.hookSpecificOutput.permissionDecision // "unknown"' 2>/dev/null)
+                if [ "${allow_decision}" = "allow" ]; then
+                    printf "    ${GREEN}OK${NC}  Live test: Read -> allow\n"
+                else
+                    printf "    ${YELLOW}!!${NC}  Live test: Read -> ${allow_decision} (expected: allow)\n"
+                    warnings=$((warnings + 1))
+                fi
+            else
+                printf "    ${DIM}--${NC}  Live test skipped (gate busy — this is normal if an agent session is active)\n"
+            fi
+
+            local test_deny
+            test_deny=$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"},"session_id":"doctor-test-%s"}' "$$" | "${gate}" 2>/dev/null || echo "")
+            if [ -n "${test_deny}" ]; then
+                local deny_decision
+                deny_decision=$(printf '%s' "${test_deny}" | jq -r '.hookSpecificOutput.permissionDecision // "unknown"' 2>/dev/null)
+                if [ "${deny_decision}" = "deny" ]; then
+                    printf "    ${GREEN}OK${NC}  Live test: rm -rf -> deny\n"
+                else
+                    printf "    ${RED}!!${NC}  Live test: rm -rf -> ${deny_decision} (expected: deny)\n"
+                    errors=$((errors + 1))
+                fi
+            else
+                printf "    ${DIM}--${NC}  Live test skipped (gate busy)\n"
+            fi
+        else
+            printf "    ${DIM}--${NC}  Live gate self-tests skipped by default; run ${BOLD}zlar doctor --live${NC} to execute them\n"
+        fi
+    fi
+
+    printf "\n"
+
+    # ── 6. Audit Trail ───────────────────────────────────────────────────────
+
+    printf "  ${BOLD}Audit Trail${NC}\n"
+
+    local audit_dir="${PROJECT_DIR}/var/log"
+    if [ -d "${audit_dir}" ]; then
+        if [ -w "${audit_dir}" ]; then
+            printf "    ${GREEN}OK${NC}  Audit directory writable: ${audit_dir}\n"
+        else
+            printf "    ${RED}!!${NC}  Audit directory not writable: ${audit_dir}\n"
+            printf "         Fix: ${BOLD}chmod u+w ${audit_dir}${NC}\n"
+            errors=$((errors + 1))
+        fi
+    else
+        printf "    ${YELLOW}!!${NC}  Audit directory missing: ${audit_dir}\n"
+        printf "         Fix: ${BOLD}mkdir -p ${audit_dir}${NC}\n"
+        warnings=$((warnings + 1))
+    fi
+
+    local audit_file="${PROJECT_DIR}/var/log/audit.jsonl"
+    if [ -f "${audit_file}" ]; then
+        local audit_count
+        audit_count=$(wc -l < "${audit_file}" 2>/dev/null | tr -d ' ')
+        printf "    ${GREEN}OK${NC}  Audit trail: ${audit_count} entries\n"
+    else
+        printf "    ${DIM}--${NC}  No audit entries yet (will be created on first gate evaluation)\n"
+    fi
+
+    printf "\n"
+
+    # ── 7. Telegram (optional) ───────────────────────────────────────────────
+
+    printf "  ${BOLD}Telegram (optional)${NC}\n"
+
+    local gate_config="${PROJECT_DIR}/etc/gate.json"
+    local tg_enabled="false"
+    if [ -f "${gate_config}" ]; then
+        tg_enabled=$(jq -r '.telegram.enabled // false' "${gate_config}" 2>/dev/null)
+    fi
+
+    if [ "${tg_enabled}" = "true" ]; then
+        # Check for token
+        local tg_token=""
+        if [ -f "${PROJECT_DIR}/.env" ]; then
+            tg_token=$(telegram_token_from_env_file "${PROJECT_DIR}/.env" || true)
+        fi
+        [ -z "${tg_token}" ] && tg_token="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
+
+        if [ -n "${tg_token}" ]; then
+            printf "    ${GREEN}OK${NC}  Telegram enabled, token configured\n"
+        else
+            printf "    ${RED}!!${NC}  Telegram enabled but no token found\n"
+            printf "         Fix: run ${BOLD}zlar telegram${NC} or set ZLAR_TELEGRAM_TOKEN in ${PROJECT_DIR}/.env\n"
+            errors=$((errors + 1))
+        fi
+
+        local tg_chat_id=""
+        if [ -f "${gate_config}" ]; then
+            tg_chat_id=$(jq -r '.telegram.chat_id // ""' "${gate_config}" 2>/dev/null | tr -d '[:space:]')
+        fi
+        local tg_chat_status
+        tg_chat_status=$(telegram_chat_id_status "${tg_chat_id}")
+        if [ "${tg_chat_status}" = "valid_numeric" ]; then
+            printf "    ${GREEN}OK${NC}  Telegram chat_id valid numeric destination\n"
+        else
+            printf "    ${RED}!!${NC}  Telegram chat_id invalid or missing — %s\n" "$(telegram_chat_id_display "${tg_chat_status}")"
+            printf "         Fix: run ${BOLD}zlar telegram${NC} and enter the numeric user/chat ID, not a bot username\n"
+            errors=$((errors + 1))
+        fi
+
+        # Check callback polling daemon (tg-poll)
+        local tg_poll_pid=""
+        if [ -f /var/run/zlar-tg/poll.pid ]; then
+            tg_poll_pid=$(cat /var/run/zlar-tg/poll.pid 2>/dev/null | tr -d '[:space:]')
+        fi
+
+        if [ -n "${tg_poll_pid}" ] && kill -0 "${tg_poll_pid}" 2>/dev/null; then
+            printf "    ${GREEN}OK${NC}  Callback listener running (PID ${tg_poll_pid})\n"
+        else
+            # No PID file or stale PID — check if process exists by name
+            local tg_poll_running=""
+            tg_poll_running=$(pgrep -f zlar-tg-poll 2>/dev/null | head -1 || true)
+            if [ -n "${tg_poll_running}" ]; then
+                printf "    ${GREEN}OK${NC}  Callback listener running (PID ${tg_poll_running}, stale pidfile)\n"
+            else
+                printf "    ${RED}!!${NC}  Callback listener NOT running — Telegram buttons won't respond\n"
+                printf "         Fix: see ${BOLD}docs/troubleshooting.md#telegram-callback-listener${NC}\n"
+                printf "         (This is the #1 cause of 'I approved but nothing happened')\n"
+                errors=$((errors + 1))
+            fi
+        fi
+
+        # Check HMAC secret readability (the April 3 bug)
+        local hmac_file="/var/run/zlar-tg/inbox-hmac-secret"
+        if [ -f "${hmac_file}" ]; then
+            if [ -r "${hmac_file}" ]; then
+                printf "    ${GREEN}OK${NC}  HMAC secret readable\n"
+            else
+                printf "    ${RED}!!${NC}  HMAC secret exists but not readable (will crash gate)\n"
+                printf "         Fix: ${BOLD}sudo chmod 640 ${hmac_file}${NC}\n"
+                errors=$((errors + 1))
+            fi
+        else
+            printf "    ${YELLOW}!!${NC}  HMAC secret missing (callback listener may not have started since last reboot)\n"
+            printf "         Fix: see ${BOLD}docs/troubleshooting.md#telegram-callback-listener${NC}\n"
+            warnings=$((warnings + 1))
+        fi
+
+        # Check callback inbox readability. A root-owned mcp inbox with mode
+        # 700 lets the dispatcher write callbacks but prevents the user-space
+        # MCP gate from reading them.
+        local inbox_base="/var/run/zlar-tg/inbox"
+        local inbox_name
+        printf "    ${BOLD}Callback inboxes${NC}\n"
+        for inbox_name in cc oc mcp; do
+            local inbox_dir="${inbox_base}/${inbox_name}"
+            if [ -d "${inbox_dir}" ]; then
+                if [ -r "${inbox_dir}" ] && [ -x "${inbox_dir}" ]; then
+                    printf "    ${GREEN}OK${NC}  %s inbox readable/searchable\n" "${inbox_name}"
+                else
+                    printf "    ${RED}!!${NC}  %s inbox exists but is not readable/searchable by this user\n" "${inbox_name}"
+                    printf "         Fix: reinstall/re-run ${BOLD}scripts/zlar-tg-boot.sh${NC} as the LaunchDaemon boot script\n"
+                    errors=$((errors + 1))
+                fi
+            else
+                printf "    ${YELLOW}!!${NC}  %s inbox missing\n" "${inbox_name}"
+                printf "         Fix: restart the Telegram dispatcher bootstrap\n"
+                warnings=$((warnings + 1))
+            fi
+        done
+    else
+        printf "    ${DIM}--${NC}  Telegram disabled (deny-only mode — all blocked actions are instant-denied)\n"
+        printf "         Upgrade: ${BOLD}zlar telegram${NC} to enable human approval from your phone\n"
+    fi
+
+    printf "\n"
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+
+    printf "  ${BOLD}────────────────────────────────────────${NC}\n"
+    if [ "${errors}" -eq 0 ] && [ "${warnings}" -eq 0 ]; then
+        printf "  ${GREEN}All checks passed.${NC} ZLAR is healthy.\n"
+    elif [ "${errors}" -eq 0 ]; then
+        printf "  ${YELLOW}${warnings} warning(s).${NC} ZLAR is functional but has non-critical issues.\n"
+    else
+        printf "  ${RED}${errors} error(s)${NC}, ${YELLOW}${warnings} warning(s).${NC}\n"
+        printf "  Fix the errors above to ensure governance is working.\n"
+    fi
+    printf "\n"
+
+    return "${errors}"
+}
+
+cmd_help() {
+    printf "\n${BOLD}ZLAR v${VERSION}${NC} — Zero-config governance for AI coding agents\n\n"
+    printf "  ${BOLD}Usage:${NC} zlar <command>\n\n"
+    printf "  ${BOLD}Gate control:${NC}\n"
+    printf "    on          Resume enforcement (policy active, Telegram routing on)\n"
+    printf "    off         Suspend enforcement (allow all — for maintenance/build)\n"
+    printf "    lock        Deny all agent actions, no Telegram routing (away/sleep)\n"
+    printf "    unlock      Remove lock and resume normal enforcement\n"
+    printf "\n"
+    printf "  ${BOLD}Commands:${NC}\n"
+    printf "    status      Show governed surfaces, hook reality, policy summary, audit count\n"
+    printf "    doctor      Check installation health (deps, keys, hook reality, policy)\n"
+    printf "    reset       Reset human-invariant state (clear stuck pending counters)\n"
+    printf "    audit [n]   Show last n audit entries (default: 20)\n"
+    printf "    why <id>    Show Worker Receipt for exact event id (read-only)\n"
+    printf "    run         Run one Bash command through the ZLAR-owned runner surface\n"
+    printf "    coverage    Build fixture-input governed surface coverage map\n"
+    printf "    consequence-lifecycle\n"
+    printf "                Map one terminal-chain fixture lifecycle without claiming closure\n"
+    printf "    agent-passenger-lab\n"
+    printf "                Run local fixture governed-crossing passenger lab\n"
+    printf "    coverage-evidence\n"
+    printf "                Assemble supplied event-scoped coverage evidence\n"
+    printf "    downstream-recognition\n"
+    printf "                Evaluate supplied downstream receipt recognition evidence\n"
+    printf "    downstream-refusal-proof\n"
+    printf "                Run hermetic downstream refusal proof\n"
+    printf "    human-authorization-proof\n"
+    printf "                Run hermetic simulated-human authorization proof\n"
+    printf "    approval-transport-proof\n"
+    printf "                Run hermetic channel-neutral approval transport proof\n"
+    printf "    current-machine-approval-packet\n"
+    printf "                Verify selected-surface approval packet completeness\n"
+    printf "    current-machine-approval-intake\n"
+    printf "                Run explicit-packet pre-authority intake gate\n"
+    printf "    current-machine-approval-request-preview\n"
+    printf "                Verify intake report before authority request preview\n"
+    printf "    current-machine-governance-preview\n"
+    printf "                Compose local no-write current-machine preview receipt\n"
+    printf "    verifier-env [--json|--json-out <file>]\n"
+    printf "                Check external verifier workstation prerequisites\n"
+    printf "    verifier-kit-reproducibility [--json|--json-out <file>]\n"
+    printf "                Prove verifier kit same-key source-build archive determinism\n"
+    printf "    verifier-kit-release-assets-live-read\n"
+    printf "                Read explicit-tag public release assets and optionally save downloaded bytes\n"
+    printf "    verifier-kit-public-distribution\n"
+    printf "                Audit verifier kit release-asset publication posture\n"
+    printf "    private-verifier-result\n"
+    printf "                Validate private-by-default verifier result envelopes\n"
+    printf "    private-verifier-readiness\n"
+    printf "                Build or verify local private no-send verifier-readiness packets\n"
+    printf "    public-artifact-verifier-result\n"
+    printf "                Validate public-artifact verifier reply envelopes\n"
+    printf "    public-external-attestation-result\n"
+    printf "                Validate bounded public signed external-attestation result envelopes\n"
+    printf "    live-trust-registry-state\n"
+    printf "                Validate no-secret live-shaped trust registry state contracts\n"
+    printf "    private-verifier-zip-result\n"
+    printf "                Validate private outside-machine ZIP-snapshot verifier results\n"
+    printf "    issuer-status-proof\n"
+    printf "                Run hermetic issuer status proof\n"
+    printf "    runner-receipt-issuer-recognition-proof\n"
+    printf "                Run hermetic zlar run receipt issuer-recognition proof\n"
+    printf "    configured-recognition-consumer-replay-store-proof\n"
+    printf "                Run local configured-recognition replay-store proof\n"
+    printf "    source-transport-preflight\n"
+    printf "                Validate no-secret source movement preflight packet\n"
+    printf "    source-transport-proof\n"
+    printf "                Verify no-secret source movement reports/contracts\n"
+    printf "    source-bridge-window\n"
+    printf "                Validate no-secret time-boxed source bridge window authority\n"
+    printf "    trusted-receipt-issuer-completion-proof\n"
+    printf "                Validate bounded Trusted Receipt Issuer completion evidence\n"
+    printf "    key-state\n"
+    printf "                Show read-only key-state alignment snapshot\n"
+    printf "    protected-records-proof\n"
+    printf "                Refuse permanently retired fresh E1 terminal-proof generation\n"
+    printf "    protected-records-local-boarding-proof\n"
+    printf "                Run local in-memory protected records boarding proof\n"
+    printf "    claude-code-hook-contract-replay-proof\n"
+    printf "                Run local Claude-shaped hook-contract replay proof\n"
+    printf "    protected-records-service-proof\n"
+    printf "                Refuse permanently retired fresh downstream-service proof generation\n"
+    printf "    protected-records-service-preflight\n"
+    printf "                Verify exact historical artifact; fresh preflight generation retired\n"
+    printf "    protected-records-runtime-service\n"
+    printf "                Refuse the permanently retired legacy runtime-service direct entry surface\n"
+    printf "    protected-records-replacement-crossing-v2\n"
+    printf "                Execute at most one exact replacement crossing and pin its artifact set\n"
+    printf "    protected-records-replacement-artifact-set-v2\n"
+    printf "                Verify one pinned replacement artifact set without consequence reexecution\n"
+    printf "    protected-records-runtime-profile-preflight\n"
+    printf "                Positive generation currently refuses before proof execution\n"
+    printf "    protected-records-runtime-activation-preflight\n"
+    printf "                Positive generation currently refuses before proof execution\n"
+    printf "    protected-records-runtime-profile-proof\n"
+    printf "                Positive generation currently refuses before scratch creation\n"
+    printf "    protected-records-runtime-local-activation\n"
+    printf "                Positive generation currently refuses before activation output\n"
+    printf "    protected-records-runtime-profile-installation\n"
+    printf "                Positive generation currently refuses before install-root creation\n"
+    printf "    protected-records-installed-runtime-profile-preflight\n"
+    printf "                Read-only preflight explicit installed runtime profile selection\n"
+    printf "    protected-records-active-persistent-profile-preflight\n"
+    printf "                Source-only preflight for future active persistent profile install\n"
+    printf "    protected-records-active-persistent-profile-live-installation\n"
+    printf "                Read status; install/closeout currently refuse before root mutation\n"
+    printf "    protected-records-active-persistent-profile-action-crossing\n"
+    printf "                Currently refuses before active-root or proof-target handling\n"
+    printf "    protected-records-active-persistent-profile-lifecycle\n"
+    printf "                Verify supplied historical reports; run form currently refuses\n"
+    printf "    protected-records-installed-runtime-profile-recognition-proof\n"
+    printf "                Verify historical artifact; positive generation currently refuses\n"
+    printf "    protected-records-installed-runtime-profile-service-proof\n"
+    printf "                Verify historical artifact; positive generation currently refuses\n"
+    printf "    protected-records-installed-runtime-profile-terminal-chain\n"
+    printf "                Verify historical artifact; positive generation currently refuses\n"
+    printf "    protected-records-one-terminal-deployment-profile\n"
+    printf "                Positive generation currently refuses before bridge execution\n"
+    printf "    protected-records-named-deployment-profile-readiness\n"
+    printf "                Run local no-secret named deployment-profile rehearsal readiness report\n"
+    printf "    protected-records-named-deployment-profile-real-boundary\n"
+    printf "                Refuse before root/config/target creation without named authority\n"
+    printf "    recognized-effect-target-shape\n"
+    printf "                Verify recognized-effect target shape for protected records\n"
+    printf "    records-write-terminal-proof\n"
+    printf "                Positive generation currently refuses before nested proof execution\n"
+    printf "    protected-records-adapter-conformance\n"
+    printf "                Refuse permanently retired fresh E1 adapter-conformance generation\n"
+    printf "    local-proof-pack\n"
+    printf "                Verify exact historical artifact; fresh generation permanently retired\n"
+    printf "    product-proof-path\n"
+    printf "                Refuse permanently retired fresh Product Proof Path generation\n"
+    printf "    proof-smoke\n"
+    printf "                Current refusal probe; v1 schema is historical\n"
+    printf "    north-star-readiness\n"
+    printf "                Current fixture-rightful composition refuses\n"
+    printf "    classify    Preflight classify a proposed tool call (read-only)\n"
+    printf "    policy      Show current policy rules\n"
+    printf "    telegram    Set up Telegram approval (upgrade from deny-all)\n"
+    printf "    uninstall   Clean removal of ZLAR\n"
+    printf "    version     Show version\n"
+    printf "    help        Show this help\n"
+    printf "\n"
+    printf "  ${BOLD}More info:${NC} https://github.com/ZLAR-AI/ZLAR\n\n"
+}
+
+# ─── Dispatch ────────────────────────────────────────────────────────────────
+
+COMMAND="${1:-help}"
+shift 2>/dev/null || true
+
+case "${COMMAND}" in
+    status)    cmd_status ;;
+    doctor)    cmd_doctor "$@" ;;
+    reset)     cmd_reset ;;
+    audit)     cmd_audit "$@" ;;
+    why)       ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-why" "$@" ;;
+    run)       ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-run" "$@" ;;
+    coverage)  ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-coverage-map" "$@" ;;
+    consequence-lifecycle) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-consequence-lifecycle" "$@" ;;
+    agent-passenger-lab) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-agent-passenger-lab" "$@" ;;
+    coverage-evidence) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-coverage-evidence" "$@" ;;
+    downstream-recognition) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-downstream-recognition" "$@" ;;
+    downstream-refusal-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-downstream-refusal-proof" "$@" ;;
+    human-authorization-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-human-authorization-proof" "$@" ;;
+    approval-transport-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-approval-transport-proof" "$@" ;;
+    current-machine-approval-packet) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-current-machine-approval-packet" "$@" ;;
+    current-machine-approval-intake) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-current-machine-approval-intake" "$@" ;;
+    current-machine-approval-request-preview) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-current-machine-approval-request-preview" "$@" ;;
+    current-machine-governance-preview) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-current-machine-governance-preview" "$@" ;;
+    verifier-env) exec "${PROJECT_DIR}/bin/zlar-verifier-env" "$@" ;;
+    verifier-kit-reproducibility) exec bash "${PROJECT_DIR}/tools/verifier-kit-reproducibility-check.sh" "$@" ;;
+    verifier-kit-release-assets-live-read) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-verifier-kit-release-assets-live-read" "$@" ;;
+    verifier-kit-public-distribution) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-verifier-kit-public-distribution" "$@" ;;
+    private-verifier-result) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-private-verifier-result" "$@" ;;
+    private-verifier-readiness) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-private-verifier-readiness" "$@" ;;
+    public-artifact-verifier-result) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-public-artifact-verifier-result" "$@" ;;
+    public-external-attestation-result) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-public-external-attestation-result" "$@" ;;
+    live-trust-registry-state) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-live-trust-registry-state" "$@" ;;
+    private-verifier-zip-result) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-private-verifier-zip-result" "$@" ;;
+    issuer-status-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-issuer-status-proof" "$@" ;;
+    runner-receipt-issuer-recognition-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-runner-receipt-issuer-recognition-proof" "$@" ;;
+    configured-recognition-consumer-replay-store-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-configured-recognition-consumer-replay-store-proof" "$@" ;;
+    source-transport-preflight) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-source-transport-preflight" "$@" ;;
+    source-transport-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-source-transport-proof" "$@" ;;
+    source-bridge-window) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-source-bridge-window" "$@" ;;
+    trusted-receipt-issuer-completion-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-trusted-receipt-issuer-completion-proof" "$@" ;;
+    key-state) ZLAR_PROJECT_DIR="${PROJECT_DIR}" exec "${PROJECT_DIR}/bin/zlar-key-state" "$@" ;;
+    protected-records-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-proof" "$@" ;;
+    protected-records-local-boarding-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-local-boarding-proof" "$@" ;;
+    claude-code-hook-contract-replay-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-claude-code-hook-contract-replay-proof" "$@" ;;
+    protected-records-service-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-service-proof" "$@" ;;
+    protected-records-service-preflight) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-service-preflight" "$@" ;;
+    protected-records-runtime-service) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-runtime-service" "$@" ;;
+    protected-records-replacement-crossing-v2) exec "${PROJECT_DIR}/bin/zlar-protected-records-replacement-crossing-v2" "$@" ;;
+    protected-records-replacement-artifact-set-v2) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-replacement-artifact-set-v2" "$@" ;;
+    protected-records-runtime-profile-preflight) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-runtime-profile-preflight" "$@" ;;
+    protected-records-runtime-activation-preflight) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-runtime-activation-preflight" "$@" ;;
+    protected-records-runtime-profile-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-runtime-profile-proof" "$@" ;;
+    protected-records-runtime-local-activation) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-runtime-local-activation" "$@" ;;
+    protected-records-runtime-profile-installation) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-runtime-profile-installation" "$@" ;;
+    protected-records-installed-runtime-profile-preflight) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-installed-runtime-profile-preflight" "$@" ;;
+    protected-records-active-persistent-profile-preflight) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-active-persistent-profile-preflight" "$@" ;;
+    protected-records-active-persistent-profile-live-installation) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-active-persistent-profile-live-installation" "$@" ;;
+    protected-records-active-persistent-profile-action-crossing) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-active-persistent-profile-action-crossing" "$@" ;;
+    protected-records-active-persistent-profile-lifecycle) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-active-persistent-profile-lifecycle" "$@" ;;
+    protected-records-installed-runtime-profile-recognition-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-installed-runtime-profile-recognition-proof" "$@" ;;
+    protected-records-installed-runtime-profile-service-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-installed-runtime-profile-service-proof" "$@" ;;
+    protected-records-installed-runtime-profile-terminal-chain) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-installed-runtime-profile-terminal-chain" "$@" ;;
+    protected-records-one-terminal-deployment-profile) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-one-terminal-deployment-profile" "$@" ;;
+    protected-records-named-deployment-profile-readiness) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-named-deployment-profile-readiness" "$@" ;;
+    protected-records-named-deployment-profile-real-boundary) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-named-deployment-profile-real-boundary" "$@" ;;
+    recognized-effect-target-shape) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-recognized-effect-target-shape" "$@" ;;
+    records-write-terminal-proof) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-records-write-terminal-proof" "$@" ;;
+    protected-records-adapter-conformance) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-protected-records-adapter-conformance" "$@" ;;
+    local-proof-pack) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-local-proof-pack" "$@" ;;
+    product-proof-path) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-product-proof-path" "$@" ;;
+    proof-smoke) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-proof-smoke" "$@" ;;
+    north-star-readiness) ZLAR_PROJECT_DIR="${PROJECT_DIR}" node "${PROJECT_DIR}/bin/zlar-north-star-readiness" "$@" ;;
+    classify)  exec "${PROJECT_DIR}/bin/zlar-classify" "$@" ;;
+    policy)    cmd_policy ;;
+    telegram)  cmd_telegram ;;
+    uninstall) cmd_uninstall ;;
+    version)   cmd_version ;;
+    off)
+        # Order matters: the structural flag is the state. The legacy wrapper
+        # marker is written only after /etc/zlar/off-flag actually lands —
+        # writing it first left a marker implying an off state that never
+        # happened when sudo was unavailable.
+        if sudo -n touch /etc/zlar/off-flag 2>/dev/null; then
+            touch "$HOME/.claude/.gate-disabled"
+            _ensure_gu && gu_record_disable 2>/dev/null || true
+            printf 'ZLAR gate is OFF.\nGoverned tool hooks are unblocked.\nWork done while OFF is not governed by ZLAR.\n'
+        else
+            printf '  (warn: /etc/zlar/off-flag not writable; nothing changed)\n'
+            printf 'ZLAR gate is UNCHANGED and may still be ON. The off state requires /etc/zlar/off-flag:\n    sudo touch /etc/zlar/off-flag\n'
+            exit 1
+        fi
+        ;;
+    on)
+        _ensure_gu
+        _gu_on_now=$(date +%s)
+        _gu_on_state="off"
+        _gu_on_streak_start=0
+        _gu_on_lifetime=0
+        if [ "${_GU_LOADED}" = "1" ] && [ -f "${_GU_STATE_FILE}" ]; then
+            _gu_on_snap=$(jq -c 'del(._hmac)' "${_GU_STATE_FILE}" 2>/dev/null || echo '{}')
+            _gu_on_state=$(printf '%s' "${_gu_on_snap}" | jq -r '.state // "off"')
+            _gu_on_streak_start=$(printf '%s' "${_gu_on_snap}" | jq -r '.current_streak_start_epoch // 0')
+            _gu_on_lifetime=$(printf '%s' "${_gu_on_snap}" | jq -r '.lifetime_on_seconds // 0')
+        fi
+        if [ "${_gu_on_state}" = "on" ]; then
+            _gu_on_streak_sec=0
+            [ "${_gu_on_streak_start:-0}" -gt 0 ] && _gu_on_streak_sec=$(( _gu_on_now - _gu_on_streak_start ))
+            if [ "${_GU_LOADED}" = "1" ]; then
+                echo "Gate already ON — streak: $(gu_format_duration "${_gu_on_streak_sec}"). Nothing changed."
+            else
+                echo "Gate already ON. Nothing changed."
+            fi
+        else
+            rm -f "$HOME/.claude/.gate-disabled"
+            if [ -f /etc/zlar/off-flag ]; then
+                sudo -n rm -f /etc/zlar/off-flag 2>/dev/null || true
+                if [ -f /etc/zlar/off-flag ]; then
+                    echo "  (warn: /etc/zlar/off-flag still present; gate structurally OFF until root removes it)"
+                fi
+            fi
+            rm -f "$HOME/.claude/.gate-locked" 2>/dev/null || true
+            [ "${_GU_LOADED}" = "1" ] && gu_record_enable 2>/dev/null || true
+            echo "Gate ON — policy enforced"
+            if [ "${_GU_LOADED}" = "1" ] && [ "${_gu_on_lifetime:-0}" -gt 0 ]; then
+                echo "  Previous streak committed to lifetime. Lifetime total: $(gu_format_duration "${_gu_on_lifetime}")."
+            fi
+        fi
+        ;;
+    lock)
+        LOCK_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        printf '%s\n' "${LOCK_TIME}" > "$HOME/.claude/.gate-locked"
+        echo "Gate LOCKED at ${LOCK_TIME} — all agent actions denied. Run 'zlar unlock' to resume."
+        ;;
+    unlock)
+        if [ -f "$HOME/.claude/.gate-locked" ]; then
+            rm -f "$HOME/.claude/.gate-locked"
+            echo "Gate UNLOCKED — enforcement resumed"
+        else
+            echo "Gate was not locked"
+        fi
+        ;;
+    help|--help|-h) cmd_help ;;
+    *)
+        echo "Unknown command: ${COMMAND}"
+        cmd_help
+        exit 1
+        ;;
+esac

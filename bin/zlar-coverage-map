@@ -1,0 +1,105 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import {
+  assertGovernedSurfaceCoverageMap,
+  assertNoUnsafeCoverageMapText,
+  buildGovernedSurfaceCoverageMap,
+  formatGovernedSurfaceCoverageMapSummary,
+} from '../lib/governed-surface-coverage-map.mjs';
+
+const SAMPLE_COVERAGE_INPUT = fileURLToPath(
+  new URL('../tests/fixtures/governed-surface-coverage-map-v1-input.json', import.meta.url)
+);
+
+function usage() {
+  console.error('Usage: zlar coverage (--input <file|->|--sample) [--json] [--require-governed]');
+  console.error('This slice does not perform live probing; fixture/report evidence JSON is required.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+let inputPath = '';
+let sampleRequested = false;
+let json = false;
+let requireGoverned = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--input') {
+    if (inputPath || sampleRequested) {
+      usage();
+      die('coverage accepts only one input source.', 2);
+    }
+    inputPath = args[++i] || '';
+    if (!inputPath) {
+      usage();
+      die('live probing is not implemented in this slice; --input <file|-> or --sample is required.', 2);
+    }
+  } else if (arg === '--sample') {
+    if (inputPath || sampleRequested) {
+      usage();
+      die('coverage accepts only one input source.', 2);
+    }
+    sampleRequested = true;
+  } else if (arg === '--json') {
+    json = true;
+  } else if (arg === '--require-governed') {
+    requireGoverned = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (sampleRequested) {
+  inputPath = SAMPLE_COVERAGE_INPUT;
+}
+
+if (!inputPath) {
+  usage();
+  die('live probing is not implemented in this slice; --input <file|-> or --sample is required.', 2);
+}
+
+let rawInput = '';
+try {
+  rawInput = inputPath === '-'
+    ? readFileSync(0, 'utf8')
+    : readFileSync(inputPath, 'utf8');
+} catch (err) {
+  die('Could not read coverage evidence input.');
+}
+
+let input;
+try {
+  input = JSON.parse(rawInput);
+} catch (err) {
+  die(`Could not parse coverage evidence JSON: ${err.message}`);
+}
+
+try {
+  const report = buildGovernedSurfaceCoverageMap(input);
+  assertGovernedSurfaceCoverageMap(report);
+
+  const ungoverned = report.surfaces
+    .filter((surface) => surface.counted === true && surface.governed !== true)
+    .map((surface) => `${surface.surface_id}:${surface.verification_status}`);
+  if (requireGoverned && ungoverned.length > 0) {
+    die(`--require-governed failed; counted lane(s) not governed: ${ungoverned.join(', ')}`);
+  }
+
+  const output = json
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : `${formatGovernedSurfaceCoverageMapSummary(report)}\n`;
+  assertNoUnsafeCoverageMapText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

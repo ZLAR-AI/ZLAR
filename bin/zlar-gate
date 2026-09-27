@@ -1,0 +1,3486 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR Gate v3.0.6 — Claude Code Hook Script
+#
+# THE gate. Runs synchronously on every Claude Code PreToolUse hook invocation.
+# Reads tool call from stdin, classifies, evaluates policy, asks Telegram if
+# needed, writes audit trail, returns allow/deny on stdout.
+#
+# No daemon. No server. No database. The process IS the pending state.
+#
+# v2.7.x changes:
+#   - First Authority Law published as signal/DOCTRINE.md
+#   - Structural off-switch at /etc/zlar/off-flag (root-owned, sudoers-toggled)
+#   - Architecture map at docs/architecture-map.md
+#   - H13 pending_count belt-reset on date rollover
+#
+# v2.5.1 changes:
+#   - Approval binding: approvals are now bound to SHA-256 hash of exact command
+#   - Hash chain atomicity via flock on Linux
+#   - Strict signed audit mode (ZLAR_REQUIRE_SIGNED_AUDIT)
+#
+# v2.5.0 changes:
+#   - Per-entry Ed25519 signing of audit trail entries (AU-10 non-repudiation)
+#   - AUDIT_SIGNING_KEY configuration for audit entry signatures
+#   - Graceful fallback to "unsigned" if signing key missing or signing fails
+#
+# v2.4.0 changes:
+#   - 9 new tool translations (TodoWrite, TaskOutput, TaskStop, Skill,
+#     EnterPlanMode, ExitPlanMode, AskUserQuestion, EnterWorktree, ExitWorktree)
+#   - MCP tool classification (mcp__* → mcp domain)
+#   - Internal tool fast-path (no policy evaluation for conversation-internal tools)
+#   - denied_by field in deny responses (human/timeout/policy/rate_limit/gate_error)
+#   - authorizer field in audit events
+#   - ERR trap for crash safety
+#   - Newline injection fix (S1 CRITICAL from gate v2 review)
+#   - Private temp directory (not world-readable /tmp)
+#   - Audit file rotation at 10MB
+#   - Atomic session counters via flock
+#   - Telegram token not exposed in process table
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+# ERR trap — if anything fails unexpectedly, deny and log
+trap '_gate_crash $LINENO' ERR
+
+_gate_crash() {
+    local line="$1"
+    local crash_log="${LOG_FILE:-}"
+    [ -z "${crash_log}" ] && crash_log="${PROJECT_DIR:+${PROJECT_DIR}/var/log/gate-crash.log}"
+    [ -z "${crash_log}" ] && crash_log="/var/log/zlar-gate-crash.log"
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] CRASH at line ${line}" >> "${crash_log}" 2>/dev/null || true
+    # Emit correct event type — _GATE_HOOK_EVENT is set when we know the hook type.
+    # Default to PreToolUse if crash happens before hook type is determined.
+    local _event="${_GATE_HOOK_EVENT:-PreToolUse}"
+    echo '{"hookSpecificOutput":{"hookEventName":"'"${_event}"'","permissionDecision":"deny","permissionDecisionReason":"ZLAR gate crash (line '"${line}"'). All actions blocked."}}'
+    # R041 contract hardening (2026-05-12): exit 2 alongside JSON deny — belt-and-suspenders.
+    exit 2
+}
+
+# ─── Human Override: First Authority ────────────────────────────────────────
+# Root-owned flag file at /etc/zlar/off-flag. Agent cannot write /etc without
+# sudo, and R003 denies any bash command containing sudo. This is the
+# structural human override path for the CC gate. v2.7.0.
+#
+# Presence of the flag returns allow for this invocation without any further
+# evaluation — no policy load, no invariants, no sourcing, no telemetry.
+# Older wrappers may have checked ~/.claude/.gate-disabled. Current
+# install-managed wrappers delegate to this gate; /etc/zlar/off-flag is the
+# load-bearing off state for this path.
+if [ -f /etc/zlar/off-flag ]; then
+    INPUT=$(cat <&0 2>/dev/null || echo '{}')
+    EVENT_NAME=$(echo "${INPUT}" | jq -r '.hook_event_name // "PreToolUse"' 2>/dev/null)
+    [ -z "${EVENT_NAME}" ] && EVENT_NAME="PreToolUse"
+    printf '{"hookSpecificOutput":{"hookEventName":"%s","permissionDecision":"allow"}}\n' "${EVENT_NAME}"
+    exit 0
+fi
+
+# ─── Human Lock: Intentional Fail-Closed ──────────────────────────────────────
+# User-set flag at ~/.claude/.gate-locked. Set by 'zlar lock' before stepping
+# away. Differs from 'zlar off' (which allows everything) — lock denies
+# everything with no Telegram routing. The agent cannot act at all until
+# 'zlar unlock' is run. No sudo required; any human at the keyboard can set it.
+#
+# Checked after off-flag: if the human explicitly turned the gate off, lock
+# does not override that (off means maintenance mode, not governance). If both
+# are set, off wins — the human present at the keyboard chose that state.
+if [ -f "${HOME}/.claude/.gate-locked" ]; then
+    INPUT=$(cat <&0 2>/dev/null || echo '{}')
+    EVENT_NAME=$(echo "${INPUT}" | jq -r '.hook_event_name // "PreToolUse"' 2>/dev/null)
+    [ -z "${EVENT_NAME}" ] && EVENT_NAME="PreToolUse"
+    LOCKED_AT=$(cat "${HOME}/.claude/.gate-locked" 2>/dev/null | tr -d '[:space:]')
+    printf '{"hookSpecificOutput":{"hookEventName":"%s","permissionDecision":"deny","permissionDecisionReason":"[gate:locked] Gate locked by human at %s. Run '\''zlar unlock'\'' to resume."}}\n' \
+        "${EVENT_NAME}" "${LOCKED_AT:-unknown}"
+    # R041 contract hardening (2026-05-12): exit 2 alongside JSON deny — belt-and-suspenders.
+    exit 2
+fi
+
+# Set when hook event type is determined (before main processing).
+_GATE_HOOK_EVENT="PreToolUse"
+
+# R041 contract hardening (2026-05-12): process-level exit code intent.
+# Response helpers (respond_deny, respond_subagent_deny) set this to 2 when
+# they emit a blocking deny. The script's final `exit` line reads this flag
+# after main() returns and the post-case seal/restore block completes, so
+# Claude Code receives BOTH signals — JSON deny on stdout AND exit code 2.
+# Default 0 (allow / non-deny). Never set this directly outside the helpers
+# and the _gate_crash trap.
+_GATE_EXIT_CODE=0
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# Source cryptographic abstraction layer
+export _CRYPTO_PROJECT_DIR="${PROJECT_DIR}"
+# shellcheck source=../lib/crypto.sh
+source "${PROJECT_DIR}/lib/crypto.sh"
+
+# Source human invariant enforcement (H6, H13, H14, H15, H17)
+export _HI_PROJECT_DIR="${PROJECT_DIR}"
+# shellcheck source=../lib/human-invariants.sh
+source "${PROJECT_DIR}/lib/human-invariants.sh"
+
+# Source gate uptime tracking (v3.1.4). Heartbeat runs on every gate
+# invocation while the gate is ON — writes batched to avoid hot-path cost.
+# Off-flag / lock paths have already exited above; reaching this point
+# means the gate is effectively on.
+export _GU_PROJECT_DIR="${PROJECT_DIR}"
+# shellcheck source=../lib/gate-uptime.sh
+source "${PROJECT_DIR}/lib/gate-uptime.sh"
+gu_record_heartbeat 2>/dev/null || true
+
+# Source fail-closed alert library — out-of-band notification path that
+# fires when a human invariant blocks an ask. Independent of the gate's
+# normal ask flow, so it cannot be blocked by the same invariant it is
+# alerting about. Best-effort and silent on failure.
+# shellcheck source=../lib/fail-closed-alert.sh
+source "${PROJECT_DIR}/lib/fail-closed-alert.sh"
+# shellcheck source=../lib/preconfirm-cc.sh
+source "${PROJECT_DIR}/lib/preconfirm-cc.sh"
+
+# ─── Private temp directory ──────────────────────────────────────────────────
+# Not /tmp (world-readable). Gate-private directory for policy verification.
+GATE_TMP="${PROJECT_DIR}/var/tmp"
+mkdir -p "${GATE_TMP}" 2>/dev/null
+chmod 700 "${GATE_TMP}" 2>/dev/null || true
+
+# ─── Configuration ──────────────────────────────────────────────────────────
+
+GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
+POLICY_FILE="${PROJECT_DIR}/etc/policies/active.policy.json"
+POLICY_PUBKEY="${PROJECT_DIR}/etc/keys/policy-signing.pub"
+
+# ── Second Authority Law: Constitution ─────────────────────────────────────
+CONSTITUTION_FILE="${PROJECT_DIR}/etc/constitution.json"
+CONSTITUTION_PUBKEY="${PROJECT_DIR}/etc/keys/constitution-signing.pub"
+CONSTITUTION_PRESENCE_FILE="${PROJECT_DIR}/var/log/.constitution-last-hash"
+_CONSTITUTION_VALIDATED=""
+AUDIT_SIGNING_KEY="${HOME}/.zlar-signing.key"
+ZLAR_REQUIRE_SIGNED_AUDIT="${ZLAR_REQUIRE_SIGNED_AUDIT:-false}"
+AUDIT_FILE="${ZLAR_AUDIT_FILE:-${PROJECT_DIR}/var/log/audit.jsonl}"
+ZLAR_EMIT_RECEIPTS="${ZLAR_EMIT_RECEIPTS:-false}"
+RECEIPT_FILE="${PROJECT_DIR}/var/log/receipts.jsonl"
+WORKER_RECEIPT_FILE="${ZLAR_WORKER_RECEIPT_FILE:-${PROJECT_DIR}/var/log/worker-receipts.jsonl}"
+WORKER_RECEIPT_HELPER="${ZLAR_WORKER_RECEIPT_HELPER:-${PROJECT_DIR}/bin/zlar-worker-receipt}"
+_PREV_RECEIPT_HASH=""
+AVAILABILITY_STATE="${PROJECT_DIR}/var/log/availability.state"
+AWAY_QUEUE="${PROJECT_DIR}/var/log/away-queue.jsonl"
+LOCKDOWN_FILE="${PROJECT_DIR}/var/log/watchdog.lock"
+
+# ── Sandbox Configuration ───────────────────────────────────────────────────
+# Per-command macOS Seatbelt sandboxing (Phase C perimeter closure).
+# Two tiers: nonet (default, denies all network) and net (allows network).
+SANDBOX_PROFILE_NONET="${PROJECT_DIR}/etc/sandbox/zlar-gate-nonet.sb"
+SANDBOX_PROFILE_NET="${PROJECT_DIR}/etc/sandbox/zlar-gate-net.sb"
+SANDBOX_ENABLED="false"
+if [ -f "${SANDBOX_PROFILE_NONET}" ] && command -v sandbox-exec &>/dev/null; then
+    SANDBOX_ENABLED="true"
+fi
+# Override via gate.json: {"sandbox": {"enabled": false}}
+if [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    _sbx=$(jq -r '.sandbox.enabled // ""' "${GATE_CONFIG}" 2>/dev/null)
+    [ "${_sbx}" = "false" ] && SANDBOX_ENABLED="false"
+fi
+# Network-requiring rules: matched rule determines which sandbox tier to use.
+# Rules whose commands legitimately need outbound network get Tier 2b (net).
+# Only rules where the human has explicitly approved network access get Tier 2b.
+# R001 (safe reads) and R018 (open) do NOT need network — if gh needs network,
+# it should match R016 and go through Telegram approval.
+SANDBOX_NET_RULES="R014|R014a|R016"
+SESSION_DIR="${PROJECT_DIR}/var/log/sessions"
+LOG_FILE="${PROJECT_DIR}/var/log/gate.log"
+
+zlar_telegram_disabled() {
+    case "${ZLAR_TELEGRAM_DISABLED:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# ─── Cryptographic Metadata (PQC Phase 1) ────────────────────────────────────
+# Label every audit entry with the algorithms used. When migration to ML-DSA
+# happens, tooling reads these fields to know which entries need re-signing.
+# Algorithm labels resolved via lib/crypto.sh abstraction layer.
+SIGNATURE_ALGORITHM=$(zlar_crypto_label)
+HASH_ALGORITHM=$(zlar_crypto_hash_label)
+PUBLIC_KEY_ID="unknown"
+if [ -f "${POLICY_PUBKEY}" ]; then
+    PUBLIC_KEY_ID=$(zlar_crypto_pubkey_fingerprint "${POLICY_PUBKEY}")
+fi
+
+# Load overrides from gate.json if present
+if [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    _cfg() { jq -r "$1 // empty" "${GATE_CONFIG}" 2>/dev/null; }
+    TELEGRAM_CHAT_ID=$(_cfg '.telegram.chat_id')
+    TELEGRAM_TIMEOUT_S=$(_cfg '.telegram.timeout_s')
+    AWAY_THRESHOLD=$(_cfg '.availability.away_auto_allow_threshold')
+    SESSION_WRITE_LIMIT=$(_cfg '.session_write_limit')
+    _req_signed=$(_cfg '.require_signed_audit')
+    [ -n "${_req_signed}" ] && ZLAR_REQUIRE_SIGNED_AUDIT="${_req_signed}"
+    _emit_receipts=$(_cfg '.emit_receipts')
+    [ -n "${_emit_receipts}" ] && ZLAR_EMIT_RECEIPTS="${_emit_receipts}"
+fi
+
+# ─── Load Telegram token from .env (parse, don't source) ────────────────────
+# Sourcing .env is a code execution vector. Parse key=value only.
+_load_env() {
+    if zlar_telegram_disabled; then
+        return 0
+    fi
+
+    local env_file="${PROJECT_DIR}/.env"
+    if [ -f "${env_file}" ]; then
+        while IFS='=' read -r key value; do
+            # Skip comments and empty lines
+            [[ "${key}" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${key}" ]] && continue
+            # Strip surrounding quotes from value
+            value="${value%\"}"
+            value="${value#\"}"
+            value="${value%\'}"
+            value="${value#\'}"
+            # Only export known keys
+            case "${key}" in
+                TELEGRAM_BOT_TOKEN|ZLAR_TELEGRAM_TOKEN)
+                    export "${key}=${value}"
+                    ;;
+            esac
+        done < "${env_file}"
+    fi
+}
+_load_env
+
+# Source session state library (thin stateful layer for velocity/loop/burst detection)
+# shellcheck source=../lib/session-state.sh
+if [ -f "${PROJECT_DIR}/lib/session-state.sh" ]; then
+    source "${PROJECT_DIR}/lib/session-state.sh"
+    SESSION_STATE_ENABLED="true"
+else
+    SESSION_STATE_ENABLED="false"
+fi
+
+# Source restore library (Agent Health trust-state layer)
+# shellcheck source=../lib/restore.sh
+# RESTORE-INV-04: syntax-check before sourcing. A broken restore.sh must not
+# crash the gate. bash -n is a parse-only check (no execution).
+if [ -f "${PROJECT_DIR}/lib/restore.sh" ]; then
+    if bash -n "${PROJECT_DIR}/lib/restore.sh" 2>/dev/null; then
+        source "${PROJECT_DIR}/lib/restore.sh"
+        restore_init 2>/dev/null || true  # INV-04: never crash the gate
+    else
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARNING: restore.sh has syntax errors — skipping restore (gate continues without Agent Health)" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+        RESTORE_ENABLED="false"
+    fi
+fi
+
+# ── Novelty detection ──────────────────────────────────────────────────────
+# Tracks which high-consequence domains have been used this session.
+# First occurrence of mcp (per server) or webfetch → signal novelty.
+# The gate escalates; the human reviews once; subsequent calls proceed normally.
+# This is a training moment, not permanent friction.
+NOVELTY_DETECTED="false"
+
+novelty_check_and_record() {
+    local domain="$1" tool_display="$2"
+    local seen_file="${SESSION_DIR}/${SESSION_ID:-unknown}.seen-domains"
+
+    local check_key="${domain}"
+
+    # For MCP, track per server — different servers are different trust surfaces
+    if [ "${domain}" = "mcp" ]; then
+        local mcp_server
+        mcp_server=$(echo "${tool_display}" | sed -n 's/^MCP:\([^/]*\)\/.*/\1/p' 2>/dev/null)
+        [ -n "${mcp_server}" ] && check_key="mcp:${mcp_server}"
+    fi
+
+    # Only novelty-track high-consequence domains
+    case "${domain}" in
+        mcp|webfetch) ;;
+        *) return 1 ;;
+    esac
+
+    # Check if already seen this session
+    if [ -f "${seen_file}" ] && grep -qF "${check_key}" "${seen_file}" 2>/dev/null; then
+        return 1  # Already seen — not novel
+    fi
+
+    # Record and signal novelty
+    echo "${check_key}" >> "${seen_file}" 2>/dev/null || true
+    return 0  # Novel — first occurrence
+}
+
+# Source canary library (governance health probes for human-in-the-loop integrity)
+# shellcheck source=../lib/canary.sh
+CANARY_LOADED="false"
+if [ -f "${PROJECT_DIR}/lib/canary.sh" ]; then
+    source "${PROJECT_DIR}/lib/canary.sh"
+    canary_load_config "${GATE_CONFIG}"
+    CANARY_LOADED="true"
+fi
+
+# Load standing approvals (pre-authorized patterns that skip Telegram ask)
+STANDING_APPROVALS_LOADED="false"
+STANDING_APPROVALS_JSON=""
+STANDING_APPROVAL_ID=""
+STANDING_APPROVALS_FILE="${PROJECT_DIR}/etc/standing-approvals.json"
+if [ -f "${STANDING_APPROVALS_FILE}" ] && command -v jq &>/dev/null; then
+    # Verify signature if policy pubkey exists (same trust model as policy)
+    _sa_sig_ok="true"
+    if [ -f "${POLICY_PUBKEY}" ]; then
+        _sa_sig_value=$(jq -r '.signature.value // ""' "${STANDING_APPROVALS_FILE}" 2>/dev/null)
+        if [ -z "${_sa_sig_value}" ] || [ "${_sa_sig_value}" = "" ]; then
+            _sa_sig_ok="false"
+        else
+            # Phase B of ADR-011 — dual canonical form verification.
+            _sa_canon_spec=$(mktemp "${GATE_TMP}/sa-canon-spec.XXXXXX")
+            _sa_canon_pretty=$(mktemp "${GATE_TMP}/sa-canon-pretty.XXXXXX")
+            _sa_hash_spec=$(mktemp "${GATE_TMP}/sa-hash-spec.XXXXXX")
+            _sa_hash_pretty=$(mktemp "${GATE_TMP}/sa-hash-pretty.XXXXXX")
+            _sa_sig_bin=$(mktemp "${GATE_TMP}/sa-sig.XXXXXX")
+
+            jq -S -c '.signature.value = ""' "${STANDING_APPROVALS_FILE}" | tr -d '\n' > "${_sa_canon_spec}" 2>/dev/null
+            zlar_crypto_hash "${_sa_canon_spec}" "${_sa_hash_spec}"
+
+            jq '.signature.value = ""' "${STANDING_APPROVALS_FILE}" > "${_sa_canon_pretty}" 2>/dev/null
+            zlar_crypto_hash "${_sa_canon_pretty}" "${_sa_hash_pretty}"
+
+            echo "${_sa_sig_value}" | base64 -d > "${_sa_sig_bin}" 2>/dev/null
+
+            if zlar_crypto_verify "${POLICY_PUBKEY}" "${_sa_hash_spec}" "${_sa_sig_bin}" "ed25519"; then
+                _sa_sig_ok="true"
+            elif zlar_crypto_verify "${POLICY_PUBKEY}" "${_sa_hash_pretty}" "${_sa_sig_bin}" "ed25519"; then
+                _sa_sig_ok="true"
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARN: Standing approvals verified under LEGACY canonical form bash-pretty (ADR-011)" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+            else
+                _sa_sig_ok="false"
+            fi
+
+            rm -f "${_sa_canon_spec}" "${_sa_canon_pretty}" "${_sa_hash_spec}" "${_sa_hash_pretty}" "${_sa_sig_bin}"
+        fi
+    fi
+    if [ "${_sa_sig_ok}" = "true" ]; then
+        STANDING_APPROVALS_JSON=$(jq -c '.approvals // []' "${STANDING_APPROVALS_FILE}" 2>/dev/null)
+        STANDING_APPROVALS_LOADED="true"
+    fi
+fi
+
+# Load agent-policy-bindings (per-agent standing approval scoping + velocity limits)
+AGENT_BINDINGS_LOADED="false"
+AGENT_BINDINGS_JSON=""
+AGENT_BINDINGS_FILE="${PROJECT_DIR}/etc/agent-policy-bindings.json"
+if [ -f "${AGENT_BINDINGS_FILE}" ] && command -v jq &>/dev/null; then
+    AGENT_BINDINGS_JSON=$(jq -c '.bindings // []' "${AGENT_BINDINGS_FILE}" 2>/dev/null)
+    if [ -n "${AGENT_BINDINGS_JSON}" ] && [ "${AGENT_BINDINGS_JSON}" != "[]" ]; then
+        AGENT_BINDINGS_LOADED="true"
+        # NOTE: log() is not yet defined at module-load time. Use echo to gate log.
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] Agent bindings loaded ($(echo "${AGENT_BINDINGS_JSON}" | jq 'length') agents)" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+
+        # Build A invariant: delegated authority must monotonically narrow, never widen.
+        # Validate depth_rules — depth N+1 SAs must be a subset of depth N SAs.
+        # NOTE: no 'local' here — this runs at top level, not inside a function.
+        _narrowing_ok=$(echo "${AGENT_BINDINGS_JSON}" | jq '
+            [.[] | select(.delegation.depth_rules != null) |
+                .agent_id as $aid |
+                .delegation.depth_rules | sort_by(.depth) |
+                . as $rules |
+                [range(0; length - 1) |
+                    ($rules[.].standing_approvals) as $parent_sas |
+                    ($rules[. + 1].standing_approvals) as $child_sas |
+                    ($child_sas - $parent_sas) as $widened |
+                    select(($widened | length) > 0) |
+                    {agent: $aid, depth: $rules[. + 1].depth, widened: $widened}
+                ]
+            ] | flatten | length
+        ' 2>/dev/null || echo "0")
+        if [ "${_narrowing_ok}" != "0" ]; then
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARNING: Delegation depth_rules violate monotonic narrowing" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+        fi
+    fi
+fi
+
+# Load capability manifest (v0 — the interface to governance)
+# See docs/MANIFEST-INVARIANTS.md for design invariants.
+# Missing manifest = backward compatible (policy-only). Tampered = hard deny.
+# FIX: Presence tracking — if a manifest was ever successfully loaded, absence
+# is treated as a tamper event, not a benign missing-manifest fallback.
+MANIFEST_LOADED="false"
+MANIFEST_JSON=""
+MANIFEST_HARD_DENY_REASON=""  # Set during load, checked in main() where respond_deny is available
+MANIFEST_FILE="${ZLAR_MANIFEST_FILE:-${PROJECT_DIR}/etc/manifest.json}"
+MANIFEST_SEQ_FILE="${ZLAR_MANIFEST_SEQ_FILE:-${PROJECT_DIR}/var/log/.manifest-last-seq}"
+
+# FIX: Presence detection via seq file — if seq file exists, a manifest was
+# previously loaded. A missing manifest after that = deletion attack, not a
+# benign first-deployment scenario. One file serves both purposes (presence +
+# replay protection). No separate .manifest-present file needed.
+if [ ! -f "${MANIFEST_FILE}" ] && [ -f "${MANIFEST_SEQ_FILE}" ]; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest was present but is now missing — possible deletion attack. Hard deny." >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+    # Send Telegram alert best-effort
+    if [ -n "${TELEGRAM_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+        _alert_body=$(jq -n --arg chat "${TELEGRAM_CHAT_ID}" \
+            '{"chat_id":$chat,"text":"🚨 ZLAR CRITICAL: Manifest file was present but is now missing. Possible deletion attack. Gate is hard-denied until manifest is restored.","parse_mode":"Markdown"}')
+        curl -s -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" -d "${_alert_body}" >/dev/null 2>&1 || true
+    fi
+    # Flag for hard deny — respond_deny not yet defined at this point in the script.
+    # The flag is checked in main() where all functions are available.
+    MANIFEST_HARD_DENY_REASON="manifest:deletion_attack|Manifest was present but is now missing — possible deletion attack. Restore manifest to resume."
+fi
+
+if [ -f "${MANIFEST_FILE}" ] && command -v jq &>/dev/null; then
+    # Check signature if pubkey exists
+    _manifest_sig=$(jq -r '.signature.value // ""' "${MANIFEST_FILE}" 2>/dev/null)
+    _manifest_ok="true"
+    if [ -n "${_manifest_sig}" ] && [ -f "${POLICY_PUBKEY}" ]; then
+        # Phase B of ADR-011 — dual canonical form verification.
+        _m_canon_spec=$(mktemp "${GATE_TMP}/m-canon-spec.XXXXXX")
+        _m_canon_pipe=$(mktemp "${GATE_TMP}/m-canon-pipe.XXXXXX")
+        _m_hash_spec=$(mktemp "${GATE_TMP}/m-hash-spec.XXXXXX")
+        _m_hash_pipe=$(mktemp "${GATE_TMP}/m-hash-pipe.XXXXXX")
+        _m_sig_bin=$(mktemp "${GATE_TMP}/m-sig.XXXXXX")
+
+        jq -S -c '.signature = {algorithm:"",value:"",key_id:""}' "${MANIFEST_FILE}" | tr -d '\n' > "${_m_canon_spec}" 2>/dev/null
+        zlar_crypto_hash "${_m_canon_spec}" "${_m_hash_spec}"
+
+        jq -S -c '.signature = {algorithm:"",value:"",key_id:""}' "${MANIFEST_FILE}" > "${_m_canon_pipe}" 2>/dev/null
+        zlar_crypto_hash "${_m_canon_pipe}" "${_m_hash_pipe}"
+
+        echo "${_manifest_sig}" | base64 -d > "${_m_sig_bin}" 2>/dev/null
+
+        _m_verified=""
+        if zlar_crypto_verify "${POLICY_PUBKEY}" "${_m_hash_spec}" "${_m_sig_bin}" "ed25519"; then
+            _m_verified="spec"
+        elif zlar_crypto_verify "${POLICY_PUBKEY}" "${_m_hash_pipe}" "${_m_sig_bin}" "ed25519"; then
+            _m_verified="bash-pipeline"
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARN: Manifest verified under LEGACY canonical form bash-pipeline (ADR-011)" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+        fi
+
+        rm -f "${_m_canon_spec}" "${_m_canon_pipe}" "${_m_hash_spec}" "${_m_hash_pipe}" "${_m_sig_bin}"
+
+        if [ -z "${_m_verified}" ]; then
+            _manifest_ok="false"
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest signature INVALID — manifest rejected" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+            MANIFEST_HARD_DENY_REASON="manifest:tampered|Manifest signature INVALID — hard deny per invariant 8"
+        fi
+    elif [ -z "${_manifest_sig}" ]; then
+        # Unsigned manifest — fall back to policy-only (invariant #7)
+        _manifest_ok="false"
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARNING: Manifest is unsigned — ignoring" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+    else
+        # Signature present but public key file missing — cannot verify.
+        # This is misconfiguration or a key deletion attack. Fail closed.
+        _manifest_ok="false"
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest is signed but public key missing — cannot verify" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+        MANIFEST_HARD_DENY_REASON="manifest:missing_pubkey|Manifest is signed but public key file is missing — cannot verify. Possible key deletion attack."
+    fi
+    if [ "${_manifest_ok}" = "true" ]; then
+        # Check expiry (invariant #6: expired = hard deny)
+        _m_expires=$(jq -r '.expires // ""' "${MANIFEST_FILE}" 2>/dev/null)
+        _m_now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        if [ -n "${_m_expires}" ] && [[ "${_m_now}" > "${_m_expires}" ]]; then
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest expired (${_m_expires}) — hard deny per invariant 6" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+            MANIFEST_HARD_DENY_REASON="manifest:expired|Manifest expired (${_m_expires}) — hard deny per invariant 6. Renew manifest to resume."
+        else
+            MANIFEST_JSON=$(jq -c '.' "${MANIFEST_FILE}" 2>/dev/null)
+
+            # FIX: Replay protection — check sequence number is strictly increasing
+            # FIX: Poison detection — seq file value >> manifest.sequence = DoS attack
+            _m_seq=$(echo "${MANIFEST_JSON}" | jq -r '.sequence // 0' 2>/dev/null)
+            _m_last_seq=0
+            [ -f "${MANIFEST_SEQ_FILE}" ] && _m_last_seq=$(cat "${MANIFEST_SEQ_FILE}" 2>/dev/null | tr -cd '0-9' || echo 0)
+            case "${_m_seq}" in
+                ''|*[!0-9]*)
+                    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARN: Manifest sequence was non-numeric (${_m_seq:-empty}); treating as 0 for rollback comparison." >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+                    _m_seq=0
+                    ;;
+            esac
+            case "${_m_last_seq}" in
+                ''|*[!0-9]*)
+                    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] WARN: Last manifest sequence file was non-numeric (${_m_last_seq:-empty}); treating as 0 for rollback comparison." >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+                    _m_last_seq=0
+                    ;;
+            esac
+
+            # Poison check: seq file is implausibly ahead of this signed manifest.
+            # The seq file only advances when a valid manifest loads — if it's more
+            # than 100 ahead of a validly-signed manifest, it was externally modified.
+            # Trust the signed manifest; reset the seq file and proceed.
+            _POISON_THRESHOLD=100
+            _m_seq_gap=$(( _m_last_seq - _m_seq ))
+            if [ "${_m_seq}" != "0" ] && [ "${_m_seq_gap}" -gt "${_POISON_THRESHOLD}" ]; then
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Seq file value ${_m_last_seq} is ${_m_seq_gap} ahead of signed manifest seq ${_m_seq} — possible seq file poisoning. Resetting to manifest sequence." >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+                if [ -n "${TELEGRAM_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+                    _alert_body=$(jq -n --arg chat "${TELEGRAM_CHAT_ID}" --arg gap "${_m_seq_gap}" \
+                        '{"chat_id":$chat,"text":"🚨 ZLAR CRITICAL: Sequence file may have been poisoned (gap: \($gap)). Reset to manifest sequence. Check for unauthorized filesystem writes.","parse_mode":"Markdown"}')
+                    curl -s -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+                        -H "Content-Type: application/json" -d "${_alert_body}" >/dev/null 2>&1 || true
+                fi
+                _m_last_seq=0  # Reset — trust the signed manifest
+            fi
+
+            if [ -n "${_m_seq}" ] && [ "${_m_seq}" != "0" ] && [ "${_m_seq}" -lt "${_m_last_seq}" ]; then
+                # Strictly less-than: detects manifest rollback (old manifest
+                # replayed after a newer one was loaded). Equal is normal —
+                # the same manifest loads on every gate invocation within a
+                # session. Without this distinction, the first Telegram
+                # approve-then-retry cycle hard-denies because the retry
+                # presents the same seq the original call already persisted.
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] CRITICAL: Manifest sequence ${_m_seq} < last seen ${_m_last_seq} — possible rollback attack. Hard deny." >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+                MANIFEST_LOADED="false"
+                MANIFEST_JSON=""
+                MANIFEST_HARD_DENY_REASON="manifest:replay|Manifest sequence ${_m_seq} < last seen ${_m_last_seq} — hard deny per invariant 10 (rollback detected)"
+            else
+                MANIFEST_LOADED="true"
+                # Persist sequence (seq file existence also serves as presence marker)
+                echo "${_m_seq}" > "${MANIFEST_SEQ_FILE}" 2>/dev/null || true
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [gate] Manifest loaded: $(jq -r '.identity.agent_id // "?"' "${MANIFEST_FILE}" 2>/dev/null) (seq=${_m_seq})" >> "${PROJECT_DIR}/var/log/gate.log" 2>/dev/null || true
+            fi
+        fi
+    fi
+fi
+
+# Env var overrides + chat_id source detection.
+# v3.3.9: hardcoded fallback removed. Source is one of "gate.json", "env",
+# or "unconfigured". Both lib/canary.sh (v3.3.7) and the general ask path
+# below (_telegram_dispatch_ready) refuse to dispatch when source is
+# non-authoritative, preventing a misdeployed non-maintainer gate from
+# silently routing asks to the maintainer's Telegram chat.
+TELEGRAM_TOKEN="${ZLAR_TELEGRAM_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
+if [ -n "${ZLAR_TELEGRAM_CHAT_ID:-}" ]; then
+    TELEGRAM_CHAT_ID="${ZLAR_TELEGRAM_CHAT_ID}"
+    TELEGRAM_CHAT_ID_SOURCE="env"
+elif [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+    # Inherited from gate.json read at line 195
+    TELEGRAM_CHAT_ID_SOURCE="gate.json"
+else
+    TELEGRAM_CHAT_ID=""
+    TELEGRAM_CHAT_ID_SOURCE="unconfigured"
+fi
+if zlar_telegram_disabled; then
+    TELEGRAM_TOKEN=""
+    TELEGRAM_CHAT_ID=""
+    TELEGRAM_CHAT_ID_SOURCE="disabled"
+fi
+TELEGRAM_TIMEOUT_S="${TELEGRAM_TIMEOUT_S:-300}"
+# R012 retry dedup: how long an approval is cached per (rule, session, command
+# fingerprint) after the human confirms. Retries within this window replay the
+# prior approval without re-asking. Bounded so stale approvals expire even if
+# the command keeps retrying. Default 300s matches TELEGRAM_TIMEOUT_S.
+ZLAR_APPROVED_TTL_S="${ZLAR_APPROVED_TTL_S:-300}"
+
+# Source shared HMAC library for inbox integrity verification
+# shellcheck source=../lib/hmac.sh
+source "${PROJECT_DIR}/lib/hmac.sh"
+zlar_hmac_load_secret
+AWAY_THRESHOLD="${AWAY_THRESHOLD:-30}"
+SESSION_WRITE_LIMIT="${SESSION_WRITE_LIMIT:-50}"
+
+# H3: Rate limiting — read from gate.json
+TELEGRAM_FLOOD_GUARD_MS="${TELEGRAM_FLOOD_GUARD_MS:-1500}"
+RATE_LIMIT_FILE="${PROJECT_DIR}/var/log/.telegram-rate"
+if [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    _flood=$(_cfg '.telegram.flood_guard_ms')
+    [ -n "${_flood}" ] && TELEGRAM_FLOOD_GUARD_MS="${_flood}"
+fi
+
+# A2: Karma thresholds integration
+KARMA_THRESHOLDS="${PROJECT_DIR}/var/log/karma-thresholds.json"
+if [ -f "${KARMA_THRESHOLDS}" ] && command -v jq &>/dev/null; then
+    local_threshold=$(jq -r '.effective_thresholds.allow // empty' "${KARMA_THRESHOLDS}" 2>/dev/null)
+    if [ -n "${local_threshold}" ]; then
+        AWAY_THRESHOLD="${local_threshold}"
+    fi
+fi
+
+# Approval directory for deny-then-retry pattern
+# Claude Code hooks must respond fast — we cannot poll for Telegram responses
+# in-process. Instead: deny immediately, write pending file, check on retry.
+APPROVAL_DIR="${ZLAR_APPROVAL_DIR:-${PROJECT_DIR}/var/log/approvals}"
+
+# Ensure log directories exist
+mkdir -p "$(dirname "${AUDIT_FILE}")" "${SESSION_DIR}" "${APPROVAL_DIR}" 2>/dev/null
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STARTUP — handled by wrapper (~/.claude/zlar-gate.sh).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Sequence counter (per invocation, starts at 0)
+SEQ=0
+
+# Path B Phase 1: last emitted audit event ID (set by emit_event, read by seal)
+LAST_EMITTED_EVENT_ID=""
+
+# ─── Logging ────────────────────────────────────────────────────────────────
+
+# Collapse an agent-supplied string to a single printable line.
+#
+# Newlines and control characters let the party being governed append lines to
+# surfaces a human reads as the gate's own words — gate.log, and the Telegram
+# approval card. sanitize_path() has stripped newlines from file paths since
+# early on, calling it an injection vector in its own comment, and
+# translate_tool() does the same to Bash commands. The perimeter existed; the
+# free-text fields that arrived later (agent_type, .description, subagent
+# prompt) never got it. This is that same defence, named once.
+#
+# Byte-safe for UTF-8: every byte deleted here is below 0x80, so multibyte
+# characters pass through intact — the reasons carry ⏳ and →, and an agent
+# type may legitimately carry non-ASCII.
+sanitize_text() {
+    printf '%s' "${1:-}" \
+        | tr '\n\r\t' '   ' \
+        | tr -d '\000-\037\177' \
+        | sed 's/  */ /g; s/^ //; s/ $//'
+}
+
+log() {
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # One call, one line. Defence in depth: even if a future caller interpolates
+    # an unsanitized value, it cannot forge a second timestamped log entry.
+    echo "[${ts}] $(sanitize_text "$*")" >> "${LOG_FILE}" 2>/dev/null || true
+}
+
+# ─── Response Helpers ───────────────────────────────────────────────────────
+
+respond_allow() {
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
+}
+
+respond_allow_or_sandbox() {
+    # Convenience: if sandbox is enabled and domain is bash, sandbox it.
+    # Otherwise, plain allow.
+    if [ "${DOMAIN}" = "bash" ] && [ "${SANDBOX_ENABLED}" = "true" ]; then
+        local _cmd
+        _cmd=$(echo "${DETAIL}" | jq -r '.command // ""' 2>/dev/null)
+        respond_allow_sandboxed "${_cmd}" "${MATCHED_RULE}"
+    else
+        respond_allow
+    fi
+}
+
+respond_allow_sandboxed() {
+    # Wrap the bash command in sandbox-exec, returning updatedInput so
+    # Claude Code executes the sandboxed version transparently.
+    local original_command="$1"
+    local matched_rule="${2:-}"
+    local profile="${SANDBOX_PROFILE_NONET}"
+
+    # Select tier: if the matched rule is in the network-allowed set, use Tier 2b
+    if echo "${matched_rule}" | grep -qE "^(${SANDBOX_NET_RULES})$" 2>/dev/null; then
+        profile="${SANDBOX_PROFILE_NET}"
+    fi
+
+    if [ ! -f "${profile}" ]; then
+        log "WARN: Sandbox profile not found (${profile}) — allowing without sandbox"
+        respond_allow
+        return
+    fi
+
+    # Build the wrapped command. Use single-quote escaping for safety.
+    local escaped_command
+    escaped_command=$(printf '%s' "${original_command}" | sed "s/'/'\\\\''/g")
+    local wrapped="sandbox-exec -f '${profile}' -D 'HOME_DIR=${HOME}' bash -c '${escaped_command}'"
+
+    # Return updatedInput with the wrapped command. Built with jq --arg for the
+    # same reason as respond_deny — and here the text is unambiguously
+    # agent-supplied: it is the Bash command itself. A quote in it broke this
+    # response document too. If the wrapper cannot be encoded, deny: a gate that
+    # cannot state its decision must not hand back an allow.
+    local out
+    out=$(jq -cn --arg cmd "${wrapped}" \
+        '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",updatedInput:{command:$cmd}}}' 2>/dev/null) || out=""
+    if [ -z "${out}" ]; then
+        log "ERROR: sandboxed command could not be encoded — denying"
+        respond_deny "Sandbox wrapper could not be encoded" "gate_error"
+        return
+    fi
+    printf '%s\n' "${out}"
+}
+
+respond_deny() {
+    local reason="${1:-Policy denied}"
+    local denied_by="${2:-policy}"
+    # The gate's stdout IS its decision, so the reason must be a JSON *value*
+    # and never a fragment of the document's own syntax.
+    #
+    # The previous `jq -Rrs '.' | sed 's/^"//;s/"$//'` escaped nothing: -r
+    # prints the string raw, and the sed then stripped quotes that were never
+    # added. A reason containing a double quote closed permissionDecisionReason
+    # early. Best case the line was unparseable and the harness, holding no
+    # decision, allowed the action. Worst case the reason closed the string and
+    # opened a second "permissionDecision" key — jq, Node and Python all resolve
+    # duplicate keys last-wins, so a well-formed refusal was read as an allow
+    # while the gate logged DENIED. Same signature as the 2026-08-17 fail-open.
+    #
+    # jq --arg makes the reason a value; it cannot escape its own string.
+    local out
+    out=$(jq -cn --arg by "${denied_by}" --arg reason "${reason}" \
+        '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $by + "] " + ($reason | .[0:200]))}}' 2>/dev/null) || out=""
+    # Fail closed on the encoder itself. No jq, or a reason jq cannot encode,
+    # must still produce a readable refusal — never silence, which is an allow.
+    [ -n "${out}" ] || out='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[gate_error] Denied. The reason could not be encoded."}}'
+    printf '%s\n' "${out}"
+    # R041 contract hardening (2026-05-12): record blocking-deny intent for end-of-script exit.
+    _GATE_EXIT_CODE=2
+}
+
+respond_subagent_allow() {
+    echo '{"hookSpecificOutput":{"hookEventName":"SubagentStart","permissionDecision":"allow"}}'
+}
+
+respond_subagent_deny() {
+    local reason="${1:-Policy denied}"
+    local denied_by="${2:-policy}"
+    # Same defect, same fix as respond_deny — and this one is the sharper edge.
+    # Two callers below interpolate ${agent_type} into the reason, and
+    # agent_type is read verbatim from the SubagentStart payload with no
+    # sanitizing, unlike SESSION_ID and AGENT_ID which are both run through
+    # `tr -cd`. The launching agent names its own subagent type, so the refusal
+    # text was reachable by the party being refused.
+    local out
+    out=$(jq -cn --arg by "${denied_by}" --arg reason "${reason}" \
+        '{hookSpecificOutput:{hookEventName:"SubagentStart",permissionDecision:"deny",permissionDecisionReason:("[" + $by + "] " + ($reason | .[0:200]))}}' 2>/dev/null) || out=""
+    [ -n "${out}" ] || out='{"hookSpecificOutput":{"hookEventName":"SubagentStart","permissionDecision":"deny","permissionDecisionReason":"[gate_error] Denied. The reason could not be encoded."}}'
+    printf '%s\n' "${out}"
+    # R041 contract hardening (2026-05-12): record blocking-deny intent for end-of-script exit.
+    _GATE_EXIT_CODE=2
+}
+
+# ─── UUID Generation ────────────────────────────────────────────────────────
+
+gen_id() {
+    local hex_ts
+    hex_ts=$(printf '%x' "$(date +%s)")
+    local rand
+    rand=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p)
+    echo "${hex_ts}-${rand}"
+}
+
+# ─── Agent Identity (Governed Action Receipt v1) ───────────────────────────
+# Every audit entry carries cryptographic identity of the governing config
+# artifact actually in effect at decision time. Complementary to the manifest
+# identity layer (manifest_agent_id / manifest_principal): manifest is
+# declarative, config_hash is observational.
+#
+# Resolution order (first match wins — single-file v1.0 definition; v1.1+
+# may add a composed multi-file digest as an additive field):
+#   1. ./CLAUDE.md                   → project_claude_md
+#   2. ~/.claude/CLAUDE.md           → user_claude_md
+#   3. ./soul.md                     → project_soul_md
+#   4. ./should.md                   → project_should_md
+#
+# Hashing: SHA-256 of the raw file bytes as loaded, no normalization.
+# Fingerprint: first 16 hex chars of SHA-256 of
+#   "claude-code:${agent_config_hash}:${policy_version}"
+# All three vars are "null" (the literal string) when no governing
+# artifact is present — the audit entry jq uses --argjson to emit real
+# JSON null.
+AGENT_CONFIG_HASH="null"
+AGENT_CONFIG_SOURCE="null"
+AGENT_FINGERPRINT="null"
+
+_compute_agent_identity() {
+    local config_file="" config_source=""
+
+    if [ -f "${PWD}/CLAUDE.md" ]; then
+        config_file="${PWD}/CLAUDE.md"
+        config_source="project_claude_md"
+    elif [ -f "${HOME}/.claude/CLAUDE.md" ]; then
+        config_file="${HOME}/.claude/CLAUDE.md"
+        config_source="user_claude_md"
+    elif [ -f "${PWD}/soul.md" ]; then
+        config_file="${PWD}/soul.md"
+        config_source="project_soul_md"
+    elif [ -f "${PWD}/should.md" ]; then
+        config_file="${PWD}/should.md"
+        config_source="project_should_md"
+    fi
+
+    if [ -n "${config_file}" ] && [ -r "${config_file}" ]; then
+        local _hash
+        _hash=$(shasum -a 256 "${config_file}" 2>/dev/null | awk '{print $1}')
+        if [ -n "${_hash}" ] && [ "${#_hash}" = "64" ]; then
+            AGENT_CONFIG_HASH="\"${_hash}\""
+            AGENT_CONFIG_SOURCE="\"${config_source}\""
+            local _fp
+            _fp=$(printf 'claude-code:%s:%s' "${_hash}" "${POLICY_VERSION:-unknown}" \
+                  | shasum -a 256 | awk '{print substr($1,1,16)}')
+            if [ -n "${_fp}" ] && [ "${#_fp}" = "16" ]; then
+                AGENT_FINGERPRINT="\"${_fp}\""
+            fi
+        fi
+    fi
+}
+
+# ─── Audit File Rotation ────────────────────────────────────────────────────
+
+rotate_audit_if_needed() {
+    if [ -f "${AUDIT_FILE}" ]; then
+        local size
+        size=$(stat -f%z "${AUDIT_FILE}" 2>/dev/null || stat -c%s "${AUDIT_FILE}" 2>/dev/null || echo 0)
+        # Rotate at 10MB
+        if [ "${size}" -gt 10485760 ]; then
+            # Capture aggregate hash and chain tail BEFORE moving — these
+            # pin the rotated file to its pre-rotation content.
+            local rotated_hash chain_tail
+            rotated_hash=$(shasum -a 256 "${AUDIT_FILE}" 2>/dev/null | awk '{print $1}')
+            chain_tail=$(tail -1 "${AUDIT_FILE}" 2>/dev/null | shasum -a 256 | awk '{print $1}')
+
+            local rotated="${AUDIT_FILE}.$(date +%Y%m%d%H%M%S)"
+            mv "${AUDIT_FILE}" "${rotated}" 2>/dev/null || true
+
+            # Emit a cross-file anchor to a sidecar. Records:
+            #   - aggregate hash of the rotated file
+            #   - chain-tail hash (last-line sha256) at rotation time
+            # A verifier can now detect silent deletion of the archive
+            # (anchor present, file absent) and substitution (file present
+            # but hash mismatch). Closes Property 5a in the v3.1.0 spec.
+            local anchor_file="${AUDIT_FILE}.anchors.jsonl"
+            local anchor_entry
+            anchor_entry=$(jq -n -c \
+                --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --arg rotated_file "$(basename "${rotated}")" \
+                --arg rotated_hash "sha256:${rotated_hash}" \
+                --arg chain_tail "${chain_tail}" \
+                --arg rotated_size "${size}" \
+                '{ts:$ts,rotated_file:$rotated_file,rotated_hash:$rotated_hash,chain_tail:$chain_tail,rotated_size:($rotated_size|tonumber)}' 2>/dev/null)
+            if [ -n "${anchor_entry}" ]; then
+                printf '%s\n' "${anchor_entry}" >> "${anchor_file}" 2>/dev/null || true
+            fi
+            log "Audit file rotated: ${rotated} (${size} bytes) anchor=${rotated_hash:0:16}"
+        fi
+    fi
+}
+
+# ─── Governed Action Receipt (Phase A) ─────────────────────────────────────
+# Generates a portable proof alongside each audit event. The receipt is the
+# product. Anyone with the public key can verify. Cross-gate compatible with
+# the Node.js receipt library (lib/receipt.mjs).
+
+_emit_receipt() {
+    local event_id="$1" ts="$2" action="$3" domain="$4" detail="$5" \
+          outcome="$6" rule="$7" authorizer="$8" policy_version="$9" prev_hash="${10}" \
+          escalation_source="${11:-null}"
+
+    # Compute detail hash: SHA-256 of canonical detail JSON
+    local detail_hash
+    detail_hash=$(printf '%s' "${detail}" | jq -S -c '.' | shasum -a 256 | awk '{print $1}')
+
+    # Extract manifest fields if manifest is loaded
+    local m_version="null" m_agent_id="null" m_principal="null"
+    if [ "${MANIFEST_LOADED}" = "true" ] && [ -n "${MANIFEST_JSON}" ]; then
+        local _mv _ma _mp
+        _mv=$(echo "${MANIFEST_JSON}" | jq -r '.identity.manifest_version // empty' 2>/dev/null || true)
+        [ -n "${_mv}" ] && m_version="\"${_mv}\""
+        _ma=$(echo "${MANIFEST_JSON}" | jq -r '.identity.agent_id // empty' 2>/dev/null || true)
+        [ -n "${_ma}" ] && m_agent_id="\"${_ma}\""
+        _mp=$(echo "${MANIFEST_JSON}" | jq -r '.identity.principal // empty' 2>/dev/null || true)
+        [ -n "${_mp}" ] && m_principal="\"${_mp}\""
+    fi
+
+    # Prev receipt hash for chain linking
+    local prev_receipt_hash="null"
+    if [ -n "${_PREV_RECEIPT_HASH}" ]; then
+        prev_receipt_hash="\"${_PREV_RECEIPT_HASH}\""
+    fi
+
+    # Generate receipt ID
+    local receipt_id
+    receipt_id=$(printf '%012x' "$(date +%s)")$(openssl rand -hex 16)
+
+    # Build unsigned receipt
+    local unsigned_receipt
+    # Escalation source for auditor transparency.
+    # null = no escalation (policy allow/deny as-is)
+    # "policy" = the matched rule said "ask"
+    # "novelty" = first use of this domain/server this session
+    # "restore" = Agent Health trust state degradation
+    # "session" = session velocity/loop detection
+    local esc_json="null"
+    if [ "${escalation_source}" != "null" ]; then
+        esc_json="\"${escalation_source}\""
+    fi
+
+    unsigned_receipt=$(jq -n -c \
+        --arg rv "0.1.0" \
+        --arg id "${receipt_id}" \
+        --arg tool "${action}" \
+        --arg domain "${domain}" \
+        --arg detail_hash "${detail_hash}" \
+        --arg outcome "${outcome}" \
+        --arg rule "${rule}" \
+        --arg authorizer "${authorizer}" \
+        --arg timestamp "${ts}" \
+        --arg policy_version "${policy_version}" \
+        --argjson manifest_version "${m_version}" \
+        --argjson manifest_agent_id "${m_agent_id}" \
+        --argjson manifest_principal "${m_principal}" \
+        --arg audit_event_id "${event_id}" \
+        --arg audit_prev_hash "${prev_hash}" \
+        --argjson prev_receipt_hash "${prev_receipt_hash}" \
+        --argjson escalation_source "${esc_json}" \
+        '{receipt_version:$rv,id:$id,
+          governed_action:{tool:$tool,domain:$domain,detail_hash:$detail_hash},
+          decision:{outcome:$outcome,rule:$rule,authorizer:$authorizer,timestamp:$timestamp},
+          evidence:{policy_version:$policy_version,manifest_version:$manifest_version,
+            manifest_agent_id:$manifest_agent_id,manifest_principal:$manifest_principal,
+            delegation_chain:[],audit_event_id:$audit_event_id,audit_prev_hash:$audit_prev_hash,
+            escalation_source:$escalation_source},
+          prev_receipt_hash:$prev_receipt_hash}')
+
+    # Sign the receipt (same approach as audit entry signing)
+    local receipt_sig="unsigned"
+    if [ -f "${AUDIT_SIGNING_KEY}" ]; then
+        local _r_hash_file _r_sig_file
+        _r_hash_file="${GATE_TMP}/receipt-hash.$$"
+        _r_sig_file="${GATE_TMP}/receipt-sig.$$"
+
+        printf '%s' "${unsigned_receipt}" | jq -S -c '.' | shasum -a 256 | awk '{print $1}' | tr -d '\n' > "${_r_hash_file}" 2>/dev/null
+
+        if zlar_crypto_sign "${AUDIT_SIGNING_KEY}" "${_r_hash_file}" "${_r_sig_file}" 2>/dev/null; then
+            receipt_sig=$(base64 < "${_r_sig_file}" | tr -d '\n')
+        fi
+
+        rm -f "${_r_hash_file}" "${_r_sig_file}" 2>/dev/null
+    fi
+
+    # Assemble signed receipt
+    local signed_receipt
+    signed_receipt=$(echo "${unsigned_receipt}" | jq -c \
+        --arg algo "${SIGNATURE_ALGORITHM}" \
+        --arg hash_algo "SHA-256" \
+        --arg sig "${receipt_sig}" \
+        --arg key_id "${PUBLIC_KEY_ID}" \
+        '. + {signature:{algorithm:$algo,hash_algorithm:$hash_algo,value:$sig,key_id:$key_id}}')
+
+    # Write receipt to chain
+    echo "${signed_receipt}" >> "${RECEIPT_FILE}" 2>/dev/null || true
+
+    # Update prev receipt hash for next receipt in chain
+    _PREV_RECEIPT_HASH=$(printf '%s' "${signed_receipt}" | jq -S -c '.' | shasum -a 256 | awk '{print $1}')
+}
+
+_emit_worker_receipt() {
+    local event_json="$1"
+    local rule_description="${2:-}"
+    local approval_channel="${3:-none}"
+
+    # Worker Receipts are explanatory evidence. Emission failure must be visible
+    # in gate logs but must not change the already-computed governance decision.
+    if ! command -v node &>/dev/null; then
+        log "WARN: Worker Receipt emission skipped - node not found"
+        return 0
+    fi
+    if [ ! -f "${WORKER_RECEIPT_HELPER}" ]; then
+        log "WARN: Worker Receipt emission skipped - helper missing: ${WORKER_RECEIPT_HELPER}"
+        return 0
+    fi
+
+    mkdir -p "$(dirname "${WORKER_RECEIPT_FILE}")" 2>/dev/null || true
+
+    local _wr_rc=0
+    if command -v flock &>/dev/null; then
+        exec 9>"${WORKER_RECEIPT_FILE}.lock"
+        if flock -w 2 9; then
+            printf '%s' "${event_json}" | node "${WORKER_RECEIPT_HELPER}" \
+                --append "${WORKER_RECEIPT_FILE}" \
+                --rule-description "${rule_description}" \
+                --policy-key-id "${PUBLIC_KEY_ID}" \
+                --approval-channel "${approval_channel}" >/dev/null 2>>"${LOG_FILE}" || _wr_rc=$?
+        else
+            log "WARN: Worker Receipt lock unavailable - skipping emission"
+        fi
+        exec 9>&- 2>/dev/null || true
+    else
+        printf '%s' "${event_json}" | node "${WORKER_RECEIPT_HELPER}" \
+            --append "${WORKER_RECEIPT_FILE}" \
+            --rule-description "${rule_description}" \
+            --policy-key-id "${PUBLIC_KEY_ID}" \
+            --approval-channel "${approval_channel}" >/dev/null 2>>"${LOG_FILE}" || _wr_rc=$?
+    fi
+
+    if [ "${_wr_rc}" -ne 0 ]; then
+        log "WARN: Worker Receipt emission failed for audit event $(printf '%s' "${event_json}" | jq -r '.id // "unknown"' 2>/dev/null || echo unknown)"
+    fi
+    return 0
+}
+
+# ─── Audit Event Emission ──────────────────────────────────────────────────
+
+emit_event() {
+    local domain="$1" action="$2" outcome="$3" detail="$4" rule="$5" severity="$6" risk_score="${7:-0}" authorizer="${8:-gate}"
+    local id ts
+    id=$(gen_id)
+    LAST_EMITTED_EVENT_ID="${id}"
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    SEQ=$((SEQ + 1))
+
+    # Hash chain — compute prev_hash from last audit line.
+    # Lock the whole rotate/hash/sign/append section. macOS does not ship
+    # flock by default, so fall back to atomic mkdir locks instead of writing
+    # unlocked under parallel hook invocations.
+    # Rotation happens INSIDE the lock to prevent concurrent rotate+append races.
+    local _audit_lock_fd="" _audit_lock_dir=""
+    if command -v flock &>/dev/null; then
+        exec 8>"${AUDIT_FILE}.lock"
+        if flock -w 2 8; then
+            _audit_lock_fd="8"
+        else
+            exec 8>&- 2>/dev/null || true
+            log "WARN: Could not acquire audit flock — trying mkdir lock fallback"
+        fi
+    fi
+    if [ -z "${_audit_lock_fd}" ]; then
+        _audit_lock_dir="${AUDIT_FILE}.lock.d"
+        local _audit_lock_deadline _audit_lock_now _audit_lock_mtime _audit_lock_age
+        _audit_lock_deadline=$(( $(date +%s) + 2 ))
+        while ! mkdir "${_audit_lock_dir}" 2>/dev/null; do
+            _audit_lock_now=$(date +%s)
+            _audit_lock_mtime=$(stat -c %Y "${_audit_lock_dir}" 2>/dev/null || stat -f %m "${_audit_lock_dir}" 2>/dev/null || echo 0)
+            case "${_audit_lock_mtime}" in
+                ''|*[!0-9]*) _audit_lock_mtime=0 ;;
+            esac
+            _audit_lock_age=$(( _audit_lock_now - _audit_lock_mtime ))
+            if [ "${_audit_lock_age}" -gt 30 ]; then
+                rmdir "${_audit_lock_dir}" 2>/dev/null || true
+                continue
+            fi
+            if [ "${_audit_lock_now}" -ge "${_audit_lock_deadline}" ]; then
+                log "WARN: Could not acquire audit mkdir lock — proceeding unlocked"
+                _audit_lock_dir=""
+                break
+            fi
+            sleep 0.05 2>/dev/null || sleep 1
+        done
+    fi
+
+    # Rotate audit file if needed (inside lock)
+    rotate_audit_if_needed
+
+    local prev_hash="genesis"
+    if [ -f "${AUDIT_FILE}" ] && [ -s "${AUDIT_FILE}" ]; then
+        prev_hash=$(tail -1 "${AUDIT_FILE}" 2>/dev/null | shasum -a 256 | awk '{print $1}')
+    fi
+
+    local event
+    event=$(jq -n -c \
+        --arg id "${id}" \
+        --arg ts "${ts}" \
+        --argjson seq "${SEQ}" \
+        --arg source "gate" \
+        --arg host "$(hostname -s)" \
+        --arg user "$(whoami)" \
+        --arg agent_id "${AGENT_ID:-claude-code}" \
+        --arg session_id "${SESSION_ID:-unknown}" \
+        --argjson agent_config_hash "${AGENT_CONFIG_HASH}" \
+        --argjson agent_config_source "${AGENT_CONFIG_SOURCE}" \
+        --argjson agent_fingerprint "${AGENT_FINGERPRINT}" \
+        --arg domain "${domain}" \
+        --arg action "${action}" \
+        --arg outcome "${outcome}" \
+        --argjson risk_score "${risk_score}" \
+        --argjson detail "${detail}" \
+        --arg rule "${rule}" \
+        --arg policy_version "${POLICY_VERSION:-unknown}" \
+        --arg severity "${severity}" \
+        --arg prev_hash "${prev_hash}" \
+        --arg authorizer "${authorizer}" \
+        --arg sig_alg "${SIGNATURE_ALGORITHM}" \
+        --arg hash_alg "${HASH_ALGORITHM}" \
+        --arg pubkey_id "${PUBLIC_KEY_ID}" \
+        '{id:$id,ts:$ts,seq:$seq,source:$source,host:$host,user:$user,
+          agent_id:$agent_id,session_id:$session_id,
+          agent_config_hash:$agent_config_hash,
+          agent_config_source:$agent_config_source,
+          agent_fingerprint:$agent_fingerprint,
+          domain:$domain,
+          action:$action,outcome:$outcome,risk_score:$risk_score,
+          detail:$detail,rule:$rule,policy_version:$policy_version,
+          severity:$severity,prev_hash:$prev_hash,authorizer:$authorizer,
+          signature_algorithm:$sig_alg,hash_algorithm:$hash_alg,
+          public_key_id:$pubkey_id}')
+
+    # ── Per-entry Ed25519 signing ──
+    # Sign the event JSON to provide non-repudiation (SP 800-53 AU-10).
+    # The signature covers the entire event including prev_hash, binding
+    # this entry to the chain. Anyone with the public key can verify.
+    local signature="unsigned"
+    if [ -f "${AUDIT_SIGNING_KEY}" ]; then
+        local _sign_hash_file _sign_sig_file
+        _sign_hash_file="${GATE_TMP}/audit-sign-hash.$$"
+        _sign_sig_file="${GATE_TMP}/audit-sign-sig.$$"
+
+        # Hash the event JSON in canonical form (sorted keys, compact).
+        # jq -S sorts all keys recursively including nested objects.
+        # Deterministic within the jq toolchain. NOTE: jq -S -c is not a
+        # formal cross-language canonicalization standard (see JCS/RFC 8785).
+        # External verifiers must also use jq -S -c to reproduce this hash.
+        printf '%s' "${event}" | jq -S -c '.' | shasum -a 256 | awk '{print $1}' | tr -d '\n' > "${_sign_hash_file}" 2>/dev/null
+
+        # Sign with Ed25519 via crypto abstraction layer
+        if zlar_crypto_sign "${AUDIT_SIGNING_KEY}" "${_sign_hash_file}" "${_sign_sig_file}" 2>/dev/null; then
+            signature=$(base64 < "${_sign_sig_file}" | tr -d '\n')
+        else
+            log "WARN: Audit entry signing failed — entry will be written unsigned"
+        fi
+
+        rm -f "${_sign_hash_file}" "${_sign_sig_file}" 2>/dev/null
+    fi
+
+    # Strict signing mode: refuse to write unsigned entries when required
+    if [ "${signature}" = "unsigned" ] && [ "${ZLAR_REQUIRE_SIGNED_AUDIT}" = "true" ]; then
+        log "CRITICAL: Audit signing required but signing failed/key missing — denying"
+        [ -n "${_audit_lock_fd}" ] && exec 8>&- 2>/dev/null || true
+        [ -n "${_audit_lock_dir}" ] && rmdir "${_audit_lock_dir}" 2>/dev/null || true
+        return 1
+    fi
+
+    # Append signature to the event
+    event=$(echo "${event}" | jq -c --arg sig "${signature}" '. + {signature: $sig}')
+
+    local _audit_write_ok="true"
+    if ! echo "${event}" >> "${AUDIT_FILE}" 2>/dev/null; then
+        log "CRITICAL: Failed to write audit event — audit trail may be incomplete"
+        _audit_write_ok="false"
+    fi
+
+    # Release audit lock.
+    [ -n "${_audit_lock_fd}" ] && exec 8>&- 2>/dev/null || true
+    [ -n "${_audit_lock_dir}" ] && rmdir "${_audit_lock_dir}" 2>/dev/null || true
+
+    local _wr_rule_description="${MATCHED_RULE_DESCRIPTION:-}"
+    if [ "${rule}" != "${MATCHED_RULE:-}" ] || [ -z "${_wr_rule_description}" ]; then
+        _wr_rule_description=$(echo "${POLICY_RULES_JSON:-[]}" | jq -r --arg id "${rule}" '.[] | select(.id == $id) | .description' 2>/dev/null | head -n 1)
+        [ -z "${_wr_rule_description}" ] && [ "${rule}" = "default" ] && _wr_rule_description="Default policy action."
+    fi
+
+    local _wr_approval_channel="none"
+    if [[ "${authorizer}" == human:* ]]; then
+        _wr_approval_channel="telegram"
+    elif [[ "${authorizer}" == standing:* ]]; then
+        _wr_approval_channel="standing_approval"
+    elif [[ "${authorizer}" == gate:telegram_* ]] || [[ "${authorizer}" == gate:rate_limit ]] || [[ "${authorizer}" == gate:error ]]; then
+        _wr_approval_channel="telegram"
+    fi
+
+    if [ "${_audit_write_ok}" = "true" ]; then
+        _emit_worker_receipt "${event}" "${_wr_rule_description}" "${_wr_approval_channel}"
+    fi
+
+    # Generate receipt if enabled (outside audit lock — receipts are additive)
+    if [ "${ZLAR_EMIT_RECEIPTS}" = "true" ]; then
+        _emit_receipt "${id}" "${ts}" "${action}" "${domain}" "${detail}" \
+            "${outcome}" "${rule}" "${authorizer}" "${POLICY_VERSION:-unknown}" "${prev_hash}" \
+            "${ESCALATION_SOURCE:-null}"
+    fi
+}
+
+# ─── Tool Translation ──────────────────────────────────────────────────────
+
+DOMAIN=""
+DETAIL="{}"
+TOOL_DISPLAY=""
+TOOL_INTENT=""  # optional .description from tool_input — shown as Context in Telegram ask
+
+sanitize_path() {
+    # Strip newlines (injection vector), resolve symlinks (laundering vector).
+    # Handles macOS /var → /private/var, /tmp → /private/tmp.
+    # Falls back to sanitized-only path if realpath fails (new files).
+    local raw_path="$1"
+    local clean_path
+    clean_path=$(echo "${raw_path}" | tr '\n\r' '  ' | sed 's/  */ /g; s/^ //; s/ $//')
+    if [ -n "${clean_path}" ] && command -v realpath &>/dev/null; then
+        local resolved
+        resolved=$(realpath "${clean_path}" 2>/dev/null)
+        if [ -n "${resolved}" ]; then
+            clean_path="${resolved}"
+        fi
+    fi
+    printf '%s' "${clean_path}"
+}
+
+# ─── DETAIL Schema Contract ────────────────────────────────────────────────
+# The DETAIL JSON per tool type is load-bearing for the action fingerprint
+# (approval binding hash). Adding, removing, or renaming a field in any
+# tool's DETAIL breaks all existing approval hashes for that tool type.
+# Changes to DETAIL shape require explicit versioning.
+#
+# Frozen schemas:
+#   Bash:         {command, cwd}
+#   Write:        {path, content_length, content_sha256}
+#   Edit:         {path, old_string, new_string}
+#   Read:         {path}
+#   NotebookEdit: {path}
+#   Glob:         {pattern, path}
+#   Grep:         {pattern, path}
+#   Agent/Task:   {prompt}
+#   WebFetch:     {url}
+#   WebSearch:    {query}
+#   MCP:          {server, tool, args}
+# ───────────────────────────────────────────────────────────────────────────
+
+translate_tool() {
+    local tool_name="$1"
+    local tool_input="$2"
+
+    TOOL_INTENT=""  # Reset on every translate — Bash sets it, others leave blank.
+
+    case "${tool_name}" in
+        Bash)
+            DOMAIN="bash"
+            # S1: Newline injection fix — strip literal newlines from command
+            # An agent can embed \n in a command to sail past single-line regex rules.
+            # Collapse to spaces before classification.
+            local sanitized_command
+            sanitized_command=$(echo "${tool_input}" | jq -r '.command // ""' 2>/dev/null | tr '\n\r' '  ')
+            DETAIL=$(jq -n -c --arg cmd "${sanitized_command}" --arg cwd "$(echo "${tool_input}" | jq -r '.cwd // ""' 2>/dev/null)" '{command: $cmd, cwd: $cwd}')
+            TOOL_DISPLAY=$(echo "${sanitized_command}" | head -c 200)
+            # Shown to the human as "Context" on the approval card. Truncate in jq
+            # (characters, not bytes — head -c can split a multibyte character and
+            # hand invalid UTF-8 downstream) and strip control characters, or the
+            # agent writes extra lines onto the screen the human decides from.
+            TOOL_INTENT=$(sanitize_text "$(echo "${tool_input}" | jq -r '(.description // "")[0:120]' 2>/dev/null)")
+            ;;
+        Write)
+            DOMAIN="write"
+            local write_path
+            write_path=$(sanitize_path "$(echo "${tool_input}" | jq -r '.file_path // ""' 2>/dev/null)")
+            local content_hash
+            content_hash=$(echo "${tool_input}" | jq -r '.content // ""' 2>/dev/null | shasum -a 256 | awk '{print $1}')
+            DETAIL=$(jq -n -c --arg p "${write_path}" --arg hash "${content_hash}" --argjson len "$(echo "${tool_input}" | jq '((.content // "") | length)' 2>/dev/null || echo 0)" '{path: $p, content_length: $len, content_sha256: $hash}')
+            TOOL_DISPLAY=$(echo "${write_path}" | head -c 200)
+            ;;
+        Edit)
+            DOMAIN="edit"
+            local edit_path
+            edit_path=$(sanitize_path "$(echo "${tool_input}" | jq -r '.file_path // ""' 2>/dev/null)")
+            DETAIL=$(echo "${tool_input}" | jq -c --arg p "${edit_path}" '{path: $p, old_string: ((.old_string // "")[0:80]), new_string: ((.new_string // "")[0:80])}' 2>/dev/null || echo '{"path":""}')
+            TOOL_DISPLAY=$(echo "${edit_path}" | head -c 200)
+            ;;
+        Read)
+            DOMAIN="read"
+            local read_path
+            read_path=$(sanitize_path "$(echo "${tool_input}" | jq -r '.file_path // ""' 2>/dev/null)")
+            DETAIL=$(jq -n -c --arg p "${read_path}" '{path: $p}')
+            TOOL_DISPLAY=$(echo "${read_path}" | head -c 200)
+            ;;
+        Glob)
+            DOMAIN="glob"
+            DETAIL=$(echo "${tool_input}" | jq -c '{pattern: (.pattern // ""), path: (.path // "")}' 2>/dev/null || echo '{"pattern":""}')
+            TOOL_DISPLAY=$(echo "${tool_input}" | jq -r '.pattern // ""' 2>/dev/null)
+            ;;
+        Grep)
+            DOMAIN="grep"
+            DETAIL=$(echo "${tool_input}" | jq -c '{pattern: (.pattern // ""), path: (.path // "")}' 2>/dev/null || echo '{"pattern":""}')
+            TOOL_DISPLAY=$(echo "${tool_input}" | jq -r '.pattern // ""' 2>/dev/null)
+            ;;
+        NotebookEdit)
+            DOMAIN="notebook"
+            local notebook_path
+            notebook_path=$(sanitize_path "$(echo "${tool_input}" | jq -r '.notebook_path // ""' 2>/dev/null)")
+            DETAIL=$(jq -n -c --arg p "${notebook_path}" '{path: $p}')
+            TOOL_DISPLAY=$(echo "${notebook_path}" | head -c 200)
+            ;;
+        Task|Agent)
+            DOMAIN="agent"
+            DETAIL=$(echo "${tool_input}" | jq -c '{prompt: ((.prompt // .description // "subagent")[0:200])}' 2>/dev/null || echo '{"prompt":"subagent"}')
+            TOOL_DISPLAY="Sub-agent"
+            ;;
+        WebFetch)
+            DOMAIN="webfetch"
+            DETAIL=$(echo "${tool_input}" | jq -c '{url: (.url // "")}' 2>/dev/null || echo '{"url":""}')
+            TOOL_DISPLAY=$(echo "${tool_input}" | jq -r '.url // ""' 2>/dev/null)
+            ;;
+        WebSearch)
+            DOMAIN="websearch"
+            DETAIL=$(echo "${tool_input}" | jq -c '{query: (.query // "")}' 2>/dev/null || echo '{"query":""}')
+            TOOL_DISPLAY=$(echo "${tool_input}" | jq -r '.query // ""' 2>/dev/null)
+            ;;
+
+        # ── Internal Claude Code tools (no filesystem, no network) ──────────
+        TodoWrite)
+            DOMAIN="internal"
+            DETAIL='{"tool":"TodoWrite"}'
+            TOOL_DISPLAY="TodoWrite"
+            ;;
+        TaskOutput|TaskStop)
+            DOMAIN="internal"
+            DETAIL=$(jq -n -c --arg t "${tool_name}" '{tool: $t}')
+            TOOL_DISPLAY="${tool_name}"
+            ;;
+        AskUserQuestion)
+            DOMAIN="internal"
+            DETAIL='{"tool":"AskUserQuestion"}'
+            TOOL_DISPLAY="AskUserQuestion"
+            ;;
+        EnterPlanMode|ExitPlanMode)
+            DOMAIN="internal"
+            DETAIL=$(jq -n -c --arg t "${tool_name}" '{tool: $t}')
+            TOOL_DISPLAY="${tool_name}"
+            ;;
+        Skill)
+            DOMAIN="internal"
+            DETAIL=$(echo "${tool_input}" | jq -c '{skill: (.skill // "")}' 2>/dev/null || echo '{"skill":""}')
+            TOOL_DISPLAY=$(echo "${tool_input}" | jq -r '.skill // "skill"' 2>/dev/null)
+            ;;
+        EnterWorktree|ExitWorktree)
+            DOMAIN="internal"
+            DETAIL=$(jq -n -c --arg t "${tool_name}" '{tool: $t}')
+            TOOL_DISPLAY="${tool_name}"
+            ;;
+        ToolSearch|ScheduleWakeup|CronCreate|CronDelete|CronList|Monitor|PushNotification|RemoteTrigger)
+            # Harness-layer tools: ToolSearch loads deferred tool schemas;
+            # ScheduleWakeup/Cron* schedule future wake-ups; Monitor streams
+            # process events; PushNotification/RemoteTrigger signal the harness.
+            # None reach the world — they are orchestration signals to the
+            # Claude Code runtime. Classified as internal.
+            DOMAIN="internal"
+            DETAIL=$(jq -n -c --arg t "${tool_name}" '{tool: $t}')
+            TOOL_DISPLAY="${tool_name}"
+            ;;
+
+        # ── MCP tools (third-party, potentially dangerous) ──────────────────
+        mcp__*)
+            DOMAIN="mcp"
+            # Extract server name and tool name from mcp__server__tool format
+            # Server and tool names can contain underscores (e.g., Claude_Preview,
+            # preview_click), so we split on __ (double underscore) via awk.
+            local mcp_server mcp_tool
+            mcp_server=$(echo "${tool_name}" | awk -F'__' '{print $2}')
+            mcp_tool=$(echo "${tool_name}" | awk -F'__' '{print $NF}')
+            DETAIL=$(jq -n -c --arg s "${mcp_server}" --arg t "${mcp_tool}" --arg full "${tool_name}" '{server: $s, tool: $t, full_name: $full}')
+            TOOL_DISPLAY="MCP:${mcp_server}/${mcp_tool}"
+            ;;
+
+        *)
+            DOMAIN="unknown"
+            DETAIL=$(jq -n -c --arg t "${tool_name}" '{tool: $t}')
+            TOOL_DISPLAY="${tool_name}"
+            ;;
+    esac
+}
+
+# ─── Policy Loader ──────────────────────────────────────────────────────────
+
+# ── Second Authority Law: Constitutional Validation ──────────────────────────
+#
+# Validates the operational policy against the constitution at load time.
+# The constitution constrains what policies are permitted to contain.
+# Session-scoped cache: validate once per session, not per tool call.
+#
+# Pre-constitutional mode: if no constitution has ever been deployed
+# (no file AND no presence tracker), the gate operates normally. Once a
+# constitution is deployed, the presence tracker is set and the gate
+# requires the constitution from that point forward.
+
+validate_constitution() {
+    # 1. Presence check (deployment-gated validation)
+    #
+    # The presence tracker is set ONLY by `zlar-constitution deploy`.
+    # It is the ceremony marker that distinguishes "constitution was properly
+    # deployed" from "a file happens to exist at the constitution path."
+    #
+    # Without the tracker, the constitution file is IGNORED — even if it
+    # exists. This prevents a DoS attack where an agent drops a fake
+    # unsigned constitution.json to trigger hard-deny on validation failure.
+    #
+    # Four states:
+    #   file exists + tracker exists  → full validation (deployed constitution)
+    #   file exists + no tracker      → ignore file (not deployed via ceremony)
+    #   no file + tracker exists      → deletion attack (hard deny)
+    #   no file + no tracker          → pre-constitutional mode (pass)
+    if [ ! -f "${CONSTITUTION_PRESENCE_FILE}" ]; then
+        if [ -f "${CONSTITUTION_FILE}" ]; then
+            log "INFO: Constitution file exists but no deployment tracker — ignoring (not deployed via ceremony)"
+        else
+            log "INFO: No constitution file — pre-constitutional mode"
+        fi
+        return 0
+    fi
+
+    # Tracker exists — constitution was deployed. File must be present.
+    if [ ! -f "${CONSTITUTION_FILE}" ]; then
+        log "FATAL: Constitution was deployed but file is now missing — possible deletion attack"
+        if [ -n "${TELEGRAM_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            local _alert_body
+            _alert_body=$(jq -n --arg chat "${TELEGRAM_CHAT_ID}" \
+                '{"chat_id":$chat,"text":"🚨 ZLAR CRITICAL: Constitution file was deployed but is now missing. Possible deletion attack. Gate hard-denied until constitution is restored."}')
+            curl -s -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+                -H "Content-Type: application/json" -d "${_alert_body}" >/dev/null 2>&1 || true
+        fi
+        return 1
+    fi
+
+    # 2. Session cache check
+    if [ -n "${SESSION_ID:-}" ]; then
+        local _cache_file="${SESSION_DIR}/${SESSION_ID}.constitution-valid"
+        local _current_hash
+        _current_hash=$(shasum -a 256 "${CONSTITUTION_FILE}" 2>/dev/null | awk '{print $1}')
+        if [ -f "${_cache_file}" ]; then
+            local _cached_hash
+            _cached_hash=$(cat "${_cache_file}" 2>/dev/null | tr -d '[:space:]')
+            if [ "${_current_hash}" = "${_cached_hash}" ]; then
+                return 0  # Cache hit
+            fi
+        fi
+    fi
+
+    # 3. Constitutional public key must exist
+    if [ ! -f "${CONSTITUTION_PUBKEY}" ]; then
+        log "FATAL: Constitution public key not found at ${CONSTITUTION_PUBKEY}"
+        return 1
+    fi
+
+    # 4. Key separation (PC-06)
+    local _const_fp _policy_fp
+    _const_fp=$(zlar_crypto_pubkey_fingerprint "${CONSTITUTION_PUBKEY}" 2>/dev/null)
+    _policy_fp=$(zlar_crypto_pubkey_fingerprint "${POLICY_PUBKEY}" 2>/dev/null)
+    if [ -n "${_const_fp}" ] && [ -n "${_policy_fp}" ] && [ "${_const_fp}" = "${_policy_fp}" ]; then
+        log "FATAL: PC-06 VIOLATED — constitutional key fingerprint matches policy key"
+        return 1
+    fi
+
+    # 5. Verify constitution signature
+    local _c_sig_value _c_sig_algo
+    _c_sig_value=$(jq -r '.signature.value // ""' "${CONSTITUTION_FILE}" 2>/dev/null)
+    _c_sig_algo=$(jq -r '.signature.algorithm // "ed25519"' "${CONSTITUTION_FILE}" 2>/dev/null)
+    if [ -z "${_c_sig_value}" ] || [ "${_c_sig_value}" = "" ]; then
+        log "FATAL: Constitution is unsigned"
+        return 1
+    fi
+
+    # Phase B of ADR-011 — dual canonical form verification.
+    local _c_canon_spec _c_canon_pretty _c_hash_spec _c_hash_pretty _c_sig
+    _c_canon_spec=$(mktemp "${GATE_TMP}/c-canon-spec.XXXXXX")
+    _c_canon_pretty=$(mktemp "${GATE_TMP}/c-canon-pretty.XXXXXX")
+    _c_hash_spec=$(mktemp "${GATE_TMP}/c-hash-spec.XXXXXX")
+    _c_hash_pretty=$(mktemp "${GATE_TMP}/c-hash-pretty.XXXXXX")
+    _c_sig=$(mktemp "${GATE_TMP}/c-sig.XXXXXX")
+
+    jq -S -c '.signature.value = ""' "${CONSTITUTION_FILE}" | tr -d '\n' > "${_c_canon_spec}" 2>/dev/null
+    zlar_crypto_hash "${_c_canon_spec}" "${_c_hash_spec}"
+
+    jq '.signature.value = ""' "${CONSTITUTION_FILE}" > "${_c_canon_pretty}" 2>/dev/null
+    zlar_crypto_hash "${_c_canon_pretty}" "${_c_hash_pretty}"
+
+    echo "${_c_sig_value}" | base64 -d > "${_c_sig}" 2>/dev/null
+
+    local _c_verified=""
+    if zlar_crypto_verify "${CONSTITUTION_PUBKEY}" "${_c_hash_spec}" "${_c_sig}" "${_c_sig_algo}"; then
+        _c_verified="spec"
+    elif zlar_crypto_verify "${CONSTITUTION_PUBKEY}" "${_c_hash_pretty}" "${_c_sig}" "${_c_sig_algo}"; then
+        _c_verified="bash-pretty"
+        log "WARN: Constitution signature verified under LEGACY canonical form bash-pretty (ADR-011)"
+    fi
+
+    rm -f "${_c_canon_spec}" "${_c_canon_pretty}" "${_c_hash_spec}" "${_c_hash_pretty}" "${_c_sig}"
+
+    if [ -z "${_c_verified}" ]; then
+        log "FATAL: Constitution signature INVALID (tried spec and bash-pretty canonical forms)"
+        return 1
+    fi
+
+    # 6. PC-01: No rule exercising consequential power with audit: false
+    local _silent_rules
+    _silent_rules=$(jq -r '
+      [.rules[] |
+        select(
+          (.audit == false) and
+          ((.risk_score.irreversibility // 0) > 0 or
+           (.risk_score.consequence // 0) > 0 or
+           (.risk_score.blast_radius // 0) > 0)
+        ) | .id
+      ] | join(", ")' "${POLICY_FILE}" 2>/dev/null)
+    if [ -n "${_silent_rules}" ]; then
+        log "FATAL: PC-01 VIOLATED — rules with consequential risk and audit:false: ${_silent_rules}"
+        return 1
+    fi
+
+    # 7. PC-02: At least one ask rule must exist (human contestability)
+    local _ask_count
+    _ask_count=$(jq '[.rules[] | select(.action == "ask")] | length' "${POLICY_FILE}" 2>/dev/null)
+    if [ "${_ask_count:-0}" -eq 0 ]; then
+        log "FATAL: PC-02 VIOLATED — no ask rules in policy (no human contestability path)"
+        return 1
+    fi
+
+    # 8. PC-04: Suspended escalation must be deny
+    if [ -f "${PROJECT_DIR}/etc/restore-config.json" ]; then
+        local _esc_suspended
+        _esc_suspended=$(jq -r '.escalation.suspended // "deny"' "${PROJECT_DIR}/etc/restore-config.json" 2>/dev/null)
+        if [ "${_esc_suspended}" != "deny" ]; then
+            log "FATAL: PC-04 VIOLATED — suspended escalation is '${_esc_suspended}', must be 'deny'"
+            return 1
+        fi
+    fi
+
+    # 9. PC-05 (deny-wins): default_action must be deny
+    local _default_action
+    _default_action=$(jq -r '.default_action // ""' "${POLICY_FILE}" 2>/dev/null)
+    if [ "${_default_action}" != "deny" ]; then
+        log "FATAL: PC-05 VIOLATED — default_action is '${_default_action}', must be 'deny'"
+        return 1
+    fi
+
+    # 10a. PC-05: Constitution must declare ≥1 required deny class
+    # Defense-in-depth against a vacuously-empty required_classes field.
+    # bin/zlar-constitution _dp03_check already content-checks the six-class
+    # list at deploy time; this gate-load check guards against post-deploy
+    # tamper and against constitutions deployed by older ceremony versions.
+    # Filters to non-empty strings — nulls, non-strings, and "" are treated
+    # as vacuous.
+    local _declared_classes_count
+    _declared_classes_count=$(jq -r '
+      .amendable_constraints.manifest_deny_required_classes
+      | if type == "array"
+        then [.[] | select(type == "string" and length > 0)] | length
+        else 0
+        end' "${CONSTITUTION_FILE}" 2>/dev/null || echo 0)
+    if [ -z "${_declared_classes_count}" ] || [ "${_declared_classes_count}" -eq 0 ] 2>/dev/null; then
+        log "FATAL: PC-05 VIOLATED — constitution does not declare amendable_constraints.manifest_deny_required_classes (no reserved classes declared)"
+        return 1
+    fi
+
+    # 10b. PC-05: Manifest must deny all governance-critical power classes
+    if [ "${MANIFEST_LOADED}" = "true" ] && [ -n "${MANIFEST_JSON}" ]; then
+        local _required_classes _manifest_denies _missing_class=""
+        _required_classes=$(jq -r '.amendable_constraints.manifest_deny_required_classes[] | select(type == "string" and length > 0)' "${CONSTITUTION_FILE}" 2>/dev/null)
+        _manifest_denies=$(echo "${MANIFEST_JSON}" | jq -r '.authority.deny[]' 2>/dev/null)
+        for _rc in ${_required_classes}; do
+            if ! echo "${_manifest_denies}" | grep -q "^${_rc}$" 2>/dev/null; then
+                _missing_class="${_missing_class} ${_rc}"
+            fi
+        done
+        if [ -n "${_missing_class}" ]; then
+            log "FATAL: PC-05 VIOLATED — manifest missing required deny classes:${_missing_class}"
+            return 1
+        fi
+    fi
+
+    # 11. Write session cache + presence tracker
+    if [ -n "${SESSION_ID:-}" ]; then
+        local _current_hash
+        _current_hash=$(shasum -a 256 "${CONSTITUTION_FILE}" 2>/dev/null | awk '{print $1}')
+        echo "${_current_hash}" > "${SESSION_DIR}/${SESSION_ID}.constitution-valid" 2>/dev/null || true
+    fi
+    shasum -a 256 "${CONSTITUTION_FILE}" 2>/dev/null | awk '{print $1}' > "${CONSTITUTION_PRESENCE_FILE}" 2>/dev/null || true
+
+    log "Constitution validated: v$(jq -r '.constitution_version // "?"' "${CONSTITUTION_FILE}" 2>/dev/null)"
+    return 0
+}
+
+POLICY_VERSION=""
+POLICY_DEFAULT_ACTION="deny"
+POLICY_RULES_JSON=""
+POLICY_LOADED="false"
+
+load_policy() {
+    if [ ! -f "${POLICY_FILE}" ]; then
+        log "FATAL: Policy file not found: ${POLICY_FILE}"
+        return 1
+    fi
+
+    # SECURITY: No policy cache — always verify signature.
+    # A cache that skips sig verification is a bypass seam (attacker writes
+    # malicious policy + matching hash → gate loads it unsigned).
+    # One openssl verify per hook invocation is ~5ms — acceptable.
+
+    # Fail-closed: public key MUST exist for signature verification
+    if [ ! -f "${POLICY_PUBKEY}" ]; then
+        log "FATAL: Policy public key not found — cannot verify signature"
+        return 1
+    fi
+
+    # Verify signature using private temp directory and crypto abstraction layer
+    {
+        local sig_value sig_algo
+        sig_value=$(jq -r '.signature.value // ""' "${POLICY_FILE}" 2>/dev/null)
+        sig_algo=$(jq -r '.signature.algorithm // "ed25519"' "${POLICY_FILE}" 2>/dev/null)
+        if [ -z "${sig_value}" ] || [ "${sig_value}" = "" ]; then
+            log "FATAL: Policy is unsigned"
+            return 1
+        fi
+
+        # Phase B of ADR-011 — dual canonical form verification.
+        local canon_spec canon_pretty hash_spec hash_pretty sig_file
+        canon_spec=$(mktemp "${GATE_TMP}/canon-spec.XXXXXX")
+        canon_pretty=$(mktemp "${GATE_TMP}/canon-pretty.XXXXXX")
+        hash_spec=$(mktemp "${GATE_TMP}/hash-spec.XXXXXX")
+        hash_pretty=$(mktemp "${GATE_TMP}/hash-pretty.XXXXXX")
+        sig_file=$(mktemp "${GATE_TMP}/sig.XXXXXX")
+
+        jq -S -c '.signature.value = ""' "${POLICY_FILE}" | tr -d '\n' > "${canon_spec}" 2>/dev/null
+        zlar_crypto_hash "${canon_spec}" "${hash_spec}"
+
+        jq '.signature.value = ""' "${POLICY_FILE}" > "${canon_pretty}" 2>/dev/null
+        zlar_crypto_hash "${canon_pretty}" "${hash_pretty}"
+
+        echo "${sig_value}" | base64 -d > "${sig_file}" 2>/dev/null
+
+        local _policy_verified=""
+        if zlar_crypto_verify "${POLICY_PUBKEY}" "${hash_spec}" "${sig_file}" "${sig_algo}"; then
+            _policy_verified="spec"
+        elif zlar_crypto_verify "${POLICY_PUBKEY}" "${hash_pretty}" "${sig_file}" "${sig_algo}"; then
+            _policy_verified="bash-pretty"
+            log "WARN: Policy signature verified under LEGACY canonical form bash-pretty (ADR-011)"
+        fi
+
+        rm -f "${canon_spec}" "${canon_pretty}" "${hash_spec}" "${hash_pretty}" "${sig_file}"
+
+        if [ -z "${_policy_verified}" ]; then
+            log "FATAL: Policy signature INVALID (tried spec and bash-pretty canonical forms)"
+            return 1
+        fi
+    }
+
+    # ── Second Authority Law: Constitutional validation ──
+    # Validate policy against constitution if one is deployed.
+    # Cached per session — full validation runs once, then hash-check.
+    if [ "${_CONSTITUTION_VALIDATED}" != "true" ]; then
+        if ! validate_constitution; then
+            log "FATAL: Constitutional validation failed — hard deny"
+            return 1
+        fi
+        _CONSTITUTION_VALIDATED="true"
+    fi
+
+    # Parse policy
+    POLICY_VERSION=$(jq -r '.version // "unknown"' "${POLICY_FILE}" 2>/dev/null)
+    POLICY_DEFAULT_ACTION=$(jq -r '.default_action // "deny"' "${POLICY_FILE}" 2>/dev/null)
+    POLICY_RULES_JSON=$(jq -c '.rules' "${POLICY_FILE}" 2>/dev/null)
+    POLICY_LOADED="true"
+
+    log "Policy loaded: v${POLICY_VERSION}, default=${POLICY_DEFAULT_ACTION}"
+}
+
+# ─── Detail Matcher ─────────────────────────────────────────────────────────
+
+match_detail_field() {
+    local actual_value="$1"
+    local matcher_json="$2"
+
+    local val
+
+    # regex
+    val=$(echo "${matcher_json}" | jq -r '.regex // empty' 2>/dev/null)
+    if [ -n "${val}" ]; then
+        if echo "${actual_value}" | grep -qE "${val}" 2>/dev/null; then
+            return 0
+        fi
+        return 1
+    fi
+
+    # contains
+    val=$(echo "${matcher_json}" | jq -r '.contains // empty' 2>/dev/null)
+    if [ -n "${val}" ]; then
+        if echo "${actual_value}" | grep -qF "${val}" 2>/dev/null; then
+            return 0
+        fi
+        return 1
+    fi
+
+    # prefix
+    val=$(echo "${matcher_json}" | jq -r '.prefix // empty' 2>/dev/null)
+    if [ -n "${val}" ]; then
+        if [[ "${actual_value}" == "${val}"* ]]; then
+            return 0
+        fi
+        return 1
+    fi
+
+    # eq
+    val=$(echo "${matcher_json}" | jq -r '.eq // empty' 2>/dev/null)
+    if [ -n "${val}" ]; then
+        if [ "${actual_value}" = "${val}" ]; then
+            return 0
+        fi
+        return 1
+    fi
+
+    # not_regex
+    val=$(echo "${matcher_json}" | jq -r '.not_regex // empty' 2>/dev/null)
+    if [ -n "${val}" ]; then
+        if echo "${actual_value}" | grep -qE "${val}" 2>/dev/null; then
+            return 1
+        fi
+        return 0
+    fi
+
+    return 1
+}
+
+# ─── Policy Evaluator ──────────────────────────────────────────────────────
+
+MATCHED_RULE=""
+MATCHED_ACTION=""
+MATCHED_SEVERITY=""
+MATCHED_RISK_SCORE=0
+MATCHED_AUDIT="true"
+MATCHED_RULE_DESCRIPTION=""
+MATCHED_VERIFY_HINT=""  # optional human-readable check prompt from the matched rule
+
+evaluate_policy() {
+    local domain="$1"
+    local detail="$2"
+
+    MATCHED_RULE=""
+    MATCHED_ACTION=""
+    MATCHED_SEVERITY="info"
+    MATCHED_RISK_SCORE=0
+    MATCHED_AUDIT="true"
+    MATCHED_RULE_DESCRIPTION=""
+    MATCHED_VERIFY_HINT=""
+
+    local rule_count
+    rule_count=$(echo "${POLICY_RULES_JSON}" | jq 'length' 2>/dev/null || echo 0)
+
+    local i=0
+    while [ "${i}" -lt "${rule_count}" ]; do
+        local rule
+        rule=$(echo "${POLICY_RULES_JSON}" | jq -c ".[${i}]" 2>/dev/null)
+
+        # Skip disabled rules
+        local enabled
+        enabled=$(echo "${rule}" | jq -r '.enabled' 2>/dev/null)
+        if [ "${enabled}" = "false" ]; then
+            i=$((i + 1))
+            continue
+        fi
+
+        # Check domain match
+        local rule_domain
+        rule_domain=$(echo "${rule}" | jq -r '.domain // ""' 2>/dev/null)
+        if [ -n "${rule_domain}" ] && [ "${rule_domain}" != "${domain}" ]; then
+            i=$((i + 1))
+            continue
+        fi
+
+        # Check match conditions
+        local match_json
+        match_json=$(echo "${rule}" | jq -c '.match // {}' 2>/dev/null)
+
+        # Domain-only match (catch-all for this domain)
+        local match_domain_only
+        match_domain_only=$(echo "${match_json}" | jq -r '.domain // empty' 2>/dev/null)
+        if [ -n "${match_domain_only}" ] && [ "${match_domain_only}" = "${domain}" ]; then
+            local has_detail
+            has_detail=$(echo "${match_json}" | jq 'has("detail")' 2>/dev/null)
+            if [ "${has_detail}" != "true" ]; then
+                _set_matched "${rule}"
+                return 0
+            fi
+        fi
+
+        # Detail matchers
+        local has_detail
+        has_detail=$(echo "${match_json}" | jq 'has("detail")' 2>/dev/null)
+        if [ "${has_detail}" = "true" ]; then
+            local detail_match_json
+            detail_match_json=$(echo "${match_json}" | jq -c '.detail' 2>/dev/null)
+            local all_matched="true"
+
+            local fields
+            fields=$(echo "${detail_match_json}" | jq -r 'keys[]' 2>/dev/null)
+            for field in ${fields}; do
+                local actual_value matcher_json
+                actual_value=$(echo "${detail}" | jq -r ".${field} // \"\"" 2>/dev/null)
+                matcher_json=$(echo "${detail_match_json}" | jq -c ".${field}" 2>/dev/null)
+
+                if ! match_detail_field "${actual_value}" "${matcher_json}"; then
+                    all_matched="false"
+                    break
+                fi
+            done
+
+            if [ "${all_matched}" = "true" ]; then
+                # Check compound_guard if present
+                local has_guard
+                has_guard=$(echo "${match_json}" | jq 'has("compound_guard")' 2>/dev/null)
+                if [ "${has_guard}" = "true" ]; then
+                    local guard_json
+                    guard_json=$(echo "${match_json}" | jq -c '.compound_guard' 2>/dev/null)
+                    local guard_fields
+                    guard_fields=$(echo "${guard_json}" | jq -r 'keys[]' 2>/dev/null)
+                    local guard_passed="true"
+                    for gfield in ${guard_fields}; do
+                        local gval gmatcher
+                        gval=$(echo "${detail}" | jq -r ".${gfield} // \"\"" 2>/dev/null)
+                        gmatcher=$(echo "${guard_json}" | jq -c ".${gfield}" 2>/dev/null)
+                        if ! match_detail_field "${gval}" "${gmatcher}"; then
+                            guard_passed="false"
+                            break
+                        fi
+                    done
+                    if [ "${guard_passed}" = "false" ]; then
+                        i=$((i + 1))
+                        continue
+                    fi
+                fi
+
+                _set_matched "${rule}"
+                return 0
+            fi
+        fi
+
+        i=$((i + 1))
+    done
+
+    # No match — default action
+    MATCHED_ACTION="${POLICY_DEFAULT_ACTION}"
+    MATCHED_RULE="default"
+    MATCHED_SEVERITY="warn"
+    MATCHED_RULE_DESCRIPTION="Default policy action."
+    return 0
+}
+
+_set_matched() {
+    local rule="$1"
+    MATCHED_RULE=$(echo "${rule}" | jq -r '.id // "unknown"' 2>/dev/null)
+    MATCHED_ACTION=$(echo "${rule}" | jq -r '.action // "deny"' 2>/dev/null)
+    MATCHED_SEVERITY=$(echo "${rule}" | jq -r '.severity // "info"' 2>/dev/null)
+    MATCHED_AUDIT=$(echo "${rule}" | jq -r '.audit // true' 2>/dev/null)
+    MATCHED_RULE_DESCRIPTION=$(echo "${rule}" | jq -r '.description // ""' 2>/dev/null)
+    MATCHED_VERIFY_HINT=$(echo "${rule}" | jq -r '.verify_hint // ""' 2>/dev/null)
+
+    local has_score
+    has_score=$(echo "${rule}" | jq 'has("risk_score")' 2>/dev/null)
+    if [ "${has_score}" = "true" ]; then
+        local irrev consq blast
+        irrev=$(echo "${rule}" | jq -r '.risk_score.irreversibility // 0' 2>/dev/null)
+        consq=$(echo "${rule}" | jq -r '.risk_score.consequence // 0' 2>/dev/null)
+        blast=$(echo "${rule}" | jq -r '.risk_score.blast_radius // 0' 2>/dev/null)
+        MATCHED_RISK_SCORE="${irrev}"
+        if [ "${consq}" -gt "${MATCHED_RISK_SCORE}" ]; then MATCHED_RISK_SCORE="${consq}"; fi
+        if [ "${blast}" -gt "${MATCHED_RISK_SCORE}" ]; then MATCHED_RISK_SCORE="${blast}"; fi
+    else
+        MATCHED_RISK_SCORE=0
+    fi
+}
+
+# ─── Availability Mode ──────────────────────────────────────────────────────
+
+get_availability_mode() {
+    if [ -f "${AVAILABILITY_STATE}" ]; then
+        jq -r '.mode // "active"' "${AVAILABILITY_STATE}" 2>/dev/null || echo "active"
+    else
+        echo "active"
+    fi
+}
+
+queue_for_review() {
+    local detail="$1" rule="$2" risk_score="$3"
+    local entry
+    entry=$(jq -n -c \
+        --arg id "$(gen_id)" \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg rule "${rule}" \
+        --arg domain "${DOMAIN}" \
+        --argjson detail "${detail}" \
+        --argjson risk_score "${risk_score}" \
+        '{id:$id,ts:$ts,rule:$rule,domain:$domain,detail:$detail,risk_score:$risk_score}')
+    echo "${entry}" >> "${AWAY_QUEUE}" 2>/dev/null || true
+}
+
+# ─── Telegram Ask Channel ──────────────────────────────────────────────────
+
+telegram_api() {
+    local method="$1" body="$2"
+    # Token passed via --config stdin so it never appears in ps/cmdline
+    curl -s --connect-timeout 5 --max-time 10 \
+        -X POST \
+        -H "Content-Type: application/json" \
+        -d "${body}" \
+        --config - 2>/dev/null <<EOF
+url = "https://api.telegram.org/bot${TELEGRAM_TOKEN}/${method}"
+EOF
+}
+
+# ─── Deny-then-retry approval pattern ──────────────────────────────────────
+# Claude Code hooks must return fast — blocking for Telegram polling doesn't
+# work (CC proceeds without waiting for stdout). Pattern:
+# ─── Standing Approvals ───────────────────────────────────────────────────────
+# Pre-authorized patterns that skip Telegram ask. Checked before the deny-then-
+# retry flow. If a standing approval matches, the action is allowed immediately
+# with authorizer "standing:<approval_id>".
+#
+# Returns: 0 = standing approval matched, 1 = no match
+check_standing_approval() {
+    local rule_id="$1"
+    local command_text="$2"
+
+    if [ "${STANDING_APPROVALS_LOADED}" != "true" ]; then
+        return 1
+    fi
+
+    local count i sa_rule_id sa_expires sa_match_contains sa_match_regex sa_id
+    count=$(echo "${STANDING_APPROVALS_JSON}" | jq 'length' 2>/dev/null)
+    [ -z "${count}" ] || [ "${count}" = "0" ] && return 1
+
+    local today
+    today=$(date +%Y-%m-%d)
+
+    for (( i=0; i<count; i++ )); do
+        sa_rule_id=$(echo "${STANDING_APPROVALS_JSON}" | jq -r ".[$i].rule_id // \"\"" 2>/dev/null)
+        [ "${sa_rule_id}" != "${rule_id}" ] && continue
+
+        sa_expires=$(echo "${STANDING_APPROVALS_JSON}" | jq -r ".[$i].expires // \"\"" 2>/dev/null)
+        if [ -n "${sa_expires}" ] && [[ "${today}" > "${sa_expires}" ]]; then
+            continue  # Expired
+        fi
+
+        sa_id=$(echo "${STANDING_APPROVALS_JSON}" | jq -r ".[$i].id // \"SA?\"" 2>/dev/null)
+
+        sa_match_contains=$(echo "${STANDING_APPROVALS_JSON}" | jq -r ".[$i].match.command.contains // \"\"" 2>/dev/null)
+        if [ -n "${sa_match_contains}" ]; then
+            if [[ "${command_text}" == *"${sa_match_contains}"* ]]; then
+                STANDING_APPROVAL_ID="${sa_id}"
+                log "Standing approval MATCHED: ${sa_id} (contains '${sa_match_contains}')"
+                return 0
+            fi
+        fi
+
+        sa_match_regex=$(echo "${STANDING_APPROVALS_JSON}" | jq -r ".[$i].match.command.regex // \"\"" 2>/dev/null)
+        if [ -n "${sa_match_regex}" ]; then
+            if [[ "${command_text}" =~ ${sa_match_regex} ]]; then
+                STANDING_APPROVAL_ID="${sa_id}"
+                log "Standing approval MATCHED: ${sa_id} (regex)"
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
+# Check if a standing approval is allowed for the current agent
+# If agent-policy-bindings has a binding for this agent with a standing_approvals
+# list, only the SAs in that list are permitted. If no binding exists, all SAs apply.
+#
+# Build A: Depth-aware SA scoping. If the agent is a subagent (depth > 0),
+# check delegation.depth_rules in the ROOT agent's binding. Deeper agents
+# may have fewer SAs. Same pattern as fork/setuid: child inherits, scoped down.
+#
+# Returns: 0 = SA is allowed for this agent, 1 = SA is not in agent's allowlist
+agent_sa_allowed() {
+    local sa_id="$1"
+    local agent_id="${AGENT_ID:-claude-code}"
+
+    # No bindings loaded → all SAs apply (backward compatible)
+    if [ "${AGENT_BINDINGS_LOADED}" != "true" ]; then
+        return 0
+    fi
+
+    # Check if this agent has ancestry (is a subagent)
+    local ancestry_file="${SESSION_STATE_DIR:-${PROJECT_DIR}/var/sessions}/ancestry.json"
+    local agent_depth=0
+    local root_agent="${agent_id}"
+    if [ -f "${ancestry_file}" ] && command -v jq &>/dev/null; then
+        agent_depth=$(jq --arg a "${agent_id}" \
+            '[.chains[] | select(.agent_id == $a) | .depth] | max // 0' \
+            "${ancestry_file}" 2>/dev/null || echo 0)
+        if [ "${agent_depth}" -gt 0 ]; then
+            # Find the root agent (depth 0 ancestor)
+            # Uses iteration limit (max 10 hops) to prevent infinite loops on cycles
+            root_agent=$(jq -r --arg a "${agent_id}" '
+                .chains as $c |
+                {id: $a, steps: 0} |
+                until(
+                    (.steps >= 10) or (. as $s | [$c[] | select(.agent_id == $s.id)] | length == 0);
+                    . as $s | [$c[] | select(.agent_id == $s.id) | .parent] | .[0] as $p |
+                    {id: ($p // $s.id), steps: ($s.steps + 1)}
+                ) | .id
+            ' "${ancestry_file}" 2>/dev/null || echo "${agent_id}")
+        fi
+    fi
+
+    # If depth > 0 and root has delegation.depth_rules, use depth-specific SAs
+    if [ "${agent_depth}" -gt 0 ]; then
+        local depth_sas
+        depth_sas=$(echo "${AGENT_BINDINGS_JSON}" | jq -r --arg a "${root_agent}" --argjson d "${agent_depth}" \
+            '[.[] | select(.agent_id == $a) | .delegation.depth_rules // [] | .[] | select(.depth == $d) | .standing_approvals[]] | .[]' 2>/dev/null)
+        if [ -n "${depth_sas}" ]; then
+            # Depth-specific rules exist — check against them
+            if echo "${depth_sas}" | grep -qx "${sa_id}"; then
+                return 0
+            fi
+            log "Standing approval ${sa_id} not allowed at depth ${agent_depth} for root ${root_agent}"
+            return 1
+        fi
+        # No depth-specific rules for this depth → check if depth_rules exists at all
+        local has_depth_rules
+        has_depth_rules=$(echo "${AGENT_BINDINGS_JSON}" | jq --arg a "${root_agent}" \
+            '[.[] | select(.agent_id == $a) | .delegation.depth_rules // [] | length] | .[0] // 0' 2>/dev/null)
+        if [ "${has_depth_rules}" -gt 0 ]; then
+            # Depth rules exist but none match this depth → no SAs at this depth
+            log "No depth rules for depth ${agent_depth} — no SAs allowed"
+            return 1
+        fi
+    fi
+
+    # Look up this agent's binding (direct, not depth-based)
+    local agent_sas
+    agent_sas=$(echo "${AGENT_BINDINGS_JSON}" | jq -r --arg a "${agent_id}" \
+        '[.[] | select(.agent_id == $a) | .standing_approvals[]] // [] | .[]' 2>/dev/null)
+
+    # No binding for this agent → all SAs apply (unbound = default policy)
+    if [ -z "${agent_sas}" ]; then
+        return 0
+    fi
+
+    # Check if this SA is in the agent's allowlist
+    if echo "${agent_sas}" | grep -qx "${sa_id}"; then
+        return 0
+    fi
+
+    log "Standing approval ${sa_id} not in agent ${agent_id}'s binding — skipped"
+    return 1
+}
+
+# ─── Deny-Then-Retry Approval Pattern ────────────────────────────────────────
+#   1. First invocation: send Telegram ask, write pending file, return deny
+#   2. Human taps approve/deny on phone → dispatcher writes to inbox
+#   3. Retry invocation: gate checks inbox for pending action's callback
+#
+# Pending file format: ${APPROVAL_DIR}/${rule}-${SESSION_ID}-${hash_prefix}.pending
+# hash_prefix = first 16 chars of action_hash (prevents collision when two distinct
+# actions match the same rule in the same session — e.g., two file edits under R012).
+# Contains: action_id (used to match Telegram callback)
+#
+# Returns:
+#   0 = approved (cache hit or newly confirmed this invocation)
+#   1 = denied
+#   2 = no pending / expired / corrupt — caller SHOULD send a fresh ask
+#   3 = still pending, no human response yet — caller MUST NOT send a new ask
+#       (prevents R012 retry approval race where each retry orphaned the prior
+#        callback by generating a new action_id)
+check_pending_approval() {
+    local rule="$1"
+    local expected_action_hash="${2:-}"
+    local one_use="${3:-0}"
+    # Include hash prefix in filename to prevent same-rule same-session collisions.
+    # Falls back to no-suffix for callers that don't supply a hash (defensive).
+    local _hash_suffix=""
+    [ -n "${expected_action_hash}" ] && _hash_suffix="-${expected_action_hash:0:16}"
+    local pending_file="${APPROVAL_DIR}/${rule}-${SESSION_ID}${_hash_suffix}.pending"
+    local approved_file="${APPROVAL_DIR}/${rule}-${SESSION_ID}${_hash_suffix}.approved"
+
+    # Approved-cache hit: a prior invocation for this exact (rule, session,
+    # command fingerprint) already got human approval within the TTL. Replay
+    # that decision without bothering the human. Handles idempotency retries
+    # that happen after the tool already ran.
+    # A caller that supplied no action hash has a session-scoped filename, so a
+    # cache replay would authorize any action matching this rule for the rest of
+    # the TTL. Both current callers supply a hash; this keeps the unsafe default
+    # unreachable if a future one forgets. The pending path below still works —
+    # it matches on the per-ask unique action_id — so such a caller simply asks
+    # the human every time instead of silently widening an old approval.
+    if [ -z "${expected_action_hash}" ] && [ -f "${approved_file}" ]; then
+        log "check_pending_approval: refusing cache replay — no action hash for rule ${rule}"
+        rm -f "${approved_file}"
+    fi
+
+    if [ -n "${expected_action_hash}" ] && [ -f "${approved_file}" ]; then
+        local approved_age
+        approved_age=$(( $(date +%s) - $(stat -c %Y "${approved_file}" 2>/dev/null || stat -f %m "${approved_file}" 2>/dev/null || echo 0) ))
+        if [ "${approved_age}" -lt "${ZLAR_APPROVED_TTL_S}" ]; then
+            # One-use callers pass one_use=1. Their operation is not idempotent —
+            # running it twice does the work twice — so a single human approval
+            # must authorize exactly one crossing. Idempotent callers keep the
+            # TTL replay, which exists to absorb harness retries after the tool
+            # already ran.
+            if [ "${one_use}" = "1" ]; then
+                rm -f "${approved_file}"
+                log "Pending approval CACHE HIT (one-use, consumed): ${rule} (age=${approved_age}s)"
+                return 0
+            fi
+            log "Pending approval CACHE HIT: ${rule} (age=${approved_age}s < TTL=${ZLAR_APPROVED_TTL_S}s)"
+            return 0
+        fi
+        rm -f "${approved_file}"
+    fi
+
+    if [ ! -f "${pending_file}" ]; then
+        return 2  # No pending request
+    fi
+
+    local pending_action_id pending_action_hash
+    pending_action_id=$(sed -n '1p' "${pending_file}" 2>/dev/null | tr -d '[:space:]')
+    pending_action_hash=$(sed -n '2p' "${pending_file}" 2>/dev/null | tr -d '[:space:]')
+    if [ -z "${pending_action_id}" ]; then
+        rm -f "${pending_file}"
+        return 2
+    fi
+
+    # Verify action hash matches — prevents approval replay across different commands.
+    # When the caller supplies an expected hash, the pending file MUST carry one
+    # too. An empty line 2 in the pending file would otherwise short-circuit the
+    # binding check, letting a forged or truncated pending file match any caller's
+    # expected hash. Treat that as a corrupt file: delete and force a fresh ask.
+    if [ -n "${expected_action_hash}" ]; then
+        if [ -z "${pending_action_hash}" ]; then
+            log "SECURITY: Pending file missing action_hash binding for ${rule} — treating as corrupt"
+            rm -f "${pending_file}"
+            return 2
+        fi
+        if [ "${expected_action_hash}" != "${pending_action_hash}" ]; then
+            log "SECURITY: Action hash mismatch for ${rule} — approval bound to different command"
+            rm -f "${pending_file}"
+            return 2  # Force fresh ask
+        fi
+    fi
+
+    # Check inbox for callback matching this action_id
+    # v2.10.0: Gate no longer deletes callback files — inbox dir is root-owned
+    # (agent cannot write, so agent cannot forge). Gate tracks consumed callbacks
+    # in a local file to avoid re-processing. Dispatcher handles cleanup.
+    local inbox_dir="${ZLAR_INBOX_DIR:-/var/run/zlar-tg/inbox/cc}"
+    local consumed_file="${PROJECT_DIR}/var/log/.consumed-callbacks"
+    touch "${consumed_file}" 2>/dev/null || true
+    # Prevent unbounded growth
+    local _cc_lines
+    _cc_lines=$(wc -l < "${consumed_file}" 2>/dev/null || echo 0)
+    if [ "${_cc_lines}" -gt 1000 ]; then
+        tail -500 "${consumed_file}" > "${consumed_file}.tmp" 2>/dev/null && \
+            mv "${consumed_file}.tmp" "${consumed_file}" 2>/dev/null || true
+    fi
+
+    for cb_file in "${inbox_dir}"/*.json; do
+        [ -f "${cb_file}" ] || continue
+        local cb_basename
+        cb_basename=$(basename "${cb_file}")
+        # Skip already-consumed callbacks
+        if grep -qxF "${cb_basename}" "${consumed_file}" 2>/dev/null; then
+            continue
+        fi
+
+        local cb_data cb_from cb_id_field cb_hmac
+        cb_data=$(jq -r '.data // ""' "${cb_file}" 2>/dev/null)
+        cb_from=$(jq -r '.from_id // ""' "${cb_file}" 2>/dev/null)
+        cb_id_field=$(jq -r '.callback_query_id // ""' "${cb_file}" 2>/dev/null)
+        cb_hmac=$(jq -r '.hmac // ""' "${cb_file}" 2>/dev/null)
+
+        # v3.3.9: reject empty cb_from unconditionally. A callback without a
+        # real sender identity should never be eligible to resolve an ask.
+        # The unconditional `-z` short-circuit also closes the empty-string
+        # equality bypass under unconfigured (TELEGRAM_CHAT_ID=""), where
+        # "" == "" would otherwise accept a forged callback with missing
+        # from_id during a transition window with stale .pending files.
+        if [ -z "${cb_from}" ] || [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
+            echo "${cb_basename}" >> "${consumed_file}" 2>/dev/null || true
+            continue
+        fi
+
+        # HMAC verification — advisory when secret unavailable.
+        # v2.10.0: HMAC secret is root:wheel 600, so the gate cannot read it.
+        # Primary trust is directory ownership (root:staff 750 — agent can't write).
+        # HMAC is defense-in-depth when secret IS available.
+        if [ -n "${ZLAR_INBOX_HMAC_SECRET:-}" ]; then
+            if ! zlar_hmac_verify "${cb_data}" "${cb_from}" "${cb_id_field}" "${cb_hmac}"; then
+                log "SECURITY: inbox HMAC mismatch in pending check: ${cb_file}"
+                echo "${cb_basename}" >> "${consumed_file}" 2>/dev/null || true
+                continue
+            fi
+        fi
+
+        if [ "${cb_data}" = "cc:approve:${pending_action_id}" ]; then
+            echo "${cb_basename}" >> "${consumed_file}" 2>/dev/null || true
+            rm -f "${pending_file}"
+            # Seed approved cache so same-fingerprint retries within TTL
+            # replay this decision without re-asking. See R012 race notes.
+            touch "${approved_file}" 2>/dev/null || true
+            log "Pending approval FOUND: ${rule} approved by human"
+            return 0
+        elif [ "${cb_data}" = "cc:deny:${pending_action_id}" ]; then
+            echo "${cb_basename}" >> "${consumed_file}" 2>/dev/null || true
+            rm -f "${pending_file}"
+            log "Pending approval FOUND: ${rule} denied by human"
+            return 1
+        fi
+    done
+
+    # Check if pending request is stale (older than TELEGRAM_TIMEOUT_S).
+    # stat ordering: GNU `stat -c %Y` first, then BSD `stat -f %m`. On GNU
+    # stat, `-f` means "filesystem status" not "format string", so
+    # BSD-style `stat -f %m` must be the fallback, not the primary.
+    local pending_age
+    pending_age=$(( $(date +%s) - $(stat -c %Y "${pending_file}" 2>/dev/null || stat -f %m "${pending_file}" 2>/dev/null || echo 0) ))
+    if [ "${pending_age}" -gt "${TELEGRAM_TIMEOUT_S}" ]; then
+        log "Pending approval EXPIRED: ${rule} (age=${pending_age}s > ${TELEGRAM_TIMEOUT_S}s)"
+        rm -f "${pending_file}"
+        return 2  # Expired — will trigger fresh ask
+    fi
+
+    return 3  # Still waiting — caller MUST NOT send a new ask (R012 race fix)
+}
+
+# Generate consequence line for Telegram escalation messages.
+# The human should see what happens if they approve the wrong thing.
+# Keyed on rule family + tool name. Fallback uses risk score.
+get_consequence_line() {
+    local tool_name="$1" rule="$2" risk_score="$3"
+
+    # SubagentStart — authority envelope, not a single act
+    if [ "${tool_name}" = "SubagentStart" ]; then
+        echo "⚠️ *If wrong:* you are approving an authority branch — downstream actions not individually foreseeable"
+        return
+    fi
+
+    # Rule-specific consequences
+    case "${rule}" in
+        R002*)       echo "⚠️ *If wrong:* irreversible file deletion" ;;
+        R003*)       echo "⚠️ *If wrong:* system-level privilege granted to agent" ;;
+        R004*|R005*) echo "⚠️ *If wrong:* arbitrary code execution via shell escape" ;;
+        R006*|R007*) echo "⚠️ *If wrong:* network boundary crossed — data may leave" ;;
+        R008*|R009*) echo "⚠️ *If wrong:* package installation — supply chain risk" ;;
+        R010*|R011*) echo "⚠️ *If wrong:* code execution via interpreter escape" ;;
+        R012*)       echo "⚠️ *If wrong:* governance infrastructure modified" ;;
+        R013*|R014*) echo "⚠️ *If wrong:* network command — data may exit perimeter" ;;
+        R031*|R041I) echo "⚠️ *If wrong:* secrets modified — may propagate to services" ;;
+        R033*|R033E) echo "⚠️ *If wrong:* system configuration altered" ;;
+        R034*|R041H) echo "⚠️ *If wrong:* shell environment altered — persists across sessions" ;;
+        R035*|R041J) echo "⚠️ *If wrong:* credentials overwritten or exposed" ;;
+        R032*|R041*) echo "⚠️ *If wrong:* agent governance rules may be modified" ;;
+        R050*|R051*|R052*) echo "⚠️ *If wrong:* sensitive material exposed to agent context" ;;
+        R080*)       echo "⚠️ *If wrong:* new autonomous agent spawned" ;;
+        R090*|R095*) echo "⚠️ *If wrong:* external service contacted — data may be shared" ;;
+        *)
+            if [ "${risk_score}" -ge 70 ]; then
+                echo "⚠️ *If wrong:* high\-consequence action \(risk ${risk_score}/100\)"
+            else
+                echo "⚠️ *If wrong:* unreviewed action"
+            fi
+            ;;
+    esac
+}
+
+# Plain-language policy labels for Telegram cards. Rule IDs remain visible, but
+# they should never be the thing a human has to decode under pressure.
+get_rule_plain_label() {
+    local rule="$1" tool_name="$2"
+    case "${rule}" in
+        R012W_EDIT) echo "Governance infrastructure change" ;;
+        R012*)      echo "ZLAR governance path action" ;;
+        R005C)      echo "Interpreter one-liner" ;;
+        R001C)      echo "Sensitive file read" ;;
+        R005*)      echo "Shell or interpreter escape" ;;
+        R003*)      echo "Privilege boundary action" ;;
+        R002*)      echo "File deletion action" ;;
+        R080*)      echo "New agent authority" ;;
+        *)
+            case "${tool_name}" in
+                Bash)  echo "Shell command review" ;;
+                Read)  echo "File read review" ;;
+                Edit)  echo "File edit review" ;;
+                Write) echo "File write review" ;;
+                *)     echo "Approval required" ;;
+            esac
+            ;;
+    esac
+}
+
+proof_probe_expectation() {
+    local rule="${1:-}" tool_name="${2:-}" display="${3:-}"
+    local marker
+    marker=$(printf '%s %s %s' "${rule}" "${tool_name}" "${display}" | tr '[:upper:]' '[:lower:]')
+    case "${marker}" in
+        *p2_ask_approve*|*marker_ask_approve*|*proof_probe_approve*|*proof-probe-approve*)
+            echo "approve"
+            return
+            ;;
+        *p2_ask_deny*|*marker_ask_deny*|*proof_probe_deny*|*proof-probe-deny*)
+            echo "deny"
+            return
+            ;;
+    esac
+
+    local expect="${ZLAR_APPROVAL_PROBE_EXPECT:-${ZLAR_PROOF_PROBE_EXPECTED_DECISION:-}}"
+    case "$(printf '%s' "${expect}" | tr '[:upper:]' '[:lower:]')" in
+        approve|allow|approved) echo "approve" ;;
+        deny|block|denied)      echo "deny" ;;
+        *)                      echo "" ;;
+    esac
+}
+
+approval_card_requester() {
+    local requester="${AGENT_ID:-}"
+
+    if [ -z "${requester}" ] && [ "${MANIFEST_LOADED:-false}" = "true" ] && [ -n "${MANIFEST_JSON:-}" ] && command -v jq >/dev/null 2>&1; then
+        requester=$(echo "${MANIFEST_JSON}" | jq -r '.identity.agent_id // empty' 2>/dev/null || true)
+    fi
+
+    if [ -z "${requester}" ]; then
+        requester="hook-client"
+    fi
+
+    # Keep the mobile card readable and avoid letting unusual agent ids
+    # dominate the decision surface.
+    printf '%s' "${requester}" | head -c 48
+}
+
+# Escape MarkdownV2 special characters. Used by telegram_ask_async and
+# preconfirm-cc.sh (sourced at startup, before first ask).
+_mdv2e() { printf '%s' "$1" | sed 's/\\/\\\\/g' | sed 's/[]_*[()~`>#+=|{}.!-]/\\&/g'; }
+
+# Code-span escape. Telegram MarkdownV2 requires only ` and \ to be escaped
+# INSIDE a code entity; the prose escaper's backslashes would render literally
+# there. Used for agent-supplied values shown as quoted code on the card.
+_mdv2c() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/`/\\`/g'; }
+
+telegram_chat_id_status() {
+    local value="${1:-}"
+    case "${value}" in
+        '' )
+            echo "missing"
+            ;;
+        @* )
+            echo "invalid_bot_username"
+            ;;
+        YOUR_TELEGRAM_CHAT_ID|your_chat_id_here|'<telegram_chat_id>'|'<CHAT_ID>'|TELEGRAM_CHAT_ID|CHAT_ID|placeholder|PLACEHOLDER|changeme|CHANGE_ME|todo|TODO )
+            echo "invalid_placeholder"
+            ;;
+        * )
+            if [[ "${value}" =~ ^-?[0-9]+$ ]]; then
+                echo "valid_numeric"
+            else
+                echo "invalid_non_numeric"
+            fi
+            ;;
+    esac
+}
+
+telegram_config_error_reason() {
+    local source="${1:-unconfigured}" status="${2:-missing}"
+    if [ "${source}" = "disabled" ]; then
+        echo "Telegram dispatch is disabled for this Codex/ZLAR adapter"
+        return
+    fi
+
+    case "${status}" in
+        missing)
+            echo "Telegram chat_id missing"
+            ;;
+        invalid_bot_username)
+            echo "Telegram chat_id is a @username, not a numeric chat ID"
+            ;;
+        invalid_placeholder)
+            echo "Telegram chat_id is still a placeholder"
+            ;;
+        invalid_non_numeric)
+            echo "Telegram chat_id must be numeric; user IDs are digits and group IDs may be negative"
+            ;;
+        *)
+            case "${source}" in
+                gate.json|env) echo "Telegram destination invalid" ;;
+                *) echo "Telegram chat_id source is non-authoritative" ;;
+            esac
+            ;;
+    esac
+}
+
+# v3.3.9 — Telegram dispatch readiness for general ask path.
+# Mirrors lib/canary.sh:_canary_chat_id_validate. Returns 0 if
+# TELEGRAM_CHAT_ID_SOURCE is authoritative (gate.json or env) AND the value is
+# a real numeric Telegram chat id, 1 otherwise. On first refusal per process,
+# emits a warn audit so a misdeployed gate is visible in the audit trail and
+# bin/zlar status.
+_TELEGRAM_MISCONFIG_LOGGED=""
+_telegram_dispatch_ready() {
+    local source="${TELEGRAM_CHAT_ID_SOURCE:-unconfigured}"
+    local status
+    status=$(telegram_chat_id_status "${TELEGRAM_CHAT_ID:-}")
+    local source_ok="false"
+    case "${source}" in
+        gate.json|env) source_ok="true" ;;
+    esac
+
+    if [ "${source_ok}" = "true" ] && [ "${status}" = "valid_numeric" ]; then
+        return 0
+    fi
+
+    local reason
+    reason=$(telegram_config_error_reason "${source}" "${status}")
+
+    if [ -z "${_TELEGRAM_MISCONFIG_LOGGED}" ]; then
+        _TELEGRAM_MISCONFIG_LOGGED="1"
+        if [ "${source}" = "disabled" ]; then
+            log "GATE: Telegram dispatch disabled — source=${source}; refusing to dispatch ask"
+        else
+            log "GATE: Telegram destination invalid — source=${source}, status=${status}; refusing to dispatch ask"
+        fi
+        emit_event "telegram" "config_error" "warn" \
+            "$(jq -n -c --arg src "${source}" --arg status "${status}" --arg reason "${reason}" \
+                '{chat_id_source:$src,chat_id_status:$status,reason:$reason,subsystem:"general_ask"}')" \
+            "telegram-config" "warn" 0 "system"
+    fi
+    return 1
+}
+
+telegram_config_error_message() {
+    local source="${TELEGRAM_CHAT_ID_SOURCE:-unconfigured}" status
+    status=$(telegram_chat_id_status "${TELEGRAM_CHAT_ID:-}")
+    local reason
+    reason=$(telegram_config_error_reason "${source}" "${status}")
+    if [ "${source}" = "disabled" ]; then
+        printf '%s. This Codex/ZLAR adapter is configured for local fail-closed operation without Telegram dispatch.' "${reason}"
+        return
+    fi
+    printf '%s. Set ZLAR_TELEGRAM_CHAT_ID or .telegram.chat_id in etc/gate.json to a numeric Telegram chat ID, then retry.' "${reason}"
+}
+
+_telegram_config_error_emit_and_deny() {
+    emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:telegram_config_error"
+    respond_deny "$(telegram_config_error_message) (rule ${MATCHED_RULE})" "config_error"
+}
+
+# Send Telegram ask and return immediately (non-blocking).
+# Writes pending file for check_pending_approval to find on retry.
+# Returns: 0 = message sent, 1 = send failed, 2 = no token, 3 = rate limited,
+#          4 = Telegram destination invalid/misconfigured
+telegram_ask_async() {
+    local action_id="$1" tool_name="$2" display="$3" rule="$4" risk_score="$5" severity="$6" action_hash="${7:-}"
+
+    # Refuse to dispatch when chat_id source or value is invalid.
+    # Defense-in-depth: the caller path also checks _telegram_dispatch_ready
+    # before consuming any human-state budget; this guard ensures the
+    # property holds even if telegram_ask_async is called from elsewhere.
+    if ! _telegram_dispatch_ready; then
+        return 4
+    fi
+
+    if [ -z "${TELEGRAM_TOKEN}" ]; then
+        log "No Telegram token — cannot send ask"
+        return 2
+    fi
+
+    # Rate limiting
+    local now_ms
+    now_ms=$(date +%s%N 2>/dev/null | cut -c1-13 || echo "$(($(date +%s) * 1000))")
+    if [ -f "${RATE_LIMIT_FILE}" ]; then
+        local last_ms
+        last_ms=$(cat "${RATE_LIMIT_FILE}" 2>/dev/null | tr -d '[:space:]')
+        last_ms=${last_ms:-0}
+        local elapsed_ms=$((now_ms - last_ms))
+        if [ "${elapsed_ms}" -lt "${TELEGRAM_FLOOD_GUARD_MS}" ]; then
+            log "RATE LIMITED: ${elapsed_ms}ms since last ask"
+            return 3
+        fi
+    fi
+    echo "${now_ms}" > "${RATE_LIMIT_FILE}" 2>/dev/null || true
+
+    # Format message
+    local emoji="⚡"
+    [ "${severity}" = "critical" ] && emoji="🔴"
+    [ "${severity}" = "warn" ] && emoji="🟡"
+
+    # Canary tier banner — H14 variance-based escalation (Element E1).
+    # Tier 1: first H14 trip this day. Tier 2: second+ trip. Both advisory;
+    # pre-confirm structural interruption deferred to Element E full.
+    local tier_banner=""
+    local _canary_tier
+    _canary_tier=$(hi_get_canary_tier "${TELEGRAM_CHAT_ID}" 2>/dev/null || echo "0")
+    if [ "${_canary_tier}" = "2" ]; then
+        tier_banner="
+🚨 *Pattern persists* — second flag this session — read this ask"
+    elif [ "${_canary_tier}" = "1" ]; then
+        tier_banner="
+⚡ *Pattern check* — quick approvals this session — review carefully"
+    fi
+
+    # Fatigue warning — if canary detected rubber-stamping, add friction
+    local fatigue_banner=""
+    if [ "${CANARY_LOADED}" = "true" ] && canary_is_fatigued "${SESSION_ID:-unknown}" 2>/dev/null; then
+        fatigue_banner="
+⚠️ *Governance fatigue detected — please review carefully*"
+    fi
+
+    # Consequence line — what happens if the human approves the wrong thing
+    local consequence_line
+    consequence_line=$(get_consequence_line "${tool_name}" "${rule}" "${risk_score}")
+
+    local rule_plain
+    rule_plain=$(get_rule_plain_label "${rule}" "${tool_name}")
+
+    local proof_banner=""
+    local proof_expect
+    proof_expect=$(proof_probe_expectation "${rule}" "${tool_name}" "${display}")
+    if [ -n "${proof_expect}" ]; then
+        if [ "${proof_expect}" = "approve" ]; then
+            proof_banner="
+🧪 *Proof probe* — expected human decision: APPROVE"
+        else
+            proof_banner="
+🧪 *Proof probe* — expected human decision: DENY"
+        fi
+    fi
+
+    # Authority type — distinguish single-act from envelope approval
+    local authority_type=""
+    if [ "${tool_name}" = "SubagentStart" ]; then
+        authority_type="
+🔷 *Authority envelope* — downstream actions not individually foreseeable"
+    fi
+
+    # Novelty banner — first time this domain/server has been used this session
+    local novelty_banner=""
+    if [ "${NOVELTY_DETECTED}" = "true" ]; then
+        novelty_banner="
+🆕 *First time this session*"
+    fi
+
+    # Restore escalation banner — policy said allow, but Agent Health escalated
+    local restore_banner=""
+    if [ "${RESTORE_ESCALATED}" = "true" ]; then
+        restore_banner="
+🩺 *Agent Health escalated* — trust state: $(_mdv2e "${RESTORE_TRUST_STATE:-unknown}")"
+    fi
+
+    # Agent intent — .description field from Bash tool_input (why the agent ran this)
+    local intent_line=""
+    if [ -n "${TOOL_INTENT:-}" ]; then
+        intent_line="
+📋 *Context:* \`$(_mdv2c "${TOOL_INTENT}")\`"
+    fi
+
+    # Verify hint — policy-authored check prompt for this rule
+    local verify_line=""
+    if [ -n "${MATCHED_VERIFY_HINT:-}" ]; then
+        verify_line="
+🔍 *Verify:* $(_mdv2e "${MATCHED_VERIFY_HINT}")"
+    fi
+
+    # Action label: domain-prefixed, command trimmed to 80 chars for readability.
+    # Bash commands shown raw but short — the consequence line provides context.
+    local short_display
+    short_display=$(echo "${display}" | head -c 80)
+    [ ${#display} -gt 80 ] && short_display="${short_display}…"
+    # Rendered inside a code span below, so it takes the code escaper. The
+    # prose escaper put literal backslashes into the command the human reads:
+    # "git status \\-\\-short". This is the one field they must read exactly.
+    short_display=$(_mdv2c "${short_display}")
+
+    local action_label
+    case "${tool_name}" in
+        Bash)         action_label="Bash" ;;
+        Write)        action_label="Write" ;;
+        Edit)         action_label="Edit" ;;
+        Read)         action_label="Read" ;;
+        Glob)         action_label="Glob" ;;
+        Grep)         action_label="Grep" ;;
+        WebFetch)     action_label="Fetch" ;;
+        WebSearch)    action_label="Search" ;;
+        SubagentStart|Task|Agent) action_label="Agent" ;;
+        mcp__*)       action_label="MCP" ;;
+        *)            action_label="${tool_name}" ;;
+    esac
+
+    # Session ID: first 8 chars sufficient for identification
+    local short_session="${SESSION_ID:-unknown}"
+    short_session="${short_session:0:8}"
+    local requester
+    requester=$(approval_card_requester)
+
+    # Message layout: consequence first (what you're deciding), then action for
+    # context, rule+risk as compact metadata at bottom. v2.8.1 restructure —
+    # the old layout buried the consequence below the raw command, making the
+    # message unreadable at a glance on mobile.
+    local text="${emoji} 🖥️ *$(_mdv2e "${rule_plain}")*${proof_banner}${tier_banner}${fatigue_banner}${novelty_banner}${restore_banner}${authority_type}
+
+${consequence_line}${intent_line}${verify_line}
+
+*${action_label}:* \`${short_display}\`
+Risk ${risk_score}/100 · Rule \`$(_mdv2c "${rule}")\`
+Requester \`$(_mdv2c "${requester}")\` · Session \`$(_mdv2c "${short_session}")\`
+
+If this is unclear, deny\."
+
+    # Content variables are pre-escaped via _mdv2e before template assembly.
+    # Template formatting markers (* bold, ` code) are in hardcoded strings and
+    # are intentionally not escaped. No post-assembly sed pass needed.
+
+    local keyboard
+    keyboard=$(jq -n -c \
+        --arg aid "${action_id}" \
+        '{inline_keyboard: [[
+            {text: "✅ Approve", callback_data: ("cc:approve:" + $aid)},
+            {text: "❌ Deny", callback_data: ("cc:deny:" + $aid)}
+        ]]}')
+
+    local send_body
+    send_body=$(jq -n -c \
+        --arg chat_id "${TELEGRAM_CHAT_ID}" \
+        --arg text "${text}" \
+        --argjson reply_markup "${keyboard}" \
+        '{chat_id: $chat_id, text: $text, parse_mode: "MarkdownV2", reply_markup: $reply_markup}')
+
+    local send_result
+    send_result=$(telegram_api "sendMessage" "${send_body}")
+
+    local msg_id
+    msg_id=$(echo "${send_result}" | jq -r '.result.message_id // empty' 2>/dev/null)
+
+    if [ -z "${msg_id}" ]; then
+        log "Failed to send Telegram message: ${send_result}"
+        return 1
+    fi
+
+    log "Telegram ask sent (async): msg_id=${msg_id}, action_id=${action_id}, rule=${rule}"
+
+    # Write pending file for retry check (action_id + action_hash for binding).
+    # Filename includes hash prefix to prevent collision with concurrent actions under same rule.
+    local _write_hash_suffix=""
+    [ -n "${action_hash}" ] && _write_hash_suffix="-${action_hash:0:16}"
+    printf '%s\n%s\n' "${action_id}" "${action_hash}" > "${APPROVAL_DIR}/${rule}-${SESSION_ID}${_write_hash_suffix}.pending" 2>/dev/null
+
+    return 0
+}
+
+# ─── Session Write Counter (atomic via flock) ───────────────────────────────
+
+check_session_write_limit() {
+    mkdir -p "${SESSION_DIR}" 2>/dev/null || true
+    local count_file="${SESSION_DIR}/${SESSION_ID}.count"
+    local write_count=0
+
+    # Atomic increment via flock
+    if command -v flock &>/dev/null; then
+        write_count=$(
+            flock -w 2 "${count_file}.lock" bash -c '
+                count=0
+                [ -f "'"${count_file}"'" ] && count=$(cat "'"${count_file}"'" 2>/dev/null | tr -d "[:space:]")
+                count=${count:-0}
+                count=$((count + 1))
+                echo "${count}" > "'"${count_file}"'"
+                echo "${count}"
+            ' 2>/dev/null || echo 0
+        )
+    else
+        # Fallback for systems without flock (macOS)
+        if [ -f "${count_file}" ]; then
+            write_count=$(cat "${count_file}" 2>/dev/null | tr -d '[:space:]')
+            write_count=${write_count:-0}
+        fi
+        write_count=$((write_count + 1))
+        echo "${write_count}" > "${count_file}" 2>/dev/null || true
+    fi
+
+    if [ "${write_count}" -gt "${SESSION_WRITE_LIMIT}" ]; then
+        return 1
+    fi
+    return 0
+}
+
+# ─── SubagentStart Handler ─────────────────────────────────────────────────
+
+handle_subagent_start() {
+    local input="$1"
+
+    local agent_type prompt subagent_id
+    # Named by the agent doing the launching, and it reaches gate.log, the
+    # approval card and two refusal reasons. Unlike SESSION_ID and AGENT_ID
+    # below, it was never cleaned. Empty after sanitizing is not a type.
+    agent_type=$(sanitize_text "$(echo "${input}" | jq -r '(.agent_type // "unknown")[0:64]' 2>/dev/null)")
+    [ -n "${agent_type}" ] || agent_type="unknown"
+    prompt=$(sanitize_text "$(echo "${input}" | jq -r '(.prompt // "")[0:500]' 2>/dev/null)")
+    subagent_id=$(echo "${input}" | jq -r '.agent_id // ""' 2>/dev/null)
+    SESSION_ID=$(echo "${input}" | jq -r '.session_id // "unknown"' 2>/dev/null)
+    SESSION_ID=$(echo "${SESSION_ID}" | tr -cd 'a-zA-Z0-9_-' | head -c 64)
+
+    # Extract parent agent_id from the hook payload (fixes: AGENT_ID was unset here)
+    local parent_id
+    parent_id=$(echo "${input}" | jq -r '.agent_id // ""' 2>/dev/null)
+    # In SubagentStart, agent_id in the payload is the CHILD being spawned.
+    # The parent is the caller. For now, use session-based lookup or default.
+    # If we're inside a subagent context, the parent was recorded when WE were spawned.
+    local ancestry_file="${SESSION_STATE_DIR:-${PROJECT_DIR}/var/sessions}/ancestry.json"
+    if [ -f "${ancestry_file}" ] && [ -n "${SESSION_ID}" ] && command -v jq &>/dev/null; then
+        # Look up who was last recorded in this session
+        local _session_parent
+        _session_parent=$(jq -r --arg sid "${SESSION_ID}" \
+            '[.chains[] | select(.session_id == $sid)] | sort_by(.ts) | last | .agent_id // ""' \
+            "${ancestry_file}" 2>/dev/null || true)
+        if [ -n "${_session_parent}" ]; then
+            parent_id="${_session_parent}"
+        else
+            parent_id="claude-code"
+        fi
+    else
+        parent_id="claude-code"
+    fi
+    local ancestry_file="${SESSION_STATE_DIR:-${PROJECT_DIR}/var/sessions}/ancestry.json"
+    mkdir -p "$(dirname "${ancestry_file}")" 2>/dev/null || true
+    if [ ! -f "${ancestry_file}" ]; then
+        echo '{"chains":[]}' > "${ancestry_file}" 2>/dev/null || true
+    fi
+    if [ -n "${subagent_id}" ] && command -v jq &>/dev/null; then
+        # Calculate depth from existing chains
+        local parent_depth
+        parent_depth=$(jq --arg p "${parent_id}" \
+            '[.chains[] | select(.agent_id == $p) | .depth] | max // 0' \
+            "${ancestry_file}" 2>/dev/null || echo 0)
+        local child_depth=$(( parent_depth + 1 ))
+
+        # Record the link
+        jq --arg child "${subagent_id}" --arg parent "${parent_id}" \
+            --arg agent_type "${agent_type}" --argjson depth "${child_depth}" \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sid "${SESSION_ID}" \
+            '.chains += [{agent_id:$child, parent:$parent, agent_type:$agent_type, depth:$depth, ts:$ts, session_id:$sid}]' \
+            "${ancestry_file}" > "${ancestry_file}.tmp" 2>/dev/null && \
+            mv "${ancestry_file}.tmp" "${ancestry_file}" 2>/dev/null || true
+
+        log "SubagentStart: ${parent_id}→${subagent_id} (depth ${child_depth}, type ${agent_type})"
+
+        # Check max_depth from agent bindings
+        if [ "${AGENT_BINDINGS_LOADED}" = "true" ]; then
+            local max_depth
+            max_depth=$(echo "${AGENT_BINDINGS_JSON}" | jq -r --arg a "${parent_id}" \
+                '[.[] | select(.agent_id == $a) | .delegation.max_depth] | .[0] // null' 2>/dev/null)
+            if [ -n "${max_depth}" ] && [ "${max_depth}" != "null" ] && [ "${child_depth}" -gt "${max_depth}" ]; then
+                log "DELEGATION: Depth ${child_depth} exceeds max_depth ${max_depth} for ${parent_id} — denying"
+                emit_event "subagent" "${agent_type}" "deny" \
+                    "$(jq -n -c --arg t "${agent_type}" --arg p "${prompt}" --argjson d "${child_depth}" '{agent_type:$t,prompt:$p,depth:$d}')" \
+                    "delegation-depth" "warn" 80 "gate"
+                respond_deny "Delegation depth ${child_depth} exceeds maximum ${max_depth}" "gate"
+                return
+            fi
+        fi
+    else
+        log "SubagentStart: type=${agent_type} (no agent_id in payload)"
+    fi
+
+    # Read-only subagent types auto-allow (no tool writes possible)
+    case "${agent_type}" in
+        Explore|Plan)
+            log "SubagentStart: read-only type '${agent_type}' — auto-allow"
+            emit_event "subagent" "${agent_type}" "allow" \
+                "$(jq -n -c --arg t "${agent_type}" --arg p "${prompt}" '{agent_type:$t,prompt:$p}')" \
+                "auto-readonly" "info" 0 "gate"
+            respond_subagent_allow
+            return
+            ;;
+    esac
+
+    # All other subagent types → deny-then-retry via Telegram
+    log "SubagentStart: type '${agent_type}' requires approval"
+
+    DOMAIN="subagent"
+    TOOL_DISPLAY="SubagentStart: ${agent_type}"
+    DETAIL=$(jq -n -c --arg t "${agent_type}" --arg p "${prompt}" '{agent_type:$t,prompt:$p}')
+
+    # Step 1: Check for pending approval from a previous ask
+    # Compute the action hash over rule + agent_type + the EXACT task the human
+    # was shown. DETAIL is what went to their phone; hashing anything narrower
+    # binds the approval to a class of work instead of to the work itself, and
+    # every other launch of that class inside the TTL would replay a decision
+    # the human never made — then be recorded as authorized by them.
+    # Canonicalized with `jq -S -c`, matching the general path below.
+    local action_hash
+    action_hash=$(printf '%s|%s|%s' "subagent-launch" "SubagentStart" "$(printf '%s' "${DETAIL}" | jq -S -c '.')" | shasum -a 256 | awk '{print $1}')
+
+    # one_use=1: a subagent launch is not idempotent. One approval, one launch.
+    local pending_result
+    check_pending_approval "subagent-launch" "${action_hash}" 1 && pending_result=0 || pending_result=$?
+
+    case ${pending_result} in
+        0)
+            emit_event "subagent" "${agent_type}" "authorized" "${DETAIL}" "subagent-launch" "warn" 50 "human:${TELEGRAM_CHAT_ID}"
+            log "SubagentStart: APPROVED (previous ask)"
+            respond_subagent_allow
+            ;;
+        1)
+            emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "human:${TELEGRAM_CHAT_ID}"
+            log "SubagentStart: DENIED by human"
+            respond_subagent_deny "Subagent launch denied by human" "human"
+            ;;
+        3)
+            # Ask already in flight — do NOT send a new Telegram message.
+            # Retry will check again. R012 race fix.
+            emit_event "subagent" "${agent_type}" "ask_pending_retry" "${DETAIL}" "subagent-launch" "warn" 50 "gate"
+            log "SubagentStart: ask still in flight — suppressing re-ask"
+            respond_subagent_deny "⏳ Still awaiting Telegram approval for subagent ${agent_type}. Approve on phone, then retry." "pending"
+            ;;
+        *)
+            # No approval yet — send Telegram ask and deny immediately
+            if ! _telegram_dispatch_ready; then
+                emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "gate:telegram_config_error"
+                respond_subagent_deny "$(telegram_config_error_message) (rule subagent-launch)" "config_error"
+                return
+            fi
+
+            local action_id
+            action_id=$(gen_id)
+
+            local send_result=0
+            telegram_ask_async "${action_id}" "SubagentStart" "${TOOL_DISPLAY}" "subagent-launch" "50" "warn" "${action_hash}" || send_result=$?
+
+            case ${send_result} in
+                0)
+                    emit_event "subagent" "${agent_type}" "ask_pending" "${DETAIL}" "subagent-launch" "warn" 50 "gate"
+                    respond_subagent_deny "⏳ Awaiting Telegram approval for subagent ${agent_type}. Approve on phone, then retry." "pending"
+                    ;;
+                3)
+                    emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "gate:rate_limit"
+                    respond_subagent_deny "Rate limited — too many approval requests." "rate_limit"
+                    ;;
+                4)
+                    emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "gate:telegram_config_error"
+                    respond_subagent_deny "$(telegram_config_error_message) (rule subagent-launch)" "config_error"
+                    ;;
+                *)
+                    fail_closed_alert "telegram_unreachable" 2>/dev/null || true
+                    emit_event "subagent" "${agent_type}" "denied" "${DETAIL}" "subagent-launch" "warn" 50 "gate:error"
+                    respond_subagent_deny "Could not reach human for subagent approval" "gate_error"
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+# ─── Main Gate Logic ────────────────────────────────────────────────────────
+
+main() {
+    # Keepalive touch
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${PROJECT_DIR}/var/log/.gate-active" 2>/dev/null
+
+    # 0. Manifest hard-deny check — flags set during manifest load (before functions
+    # were defined). Now that respond_deny and emit_event are available, enforce them.
+    if [ -n "${MANIFEST_HARD_DENY_REASON}" ]; then
+        local _mhd_code="${MANIFEST_HARD_DENY_REASON%%|*}"
+        local _mhd_msg="${MANIFEST_HARD_DENY_REASON#*|}"
+        emit_event "gate" "manifest" "deny" "$(printf '%s' "${_mhd_msg}" | jq -Rsc '.')" "${_mhd_code}" "critical" 100 "gate" 2>/dev/null || true
+        respond_deny "${_mhd_msg} To recover: run 'zlar off' from your terminal." "${_mhd_code}"
+        return
+    fi
+
+    # 1. Read hook input from stdin
+    local input
+    input=$(cat)
+
+    if [ -z "${input}" ]; then
+        log "Empty input — denying"
+        respond_deny "Empty hook input" "gate_error"
+        return
+    fi
+
+    # 2. Validate JSON
+    if ! echo "${input}" | jq empty 2>/dev/null; then
+        log "Malformed JSON input — denying"
+        respond_deny "Malformed hook input" "gate_error"
+        return
+    fi
+
+    # 2b. Route by hook event type
+    local hook_event_name
+    hook_event_name=$(echo "${input}" | jq -r '.hook_event_name // ""' 2>/dev/null)
+    if [ "${hook_event_name}" = "SubagentStart" ]; then
+        _GATE_HOOK_EVENT="SubagentStart"
+        handle_subagent_start "${input}"
+        return
+    fi
+
+    # 3. Extract tool info
+    local tool_name tool_input
+    tool_name=$(echo "${input}" | jq -r '.tool_name // ""' 2>/dev/null)
+    tool_input=$(echo "${input}" | jq -c '.tool_input // {}' 2>/dev/null)
+    SESSION_ID=$(echo "${input}" | jq -r '.session_id // "unknown"' 2>/dev/null)
+    # Sanitize SESSION_ID — prevent path traversal and empty string collisions
+    SESSION_ID=$(echo "${SESSION_ID}" | tr -cd 'a-zA-Z0-9_-' | head -c 64)
+    [ -z "${SESSION_ID}" ] && SESSION_ID="unknown-$(date +%s)"
+
+    # Extract agent identity from hook payload (populated in subagent contexts)
+    AGENT_ID=$(echo "${input}" | jq -r '.agent_id // ""' 2>/dev/null)
+    AGENT_ID=$(echo "${AGENT_ID}" | tr -cd 'a-zA-Z0-9_-' | head -c 64)
+    [ -z "${AGENT_ID}" ] && AGENT_ID="claude-code"
+
+    # Initialize session state (velocity/loop/burst tracking)
+    if [ "${SESSION_STATE_ENABLED}" = "true" ]; then
+        session_state_init "${SESSION_ID}"
+    fi
+
+    # Passively check for canary results (non-blocking, fail-safe)
+    if [ "${CANARY_LOADED}" = "true" ]; then
+        canary_check_result "${SESSION_ID}" "${TELEGRAM_CHAT_ID}" 2>/dev/null || true
+    fi
+
+    if [ -z "${tool_name}" ]; then
+        log "No tool_name in input — denying"
+        respond_deny "No tool name" "gate_error"
+        return
+    fi
+
+    # 4. Check watchdog lockdown
+    if [ -f "${LOCKDOWN_FILE}" ]; then
+        local lock_data
+        lock_data=$(jq -r '.locked // false' "${LOCKDOWN_FILE}" 2>/dev/null)
+        if [ "${lock_data}" = "true" ]; then
+            local lock_reason
+            lock_reason=$(jq -r '.reason // "Watchdog lockdown"' "${LOCKDOWN_FILE}" 2>/dev/null)
+            log "LOCKDOWN: ${lock_reason}"
+            translate_tool "${tool_name}" "${tool_input}"
+            emit_event "${DOMAIN}" "${tool_name}" "deny" "${DETAIL}" "watchdog-lock" "critical" 100 "watchdog"
+            respond_deny "ZLAR lockdown: ${lock_reason}" "policy"
+            # Path B: seal before early return (audit event emitted above)
+            if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ -n "${LAST_EMITTED_EVENT_ID}" ] && [ -n "${SESSION_STATE_FILE}" ]; then
+                _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
+            fi
+            return
+        fi
+    fi
+
+    # 5. Translate tool to domain + detail
+    translate_tool "${tool_name}" "${tool_input}"
+    log "Tool: ${tool_name} → domain=${DOMAIN}, display=${TOOL_DISPLAY}"
+
+    # ── FAST PATH: Internal tools (no filesystem, no network, no policy needed) ──
+    # These are conversation-internal Claude Code tools. They cannot touch the
+    # filesystem, network, or system. Routing them through policy evaluation is
+    # pure overhead — they should always pass.
+    if [ "${DOMAIN}" = "internal" ]; then
+        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "allow" "${DETAIL}" "internal-fast-path" "info" 0 "gate"
+        log "Internal tool fast-path: ${tool_name} → allow"
+        respond_allow
+        # Path B: seal before early return (audit event emitted above)
+        if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ -n "${LAST_EMITTED_EVENT_ID}" ] && [ -n "${SESSION_STATE_FILE}" ]; then
+            _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
+        fi
+        return
+    fi
+
+    # 6. Load and verify policy
+    if ! load_policy; then
+        log "Policy load failed — denying all"
+        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "policy-error" "critical" 0 "gate"
+        respond_deny "ZLAR policy error. All actions blocked." "gate_error"
+        # Path B: seal before early return (audit event emitted above)
+        if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ -n "${LAST_EMITTED_EVENT_ID}" ] && [ -n "${SESSION_STATE_FILE}" ]; then
+            _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
+        fi
+        return
+    fi
+
+    # 6a. Compute agent identity (governed config artifact hash + fingerprint).
+    # Called after POLICY_VERSION is set so the fingerprint binds it. Never
+    # fails — falls back to null fields if no governing artifact is readable.
+    _compute_agent_identity
+
+    # 6b. Build C: Policy version sync — check AFTER policy is loaded
+    if [ "${AGENT_BINDINGS_LOADED}" = "true" ]; then
+        local _drift_versions
+        _drift_versions=$(jq -r '[.bindings[].policy_version // ""] | unique | map(select(. != "" and . != "current")) | .[]' "${AGENT_BINDINGS_FILE}" 2>/dev/null)
+        local _dv
+        for _dv in ${_drift_versions}; do
+            if [ "${_dv}" != "${POLICY_VERSION}" ]; then
+                log "WARNING: Policy drift — binding expects ${_dv}, gate loaded ${POLICY_VERSION}"
+                emit_event "system" "policy-drift" "warn" \
+                    "$(jq -n -c --arg expected "${_dv}" --arg loaded "${POLICY_VERSION}" '{expected:$expected,loaded:$loaded}')" \
+                    "policy-version-sync" "warn" 0 "gate"
+            fi
+        done
+    fi
+
+    # 6c. Manifest enforcement (v0 — the manifest narrows the policy, never widens)
+    # See docs/MANIFEST-INVARIANTS.md for precedence rules.
+    if [ "${MANIFEST_LOADED}" = "true" ]; then
+        # Map domain to manifest capability category
+        local _cap_category="${DOMAIN}"
+        case "${DOMAIN}" in
+            bash)
+                # Classify bash commands as read, write, execute, or dangerous
+                local _cmd_lower
+                _cmd_lower=$(echo "${TOOL_DISPLAY}" | tr '[:upper:]' '[:lower:]')
+                if echo "${_cmd_lower}" | grep -qE '^(ls|cat|head|tail|wc|file|stat|git (status|log|diff|branch|tag|show)|gh (pr|issue|run)|pwd|echo|which|type|env|printenv)'; then
+                    _cap_category="bash.read"
+                elif echo "${_cmd_lower}" | grep -qE '(rm |rm$|sudo|kill|chmod|chown|eval |exec |source )'; then
+                    _cap_category="bash.dangerous"
+                else
+                    _cap_category="bash.execute"
+                fi
+                ;;
+            read)  _cap_category="file.read" ;;
+            write) _cap_category="file.write" ;;
+            edit)  _cap_category="file.edit" ;;
+            glob)  _cap_category="file.glob" ;;
+            grep)  _cap_category="file.grep" ;;
+            webfetch|websearch) _cap_category="network.egress" ;;
+            agent|subagent) _cap_category="agent.spawn" ;;
+            mcp) _cap_category="mcp.call" ;;
+        esac
+
+        # Check manifest deny list (deny always wins — invariant #1)
+        local _m_denied
+        _m_denied=$(echo "${MANIFEST_JSON}" | jq -r --arg cap "${_cap_category}" \
+            '[.authority.deny[] | select(. == $cap or ($cap | startswith(. + ".")))] | length' 2>/dev/null || echo 0)
+        if [ "${_m_denied}" -gt 0 ]; then
+            log "MANIFEST: Category ${_cap_category} denied by manifest"
+            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "manifest:deny" "warn" 80 "manifest"
+            respond_deny "Action denied by capability manifest (category: ${_cap_category})" "manifest"
+            return
+        fi
+
+        # Check manifest allow list
+        local _m_allowed
+        _m_allowed=$(echo "${MANIFEST_JSON}" | jq -r --arg cap "${_cap_category}" \
+            '[.authority.allow[] | select(. == $cap or ($cap | startswith(. + ".")))] | length' 2>/dev/null || echo 0)
+        if [ "${_m_allowed}" -eq 0 ]; then
+            # Not in allow list — check unmatched_action
+            local _m_unmatched
+            _m_unmatched=$(echo "${MANIFEST_JSON}" | jq -r '.authority.unmatched_action // "escalate"' 2>/dev/null)
+            if [ "${_m_unmatched}" = "deny" ]; then
+                log "MANIFEST: Category ${_cap_category} not in allow list, unmatched_action=deny"
+                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "manifest:unmatched" "warn" 60 "manifest"
+                respond_deny "Action not authorized by capability manifest (category: ${_cap_category})" "manifest"
+                return
+            elif [ "${_m_unmatched}" = "escalate" ]; then
+                # Escalate — override policy to "ask" if policy would have allowed
+                log "MANIFEST: Category ${_cap_category} not in allow list — escalating"
+                # We'll let policy evaluation run, but force the action to "ask" later
+                MANIFEST_FORCES_ASK="true"
+            else
+                # Unrecognized unmatched_action value — fail closed.
+                # Any value other than "deny" or "escalate" is a misconfiguration.
+                # Silently passing would be a security bypass. Deny and log.
+                log "MANIFEST: unmatched_action='${_m_unmatched}' is unrecognized — failing closed (deny)"
+                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "manifest:unmatched_invalid" "warn" 60 "manifest"
+                respond_deny "Action not authorized by capability manifest (unrecognized unmatched_action: ${_m_unmatched})" "manifest"
+                return
+            fi
+        fi
+    fi
+
+    # 7. Evaluate against policy rules
+    evaluate_policy "${DOMAIN}" "${DETAIL}"
+    log "Rule: ${MATCHED_RULE}, action=${MATCHED_ACTION}, risk=${MATCHED_RISK_SCORE}, severity=${MATCHED_SEVERITY}"
+
+    # 7b. Manifest escalation override (manifest narrows, never widens)
+    # Catches both "allow" and "log" — "log" is functionally allow+audit,
+    # and must not escape manifest narrowing.
+    if [ "${MANIFEST_FORCES_ASK:-false}" = "true" ] && { [ "${MATCHED_ACTION}" = "allow" ] || [ "${MATCHED_ACTION}" = "log" ]; }; then
+        log "MANIFEST: Overriding policy ${MATCHED_ACTION} → ask (category not in manifest allow list)"
+        MATCHED_ACTION="ask"
+    fi
+
+    # 8. Session write counter
+    if [ "${DOMAIN}" = "write" ] || [ "${DOMAIN}" = "edit" ]; then
+        if ! check_session_write_limit; then
+            local count_file="${SESSION_DIR}/${SESSION_ID}.count"
+            local current_count
+            current_count=$(cat "${count_file}" 2>/dev/null | tr -d '[:space:]')
+            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "session-write-limit" "critical" 90 "gate"
+            respond_deny "Session write limit exceeded (${current_count}/${SESSION_WRITE_LIMIT})" "policy"
+            return
+        fi
+    fi
+
+    # 9. Session state escalation check
+    # If policy says "allow" but session velocity/loops/bursts are anomalous,
+    # escalate to "ask" — the human decides, not the counter.
+    # Skip for risk-0 actions — they are structurally safe and should never
+    # consume human attention regardless of velocity. (Human Attention principle.)
+    if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ "${MATCHED_ACTION}" = "allow" ] && [ "${MATCHED_RISK_SCORE}" -gt 0 ]; then
+        local _pre_session_action="${MATCHED_ACTION}"
+        MATCHED_ACTION=$(session_check_escalation "${MATCHED_ACTION}" "${DOMAIN}" "${TOOL_DISPLAY}" "allow")
+        if [ "${MATCHED_ACTION}" != "${_pre_session_action}" ]; then
+            ESCALATION_SOURCE="session"
+        fi
+    fi
+
+    # 9b. Novelty detection — first occurrence of high-consequence domains
+    # MCP tools and webfetch are the domains where "first time" is a meaningful
+    # signal: a new third-party surface area or a new outbound data channel.
+    # On first occurrence per session: escalate allow/log → ask.
+    # Sets NOVELTY_DETECTED for the Telegram message to include a training banner.
+    NOVELTY_DETECTED="false"
+    RESTORE_ESCALATED="false"
+    RESTORE_TRUST_STATE=""
+    ESCALATION_SOURCE="null"
+    if { [ "${MATCHED_ACTION}" = "allow" ] || [ "${MATCHED_ACTION}" = "log" ]; } && novelty_check_and_record "${DOMAIN}" "${TOOL_DISPLAY}"; then
+        log "NOVELTY: First ${DOMAIN} action this session — escalating to ask"
+        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "novelty_escalation" "${DETAIL}" "${MATCHED_RULE}" "info" "${MATCHED_RISK_SCORE}" "gate:novelty"
+        MATCHED_ACTION="ask"
+        NOVELTY_DETECTED="true"
+        ESCALATION_SOURCE="novelty"
+    fi
+
+    # 9c. Restore / Agent Health check
+    # If trust state is degraded or worse, escalate the action.
+    # Skip for risk-0 actions (same principle as session state).
+    if [ "${RESTORE_ENABLED}" = "true" ] && \
+       { [ "${MATCHED_ACTION}" = "allow" ] || [ "${MATCHED_ACTION}" = "log" ]; } && \
+       [ "${MATCHED_RISK_SCORE}" -gt 0 ]; then
+        local restore_action
+        restore_action=$(restore_check_escalation "${MATCHED_ACTION}" 2>/dev/null) || restore_action="${MATCHED_ACTION}"
+        if [ "${restore_action}" != "${MATCHED_ACTION}" ]; then
+            local _trust_state
+            _trust_state=$(_restore_read_trust_state 2>/dev/null || echo "unknown")
+            log "RESTORE: Trust state=${_trust_state} -- escalating ${MATCHED_ACTION} -> ${restore_action}"
+            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "restore_escalation" "${DETAIL}" "${MATCHED_RULE}" "warn" "${MATCHED_RISK_SCORE}" "gate:restore"
+            MATCHED_ACTION="${restore_action}"
+            RESTORE_ESCALATED="true"
+            RESTORE_TRUST_STATE="${_trust_state}"
+            ESCALATION_SOURCE="restore"
+        fi
+    fi
+
+    # 10. Route based on action
+    case "${MATCHED_ACTION}" in
+        allow)
+            if [ "${MATCHED_AUDIT}" = "true" ]; then
+                if ! emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "allow" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "policy"; then
+                    if [ "${ZLAR_REQUIRE_SIGNED_AUDIT:-false}" = "true" ]; then
+                        log "CRITICAL: Audit emit failed in strict mode — denying allow"
+                        respond_deny "Audit trail unavailable (strict signing mode)" "gate:audit_failure"
+                        return
+                    fi
+                fi
+            fi
+            respond_allow_or_sandbox
+            ;;
+
+        deny)
+            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "policy"
+            # Track denial for burst detection
+            if [ "${SESSION_STATE_ENABLED}" = "true" ]; then
+                session_state_update "${DOMAIN}" "${TOOL_DISPLAY}" "deny" 2>/dev/null || true
+            fi
+            respond_deny "Blocked by rule ${MATCHED_RULE}: $(echo "${POLICY_RULES_JSON}" | jq -r ".[] | select(.id == \"${MATCHED_RULE}\") | .description" 2>/dev/null || echo "policy denied")" "policy"
+            ;;
+
+        ask)
+            # Check availability mode
+            local mode
+            mode=$(get_availability_mode)
+
+            case "${mode}" in
+                away)
+                    if [ "${DOMAIN}" = "write" ] || [ "${DOMAIN}" = "edit" ]; then
+                        queue_for_review "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}"
+                        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "away_queued" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate"
+                        respond_deny "Away mode: write/edit actions require review." "policy"
+                    elif [ "${MATCHED_RISK_SCORE}" -lt "${AWAY_THRESHOLD}" ]; then
+                        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "away_auto_allow" "${DETAIL}" "${MATCHED_RULE}" "info" "${MATCHED_RISK_SCORE}" "gate"
+                        respond_allow_or_sandbox
+                    elif [ "${MATCHED_SEVERITY}" = "critical" ]; then
+                        queue_for_review "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}"
+                        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "away_halt" "${DETAIL}" "${MATCHED_RULE}" "critical" "${MATCHED_RISK_SCORE}" "gate"
+                        respond_deny "Away mode: critical action halted. Queued for review." "policy"
+                    else
+                        queue_for_review "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}"
+                        emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "away_queued" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate"
+                        respond_deny "Away mode: action queued for review." "policy"
+                    fi
+                    ;;
+
+                active|review|*)
+                    # ── Standing approval fast path ──
+                    # Check pre-authorized patterns before the deny-then-retry flow.
+                    # If a standing approval matches, allow immediately — no Telegram.
+                    # ── Standing approval fast path ──
+                    # Check pre-authorized patterns before the deny-then-retry flow.
+                    # If a standing approval matches, allow immediately — no Telegram.
+                    if check_standing_approval "${MATCHED_RULE}" "${TOOL_DISPLAY}" && agent_sa_allowed "${STANDING_APPROVAL_ID}"; then
+                        # Build B: Budget check — position limits
+                        # Standing approval matches, but has the agent exceeded its budget?
+                        local _budget_result="allow"
+                        if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ "${AGENT_BINDINGS_LOADED}" = "true" ]; then
+                            _budget_result=$(budget_check "${MATCHED_RULE}" "${AGENT_ID:-claude-code}" "${AGENT_BINDINGS_JSON}")
+                        fi
+                        if [ "${_budget_result}" != "allow" ]; then
+                            log "BUDGET: Agent ${AGENT_ID:-claude-code} exceeded budget for ${MATCHED_RULE} — escalating to ${_budget_result}"
+                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:budget_exceeded"
+                            respond_deny "Budget exceeded for rule ${MATCHED_RULE}. Human approval required." "gate:budget"
+                        else
+                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "authorized" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "standing:${STANDING_APPROVAL_ID}"
+                            respond_allow_or_sandbox
+                        fi
+                    else
+
+                    # ── Deny-then-retry pattern ──
+                    # Claude Code hooks must respond fast. We cannot poll for
+                    # Telegram responses in-process. Instead:
+                    #   1. Check if a previous ask for this rule was already approved
+                    #   2. If not, send Telegram ask, deny immediately, await retry
+
+                    # Step 1: Check for pending approval from a previous ask
+                    # Compute action hash from rule + tool + canonicalized detail.
+                    # This binds the approval to the specific action parameters, not
+                    # just the rule. Different commands under the same rule require
+                    # separate approval. DETAIL is already sanitized (newlines stripped,
+                    # symlinks resolved) and constructed deterministically by
+                    # translate_tool(), so it serves as the canonical form.
+                    local action_hash
+                    action_hash=$(printf '%s|%s|%s' "${MATCHED_RULE}" "${tool_name}" "$(echo "${DETAIL}" | jq -S -c '.')" | shasum -a 256 | awk '{print $1}')
+
+                    local pending_result
+                    check_pending_approval "${MATCHED_RULE}" "${action_hash}" && pending_result=0 || pending_result=$?
+
+                    case ${pending_result} in
+                        0)
+                            # Human approved — check H15/H17 before accepting.
+                            # v2.8.0: pass action_hash so H13 decrement removes
+                            # the exact pending entry this retry corresponds to
+                            # (rather than dropping FIFO-oldest, which may be
+                            # a different still-in-flight ask).
+                            local _hi_post_result
+                            _hi_post_result=$(hi_post_response_check "${TELEGRAM_CHAT_ID}" "${MATCHED_SEVERITY}" "approve" "${action_hash}" "${MATCHED_RISK_SCORE}" 2>/dev/null) || true
+                            if [ "${_hi_post_result}" != "ok" ]; then
+                                log "HUMAN INVARIANT: approval rejected (${_hi_post_result}) — re-ask required"
+                                rm -f "${APPROVAL_DIR}/${MATCHED_RULE}-${SESSION_ID}-${action_hash:0:16}.approved" 2>/dev/null
+                                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:human_${_hi_post_result}"
+                                respond_deny "Approval not accepted (${_hi_post_result}). Please review again with more time." "gate:human_integrity"
+                                # Path B: seal before early return (audit event emitted above)
+                                if [ "${SESSION_STATE_ENABLED}" = "true" ] && [ -n "${LAST_EMITTED_EVENT_ID}" ] && [ -n "${SESSION_STATE_FILE}" ]; then
+                                    _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
+                                fi
+                                return  # exit main() after responding
+                            fi
+
+                            # Human approved on a previous ask — allow this retry
+                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "authorized" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "human:${TELEGRAM_CHAT_ID}"
+                            log "Deny-then-retry: ${MATCHED_RULE} APPROVED (previous ask)"
+
+                            # Canary: record approval, maybe send a canary after
+                            if [ "${CANARY_LOADED}" = "true" ]; then
+                                canary_record_approval "${SESSION_ID}" 2>/dev/null || true
+                                if canary_should_trigger "${SESSION_ID}" 2>/dev/null; then
+                                    canary_send "${SESSION_ID}" 2>/dev/null || true
+                                fi
+                            fi
+
+                            respond_allow_or_sandbox
+                            ;;
+                        1)
+                            # Human denied on a previous ask.
+                            # v2.8.0: pass action_hash so H13 decrement targets
+                            # the exact pending entry. hi_post_response_check
+                            # already calls hi_decrement_pending internally
+                            # (see lib/human-invariants.sh), so the explicit
+                            # second call that lived here through v2.7.x was
+                            # a double-decrement bug — removed.
+                            # Capture stdout. hi_post_response_check echoes its
+                            # result ("ok" on the deny path, lib/human-invariants.sh),
+                            # and this function's stdout IS the gate's decision
+                            # channel. Called bare, that "ok" was emitted ahead of
+                            # the refusal JSON below, the harness could not parse
+                            # the result, and the tool call ran — a denial the
+                            # human gave, the gate recorded, and nothing enforced.
+                            # Observed live 2026-08-17; see
+                            # docs/investigations/DENY-FAIL-OPEN-20260817.md.
+                            # The approve arm above already captures it; only this
+                            # arm did not.
+                            local _hi_deny_result
+                            _hi_deny_result=$(hi_post_response_check "${TELEGRAM_CHAT_ID}" "${MATCHED_SEVERITY}" "deny" "${action_hash}" "${MATCHED_RISK_SCORE}" 2>/dev/null) || true
+                            [ -n "${_hi_deny_result}" ] || true  # value unused; a denial stands regardless
+                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "human:${TELEGRAM_CHAT_ID}"
+                            log "Deny-then-retry: ${MATCHED_RULE} DENIED by human"
+                            respond_deny "Denied by human (rule ${MATCHED_RULE})" "human"
+                            ;;
+                        3)
+                            # Ask already in flight for this exact (rule, session,
+                            # command fingerprint). Do NOT send a new Telegram
+                            # message — that would orphan the prior callback_id
+                            # and burn another human interruption. Retry will
+                            # check the inbox again. R012 race fix.
+                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "ask_pending_retry" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate"
+                            log "Deny-then-retry: ${MATCHED_RULE} ask still in flight — suppressing re-ask"
+                            respond_deny "⏳ Still awaiting Telegram approval (rule ${MATCHED_RULE}). Approve on phone, then retry." "pending"
+                            ;;
+                        *)
+                            # Refuse invalid Telegram destinations before Tier 2
+                            # preconfirm, human invariant pending counters, rate
+                            # limiting, or any Telegram send path.
+                            if ! _telegram_dispatch_ready; then
+                                _telegram_config_error_emit_and_deny
+                                return
+                            fi
+
+                            # Tier 2 preconfirm: if canary_tier == 2, send interrupt card before main ask.
+                            # PROCEED (state 0) falls through to main ask. BLOCK/timeout (1), waiting (3),
+                            # or not-yet-sent (2) skip the main ask path entirely.
+                            local _skip_ask="false"
+                            if [ "${CANARY_LOADED}" = "true" ]; then
+                                local _pc_tier
+                                _pc_tier=$(hi_get_canary_tier "${TELEGRAM_CHAT_ID}" 2>/dev/null || echo "0")
+                                if [ "${_pc_tier}" = "2" ]; then
+                                    local _pc_result
+                                    check_preconfirm "${MATCHED_RULE}" "${action_hash}" && _pc_result=0 || _pc_result=$?
+                                    case ${_pc_result} in
+                                        0)  ;; # cleared — fall through to main ask
+                                        1)
+                                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:preconfirm_blocked"
+                                            respond_deny "Blocked at Tier 2 preconfirm (rule ${MATCHED_RULE})" "preconfirm_blocked"
+                                            _skip_ask="true"
+                                            ;;
+                                        2)
+                                            local _pc_send=0
+                                            telegram_preconfirm_async "${action_hash}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${TOOL_DISPLAY}" || _pc_send=$?
+                                            if [ "${_pc_send}" = "0" ]; then
+                                                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "ask_pending" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:preconfirm"
+                                                respond_deny "⏳ Tier 2 preconfirm sent (rule ${MATCHED_RULE}). Tap PROCEED on phone, then retry." "pending"
+                                            else
+                                                emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:preconfirm_error"
+                                                respond_deny "Could not send Tier 2 preconfirm (rule ${MATCHED_RULE})" "gate_error"
+                                            fi
+                                            _skip_ask="true"
+                                            ;;
+                                        3)
+                                            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "ask_pending_retry" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:preconfirm"
+                                            respond_deny "⏳ Still awaiting Tier 2 preconfirm (rule ${MATCHED_RULE}). Tap PROCEED on phone, then retry." "pending"
+                                            _skip_ask="true"
+                                            ;;
+                                    esac
+                                fi
+                            fi
+
+                            if [ "${_skip_ask}" = "false" ]; then
+                            # Defense-in-depth: the ask path already refused an
+                            # invalid Telegram destination before preconfirm or
+                            # human invariant state. Keep this guard here so a
+                            # future refactor cannot accidentally consume ask
+                            # budget before destination validation.
+                            if ! _telegram_dispatch_ready; then
+                                _telegram_config_error_emit_and_deny
+                                return
+                            fi
+
+                            # No approval yet — check human invariants, then send Telegram ask
+
+                            # H6/H13/H14: Is the human available and capable of another decision?
+                            # v2.8.0: pass action_hash so H13 can dedupe this
+                            # retry against any previous increment for the
+                            # same logical ask. Without the hash, Claude Code's
+                            # deny-then-retry loop would pump the pending
+                            # counter through the cap on every re-invocation
+                            # before the human had a chance to approve.
+                            local _hi_pre_result
+                            _hi_pre_result=$(hi_pre_ask_check "${TELEGRAM_CHAT_ID}" "${action_hash}" 2>/dev/null) || true
+                            if [ "${_hi_pre_result}" = "overloaded" ]; then
+                                # H13 advisory path (v2.8.1): queue at capacity is a signal,
+                                # not a lockout. The human decides if they're overwhelmed.
+                                # Route the ask anyway — send an advisory alert and continue.
+                                # Authority belongs to the human, not to the queue counter.
+                                log "H13 ADVISORY: queue at capacity — routing ask anyway per human authority"
+                                fail_closed_alert "overloaded" 2>/dev/null || true
+                                # Fall through to H15 and Telegram ask below.
+                            elif [ "${_hi_pre_result}" = "capacity_exceeded" ]; then
+                                # H6 advisory path (v2.8.1): daily cap reached is a signal,
+                                # not a lockout. The human decides whether they want to continue.
+                                # Route the ask anyway — send an advisory alert and continue.
+                                # Authority belongs to the human, not to the decision counter.
+                                log "H6 ADVISORY: daily cap reached — routing ask anyway per human authority"
+                                fail_closed_alert "capacity_exceeded" 2>/dev/null || true
+                                # Fall through to H15 and Telegram ask below.
+                            elif [ "${_hi_pre_result}" != "ok" ]; then
+                                # H14 advisory path (aligned with MCP gate 2d9b6dd).
+                                # All human invariant pre-checks are advisory: the
+                                # human is the authority, not the counter. Denying
+                                # here would silence the human's own channel — an
+                                # attacker who provokes rapid failing asks could
+                                # weaponize the deny as a DoS on legitimate work.
+                                # Surface the condition; let the human judge.
+                                log "HUMAN INVARIANT ADVISORY: ${_hi_pre_result} — routing ask anyway per human authority"
+                                fail_closed_alert "${_hi_pre_result}" 2>/dev/null || true
+                                # Fall through to H15 and Telegram ask below.
+                            fi
+
+                            # H15: Record ask time for deliberation floor check on response
+                            hi_record_ask_time "${TELEGRAM_CHAT_ID}" 2>/dev/null || true
+
+                            local action_id
+                            action_id=$(gen_id)
+
+                            local send_result=0
+                            telegram_ask_async "${action_id}" "${tool_name}" "${TOOL_DISPLAY}" "${MATCHED_RULE}" "${MATCHED_RISK_SCORE}" "${MATCHED_SEVERITY}" "${action_hash}" || send_result=$?
+
+                            case ${send_result} in
+                                0)
+                                    # Message sent — deny now, human will approve/deny on phone
+                                    emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "ask_pending" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate"
+                                    respond_deny "⏳ Awaiting Telegram approval (rule ${MATCHED_RULE}). Approve on phone, then retry." "pending"
+                                    ;;
+                                3)
+                                    # Send failed (rate limit) — decrement H13 pending.
+                                    # The ask never reached the human, so it is not pending.
+                                    hi_decrement_pending "${TELEGRAM_CHAT_ID}" "${action_hash}" 2>/dev/null || true
+                                    emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:rate_limit"
+                                    respond_deny "Rate limited — too many approval requests. Try again shortly." "rate_limit"
+                                    ;;
+                                4)
+                                    # Invalid Telegram destination. Defense-in-depth:
+                                    # the early guard above should return first, so this
+                                    # case only fires if telegram_ask_async is called
+                                    # from a path that bypasses it.
+                                    _telegram_config_error_emit_and_deny
+                                    ;;
+                                *)
+                                    # Send failed (error) — decrement H13 pending.
+                                    # The ask never reached the human, so it is not pending.
+                                    hi_decrement_pending "${TELEGRAM_CHAT_ID}" "${action_hash}" 2>/dev/null || true
+                                    # Alert the human that Telegram is unreachable. Uses local
+                                    # desktop notification as fallback if Telegram itself is down.
+                                    fail_closed_alert "telegram_unreachable" 2>/dev/null || true
+                                    emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "denied" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "gate:error"
+                                    respond_deny "Could not reach human for approval (rule ${MATCHED_RULE})" "gate_error"
+                                    ;;
+                            esac
+                            fi # end _skip_ask
+                            ;;
+                    esac
+                    fi
+                    ;;
+            esac
+            ;;
+
+        log)
+            if ! emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "logged" "${DETAIL}" "${MATCHED_RULE}" "${MATCHED_SEVERITY}" "${MATCHED_RISK_SCORE}" "policy"; then
+                if [ "${ZLAR_REQUIRE_SIGNED_AUDIT:-false}" = "true" ]; then
+                    log "CRITICAL: Audit emit failed in strict mode — denying log action"
+                    respond_deny "Audit trail unavailable (strict signing mode)" "gate:audit_failure"
+                    return
+                fi
+            fi
+            respond_allow_or_sandbox
+            ;;
+
+        *)
+            emit_event "${DOMAIN}" "${TOOL_DISPLAY}" "deny" "${DETAIL}" "${MATCHED_RULE}" "warn" 0 "gate"
+            respond_deny "Unknown policy action: ${MATCHED_ACTION}" "gate_error"
+            ;;
+    esac
+
+    # Path B Phase 1: Seal state file to audit trail position.
+    # After all routing and audit emission, record the last emitted
+    # event ID in the state file. On session recovery, verify compares
+    # this seal with the actual audit trail to detect staleness.
+    if [ "${SESSION_STATE_ENABLED}" = "true" ] && \
+       [ -n "${LAST_EMITTED_EVENT_ID}" ] && \
+       [ -n "${SESSION_STATE_FILE}" ]; then
+        _session_state_seal "${LAST_EMITTED_EVENT_ID}" 2>/dev/null || true
+    fi
+
+    # ZLAR 3.0: Agent Health background trigger.
+    # On deny, novelty escalation, or high-risk (70+) outcomes, fire the
+    # restore engine in the background. Non-blocking. The engine reads the
+    # audit trail, runs detectors, and updates the trust state file that
+    # lib/restore.sh reads on the next gate call.
+    if [ "${RESTORE_ENABLED}" = "true" ] && \
+       { [ "${MATCHED_ACTION}" = "deny" ] || [ "${NOVELTY_DETECTED}" = "true" ] || [ "${MATCHED_RISK_SCORE}" -ge 70 ]; } && \
+       [ -f "${PROJECT_DIR}/lib/restore-trigger.mjs" ] && \
+       command -v node &>/dev/null; then
+        # Write pending evaluation marker so the hot path knows a
+        # background evaluation is in progress (temporal gap fix)
+        date +%s > "${PROJECT_DIR}/var/restore/.evaluating" 2>/dev/null || true
+        node "${PROJECT_DIR}/lib/restore-trigger.mjs" \
+            "${SESSION_ID:-unknown}" \
+            "${PROJECT_DIR}" \
+            "${TELEGRAM_CHAT_ID:-}" \
+            </dev/null >/dev/null 2>&1 &
+        disown 2>/dev/null || true
+    fi
+}
+
+# Run
+main
+# R041 contract hardening (2026-05-12): exit code reflects the gate's decision.
+# 0 = allow / non-blocking; 2 = blocking deny (alongside JSON deny on stdout).
+# Set by respond_deny / respond_subagent_deny and the _gate_crash trap.
+exit "${_GATE_EXIT_CODE:-0}"

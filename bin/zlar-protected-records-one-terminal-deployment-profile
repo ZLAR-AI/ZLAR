@@ -1,0 +1,209 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { sha256hex } from '../lib/receipt.mjs';
+import {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText,
+} from '../lib/protected-records-runtime-profile.mjs';
+import {
+  assertProtectedRecordsCurrentFixtureAuthorityGrantFreshEffectAllowed,
+} from '../lib/protected-records-fixture-authority-status.mjs';
+import {
+  parseProtectedRecordsInstalledRuntimeProfilePreflightArtifactText,
+} from '../lib/protected-records-installed-runtime-profile-preflight.mjs';
+import {
+  assertProtectedRecordsOneTerminalDeploymentProfileProof,
+  buildProtectedRecordsOneTerminalDeploymentProfileInputProvenance,
+  formatProtectedRecordsOneTerminalDeploymentProfileProofSummary,
+  parseProtectedRecordsOneTerminalDeploymentProfileText,
+  readSampleProtectedRecordsOneTerminalDeploymentProfileInputs,
+  runProtectedRecordsOneTerminalDeploymentProfileProof,
+} from '../lib/protected-records-one-terminal-deployment-profile.mjs';
+
+const REPO_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
+
+const SAMPLE_DEPLOYMENT_PROFILE_DISPLAY_PATH =
+  'profiles/protected-records-one-terminal-deployment-profile.fixture.json';
+const SAMPLE_RUNTIME_PROFILE_DISPLAY_PATH =
+  'profiles/protected-records-runtime-fixture.profile.json';
+const SAMPLE_PREFLIGHT_ARTIFACT_DISPLAY_PATH =
+  'tests/fixtures/protected-records-installed-runtime-profile-preflight-artifact-v1.json';
+
+function usage() {
+  console.error('Usage: zlar protected-records-one-terminal-deployment-profile --sample [--json]');
+  console.error('       zlar protected-records-one-terminal-deployment-profile --profile <file|-> --runtime-profile <file> --preflight-artifact <file> [--json]');
+  console.error('Validates a local fixture one-terminal deployment profile artifact and proves its selected protected-records profile through the local disposable child-service proof.');
+  console.error(`Sample deployment profile: ${SAMPLE_DEPLOYMENT_PROFILE_DISPLAY_PATH}`);
+  console.error(`Sample runtime profile: ${SAMPLE_RUNTIME_PROFILE_DISPLAY_PATH}`);
+  console.error(`Sample preflight artifact: ${SAMPLE_PREFLIGHT_ARTIFACT_DISPLAY_PATH}`);
+  console.error('Fresh proof generation refuses while the exact one-use fixture authority grant is exhausted.');
+  console.error('This command does not install, activate, write hook/user/machine configuration, start a live runtime service, inspect a live records system, select --latest, prove current-machine governance, or claim production downstream recognition.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(message);
+    return message;
+  } catch {
+    return 'Protected records one-terminal deployment profile proof failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+function readTextInput(path, label) {
+  try {
+    return path === '-' ? readFileSync(0, 'utf8') : readFileSync(path, 'utf8');
+  } catch {
+    die(`Could not read protected records one-terminal deployment profile ${label}.`);
+  }
+}
+
+function parseJsonInput(path, label) {
+  const text = readTextInput(path, label);
+  return parseJsonInputText(text, label);
+}
+
+function parseJsonInputText(text, label) {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(text);
+  try {
+    return JSON.parse(text);
+  } catch {
+    die(`${label} is not valid JSON.`);
+  }
+}
+
+function safeInputDisplayPath(inputPath) {
+  if (inputPath === '-') {
+    return '<stdin>';
+  }
+  const resolvedPath = resolve(inputPath);
+  const relativePath = relative(REPO_ROOT, resolvedPath).split(sep).join('/');
+  if (
+    !relativePath.startsWith('../') &&
+    relativePath !== '..' &&
+    !isAbsolute(relativePath) &&
+    !relativePath.includes('..')
+  ) {
+    return relativePath;
+  }
+  return '<outside-repo-redacted>';
+}
+
+function inputSource(inputPath) {
+  if (inputPath === '-') {
+    return 'stdin-redacted';
+  }
+  return safeInputDisplayPath(inputPath) === '<outside-repo-redacted>'
+    ? 'outside-repo-redacted'
+    : 'explicit-file';
+}
+
+function buildExplicitInputs() {
+  const deploymentProfileText = readTextInput(profilePath, 'deployment profile');
+  const runtimeProfileText = readTextInput(runtimeProfilePath, 'runtime profile');
+  const preflightArtifactText = readTextInput(preflightArtifactPath, 'preflight artifact');
+  const inputProvenance = buildProtectedRecordsOneTerminalDeploymentProfileInputProvenance({
+    inputMode: 'explicit-files',
+    deploymentProfile: {
+      source: inputSource(profilePath),
+      displayPath: safeInputDisplayPath(profilePath),
+      textSha256: sha256hex(deploymentProfileText),
+    },
+    runtimeProfile: {
+      source: inputSource(runtimeProfilePath),
+      displayPath: safeInputDisplayPath(runtimeProfilePath),
+      textSha256: sha256hex(runtimeProfileText),
+    },
+    preflightArtifact: {
+      source: inputSource(preflightArtifactPath),
+      displayPath: safeInputDisplayPath(preflightArtifactPath),
+      textSha256: sha256hex(preflightArtifactText),
+    },
+  });
+  return {
+    deploymentProfile:
+      parseProtectedRecordsOneTerminalDeploymentProfileText(deploymentProfileText),
+    runtimeProfile: parseJsonInputText(runtimeProfileText, 'runtime profile'),
+    preflightArtifact:
+      parseProtectedRecordsInstalledRuntimeProfilePreflightArtifactText(preflightArtifactText),
+    inputProvenance,
+  };
+}
+
+const args = process.argv.slice(2);
+let profilePath = '';
+let runtimeProfilePath = '';
+let preflightArtifactPath = '';
+let useSample = false;
+let asJson = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--profile') {
+    profilePath = args[++i] || '';
+    if (!profilePath) {
+      usage();
+      die('Missing value for --profile.', 2);
+    }
+  } else if (arg === '--runtime-profile') {
+    runtimeProfilePath = args[++i] || '';
+    if (!runtimeProfilePath) {
+      usage();
+      die('Missing value for --runtime-profile.', 2);
+    }
+  } else if (arg === '--preflight-artifact') {
+    preflightArtifactPath = args[++i] || '';
+    if (!preflightArtifactPath) {
+      usage();
+      die('Missing value for --preflight-artifact.', 2);
+    }
+  } else if (arg === '--sample') {
+    useSample = true;
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (useSample && (profilePath || runtimeProfilePath || preflightArtifactPath)) {
+  usage();
+  die('Cannot combine --sample with explicit input files.', 2);
+}
+
+if (!useSample && (!profilePath || !runtimeProfilePath || !preflightArtifactPath)) {
+  usage();
+  die('Missing required --sample or --profile, --runtime-profile, and --preflight-artifact inputs.', 2);
+}
+
+try {
+  assertProtectedRecordsCurrentFixtureAuthorityGrantFreshEffectAllowed(
+    'Protected records one-terminal deployment profile proof generation'
+  );
+} catch (err) {
+  die(err.message);
+}
+
+try {
+  const inputs = useSample
+    ? readSampleProtectedRecordsOneTerminalDeploymentProfileInputs()
+    : buildExplicitInputs();
+  const report = runProtectedRecordsOneTerminalDeploymentProfileProof(inputs);
+  assertProtectedRecordsOneTerminalDeploymentProfileProof(report);
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatProtectedRecordsOneTerminalDeploymentProfileProofSummary(report);
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

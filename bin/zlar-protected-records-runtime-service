@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+
+// This committed script body is permanently retired. It reads no argv,
+// process environment, config, stdin, caller identity, or authority status.
+// Interpreter selection and pre-script loader execution remain outside this
+// source-level refusal.
+process.stderr.write(
+  'ERROR: protected-records runtime-service direct entry refused: legacy_runtime_v1_direct_entry_surface_retired\n',
+);
+process.exitCode = 1;

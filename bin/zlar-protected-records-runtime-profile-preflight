@@ -1,0 +1,84 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText,
+} from '../lib/protected-records-runtime-profile.mjs';
+import {
+  assertProtectedRecordsRuntimePreflightProfile,
+  assertProtectedRecordsRuntimeProfilePreflight,
+  formatProtectedRecordsRuntimeProfilePreflightSummary,
+  runProtectedRecordsRuntimeProfilePreflight,
+} from '../lib/protected-records-runtime-profile-preflight.mjs';
+
+function usage() {
+  console.error('Usage: zlar protected-records-runtime-profile-preflight --profile <file|-> [--json]');
+  console.error('The exact one-use fixture grant is exhausted. This command refuses before nested runtime proof execution.');
+  console.error('This command does not live probe, choose --latest, inspect a live records system, install a persistent runtime profile, prove production-grade anti-rollback, or claim production deployment.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(message);
+    return message;
+  } catch {
+    return 'Protected records runtime profile preflight failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+let profilePath = '';
+let asJson = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--profile') {
+    profilePath = args[++i] || '';
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (!profilePath) {
+  usage();
+  die('--profile is required; this preflight does not select a live or latest runtime profile.', 2);
+}
+
+let rawProfile = '';
+try {
+  rawProfile = profilePath === '-'
+    ? readFileSync(0, 'utf8')
+    : readFileSync(profilePath, 'utf8');
+} catch {
+  die('Could not read protected records runtime profile.');
+}
+
+let profile;
+try {
+  profile = JSON.parse(rawProfile);
+} catch (err) {
+  die(`Could not parse protected records runtime profile JSON: ${err.message}`);
+}
+
+try {
+  assertProtectedRecordsRuntimePreflightProfile(profile);
+  const report = runProtectedRecordsRuntimeProfilePreflight(profile);
+  assertProtectedRecordsRuntimeProfilePreflight(report, profile);
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatProtectedRecordsRuntimeProfilePreflightSummary(report, profile);
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

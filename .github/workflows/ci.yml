@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  demo1:
+    name: Demo 1 destination authority
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22.22.1'
+      - name: Test disposable-key protocol, destination, receipts, and handler
+        run: |
+          node cyan/test-demo1-protocol.mjs
+          node cyan/test-demo1-destination.mjs
+          node cyan/test-demo1-receipts.mjs
+          node demos/zlar-destination-gate/test-demo1-installed.mjs
+      - name: Verify source manifest
+        run: python3 -B demos/zlar-destination-gate/product_identity.py --verify
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: ShellCheck bin/
+        run: |
+          file bin/* | grep 'shell script' | cut -d: -f1 | xargs shellcheck --severity=error
+
+      - name: ShellCheck adapters/
+        run: shellcheck --severity=error adapters/*/hook.sh
+
+      - name: ShellCheck scripts/
+        run: shellcheck --severity=error scripts/*.sh scripts/zlar-tg-poll
+
+      - name: ShellCheck install/uninstall
+        run: shellcheck --severity=error install.sh uninstall.sh
+
+      - name: ShellCheck lib/
+        run: shellcheck --severity=error lib/*.sh
+
+      - name: ShellCheck tests/
+        run: shellcheck --severity=error tests/*.sh
+
+      - name: Validate JSON configs
+        run: |
+          for f in etc/*.json etc/policies/*.json; do
+            if [ -f "$f" ]; then
+              python3 -m json.tool "$f" > /dev/null || { echo "FAIL: $f"; exit 1; }
+              echo "OK: $f"
+            fi
+          done
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Current-machine approval fixtures intentionally bind to a specific
+          # tag object, commit, tree, and installer blob. CI must have those Git
+          # objects so the verifier can refuse absent or mismatched targets.
+          fetch-depth: 0
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y jq openssl
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install jq openssl@3
+          echo "/opt/homebrew/opt/openssl@3/bin" >> $GITHUB_PATH
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+
+      - name: Install Cedar dependencies
+        run: cd cedar-poc && npm ci
+
+      - name: Create CI signing key (Phase 2 SDK chain signing)
+        run: |
+          openssl genpkey -algorithm ed25519 -out ~/.zlar-signing.key
+          chmod 600 ~/.zlar-signing.key
+
+      - name: Setup CI test fixtures
+        run: |
+          # etc/policies/active.policy.json is tracked in git — CI uses the
+          # committed artifact directly. Previously this step copied
+          # default.policy.example.json over it, which forced the example
+          # (starter policy for fresh installs) to double as a CI fixture.
+          # That coupling made every CI-relevant rule change a two-file
+          # edit and silently went red whenever they drifted. Decoupled
+          # 2026-04-18 — see build/ci-role-split-decision.md.
+
+          # test-agent-identity.sh runs zlar-agents-export which reads the
+          # audit log and asserts properties of the discovered agents. CI
+          # has no audit log; create a minimal fixture with one production
+          # agent and one test agent so the production-view filtering test
+          # has data to work against.
+          mkdir -p var/log
+          cat > var/log/audit.jsonl <<'EOF'
+          {"id":"ci-fixture-1","ts":"2026-04-01T00:00:00Z","seq":1,"source":"gate","host":"ci","user":"ci","agent_id":"claude-code","session_id":"ci-session-1","domain":"bash","action":"echo ci","outcome":"allow","risk_score":0,"detail":{"command":"echo ci","cwd":"/tmp"},"rule":"R001","policy_version":"2.7.2","severity":"info","prev_hash":"genesis","authorizer":"policy","signature_algorithm":"Ed25519","hash_algorithm":"SHA-256","public_key_id":"ci-fixture","signature":"unsigned"}
+          {"id":"ci-fixture-2","ts":"2026-04-01T00:00:01Z","seq":2,"source":"gate","host":"ci","user":"ci","agent_id":"test-agent","session_id":"ci-session-2","domain":"bash","action":"echo test","outcome":"allow","risk_score":0,"detail":{"command":"echo test","cwd":"/tmp"},"rule":"R001","policy_version":"2.7.2","severity":"info","prev_hash":"ci-fixture-1-hash","authorizer":"policy","signature_algorithm":"Ed25519","hash_algorithm":"SHA-256","public_key_id":"ci-fixture","signature":"unsigned"}
+          EOF
+
+      - name: Run full test suite (count-assertions.sh)
+        run: |
+          set -o pipefail
+          bash tests/count-assertions.sh --detail | tee .ci-count-assertions.log
+
+      - name: Verify assertion threshold
+        run: |
+          COUNT=$(sed -n 's/.*Assertions: \([0-9][0-9]*\).*/\1/p' .ci-count-assertions.log | tail -1)
+          if [ -z "$COUNT" ]; then
+            echo "FAIL: assertion count not found in .ci-count-assertions.log"
+            exit 1
+          fi
+          echo "Total assertions: $COUNT"
+          if [ "$COUNT" -lt 900 ]; then
+            echo "FAIL: assertion count dropped below 900 (got $COUNT)"
+            exit 1
+          fi
+
+      - name: Verify Annex A test vectors from scratch (spec self-test)
+        run: node spec/verify-test-vectors.mjs
+
+  proof:
+    name: Proof of Enforcement
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install dependencies
+        run: sudo apt-get install -y jq openssl
+
+      - name: Run proof of enforcement simulation
+        run: bash demos/proof-of-enforcement.sh

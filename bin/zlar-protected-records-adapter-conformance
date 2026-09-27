@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+
+console.error('ERROR: e1_positive_adapter_conformance_generation_retired');
+process.exit(1);

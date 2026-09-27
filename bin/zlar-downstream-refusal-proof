@@ -1,0 +1,45 @@
+#!/usr/bin/env node
+import {
+  assertDownstreamRefusalProof,
+  assertNoUnsafeDownstreamRefusalProofText,
+  formatDownstreamRefusalProofSummary,
+  runHermeticDownstreamRefusalProof,
+} from '../lib/downstream-refusal-proof.mjs';
+
+function usage() {
+  console.error('Usage: zlar downstream-refusal-proof [--json]');
+  console.error('Runs a local hermetic fake-downstream refusal proof.');
+  console.error('This command does not live probe, choose --latest, inspect runtime state, or claim production deployment.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+let asJson = false;
+
+for (const arg of args) {
+  if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+try {
+  const report = runHermeticDownstreamRefusalProof();
+  assertDownstreamRefusalProof(report);
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatDownstreamRefusalProofSummary(report);
+  assertNoUnsafeDownstreamRefusalProofText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

@@ -1,0 +1,230 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import {
+  bindRequiredBodySha256,
+  formatRequiredBodySha256Posture,
+} from '../lib/artifact-required-sha.mjs';
+import {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText,
+} from '../lib/protected-records-runtime-profile.mjs';
+import {
+  assertProtectedRecordsRuntimePreflightProfile,
+} from '../lib/protected-records-runtime-profile-preflight.mjs';
+import {
+  assertProtectedRecordsRuntimeProfileInstallationArtifact,
+  assertProtectedRecordsRuntimeProfileInstallationPlan,
+  assertProtectedRecordsRuntimeProfileInstallationProof,
+  buildProtectedRecordsRuntimeProfileInstallationArtifact,
+  formatProtectedRecordsRuntimeProfileInstallationArtifactSummary,
+  formatProtectedRecordsRuntimeProfileInstallationArtifactVerification,
+  formatProtectedRecordsRuntimeProfileInstallationProofSummary,
+  parseProtectedRecordsRuntimeProfileInstallationArtifactText,
+  runProtectedRecordsRuntimeProfileInstallationProof,
+  verifyProtectedRecordsRuntimeProfileInstallationArtifact,
+  writeProtectedRecordsRuntimeProfileInstallationArtifact,
+} from '../lib/protected-records-runtime-profile-installation.mjs';
+
+const SAMPLE_ARTIFACT_DISPLAY_PATH =
+  'tests/fixtures/protected-records-runtime-profile-installation-artifact-v1.json';
+const SAMPLE_ARTIFACT_PATH = fileURLToPath(new URL(`../${SAMPLE_ARTIFACT_DISPLAY_PATH}`, import.meta.url));
+
+function usage() {
+  console.error('Usage: zlar protected-records-runtime-profile-installation --plan <file|-> --profile <file|-> [--json] [--artifact <file|->]');
+  console.error('       zlar protected-records-runtime-profile-installation verify (--input <file|->|--sample) [--json] [--require-sha <artifact_body_sha256>]');
+  console.error('Positive installation-proof generation refuses before install-root creation under the exhausted one-use grant; verify remains read-only historical artifact inspection.');
+  console.error('Use --artifact <file> to write a portable checksummed disposable-installation artifact, or --artifact - to print it.');
+  console.error('Use verify --input <file|-> to verify a supplied disposable-installation artifact without rerunning the proof.');
+  console.error('Use verify --sample as the first safe run: it verifies the committed sample disposable-installation artifact without generating new evidence.');
+  console.error('Use verify --require-sha <artifact_body_sha256> to refuse a valid artifact whose body hash is not the expected artifact identity.');
+  console.error(`Sample artifact: ${SAMPLE_ARTIFACT_DISPLAY_PATH}`);
+  console.error('This command does not live probe, choose --latest, install a persistent runtime profile, write hook/user/machine/runtime production configuration, use Telegram, inspect a live records system, claim production deployment, or prove current-machine governance.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(message);
+    return message;
+  } catch {
+    return 'Protected records runtime profile installation proof failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+function readJsonInput(path, label) {
+  let raw = '';
+  try {
+    raw = path === '-' ? readFileSync(0, 'utf8') : readFileSync(path, 'utf8');
+  } catch {
+    die(`Could not read protected records runtime profile installation ${label}.`);
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    die(`Could not parse protected records runtime profile installation ${label} JSON: ${err.message}`);
+  }
+}
+
+function readTextInput(path, label) {
+  try {
+    return path === '-' ? readFileSync(0, 'utf8') : readFileSync(path, 'utf8');
+  } catch {
+    die(`Could not read protected records runtime profile installation ${label}.`);
+  }
+}
+
+function readSampleArtifact() {
+  try {
+    return readFileSync(SAMPLE_ARTIFACT_PATH, 'utf8');
+  } catch {
+    die(`Sample artifact is unavailable at ${SAMPLE_ARTIFACT_DISPLAY_PATH}.`, 2);
+  }
+}
+
+function runVerifyCommand(argv) {
+  let inputPath = '';
+  let useSample = false;
+  let asJson = false;
+  let requiredSha = '';
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--input') {
+      inputPath = argv[++i] || '';
+      if (!inputPath) {
+        usage();
+        die('Missing value for --input.', 2);
+      }
+    } else if (arg === '--sample') {
+      useSample = true;
+    } else if (arg === '--json') {
+      asJson = true;
+    } else if (arg === '--require-sha') {
+      requiredSha = argv[++i] || '';
+      if (!requiredSha) {
+        usage();
+        die('Missing value for --require-sha.', 2);
+      }
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die('Unsupported verify option provided.', 2);
+    }
+  }
+
+  if (inputPath && useSample) {
+    usage();
+    die('Cannot combine --input with --sample.', 2);
+  }
+
+  if (!inputPath && !useSample) {
+    usage();
+    die('Missing required --input <file|-> or --sample.', 2);
+  }
+
+  const artifact = parseProtectedRecordsRuntimeProfileInstallationArtifactText(
+    useSample ? readSampleArtifact() : readTextInput(inputPath, 'artifact')
+  );
+  const baseVerification = verifyProtectedRecordsRuntimeProfileInstallationArtifact(artifact);
+  const verification = bindRequiredBodySha256(
+    baseVerification,
+    requiredSha,
+    'Protected records runtime profile installation artifact'
+  );
+  const output = asJson
+    ? `${JSON.stringify(verification, null, 2)}\n`
+    : formatProtectedRecordsRuntimeProfileInstallationArtifactVerification(baseVerification) +
+      formatRequiredBodySha256Posture(verification);
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+}
+
+const args = process.argv.slice(2);
+
+if (args[0] === 'verify') {
+  try {
+    runVerifyCommand(args.slice(1));
+  } catch (err) {
+    die(err.message);
+  }
+  process.exit(0);
+}
+
+let planPath = '';
+let profilePath = '';
+let asJson = false;
+let artifactOutput = '';
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--plan') {
+    planPath = args[++i] || '';
+  } else if (arg === '--profile') {
+    profilePath = args[++i] || '';
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--artifact') {
+    artifactOutput = args[++i] || '';
+    if (!artifactOutput) {
+      usage();
+      die('Missing value for --artifact.', 2);
+    }
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (!planPath || !profilePath) {
+  usage();
+  die('--plan and --profile are required; this proof does not select a live, latest, persistent, or current-machine runtime profile.', 2);
+}
+if (planPath === '-' && profilePath === '-') {
+  usage();
+  die('--plan - and --profile - cannot both read from stdin.', 2);
+}
+if (artifactOutput === '-' && asJson) {
+  usage();
+  die('Cannot combine --json with --artifact -.', 2);
+}
+
+const plan = readJsonInput(planPath, 'plan');
+const profile = readJsonInput(profilePath, 'profile');
+
+try {
+  assertProtectedRecordsRuntimeProfileInstallationPlan(plan);
+  assertProtectedRecordsRuntimePreflightProfile(profile);
+  const report = runProtectedRecordsRuntimeProfileInstallationProof(plan, profile);
+  assertProtectedRecordsRuntimeProfileInstallationProof(report, plan, profile);
+  let output;
+  if (artifactOutput === '-') {
+    const artifact = buildProtectedRecordsRuntimeProfileInstallationArtifact(plan, profile, report);
+    assertProtectedRecordsRuntimeProfileInstallationArtifact(artifact);
+    output = `${JSON.stringify(artifact, null, 2)}\n`;
+  } else {
+    let artifact = null;
+    if (artifactOutput) {
+      artifact = buildProtectedRecordsRuntimeProfileInstallationArtifact(plan, profile, report);
+      writeProtectedRecordsRuntimeProfileInstallationArtifact(artifact, artifactOutput);
+    }
+    output = asJson
+      ? `${JSON.stringify(report, null, 2)}\n`
+      : formatProtectedRecordsRuntimeProfileInstallationProofSummary(report, plan, profile);
+    if (artifact) {
+      output += formatProtectedRecordsRuntimeProfileInstallationArtifactSummary(artifact);
+    }
+  }
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

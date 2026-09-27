@@ -1,0 +1,203 @@
+#!/usr/bin/env node
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+} from 'node:fs';
+import { resolve } from 'node:path';
+import {
+  assertConsequenceLifecycleReplacementOverlayV0,
+  buildConsequenceLifecycleReplacementOverlayV0,
+  formatConsequenceLifecycleReplacementOverlaySummaryV0,
+} from '../lib/consequence-lifecycle-replacement-evidence-v0.mjs';
+
+const MAX_INPUT_BYTES = 8 * 1024 * 1024;
+const SHA256_RE = /^[a-f0-9]{64}$/;
+
+function usage() {
+  console.error(
+    'Usage: bin/zlar-consequence-lifecycle-replacement-overlay-v0 --base-map <file> --replacement-manifest <file> --replacement-service <file> --replacement-terminal <file> --replacement-exhausted-status <file> --require-base-map-sha <sha256> --require-replacement-manifest-sha <sha256> --require-replacement-grant-sha <sha256> --require-replacement-manifest-schema-sha <sha256> --require-replacement-exhausted-status-sha <sha256> [--json] [--require-closed]',
+  );
+  console.error(
+    'Verification-only: its committed static import graph contains no lifecycle generator, runtime, crossing driver, key, signing, or child-process module; loader/preload and interpreter substitution are outside coverage.',
+  );
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const options = {
+    baseMapPath: '',
+    manifestPath: '',
+    servicePath: '',
+    terminalPath: '',
+    exhaustedStatusPath: '',
+    requiredBaseMapSha256: '',
+    requiredManifestSha256: '',
+    requiredGrantSha256: '',
+    requiredManifestSchemaSha256: '',
+    requiredExhaustedStatusSha256: '',
+    json: false,
+    requireClosed: false,
+  };
+  const valueFlags = new Map([
+    ['--base-map', 'baseMapPath'],
+    ['--replacement-manifest', 'manifestPath'],
+    ['--replacement-service', 'servicePath'],
+    ['--replacement-terminal', 'terminalPath'],
+    ['--replacement-exhausted-status', 'exhaustedStatusPath'],
+    ['--require-base-map-sha', 'requiredBaseMapSha256'],
+    ['--require-replacement-manifest-sha', 'requiredManifestSha256'],
+    ['--require-replacement-grant-sha', 'requiredGrantSha256'],
+    ['--require-replacement-manifest-schema-sha', 'requiredManifestSchemaSha256'],
+    ['--require-replacement-exhausted-status-sha', 'requiredExhaustedStatusSha256'],
+  ]);
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (valueFlags.has(arg)) {
+      const key = valueFlags.get(arg);
+      if (options[key]) {
+        usage();
+        die(`${arg} may be supplied only once.`, 2);
+      }
+      const candidate = argv[++index] || '';
+      if (!candidate || candidate.startsWith('-')) {
+        usage();
+        die(`${arg} requires one explicit value.`, 2);
+      }
+      options[key] = candidate;
+    } else if (arg === '--json') {
+      options.json = true;
+    } else if (arg === '--require-closed') {
+      options.requireClosed = true;
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die('Unsupported option provided.', 2);
+    }
+  }
+  for (const [label, value] of [
+    ['--base-map', options.baseMapPath],
+    ['--replacement-manifest', options.manifestPath],
+    ['--replacement-service', options.servicePath],
+    ['--replacement-terminal', options.terminalPath],
+    ['--replacement-exhausted-status', options.exhaustedStatusPath],
+    ['--require-base-map-sha', options.requiredBaseMapSha256],
+    ['--require-replacement-manifest-sha', options.requiredManifestSha256],
+    ['--require-replacement-grant-sha', options.requiredGrantSha256],
+    ['--require-replacement-manifest-schema-sha', options.requiredManifestSchemaSha256],
+    ['--require-replacement-exhausted-status-sha', options.requiredExhaustedStatusSha256],
+  ]) {
+    if (!value) die(`${label} is required.`, 2);
+  }
+  for (const [label, value] of [
+    ['base map', options.requiredBaseMapSha256],
+    ['replacement manifest', options.requiredManifestSha256],
+    ['replacement grant', options.requiredGrantSha256],
+    ['replacement manifest schema', options.requiredManifestSchemaSha256],
+    ['replacement exhausted status', options.requiredExhaustedStatusSha256],
+  ]) {
+    if (!SHA256_RE.test(value)) {
+      die(`Required ${label} SHA-256 is invalid.`, 2);
+    }
+  }
+  return options;
+}
+
+function readExactRegularFile(path, label) {
+  if (!Number.isInteger(constants.O_NOFOLLOW)) {
+    throw new Error('No-follow file opening is unavailable');
+  }
+  let descriptor;
+  try {
+    descriptor = openSync(
+      resolve(path),
+      constants.O_RDONLY |
+        constants.O_NOFOLLOW |
+        (Number.isInteger(constants.O_CLOEXEC) ? constants.O_CLOEXEC : 0),
+    );
+    const status = fstatSync(descriptor);
+    if (!status.isFile()) {
+      throw new Error(`${label} is not a regular file`);
+    }
+    if (status.size < 2 || status.size > MAX_INPUT_BYTES) {
+      throw new Error(`${label} size is outside the accepted boundary`);
+    }
+    const raw = readFileSync(descriptor);
+    if (raw.length !== status.size) {
+      throw new Error(`${label} changed while being read`);
+    }
+    return raw;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function assertSafeOutput(value) {
+  const text = String(value);
+  if (
+    /\/Users\/[A-Za-z0-9._-]+\//.test(text) ||
+    /\/home\/[A-Za-z0-9._-]+\//.test(text) ||
+    /"lifecycle_closed"\s*:\s*true/i.test(text) ||
+    /\bZLAR governs all (?:AI|actions|agents)\b/i.test(text)
+  ) {
+    throw new Error('Replacement lifecycle overlay output is unsafe');
+  }
+}
+
+try {
+  const options = parseArgs(process.argv.slice(2));
+  let params;
+  try {
+    params = {
+      baseMapRawBytes: readExactRegularFile(
+        options.baseMapPath,
+        'Base consequence lifecycle map',
+      ),
+      expectedBaseMapSha256: options.requiredBaseMapSha256,
+      expectedExhaustedStatusBodySha256:
+        options.requiredExhaustedStatusSha256,
+      expectedGrantContractSha256: options.requiredGrantSha256,
+      expectedManifestArtifactBodySha256: options.requiredManifestSha256,
+      expectedManifestSchemaContractSha256:
+        options.requiredManifestSchemaSha256,
+      exhaustedStatusRawBytes: readExactRegularFile(
+        options.exhaustedStatusPath,
+        'Replacement exhausted-status wrapper',
+      ),
+      manifestRawBytes: readExactRegularFile(
+        options.manifestPath,
+        'Replacement manifest',
+      ),
+      serviceArtifactRawBytes: readExactRegularFile(
+        options.servicePath,
+        'Replacement service artifact',
+      ),
+      terminalArtifactRawBytes: readExactRegularFile(
+        options.terminalPath,
+        'Replacement terminal artifact',
+      ),
+    };
+  } catch {
+    die('Could not read one exact regular overlay input.');
+  }
+  const report = buildConsequenceLifecycleReplacementOverlayV0(params);
+  assertConsequenceLifecycleReplacementOverlayV0(report, params);
+  if (options.requireClosed) {
+    die(`--require-closed failed; closure_status=${report.closure.closure_status}`);
+  }
+  const output = options.json
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : `${formatConsequenceLifecycleReplacementOverlaySummaryV0(report, params)}\n`;
+  assertSafeOutput(output);
+  process.stdout.write(output);
+} catch (error) {
+  die(error?.message || 'Replacement lifecycle overlay verification failed closed.');
+}

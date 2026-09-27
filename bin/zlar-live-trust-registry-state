@@ -1,0 +1,85 @@
+#!/usr/bin/env node
+import { existsSync, readFileSync } from 'node:fs';
+import {
+  buildLiveTrustRegistryStateVerification,
+  formatLiveTrustRegistryStateVerification,
+} from '../lib/live-trust-registry-state-contract.mjs';
+
+function usage() {
+  console.error('Usage: zlar live-trust-registry-state verify --input <file|-> [--json]');
+  console.error('Validates a no-secret live-shaped trust-registry/key-custody/revocation contract.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function readInput(path) {
+  if (path === '-') return readFileSync(0, 'utf8');
+  if (!existsSync(path)) die('input file not found', 2);
+  return readFileSync(path, 'utf8');
+}
+
+function parseJson(text, label) {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    die(`${label} is not valid JSON: ${err.message}`, 2);
+  }
+}
+
+const args = process.argv.slice(2);
+if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  usage();
+  process.exit(args.length === 0 ? 2 : 0);
+}
+
+const command = args.shift();
+if (command !== 'verify') {
+  usage();
+  die('unsupported live-trust-registry-state command.', 2);
+}
+
+let inputPath = '';
+let asJson = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--input') {
+    if (inputPath) {
+      usage();
+      die('verify accepts only one input source.', 2);
+    }
+    inputPath = args[++i] || '';
+    if (!inputPath) {
+      usage();
+      die('--input requires <file|->.', 2);
+    }
+  } else if (arg === '--json') {
+    asJson = true;
+  } else {
+    usage();
+    die(`Unsupported option: ${arg}`, 2);
+  }
+}
+
+if (!inputPath) {
+  usage();
+  die('verify requires --input <file|->.', 2);
+}
+
+try {
+  const inputText = readInput(inputPath);
+  const contract = parseJson(inputText, inputPath);
+  const verification = buildLiveTrustRegistryStateVerification(contract, {
+    inputText,
+  });
+  process.stdout.write(
+    asJson
+      ? `${JSON.stringify(verification, null, 2)}\n`
+      : formatLiveTrustRegistryStateVerification(verification),
+  );
+} catch (err) {
+  die(`Live trust registry state verification failed: ${err.message}`);
+}

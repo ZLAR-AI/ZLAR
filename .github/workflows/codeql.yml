@@ -1,0 +1,58 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * 1'  # Weekly Monday 4:17am UTC
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      matrix:
+        language: [javascript]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+
+      - name: Perform CodeQL Analysis
+        id: analyze
+        uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+        with:
+          output: codeql-results
+          upload: never
+          upload-database: false
+
+      - name: Summarize private CodeQL evidence
+        run: |
+          {
+            echo "### Private CodeQL evidence"
+            echo "- CodeQL analysis completed for \`${{ matrix.language }}\`."
+            echo "- GitHub code-scanning upload is disabled because this private repository does not have GitHub Code Security / Advanced Security enabled."
+            echo "- SARIF evidence is preserved as the private workflow artifact \`codeql-sarif-${{ matrix.language }}\`."
+            echo "- This is not GitHub code-scanning dashboard evidence."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload private CodeQL SARIF artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codeql-sarif-${{ matrix.language }}
+          path: codeql-results/*.sarif
+          if-no-files-found: error
+          retention-days: 30

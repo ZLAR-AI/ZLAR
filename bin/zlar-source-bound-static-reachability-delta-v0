@@ -1,0 +1,191 @@
+#!/usr/bin/env node
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+} from 'node:fs';
+import { join, resolve } from 'node:path';
+import {
+  SOURCE_BOUND_STATIC_REACHABILITY_SOURCE_PATHS_V0,
+  buildSourceBoundStaticReachabilityDeltaV0,
+  canonicalSourceBoundStaticReachabilityDeltaBytesV0,
+  formatSourceBoundStaticReachabilityDeltaSummaryV0,
+} from '../lib/source-bound-static-reachability-delta-v0.mjs';
+
+const MAX_INPUT_BYTES = 8 * 1024 * 1024;
+
+function usage() {
+  console.error(
+    'Usage: bin/zlar-source-bound-static-reachability-delta-v0 --repo-root <dir> --parent-map <file> --require-parent-file-sha <sha256> --require-parent-body-sha <sha256> --require-analyzed-source-commit <git-sha1> --require-source-inventory-sha <sha256> [--json]',
+  );
+  console.error(
+    'Validates an additive, source-only exact-edge certificate over inert bytes. It does not import or execute target modules, invoke Git, write an artifact, prove runtime reachability or effect capability, move authority, or close the lifecycle.',
+  );
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const options = {
+    repoRoot: '',
+    parentMapPath: '',
+    expectedParentFileSha256: '',
+    expectedParentBodySha256: '',
+    expectedAnalyzedSourceCommitOid: '',
+    expectedSourceInventorySha256: '',
+    json: false,
+  };
+  const flags = new Map([
+    ['--repo-root', 'repoRoot'],
+    ['--parent-map', 'parentMapPath'],
+    ['--require-parent-file-sha', 'expectedParentFileSha256'],
+    ['--require-parent-body-sha', 'expectedParentBodySha256'],
+    ['--require-analyzed-source-commit', 'expectedAnalyzedSourceCommitOid'],
+    ['--require-source-inventory-sha', 'expectedSourceInventorySha256'],
+  ]);
+  const seen = new Set();
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    }
+    if (
+      arg === '--require-runtime-reachable' ||
+      arg === '--require-effect-capable' ||
+      arg === '--require-current-refusal' ||
+      arg === '--require-domain-complete' ||
+      arg === '--require-equivalent-route-closure' ||
+      arg === '--require-lifecycle-closed' ||
+      arg === '--output'
+    ) {
+      die(`${arg} is unsupported by this source-only, stdout-only delta.`, 2);
+    }
+    if (arg === '--json') {
+      if (seen.has(arg)) die('Duplicate flag: --json', 2);
+      seen.add(arg);
+      options.json = true;
+      continue;
+    }
+    const key = flags.get(arg);
+    if (!key) {
+      usage();
+      die(`Unsupported option: ${arg}`, 2);
+    }
+    if (seen.has(arg)) die(`Duplicate flag: ${arg}`, 2);
+    seen.add(arg);
+    const value = argv[++index];
+    if (!value || value.startsWith('--')) die(`${arg} requires one value.`, 2);
+    options[key] = value;
+  }
+  for (const [flag, key] of flags) {
+    if (!options[key]) die(`${flag} is required.`, 2);
+  }
+  return options;
+}
+
+function sameDescriptor(before, after) {
+  return (
+    before.dev === after.dev &&
+    before.ino === after.ino &&
+    before.mode === after.mode &&
+    before.nlink === after.nlink &&
+    before.size === after.size &&
+    before.mtimeMs === after.mtimeMs &&
+    before.ctimeMs === after.ctimeMs
+  );
+}
+
+function readBoundedRegularFile(path, label, identities) {
+  const resolvedPath = resolve(path);
+  let realPath;
+  try {
+    realPath = realpathSync(resolvedPath);
+  } catch {
+    throw new Error(`${label} could not be resolved`);
+  }
+  if (realPath !== resolvedPath) {
+    throw new Error(`${label} path may not contain symlinks`);
+  }
+  let fd;
+  try {
+    fd = openSync(resolvedPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    throw new Error(`${label} could not be opened as a no-follow file`);
+  }
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile()) throw new Error(`${label} must be a regular file`);
+    if (before.size < 2 || before.size > MAX_INPUT_BYTES) {
+      throw new Error(`${label} size is outside the accepted boundary`);
+    }
+    const identity = `${before.dev}:${before.ino}`;
+    if (identities.has(identity)) throw new Error(`${label} aliases another input`);
+    const raw = readFileSync(fd);
+    const after = fstatSync(fd);
+    if (raw.length !== before.size || !sameDescriptor(before, after)) {
+      throw new Error(`${label} changed while being read`);
+    }
+    identities.add(identity);
+    return raw;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function readSourceFiles(repoRoot, identities) {
+  const resolvedRoot = resolve(repoRoot);
+  const rootStatus = lstatSync(resolvedRoot);
+  if (rootStatus.isSymbolicLink() || !rootStatus.isDirectory()) {
+    throw new Error('Repository root must be a non-symlink directory');
+  }
+  if (realpathSync(resolvedRoot) !== resolvedRoot) {
+    throw new Error('Repository root path may not contain symlinks');
+  }
+  return Object.fromEntries(
+    Object.entries(SOURCE_BOUND_STATIC_REACHABILITY_SOURCE_PATHS_V0).map(
+      ([role, relativePath]) => [
+        role,
+        readBoundedRegularFile(
+          join(resolvedRoot, relativePath),
+          `Reachability source ${role}`,
+          identities,
+        ),
+      ],
+    ),
+  );
+}
+
+const options = parseArgs(process.argv.slice(2));
+
+try {
+  const identities = new Set();
+  const parentRawBytes = readBoundedRegularFile(
+    options.parentMapPath,
+    'Immutable parent map',
+    identities,
+  );
+  const sourceFiles = readSourceFiles(options.repoRoot, identities);
+  const artifact = buildSourceBoundStaticReachabilityDeltaV0({
+    parentRawBytes,
+    sourceFiles,
+    expectedParentFileSha256: options.expectedParentFileSha256,
+    expectedParentBodySha256: options.expectedParentBodySha256,
+    expectedAnalyzedSourceCommitOid: options.expectedAnalyzedSourceCommitOid,
+    expectedSourceInventorySha256: options.expectedSourceInventorySha256,
+  });
+  process.stdout.write(
+    options.json
+      ? canonicalSourceBoundStaticReachabilityDeltaBytesV0(artifact)
+      : formatSourceBoundStaticReachabilityDeltaSummaryV0(artifact),
+  );
+} catch (error) {
+  die(error?.message || 'Source-bound static reachability delta failed');
+}

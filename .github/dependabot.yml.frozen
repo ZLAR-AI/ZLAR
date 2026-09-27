@@ -1,0 +1,41 @@
+# FROZEN: Dependabot version updates are intentionally disabled.
+#
+# GitHub exposes Dependabot Updates as a dynamic workflow, but that workflow
+# cannot be disabled through the normal Actions workflow-disable endpoint. Keep
+# this file outside GitHub's recognized Dependabot config filenames so a
+# private-main proof window can run without an active Dependabot Updates
+# automation surface.
+#
+# To re-enable version updates later, restore this file to:
+#   .github/dependabot.yml
+# only under explicit authority.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: npm
+    directory: /cedar-poc
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: npm
+    directory: /mcp-gate
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "docker"

@@ -1,0 +1,115 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import {
+  assertNoUnsafeLocalProofPackText,
+  formatLocalProofPackArtifactVerification,
+  parseLocalProofPackArtifactText,
+  verifyLocalProofPackArtifact,
+} from '../lib/local-proof-pack.mjs';
+
+const SAMPLE_ARTIFACT_DISPLAY_PATH = 'tests/fixtures/local-proof-pack-artifact-v1.json';
+const SAMPLE_ARTIFACT_PATH = fileURLToPath(new URL(`../${SAMPLE_ARTIFACT_DISPLAY_PATH}`, import.meta.url));
+
+function usage() {
+  console.error('Usage: zlar local-proof-pack verify (--input <file|->|--sample) [--json] [--require-sha <body_sha256>]');
+  console.error('Fresh local-proof-pack and artifact generation are permanently retired.');
+  console.error('Verification preserves exact historical artifact access without proof execution.');
+  console.error(`Sample artifact: ${SAMPLE_ARTIFACT_DISPLAY_PATH}`);
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+
+function readInput(path) {
+  return path === '-'
+    ? readFileSync(0, 'utf8')
+    : readFileSync(path, 'utf8');
+}
+
+function readSampleArtifact() {
+  try {
+    return readFileSync(SAMPLE_ARTIFACT_PATH, 'utf8');
+  } catch {
+    die(`Sample artifact is unavailable at ${SAMPLE_ARTIFACT_DISPLAY_PATH}.`, 2);
+  }
+}
+
+function runVerifyCommand(argv) {
+  let inputPath = null;
+  let useSample = false;
+  let asJson = false;
+  let requiredSha = null;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--input') {
+      inputPath = argv[++i];
+      if (!inputPath) {
+        usage();
+        die('Missing value for --input.', 2);
+      }
+    } else if (arg === '--sample') {
+      useSample = true;
+    } else if (arg === '--json') {
+      asJson = true;
+    } else if (arg === '--require-sha') {
+      requiredSha = argv[++i];
+      if (!requiredSha) {
+        usage();
+        die('Missing value for --require-sha.', 2);
+      }
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die('Unsupported verify option provided.', 2);
+    }
+  }
+
+  if (inputPath && useSample) {
+    usage();
+    die('Cannot combine --input with --sample.', 2);
+  }
+
+  if (!inputPath && !useSample) {
+    usage();
+    die('Missing required --input <file|-> or --sample.', 2);
+  }
+
+  if (requiredSha && !/^[a-f0-9]{64}$/.test(requiredSha)) {
+    die('--require-sha must be a 64-character lowercase SHA-256 hex digest.', 2);
+  }
+
+  const artifactText = useSample ? readSampleArtifact() : readInput(inputPath);
+  const artifact = parseLocalProofPackArtifactText(artifactText);
+  const verificationOutput = verifyLocalProofPackArtifact(artifact, {
+    expectedArtifactBodySha256: requiredSha || null,
+  });
+  const output = asJson
+    ? `${JSON.stringify(verificationOutput, null, 2)}\n`
+    : formatLocalProofPackArtifactVerification(verificationOutput);
+  assertNoUnsafeLocalProofPackText(output);
+  process.stdout.write(output);
+}
+
+if (args[0] === 'verify') {
+  try {
+    runVerifyCommand(args.slice(1));
+  } catch (err) {
+    die(err.message);
+  }
+  process.exit(0);
+}
+
+if (args.some((arg) => arg === '--help' || arg === '-h')) {
+  usage();
+  process.exit(0);
+}
+
+die('Local proof-pack fresh generation refused: local_proof_pack_fresh_generation_retired');

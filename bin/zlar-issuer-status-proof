@@ -1,0 +1,45 @@
+#!/usr/bin/env node
+import {
+  assertIssuerStatusProof,
+  assertNoUnsafeIssuerStatusProofText,
+  formatIssuerStatusProofSummary,
+  runIssuerStatusProof,
+} from '../lib/issuer-status-proof.mjs';
+
+function usage() {
+  console.error('Usage: zlar issuer-status-proof [--json]');
+  console.error('Runs a local hermetic issuer status proof.');
+  console.error('This command does not live probe, inspect runtime state, use production keys, or claim production deployment.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+let asJson = false;
+
+for (const arg of args) {
+  if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+try {
+  const report = runIssuerStatusProof();
+  assertIssuerStatusProof(report);
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatIssuerStatusProofSummary(report);
+  assertNoUnsafeIssuerStatusProofText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

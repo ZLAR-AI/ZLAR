@@ -1,0 +1,197 @@
+#!/usr/bin/env node
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { request } from 'node:https';
+import {
+  VERIFIER_KIT_RELEASE_ASSETS_FIXTURE_READ_EVIDENCE_MODEL,
+  VERIFIER_KIT_RELEASE_ASSETS_LIVE_READ_EVIDENCE_MODEL,
+  assertNoUnsafeVerifierKitReleaseAssetsLiveReadText,
+  assertVerifierKitReleaseAssetsLiveReadReport,
+  buildVerifierKitReleaseAssetsLiveReadReport,
+  formatVerifierKitReleaseAssetsLiveReadSummary,
+} from '../lib/verifier-kit-release-assets-live-read.mjs';
+
+function usage() {
+  console.error('Usage: zlar verifier-kit-release-assets-live-read --release-tag <vX.Y.Z> [--repo <owner/name>] [--download-dir <dir>] [--json|--json-out <file>]');
+  console.error('Reads a public GitHub release by explicit tag, downloads release assets, and emits byte-bound release-asset evidence.');
+  console.error('This command does not upload assets, mutate release state, create external attestation, or prove production publisher key custody.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function readJson(path, label) {
+  if (!existsSync(path)) die(`${label} file not found: ${path}`, 2);
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    die(`Could not parse ${label} JSON: ${err.message}`, 2);
+  }
+}
+
+function sha256Bytes(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function requestBuffer(url, { accept = 'application/json', redirects = 0 } = {}) {
+  if (redirects > 5) {
+    return Promise.reject(new Error(`too many redirects while reading ${url}`));
+  }
+  return new Promise((resolve, reject) => {
+    const req = request(url, {
+      headers: {
+        Accept: accept,
+        'User-Agent': 'zlar-verifier-kit-release-assets-live-read',
+      },
+    }, (res) => {
+      const location = res.headers.location;
+      if (
+        [301, 302, 303, 307, 308].includes(res.statusCode || 0) &&
+        typeof location === 'string'
+      ) {
+        res.resume();
+        const nextUrl = new URL(location, url).toString();
+        requestBuffer(nextUrl, { accept, redirects: redirects + 1 }).then(resolve, reject);
+        return;
+      }
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const body = Buffer.concat(chunks);
+        if ((res.statusCode || 0) < 200 || (res.statusCode || 0) >= 300) {
+          reject(new Error(`HTTP ${res.statusCode} while reading ${url}`));
+          return;
+        }
+        resolve(body);
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function fetchJson(url) {
+  const bytes = await requestBuffer(url, { accept: 'application/vnd.github+json' });
+  try {
+    return JSON.parse(bytes.toString('utf8'));
+  } catch (err) {
+    throw new Error(`GitHub API returned invalid JSON: ${err.message}`);
+  }
+}
+
+function assetDownloadUrl(asset) {
+  return asset?.browser_download_url || asset?.browserDownloadUrl || '';
+}
+
+async function downloadedHashesForAssets(assets, downloadDir = '', { fixtureMode = false } = {}) {
+  const downloaded = {};
+  if (downloadDir && !fixtureMode) {
+    mkdirSync(downloadDir, { recursive: true });
+  }
+  for (const asset of assets) {
+    const name = String(asset?.name || '');
+    if (!name) continue;
+    let bytes;
+    if (downloadDir && fixtureMode) {
+      bytes = readFileSync(join(downloadDir, name));
+    } else {
+      const url = assetDownloadUrl(asset);
+      if (!url) continue;
+      bytes = await requestBuffer(url, { accept: 'application/octet-stream' });
+      if (downloadDir) {
+        writeFileSync(join(downloadDir, name), bytes);
+      }
+    }
+    downloaded[name] = {
+      sha256: sha256Bytes(bytes),
+      size: bytes.length,
+    };
+  }
+  return downloaded;
+}
+
+const args = process.argv.slice(2);
+let releaseTag = '';
+let repository = 'ZLAR-AI/ZLAR';
+let releaseJsonPath = '';
+let downloadDir = '';
+let asJson = false;
+let jsonOut = '';
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--release-tag') {
+    releaseTag = args[++i] || '';
+    if (!releaseTag) die('--release-tag requires a value', 2);
+  } else if (arg === '--repo') {
+    repository = args[++i] || '';
+    if (!repository) die('--repo requires owner/name', 2);
+  } else if (arg === '--release-json') {
+    releaseJsonPath = args[++i] || '';
+    if (!releaseJsonPath) die('--release-json requires a file', 2);
+  } else if (arg === '--download-dir') {
+    downloadDir = args[++i] || '';
+    if (!downloadDir) die('--download-dir requires a directory', 2);
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--json-out') {
+    jsonOut = args[++i] || '';
+    if (!jsonOut) die('--json-out requires a file', 2);
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die(`Unsupported option: ${arg}`, 2);
+  }
+}
+
+if (!releaseTag) {
+  usage();
+  die('--release-tag is required', 2);
+}
+if (!/^v\d+\.\d+\.\d+$/.test(releaseTag)) {
+  usage();
+  die('--release-tag must look like vX.Y.Z', 2);
+}
+if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+  usage();
+  die('--repo must look like owner/name', 2);
+}
+if (jsonOut && existsSync(jsonOut)) {
+  die(`--json-out refuses to overwrite existing file: ${jsonOut}`, 2);
+}
+
+try {
+  const releaseJson = releaseJsonPath
+    ? readJson(releaseJsonPath, 'release')
+    : await fetchJson(`https://api.github.com/repos/${repository}/releases/tags/${releaseTag}`);
+  const downloadedHashesByName = await downloadedHashesForAssets(releaseJson.assets || [], downloadDir, {
+    fixtureMode: Boolean(releaseJsonPath),
+  });
+  const report = buildVerifierKitReleaseAssetsLiveReadReport({
+    releaseTag,
+    repository,
+    releaseJson,
+    downloadedHashesByName,
+    evidenceModel: releaseJsonPath
+      ? VERIFIER_KIT_RELEASE_ASSETS_FIXTURE_READ_EVIDENCE_MODEL
+      : VERIFIER_KIT_RELEASE_ASSETS_LIVE_READ_EVIDENCE_MODEL,
+    generatedAt: new Date().toISOString().replace(/\.[0-9]{3}Z$/, 'Z'),
+  });
+  assertVerifierKitReleaseAssetsLiveReadReport(report);
+  const output = asJson || jsonOut
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatVerifierKitReleaseAssetsLiveReadSummary(report);
+  assertNoUnsafeVerifierKitReleaseAssetsLiveReadText(output);
+  if (jsonOut) {
+    writeFileSync(jsonOut, output);
+  } else {
+    process.stdout.write(output);
+  }
+} catch (err) {
+  die(err.message);
+}

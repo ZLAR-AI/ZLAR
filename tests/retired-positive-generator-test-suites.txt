@@ -1,0 +1,8 @@
+test-protected-records-adapter-conformance-cli.mjs
+test-protected-records-adapter-conformance.mjs
+test-protected-records-proof-cli.mjs
+test-protected-records-service-preflight-cli.mjs
+test-protected-records-service-profile.mjs
+test-protected-records-service-proof-cli.mjs
+test-protected-records-service-proof.mjs
+test-protected-records-terminal-proof.mjs

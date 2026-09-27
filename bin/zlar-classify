@@ -1,0 +1,174 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR — Preflight classifier (read-only, no side effects)
+#
+# Given a proposed tool call (Tool + input), returns the policy rule the gate
+# would match if that input arrived through the PreToolUse hook — WITHOUT
+# triggering Telegram, writing audit log entries, recording pending approvals,
+# or touching any gate state.
+#
+# Reuses tests/bash-gate-runner.sh as the pure evaluator. That same script is
+# the canary in tests/test-cross-gate-differential.mjs, so the classifier and
+# the live bash gate stay in lockstep through CI.
+#
+# Spec: docs/operator-loop.md
+#
+# Input:
+#   stdin: JSON {"tool_name": "<Tool>", "tool_input": { ... }}
+#
+# Output (stdout, single line):
+#   {"rule_id":"R0XX","action":"allow|ask|deny","domain":"...",
+#    "severity":"info|warn|critical","description":"..."}
+#
+# Exit codes:
+#   0 — classification produced (regardless of allow/ask/deny)
+#   1 — input or evaluator error
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -uo pipefail
+
+# Resolve symlink to find real script location.
+_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "${_SOURCE}" ]; do
+    _DIR="$(cd -P "$(dirname "${_SOURCE}")" && pwd)"
+    _SOURCE="$(readlink "${_SOURCE}")"
+    [[ "${_SOURCE}" != /* ]] && _SOURCE="${_DIR}/${_SOURCE}"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "${_SOURCE}")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+unset _SOURCE _DIR
+
+POLICY_FILE="${ZLAR_POLICY_FILE:-${PROJECT_DIR}/etc/policies/active.policy.json}"
+EVALUATOR="${PROJECT_DIR}/tests/bash-gate-runner.sh"
+
+if ! command -v jq >/dev/null 2>&1; then
+    echo '{"error":"jq not found"}' >&2
+    exit 1
+fi
+if [ ! -f "${POLICY_FILE}" ]; then
+    printf '{"error":"policy file not found: %s"}\n' "${POLICY_FILE}" >&2
+    exit 1
+fi
+if [ ! -f "${EVALUATOR}" ]; then
+    printf '{"error":"evaluator not found: %s"}\n' "${EVALUATOR}" >&2
+    exit 1
+fi
+
+INPUT=$(cat)
+if [ -z "${INPUT}" ]; then
+    echo '{"error":"empty stdin; expected {tool_name, tool_input}"}' >&2
+    exit 1
+fi
+
+TOOL_NAME=$(echo "${INPUT}" | jq -r '.tool_name // ""')
+TOOL_INPUT=$(echo "${INPUT}" | jq -c '.tool_input // {}')
+
+if [ -z "${TOOL_NAME}" ]; then
+    echo '{"error":"missing tool_name"}' >&2
+    exit 1
+fi
+
+# ─── translate_tool — mirrors bin/zlar-gate translate_tool() ─────────────────
+# Pure: (tool_name, tool_input) → (DOMAIN, DETAIL). No IO, no state.
+
+DOMAIN=""
+DETAIL=""
+
+case "${TOOL_NAME}" in
+    Bash)
+        DOMAIN="bash"
+        # Same newline-stripping as zlar-gate (S1 injection fix).
+        _cmd=$(echo "${TOOL_INPUT}" | jq -r '.command // ""' | tr '\n\r' '  ')
+        _cwd=$(echo "${TOOL_INPUT}" | jq -r '.cwd // ""')
+        DETAIL=$(jq -n -c --arg c "${_cmd}" --arg w "${_cwd}" '{command:$c, cwd:$w}')
+        ;;
+    Write)
+        DOMAIN="write"
+        _path=$(echo "${TOOL_INPUT}" | jq -r '.file_path // ""')
+        _len=$(echo "${TOOL_INPUT}" | jq '((.content // "") | length)' 2>/dev/null || echo 0)
+        DETAIL=$(jq -n -c --arg p "${_path}" --argjson l "${_len}" '{path:$p, content_length:$l, content_sha256:"preflight"}')
+        ;;
+    Edit)
+        DOMAIN="edit"
+        _path=$(echo "${TOOL_INPUT}" | jq -r '.file_path // ""')
+        DETAIL=$(echo "${TOOL_INPUT}" | jq -c --arg p "${_path}" '{path:$p, old_string:((.old_string//"")[0:80]), new_string:((.new_string//"")[0:80])}')
+        ;;
+    Read)
+        DOMAIN="read"
+        _path=$(echo "${TOOL_INPUT}" | jq -r '.file_path // ""')
+        DETAIL=$(jq -n -c --arg p "${_path}" '{path:$p}')
+        ;;
+    Glob)
+        DOMAIN="glob"
+        DETAIL=$(echo "${TOOL_INPUT}" | jq -c '{pattern:(.pattern//""), path:(.path//"")}')
+        ;;
+    Grep)
+        DOMAIN="grep"
+        DETAIL=$(echo "${TOOL_INPUT}" | jq -c '{pattern:(.pattern//""), path:(.path//"")}')
+        ;;
+    NotebookEdit)
+        DOMAIN="notebook"
+        _path=$(echo "${TOOL_INPUT}" | jq -r '.notebook_path // ""')
+        DETAIL=$(jq -n -c --arg p "${_path}" '{path:$p}')
+        ;;
+    Task|Agent)
+        DOMAIN="agent"
+        DETAIL=$(echo "${TOOL_INPUT}" | jq -c '{prompt:((.prompt // .description // "subagent")[0:200])}')
+        ;;
+    WebFetch)
+        DOMAIN="webfetch"
+        DETAIL=$(echo "${TOOL_INPUT}" | jq -c '{url:(.url//"")}')
+        ;;
+    WebSearch)
+        DOMAIN="websearch"
+        DETAIL=$(echo "${TOOL_INPUT}" | jq -c '{query:(.query//"")}')
+        ;;
+    TodoWrite|TaskOutput|TaskStop|AskUserQuestion|EnterPlanMode|ExitPlanMode|EnterWorktree|ExitWorktree|ToolSearch|ScheduleWakeup|CronCreate|CronDelete|CronList|Monitor|PushNotification|RemoteTrigger)
+        DOMAIN="internal"
+        DETAIL=$(jq -n -c --arg t "${TOOL_NAME}" '{tool:$t}')
+        ;;
+    Skill)
+        DOMAIN="internal"
+        DETAIL=$(echo "${TOOL_INPUT}" | jq -c '{skill:(.skill//"")}')
+        ;;
+    mcp__*)
+        DOMAIN="mcp"
+        _server=$(echo "${TOOL_NAME}" | awk -F'__' '{print $2}')
+        _tool=$(echo "${TOOL_NAME}" | awk -F'__' '{print $NF}')
+        DETAIL=$(jq -n -c --arg s "${_server}" --arg t "${_tool}" --arg f "${TOOL_NAME}" '{server:$s, tool:$t, full_name:$f}')
+        ;;
+    *)
+        DOMAIN="unknown"
+        DETAIL=$(jq -n -c --arg t "${TOOL_NAME}" '{tool:$t}')
+        ;;
+esac
+
+# ─── Evaluate via the pure bash-gate-runner ──────────────────────────────────
+
+RESULT=$(bash "${EVALUATOR}" "${DOMAIN}" "${DETAIL}" "${POLICY_FILE}" 2>/dev/null)
+if [ -z "${RESULT}" ]; then
+    echo '{"error":"evaluator produced no output"}' >&2
+    exit 1
+fi
+
+RULE_ID=$(echo "${RESULT}" | jq -r '.rule // "default"')
+ACTION=$(echo "${RESULT}" | jq -r '.action // "deny"')
+
+# ─── Enrich with severity and description from the policy ────────────────────
+
+if [ "${RULE_ID}" = "default" ]; then
+    SEVERITY="warn"
+    DESCRIPTION="Default policy action (no rule matched)"
+else
+    SEVERITY=$(jq -r --arg id "${RULE_ID}" '.rules[] | select(.id == $id) | .severity // "info"' "${POLICY_FILE}" 2>/dev/null)
+    DESCRIPTION=$(jq -r --arg id "${RULE_ID}" '.rules[] | select(.id == $id) | .description // ""' "${POLICY_FILE}" 2>/dev/null)
+    [ -z "${SEVERITY}" ] && SEVERITY="info"
+fi
+
+jq -n -c \
+    --arg r "${RULE_ID}" \
+    --arg a "${ACTION}" \
+    --arg d "${DOMAIN}" \
+    --arg s "${SEVERITY}" \
+    --arg desc "${DESCRIPTION}" \
+    '{rule_id:$r, action:$a, domain:$d, severity:$s, description:$desc}'

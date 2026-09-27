@@ -1,0 +1,406 @@
+{
+  "artifact_type": "zlar.e2-direct-request-factory-source-retirement.v0",
+  "schema_version": 0,
+  "verification_mode": "source-only-static-retirement-overlay",
+  "decision": "retire_direct_e2_request_factory_and_future_copy_preserve_historical_verification",
+  "consequence_class": "protected-records local-fixture records.write",
+  "effect_node_id": "E2.service-jsonl-state-append-v1",
+  "north_star_1_status": "historical",
+  "north_star_2_status": "mapped_open",
+  "source_checkpoint": {
+    "repository_id": "ZLAR_Repo",
+    "baseline_commit_oid": "530683fc61f85e5b0c8882f8b65a3bcd8ef9199d",
+    "baseline_private_remote_oid": "530683fc61f85e5b0c8882f8b65a3bcd8ef9199d",
+    "pre_change_factory_module_sha256": "42fbe1a3be4d387f231559c7b747c2f602a414c156fe37b422e831b96a385b76",
+    "pre_change_request_cli_sha256": "794f8f31f9fcb2716ad0f15e3c9f7a27c5e87af91d7d68f3e4576c2c3cefff27",
+    "pre_change_installer_sha256": "c50cb7679cec3c2fa6d32173cab405e3e83c6b143ab61533df09ad27fb8688a8",
+    "loaded_source_matches_inventory_by_exact_file_hashes": true,
+    "runtime_observation_performed": false,
+    "positive_e2_execution_performed": false,
+    "installation_performed": false,
+    "resulting_commit_recorded_after_commit": false
+  },
+  "source_inventory": [
+    {
+      "path": "lib/protected-records-service.mjs",
+      "file_sha256": "ffc9d6a8456a17afd66f0a69ea9c4b8c9c4440a74372b9d2c0fb5c18923c88e2",
+      "classification": "retired-direct-factory-refusal-stub"
+    },
+    {
+      "path": "lib/protected-records-service-verification.mjs",
+      "file_sha256": "26b3f4f8f9acadeb0cf69b2892704e94af962a96d15676cedbf87c1a9b9ffaf7",
+      "classification": "historical-plain-data-structural-verification"
+    },
+    {
+      "path": "bin/zlar-protected-records-service-request",
+      "file_sha256": "8ba33f1c837b52acfe76c56ce2ba19e10a4ac51cea21acaa62028c4e7973bbb6",
+      "classification": "retired-direct-request-fixed-refusal"
+    },
+    {
+      "path": "bin/zlar",
+      "file_sha256": "566a914511145764367238c6157ec2be75566e18d48683b027060ca0ce7a3bb8",
+      "classification": "request-dispatch-removed"
+    },
+    {
+      "path": "install.sh",
+      "file_sha256": "2e9b894eae1e2b99d1ebb323a7cd5c354847a889f1519ccafc0aae7078490d52",
+      "classification": "future-copy-filtered"
+    },
+    {
+      "path": "lib/protected-records-service-profile.mjs",
+      "file_sha256": "57d2fa64980e26a63f3c6c12d8a7aa76ab357151e4efe235575e343e8dc58ef0",
+      "classification": "historical-verification-consumer"
+    },
+    {
+      "path": "lib/protected-records-service-proof.mjs",
+      "file_sha256": "90cb226deefdfab27b57d1007ac27b42772a6aecd45a2f663a137e2d0c69b43a",
+      "classification": "historical-verification-consumer"
+    },
+    {
+      "path": "tests/count-assertions.sh",
+      "file_sha256": "ff56f4a53e71831e4ae26ee6a8034620693241c5f32a6c1970cb83e6e664dfe4",
+      "classification": "test-routing"
+    },
+    {
+      "path": "tests/retired-direct-e2-test-suites.txt",
+      "file_sha256": "0b5649e287d8dabf2fb7a74dfcbefb41b120d8293191a55b2c0bc0d66cca55b8",
+      "classification": "historical-positive-suite-inventory"
+    },
+    {
+      "path": "tests/retired-positive-generator-test-suites.txt",
+      "file_sha256": "b2baed2898df9c67502b4424ebd1165fa9e9979f491fad4e1f2a793908725af5",
+      "classification": "historical-positive-suite-inventory"
+    },
+    {
+      "path": "tests/superseded-source-bound-test-suites.txt",
+      "file_sha256": "ab8510d7136144d78325512db7dea4ae3adef48db864df2f7838c428ce729f89",
+      "classification": "source-snapshot-routing"
+    },
+    {
+      "path": "tests/test-authority-inactive-test-routing.sh",
+      "file_sha256": "07b98528eabc9d95e994b71d9dd3d5dfeab1968cdeb5a5336dc146abe449d77d",
+      "classification": "safe-routing-validator"
+    }
+  ],
+  "retired_surfaces": [
+    {
+      "surface_id": "direct-e2-exported-factory",
+      "source_path": "lib/protected-records-service.mjs",
+      "entrypoint": "applyProtectedRecordsServiceRequest",
+      "reason_code": "e2_direct_request_factory_source_retired",
+      "exact_zero_parameter_declaration": true,
+      "fixed_refusal_first_and_only_statement": true,
+      "hostile_input_read": false,
+      "positive_body_removed": true
+    },
+    {
+      "surface_id": "direct-e2-standalone-request-cli",
+      "source_path": "bin/zlar-protected-records-service-request",
+      "entrypoint": "node bin/zlar-protected-records-service-request",
+      "reason_code": "e2_direct_request_factory_source_retired",
+      "argv_stdin_config_or_target_read": false,
+      "positive_import_present": false,
+      "executable_mode_preserved": true
+    },
+    {
+      "surface_id": "direct-e2-main-dispatch",
+      "source_path": "bin/zlar",
+      "entrypoint": "zlar protected-records-service-request",
+      "current_disposition": "help_and_dispatch_removed",
+      "positive_dispatch_present": false
+    }
+  ],
+  "verification_split": {
+    "path": "lib/protected-records-service-verification.mjs",
+    "imports": [],
+    "exports": [
+      "PROTECTED_RECORDS_SERVICE_RESULT_TYPE",
+      "PROTECTED_RECORDS_SERVICE_TYPE",
+      "PROTECTED_RECORDS_SERVICE_LAUNCHER_CONFIG_TYPE",
+      "SAFE_CLAIM_CEILING",
+      "NON_CLAIMS",
+      "assertProtectedRecordsServiceResult",
+      "assertNoUnsafeProtectedRecordsServiceText"
+    ],
+    "positive_request_or_factory_export_present": false,
+    "filesystem_recognition_receipt_adapter_or_child_import_present": false,
+    "plain_data_structural_validation_only": true,
+    "hostile_object_safe": false,
+    "fresh_effect_verification": false,
+    "caller_authentication": false,
+    "authority_verification": false
+  },
+  "future_install_copy_disposition": {
+    "source_path": "install.sh",
+    "planned_wrapper_inventory_excludes": [
+      "bin/zlar-protected-records-service-request"
+    ],
+    "copy_loop_excludes": [
+      "bin/zlar-protected-records-service-request",
+      "lib/protected-records-service.mjs"
+    ],
+    "verification_module_remains_copyable": true,
+    "installer_executed": false,
+    "existing_installed_files_deleted": false,
+    "upgrade_or_reinstall_residue_closed": false,
+    "installed_copy_retirement_proven": false
+  },
+  "consumer_inventory": [
+    {
+      "id": "exported-direct-e2-factory",
+      "file": "lib/protected-records-service.mjs",
+      "classification": "fixed-refusal",
+      "edge_chain": ["direct importer", "fixed throw"],
+      "current_positive_e2_reachable": false,
+      "current_success_required": false
+    },
+    {
+      "id": "standalone-direct-e2-request-wrapper",
+      "file": "bin/zlar-protected-records-service-request",
+      "classification": "fixed-refusal",
+      "edge_chain": ["node wrapper", "fixed error exit"],
+      "current_positive_e2_reachable": false,
+      "current_success_required": false
+    },
+    {
+      "id": "main-cli-dispatch",
+      "file": "bin/zlar",
+      "classification": "dispatch-removed",
+      "edge_chain": ["main CLI", "unknown command refusal"],
+      "current_positive_e2_reachable": false,
+      "current_success_required": false
+    },
+    {
+      "id": "service-profile-historical-verification",
+      "file": "lib/protected-records-service-profile.mjs",
+      "classification": "verification-only-import",
+      "edge_chain": ["historical artifact parser/validator", "verification module"],
+      "current_positive_e2_reachable": false,
+      "current_success_required": true
+    },
+    {
+      "id": "service-proof-historical-schema",
+      "file": "lib/protected-records-service-proof.mjs",
+      "classification": "verification-only-import",
+      "edge_chain": ["historical report validator", "verification module"],
+      "current_positive_e2_reachable": false,
+      "current_success_required": true
+    },
+    {
+      "id": "three-direct-positive-test-suites",
+      "file": "tests/retired-direct-e2-test-suites.txt",
+      "classification": "historical-effect-capable-test-source",
+      "edge_chain": ["key/receipt generation", "old request/factory expectation"],
+      "current_positive_e2_reachable": false,
+      "current_success_required": false
+    },
+    {
+      "id": "stage-2-retirement-overlay",
+      "file": "spec/e2-positive-proof-generator-retirement-v0.json",
+      "classification": "immutable-prior-source-overlay",
+      "edge_chain": ["Stage 2 exact source", "Stage 3 additive overlay"],
+      "current_positive_e2_reachable": false,
+      "current_success_required": true
+    },
+    {
+      "id": "historical-profile-and-artifact-command-strings",
+      "file": "profiles/protected-records-service-fixture.profile.json and tests/fixtures",
+      "classification": "historical-evidence-text",
+      "edge_chain": ["pinned historical bytes", "verification only"],
+      "current_positive_e2_reachable": false,
+      "current_success_required": true
+    },
+    {
+      "id": "future-installer-copy",
+      "file": "install.sh",
+      "classification": "source-only-copy-exclusion",
+      "edge_chain": ["future installer", "exact wrapper/module filter"],
+      "current_positive_e2_reachable": false,
+      "current_success_required": false
+    },
+    {
+      "id": "prior-dependency-and-reachability-maps",
+      "file": "lib/consequence-path-coverage-dependency-map-v0.mjs and lib/source-bound-static-reachability-delta-v0.mjs",
+      "classification": "historical-source-bound-evidence",
+      "edge_chain": ["immutable prior source observation", "additive Stage 3 overlay"],
+      "current_positive_e2_reachable": false,
+      "current_success_required": false
+    },
+    {
+      "id": "external-dynamic-generated-or-mutated-import",
+      "file": "outside exact pinned static inventory",
+      "classification": "unknown-open",
+      "edge_chain": ["unknown caller or source", "unproven effect route"],
+      "current_positive_e2_reachable": null,
+      "current_success_required": false
+    }
+  ],
+  "effect_node_topology_refresh": {
+    "canonical_e2_identity_preserved": true,
+    "named_current_source_positive_e2_routes_before": [
+      "bin/zlar dispatch -> request wrapper -> exported factory -> E2 append",
+      "standalone request wrapper -> exported factory -> E2 append",
+      "direct import -> exported factory -> E2 append"
+    ],
+    "named_current_source_dispositions_after": [
+      "bin/zlar dispatch absent",
+      "standalone wrapper fixed-refuses",
+      "exported factory fixed-refuses",
+      "Stage 2 positive generators fixed-refuse",
+      "future installer source omits direct wrapper/module"
+    ],
+    "named_static_current_source_positive_e2_route_found_after": false,
+    "inventory_complete_for_dynamic_external_old_or_mutated_paths": false,
+    "e2_effect_node_eliminated": false,
+    "e4_distinct_effect_source_changed": false,
+    "raw_filesystem_side_door_closed": false
+  },
+  "reachability_delta_refresh": {
+    "removed_or_refused_edges": [
+      "bin/zlar -> bin/zlar-protected-records-service-request",
+      "bin/zlar-protected-records-service-request -> applyProtectedRecordsServiceRequest",
+      "applyProtectedRecordsServiceRequest -> E2.service-jsonl-state-append-v1",
+      "future installer wrapper copy -> bin/zlar-protected-records-service-request",
+      "future installer library copy -> lib/protected-records-service.mjs"
+    ],
+    "preserved_non_effect_edges": [
+      "service profile historical verification -> protected-records-service-verification.mjs",
+      "service proof historical validation -> protected-records-service-verification.mjs",
+      "historical artifact verification -> immutable fixture bytes"
+    ],
+    "unknown_dynamic_external_or_old_source_reachability_closed": false,
+    "runtime_reachability_proven": false,
+    "equivalent_route_closure_proven": false
+  },
+  "lifecycle_refresh": {
+    "map_status_before": "mapped_open",
+    "map_status_after": "mapped_open",
+    "coverage_disposition_changed": false,
+    "authority_domain_membership_assigned": false,
+    "authorized_outside_coverage_assigned": false,
+    "lifecycle_obligation_status_changes": [],
+    "attention_integrity": "named current-source direct E2 paths are retired; unknown and historical paths remain visible",
+    "exception_residue": "old installed copied mutated dynamically loaded and raw filesystem paths remain open",
+    "consequence_bearer": "local fixture protected-records state remains the named consequence surface; responsibility assignment is unproven",
+    "recovery": "no crash atomicity rollback durability or recovery claim is added",
+    "trusted_core": "source refusal does not establish installed trust-root integrity",
+    "non_effect_ceiling": "static source disposition and historical verification only"
+  },
+  "historical_verification": {
+    "stage_2_overlay": {
+      "path": "spec/e2-positive-proof-generator-retirement-v0.json",
+      "file_sha256": "a670b19da4df24233f27a0cba4887e829e6c6076e80755d4806b670826404e02",
+      "mutated": false
+    },
+    "proof_smoke": {
+      "file_path": "tests/fixtures/proof-smoke-v1-report.json",
+      "file_sha256": "69d567c4708642393c470f3cffca015d1c39096a99191d720252aaf5a33b0635",
+      "canonical_report_sha256": "4e700bfeb3061589baa68071f534e1a74221a1b26e38100afdee62bbe6938c6f"
+    },
+    "local_proof_pack": {
+      "file_path": "tests/fixtures/local-proof-pack-artifact-v1.json",
+      "file_sha256": "7147445a29974c634d8574dd9eb8051ebed0541111ce4cb21b149282f9c8ebf8",
+      "body_sha256": "777f66be5c4c5d9dcf5c5555c4e80653231815db22a82adf056c0908cf890ac0"
+    },
+    "service_preflight": {
+      "file_path": "tests/fixtures/protected-records-service-preflight-artifact-v1.json",
+      "file_sha256": "5d15cc460d2cd981cdcd21999629969b87af798a6311b80fe699ec78aba7b7f2",
+      "body_sha256": "36a3aadfa920ea3da2ac3199b5af79f937e783e42604bfa3318d6ac8824b190c"
+    },
+    "service_profile_command_fixture": {
+      "file_path": "profiles/protected-records-service-fixture.profile.json",
+      "file_sha256": "272d7f1d8e700290676ef2e24b1cd9ce9436dcc557a3e3007b475345f9e2ce5a",
+      "classification": "historical command contract, not current executable instruction"
+    },
+    "fresh_generation_performed": false,
+    "current_authority_projected": false,
+    "fresh_effect_projected": false,
+    "lifecycle_closure_projected": false
+  },
+  "unchanged_source_boundaries": {
+    "consequence_lifecycle_map_library": {
+      "path": "lib/consequence-lifecycle-map.mjs",
+      "file_sha256": "93bc5912b628a094a10d377db0f869f083cb2f06e0b54ec9ac2aa1e7054b25a4",
+      "mutated": false
+    },
+    "source_bound_reachability_library": {
+      "path": "lib/source-bound-static-reachability-delta-v0.mjs",
+      "file_sha256": "c1b91de8fbe777f3822b85601e9a729b8a110d99da6438e05dd44b6cfaa2a5f1",
+      "mutated": false
+    },
+    "prior_dependency_map_library": {
+      "path": "lib/consequence-path-coverage-dependency-map-v0.mjs",
+      "file_sha256": "e2227bf2a0834cf769973ca792816d9ff1f353337af8a3f31b176b516dd5a698",
+      "mutated": false,
+      "classification": "historical source-bound positive-path observation"
+    },
+    "replacement_e4": {
+      "driver_path": "lib/protected-records-replacement-crossing-driver-v2.mjs",
+      "driver_file_sha256": "caac0ed07d79bfb538671c6eda3bbe8d5f78fa374aa5d4c81c14c8a2898ce879",
+      "child_path": "lib/protected-records-replacement-runtime-child-v2.mjs",
+      "child_file_sha256": "00d43a598b85865600168db87e5b7aa742df3da3455dd6f1199e48b4f05acbcd",
+      "changed": false
+    }
+  },
+  "test_routing": {
+    "retired_positive_generator_suite_count": 4,
+    "retired_direct_e2_suite_count": 3,
+    "stage_2_source_bound_suite_superseded": true,
+    "stage_3_static_refusal_suite_active": true,
+    "broad_harness_executed": false,
+    "skip_status_proves_retirement": false,
+    "skip_status_proves_governance": false
+  },
+  "claim_boundary": {
+    "exact_checked_out_source_direct_e2_request_factory_retirement": true,
+    "exact_historical_verification_preserved": true,
+    "future_installer_source_copy_exclusion": true,
+    "installed_copy_retirement": false,
+    "upgrade_reinstall_residue_removal": false,
+    "already_loaded_function_retirement": false,
+    "e2_runtime_unreachability": false,
+    "e2_elimination": false,
+    "authority_domain_membership": false,
+    "domain_inventory_complete": false,
+    "equivalent_route_closure": false,
+    "lifecycle_closure": false,
+    "side_door_closure": false,
+    "exactly_once": false,
+    "crash_atomicity": false,
+    "recovery": false,
+    "current_machine_governance": false,
+    "production_governance": false,
+    "public_attestation": false,
+    "sovereign_recognition": false,
+    "all_surface_governance": false
+  },
+  "side_doors": [
+    "old-installed-copied-historical-or-mutated-positive-source",
+    "upgrade-or-reinstall-stale-installed-wrapper-and-module-residue",
+    "already-loaded-positive-function-object",
+    "historical-positive-test-source",
+    "explicit-report-artifact-packaging-and-write-exports",
+    "raw-filesystem-writes",
+    "NODE_OPTIONS-loaders-preloads-and-interpreter-substitution",
+    "PATH-or-node-interpreter-substitution",
+    "same-user-source-mutation",
+    "dynamic-generated-or-external-entrypoints",
+    "distinct-E1-E3-E4-or-unclassified-effect-routes",
+    "source-drift-after-checkpoint"
+  ],
+  "authority_status": {
+    "route_and_source_authority_present": true,
+    "private_branch_stabilization_authority_present": true,
+    "consequence_authority_present": false,
+    "active_authority_present": false,
+    "signing_or_key_authority_present": false,
+    "install_or_machine_authority_present": false,
+    "coverage_owner_authority_present": false,
+    "public_or_release_authority_present": false
+  },
+  "integrity": {
+    "algorithm": "SHA-256",
+    "scope": "canonical artifact body without integrity",
+    "body_sha256": "6c27a0be8f447a96c369388d6c67d0795060fcf88a93c5855881beb0ced38b11"
+  }
+}

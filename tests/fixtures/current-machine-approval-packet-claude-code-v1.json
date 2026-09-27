@@ -1,0 +1,349 @@
+{
+  "packet_type": "zlar-current-machine-approval-packet-v1",
+  "packet_id": "claude-code-current-machine-approval-packet-private-core-v3.4.55",
+  "schema_version": 1,
+  "canonicalization": "zlar-canonical-json-v1",
+  "selected_surface": {
+    "selected_surface": "claude_code",
+    "surface_label": "Claude Code",
+    "single_surface_scope": true,
+    "source_design": "install.sh --surface claude-code --dry-run --json current_machine_governance_design",
+    "live_surface_probe_performed": false
+  },
+  "hook_target": {
+    "hook_profile_path": "~/.claude/settings.json",
+    "hook_event": "PreToolUse",
+    "hook_command_target": "~/.zlar/adapters/claude-code/hook.sh",
+    "delegation_target": "~/.zlar/bin/zlar-gate",
+    "expected_executable": true,
+    "hook_target_verified_by_live_read": false,
+    "writes_hook_profile": false
+  },
+  "source_target": {
+    "repo_url": "https://github.com/ZLAR-AI/ZLAR",
+    "source_kind": "private_core_release_checkpoint",
+    "source_state": "private_core_v3.4.55_fixture_not_install_authority",
+    "target_commit_sha": "b89b0c2e2d79db4981cad69af4a190e9c77fb089",
+    "target_tree_sha": "91eaff8cc48b905192ddc238b6c9a9049a9efbee",
+    "target_version": "3.4.55",
+    "dirty_worktree_allowed": false,
+    "published_release_claimed": true,
+    "published_release_tag": "v3.4.55",
+    "published_release_commit_sha": "b89b0c2e2d79db4981cad69af4a190e9c77fb089",
+    "published_release_tag_object_sha": "fe16ef4d22a09fdb282898cb029bd25eefde24f5",
+    "source_manifest_sha256": "4075e6ccba5f9ee8fb08f4a92449c01a9ec94ea89a7606ff88bd9918a7ce5b0c"
+  },
+  "installer_identity": {
+    "installer_path": "install.sh",
+    "installer_git_blob_sha": "295a71e6e6c1fd331c90f1c2f43d21903bc18057",
+    "installer_sha256": "62fe23e17864cace9b76e706792bd3849f8be76df6bd3ef2be09f42ec52b27e2",
+    "installer_source_commit_sha": "b89b0c2e2d79db4981cad69af4a190e9c77fb089",
+    "installer_executable_expected": true,
+    "installer_identity_verified_live": false
+  },
+  "command_posture": {
+    "dry_run_argv": [
+      "bash",
+      "install.sh",
+      "--surface",
+      "claude-code",
+      "--no-machine-helpers",
+      "--dry-run",
+      "--json",
+      "--existing-install",
+      "repair"
+    ],
+    "real_install_argv": [
+      "bash",
+      "install.sh",
+      "--surface",
+      "claude-code",
+      "--no-machine-helpers",
+      "--existing-install",
+      "repair"
+    ],
+    "selected_surface": "claude_code",
+    "single_surface_scope": true,
+    "no_machine_helpers": true,
+    "machine_helpers_allowed": false,
+    "existing_install_mode": "repair",
+    "curl_pipe_allowed": false,
+    "latest_or_remote_fetch_allowed": false
+  },
+  "dry_run_plan_identity": {
+    "plan_type": "zlar-install-plan-v1",
+    "plan_schema_version": 1,
+    "plan_canonicalization": "zlar-canonical-json-v1",
+    "plan_command": "install.sh --dry-run --json --surface claude_code --no-machine-helpers --existing-install repair",
+    "plan_sha256": "1f1eb0150d6117e3036595a593b6eec87a5ce225796350702a3201e4447c64ea",
+    "planned_writes_sha256": "32fa855729357903f7855301c5a0b92ac632029bb14c35a75b86ec15c2560198",
+    "write_effects_sha256": "a90e1e5a66929231376bb37a9e9dec970736374b4b61232628bf159632968a33",
+    "selected_surface": "claude_code",
+    "dry_run_performed_by_packet_verifier": false,
+    "no_write_plan": true
+  },
+  "authority_request_identity": {
+    "request_id": "claude-code-current-machine-approval-request-private-core-v3.4.55-fixture-v1",
+    "issued_at": "2099-12-30T00:00:00Z",
+    "expires_at": "2099-12-31T00:00:00Z",
+    "ttl_seconds": 86400,
+    "nonce_sha256": "fe51851183aeef5e2d453a8d38b01dcb83d17cf6ae5374a166b3f6860272f9f3",
+    "request_sha256": "8685237ac83fe9d2d3a8b21b4a2fb0cfea84ee0e5d723fae7b982c9a84a6152d",
+    "replay_scope": "claude-code-private-core-v3.4.55-single-use-authority-request-fixture",
+    "single_use": true,
+    "replay_guard_required": true,
+    "summary_only_authority_material_allowed": false,
+    "authority_request_made": false
+  },
+  "backup_rollback_requirements": {
+    "backup_required_before_mutation": true,
+    "backup_artifact_identity_required": true,
+    "backup_created_by_installer": false,
+    "backup_scope": [
+      "~/.zlar",
+      "~/.zlar-signing.key",
+      "~/.claude/settings.json"
+    ],
+    "rollback_plan_required": true,
+    "rollback_plan_identity_required": true,
+    "rollback_authority_required": true,
+    "mutation_refuses_without_backup_ack": true,
+    "installer_backup_enforcement_present": false
+  },
+  "issuer_policy": {
+    "issuer": {
+      "issuer_id": "zlar-current-machine-claude-code-fixture-issuer",
+      "issuer_kid": "zlar-current-machine-claude-code-fixture-kid",
+      "issuer_status_claim": "expected_active_before_install_authority",
+      "issuer_status_verified_live": false,
+      "public_key_reference": "issuer-kid-only-reference-before-install-authority",
+      "public_key_material_included": false,
+      "private_key_material_included": false
+    },
+    "policy": {
+      "policy_id": "zlar-current-machine-claude-code-policy-v1",
+      "accepted_policy_version": "3.4.55",
+      "policy_sha256": "5fe78410bdbac8b1b91c062ca5c0f710194939da9dd8eb0140ba54af1525f0b0",
+      "policy_signature_required": true,
+      "policy_signature_verifier": "zlar-policy verify --input policy-file --pubkey issuer-public-key-reference",
+      "policy_material_included": false,
+      "live_policy_signature_verified": false
+    }
+  },
+  "receipt_path": {
+    "receipt_format": "zlar-receipt-v1",
+    "receipt_emission_source": "routed_claude_code_pretooluse_hook_gate_decision",
+    "receipt_path": "zlar-audit-receipt-envelope-for-selected-surface",
+    "recognized_receipt_required_for_boarding": true,
+    "boarding_credential_minted_by_verifier": false,
+    "live_receipt_emission_verified": false
+  },
+  "downstream_recognition": {
+    "terminal": "protected-records.installed-runtime-profile.terminal-chain.records.write",
+    "recognition_rule": "accepted issuer kid plus accepted policy plus selected surface plus terminal plus fresh non-replayed receipt plus matching detail hash",
+    "freshness_window_seconds": 300,
+    "replay_store": "zlar-current-machine-approval-replay-store-v1",
+    "refuses_before_effect": true,
+    "refusal_matrix": [
+      {
+        "reason_code": "receipt_missing",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "receipt_invalid",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "receipt_stale_or_expired",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "receipt_replay",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "unknown_issuer",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "issuer_not_active",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "policy_not_recognized",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "surface_not_recognized",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "terminal_not_recognized",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "detail_hash_mismatch",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "unsupported_receipt_format",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "request_stream_authority_material",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "authority_request_missing",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "authority_request_invalid",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "authority_request_expired",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "authority_request_replay",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "wrong_request",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "wrong_policy",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "wrong_profile",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "wrong_surface",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "wrong_terminal",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "unrecognized_authority_material",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "summary_only_authority_material",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "tampered_authority_material",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "false_boundary_flip",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "target_source_mismatch",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "installer_identity_mismatch",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "dry_run_plan_identity_mismatch",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      },
+      {
+        "reason_code": "backup_rollback_missing",
+        "refuses_before_effect": true,
+        "recognized_receipt_required": true,
+        "effect_mutation_allowed": false
+      }
+    ]
+  },
+  "authority_boundary": {
+    "approval_packet_complete_before_authority_request": true,
+    "human_authority_required_before_install_or_config": true,
+    "install_or_activation_applied": false,
+    "hook_profile_written": false,
+    "user_config_written": false,
+    "machine_config_written": false,
+    "service_started": false,
+    "secrets_or_signing_material_changed": false,
+    "telegram_used": false,
+    "github_settings_changed": false,
+    "website_publication": false,
+    "current_machine_governance_evidence": false,
+    "live_downstream_recognition_evidence": false,
+    "external_attestation": false
+  },
+  "boarding_credential_rule": "recognized boarding credential can be minted only by a routed hook/gate passage for the selected surface; this verifier cannot mint receipts",
+  "explicit_non_claims": [
+    "This packet is not installation or activation.",
+    "This packet does not prove current-machine governance.",
+    "This packet does not prove the current invocation crossed a hook.",
+    "This packet does not prove live downstream recognition or live records-system coverage.",
+    "This packet does not prove production authority, enterprise readiness, external attestation, or sovereign recognition.",
+    "This packet does not close unrouted side doors."
+  ]
+}

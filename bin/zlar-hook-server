@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+// zlar-hook-server — ZLAR HTTP Hook Adapter entry point
+//
+// Claude Code governance bridge. Translates HTTP hook protocol to gate daemon.
+// Requires zlar-daemon to be running first.
+//
+// Usage:
+//   zlar-hook-server                          # start the adapter (port 8182)
+//   zlar-hook-server --generate-managed-settings  # print enterprise config
+
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname    = dirname(fileURLToPath(import.meta.url));
+const serverPath   = join(__dirname, '..', 'sdk', 'hook-adapter', 'server.mjs');
+
+await import(serverPath);

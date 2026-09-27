@@ -1,0 +1,79 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import {
+  assertCurrentMachineApprovalIntakeReport,
+  formatCurrentMachineApprovalIntakeReport,
+  runCurrentMachineApprovalIntake,
+} from '../lib/current-machine-approval-intake.mjs';
+import { assertNoUnsafeCurrentMachineApprovalPacketText } from '../lib/current-machine-approval-packet.mjs';
+
+function usage() {
+  console.error('Usage: zlar current-machine-approval-intake --packet <file|-> [--json]');
+  console.error('Runs the current-machine approval packet verifier on an explicit packet.');
+  console.error('Refuses install/config authority request preparation unless the packet verifies as complete.');
+  console.error('This command does not install, activate, write hooks/profiles/user/machine configuration, use Telegram, touch secrets/signing material, execute live hooks, mint receipts, or prove current-machine governance.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeCurrentMachineApprovalPacketText(message);
+    return message;
+  } catch {
+    return 'Current-machine approval intake failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+let packetPath = '';
+let asJson = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--packet') {
+    packetPath = args[++i] || '';
+    if (!packetPath) {
+      usage();
+      die('Missing value for --packet.', 2);
+    }
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported current-machine approval intake option provided.', 2);
+  }
+}
+
+if (!packetPath) {
+  usage();
+  die('Missing required --packet <file|->.', 2);
+}
+
+let packetText;
+if (packetPath === '-') {
+  try {
+    packetText = readFileSync(0, 'utf8');
+  } catch {
+    die('Could not read current-machine approval packet from stdin.', 2);
+  }
+}
+
+const report = runCurrentMachineApprovalIntake({
+  packetPath,
+  packetText,
+});
+assertCurrentMachineApprovalIntakeReport(report);
+
+const output = asJson
+  ? `${JSON.stringify(report, null, 2)}\n`
+  : formatCurrentMachineApprovalIntakeReport(report);
+assertNoUnsafeCurrentMachineApprovalPacketText(output);
+process.stdout.write(output);
+process.exit(report.authority_request_allowed ? 0 : 1);

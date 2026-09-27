@@ -1,0 +1,114 @@
+{
+  "report_type": "zlar-private-verifier-zip-result-v1",
+  "schema_version": 1,
+  "generated_at": "2026-07-06T13:45:00Z",
+  "intake_class": "zip-snapshot-private-verifier-reply",
+  "target": {
+    "repo": "ZLAR-AI/ZLAR",
+    "expected_commit_sha": "5a12a2e39d67091fb96ae35d016d3e49efeaa05b",
+    "commit_sha": "5a12a2e39d67091fb96ae35d016d3e49efeaa05b",
+    "source_route": "browser-downloaded-zip-snapshot",
+    "moving_target_used": false
+  },
+  "verifier": {
+    "public_label": "private-personally-connected-outside-machine-verifier-1",
+    "relationship_to_zlar": "private personally connected outside-machine verifier; not independent, public, or arm's-length attestation",
+    "identity_public": false,
+    "contact_public": false
+  },
+  "custody": {
+    "source_channel_recorded_privately": true,
+    "received_timestamp_recorded_privately": true,
+    "raw_reply_publicly_committed": false,
+    "private_storage_required": true,
+    "public_repo_material_contains_private_identity": false,
+    "returned_attachment_locally_reviewed": true
+  },
+  "evidence": {
+    "evidence_model": "zip-snapshot-returned-artifact-set",
+    "returned_results_zip_name": "zlar-private-verifier-zip-results.zip",
+    "returned_results_zip_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_snapshot_zip_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sha256sums_entry_count": 24,
+    "required_steps": [
+      {
+        "id": "node-check-proof-smoke",
+        "exit_code": 0,
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "id": "source-bridge-window",
+        "exit_code": 0,
+        "stdout_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "id": "proof-smoke-verify",
+        "exit_code": 0,
+        "stdout_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "id": "north-star-readiness",
+        "exit_code": 0,
+        "stdout_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "id": "test-proof-smoke-cli",
+        "exit_code": 0,
+        "stdout_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "id": "test-proof-smoke-report",
+        "exit_code": 0,
+        "stdout_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "id": "public-privacy",
+        "exit_code": 0,
+        "stdout_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "privacy": {
+    "private_by_default": true,
+    "public_attribution_approved": false,
+    "public_external_attestation_approved": false,
+    "verifier_identity_public": false,
+    "verifier_contact_public": false,
+    "private_contact_included": false,
+    "private_paths_included": false,
+    "credentials_included": false
+  },
+  "claim_boundary": {
+    "private_intake_only": true,
+    "private_personally_connected_outside_machine_signal": true,
+    "artifact_custody_reviewed": true,
+    "public_external_attestation": false,
+    "independent_review": false,
+    "arms_length_review": false,
+    "public_attribution": false,
+    "git_clone_source_access": false,
+    "source_transport_credentials": false,
+    "tag_or_release_proof": false,
+    "website_public_alignment": false,
+    "production_trust": false,
+    "current_machine_governance": false,
+    "all_surface_governance": false,
+    "north_star_readiness": false,
+    "side_door_closure": false,
+    "absolute_human_intention": false
+  },
+  "non_claims": [
+    "This result is private/internal intake only unless separate public disclosure is approved.",
+    "This result is not independent, third-party, public, or arm's-length attestation.",
+    "This result does not prove git clone source access or source-transport credential proof.",
+    "This result does not prove production trust, current-machine governance, all-surface governance, or side-door closure.",
+    "This result does not prove North Star readiness, website/public alignment, tag/release proof, or absolute human intention."
+  ]
+}

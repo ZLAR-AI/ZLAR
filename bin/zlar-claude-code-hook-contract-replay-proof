@@ -1,0 +1,64 @@
+#!/usr/bin/env node
+import {
+  assertClaudeCodeHookContractReplayProof,
+  assertNoUnsafeClaudeCodeHookContractReplayProofText,
+  formatClaudeCodeHookContractReplayProofSummary,
+  runClaudeCodeHookContractReplayProof,
+} from '../lib/claude-code-hook-contract-replay-proof.mjs';
+
+function usage() {
+  console.error('Usage: zlar claude-code-hook-contract-replay-proof [--json] [--adapter-source repo|installed]');
+  console.error('Runs a local fixture Claude-shaped PreToolUse hook-contract replay proof.');
+  console.error('Defaults to repo adapter source inside a git checkout and installed adapter source outside a git checkout.');
+  console.error('This command uses built-in fixtures only and accepts no external fixture paths or live Claude prompts.');
+  console.error('It does not invoke claude, contact Claude/Anthropic, install, activate, write hooks/config, read or write ~/.claude.json, emit live receipts, prove current-machine governance, or prove live Claude app passage.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeClaudeCodeHookContractReplayProofText(message);
+    return message;
+  } catch {
+    return 'Claude Code hook-contract replay proof failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+let asJson = false;
+let adapterSource = 'auto';
+const args = process.argv.slice(2);
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--adapter-source') {
+    adapterSource = args[++i] || '';
+    if (!['repo', 'installed'].includes(adapterSource)) {
+      usage();
+      die('Unsupported adapter source for v1: use repo or installed.', 2);
+    }
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+try {
+  const report = runClaudeCodeHookContractReplayProof({ adapterSource });
+  assertClaudeCodeHookContractReplayProof(report);
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatClaudeCodeHookContractReplayProofSummary(report);
+  assertNoUnsafeClaudeCodeHookContractReplayProofText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

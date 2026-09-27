@@ -1,0 +1,21 @@
+#!/usr/bin/env node
+
+const RETIREMENT_REASON = 'e2_positive_service_proof_generation_retired';
+
+function usage() {
+  process.stderr.write(
+    'Usage: zlar protected-records-service-proof [--help]\n' +
+    'Fresh protected-records service-proof generation is permanently retired.\n' +
+    'Use the exact-pinned historical local-proof-pack verifier for retained E2 evidence.\n',
+  );
+}
+
+if (process.argv.slice(2).some((arg) => arg === '--help' || arg === '-h')) {
+  usage();
+  process.exit(0);
+}
+
+process.stderr.write(
+  `ERROR: protected-records service-proof generation refused: ${RETIREMENT_REASON}\n`,
+);
+process.exitCode = 1;

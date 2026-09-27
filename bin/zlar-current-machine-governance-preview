@@ -1,0 +1,66 @@
+#!/usr/bin/env node
+import {
+  assertCurrentMachineGovernancePreviewReport,
+  buildCurrentMachineGovernancePreview,
+  formatCurrentMachineGovernancePreviewReport,
+} from '../lib/current-machine-governance-preview.mjs';
+import {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText,
+} from '../lib/protected-records-runtime-profile.mjs';
+
+function usage() {
+  console.error('Usage: zlar current-machine-governance-preview --sample [--json]');
+  console.error('Builds a local no-write current-machine governance preview receipt from committed fixtures and proof-owned temporary roots.');
+  console.error('This command does not request authority, install, activate, write hooks/profiles/services/user/machine configuration, use Telegram, publish, change GitHub settings, or contact external verifiers.');
+  console.error('It does not prove current-machine governance.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(message);
+    return message;
+  } catch {
+    return 'Current-machine governance preview failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+let sample = false;
+let asJson = false;
+
+for (let index = 0; index < args.length; index++) {
+  const arg = args[index];
+  if (arg === '--sample') {
+    sample = true;
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported current-machine governance preview option provided.', 2);
+  }
+}
+
+if (!sample) {
+  usage();
+  die('--sample is required.', 2);
+}
+
+try {
+  const report = buildCurrentMachineGovernancePreview();
+  assertCurrentMachineGovernancePreviewReport(report);
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatCurrentMachineGovernancePreviewReport(report);
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

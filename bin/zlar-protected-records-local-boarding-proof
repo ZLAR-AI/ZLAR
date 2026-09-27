@@ -1,0 +1,54 @@
+#!/usr/bin/env node
+import {
+  assertNoUnsafeProtectedRecordsLocalBoardingProofText,
+  assertProtectedRecordsLocalBoardingProof,
+  formatProtectedRecordsLocalBoardingProofSummary,
+  runProtectedRecordsLocalBoardingProof,
+} from '../lib/protected-records-local-boarding-proof.mjs';
+
+function usage() {
+  console.error('Usage: zlar protected-records-local-boarding-proof [--json]');
+  console.error('Runs a local in-memory protected-records records.write boarding proof.');
+  console.error('This command uses built-in fixture material only and accepts no external fixture paths or receipt inputs.');
+  console.error('It does not install, activate, write hooks, write profiles, write services, write user or machine config, live probe records systems, emit live receipts, request authority, use Telegram, prove current-machine governance, or prove production downstream recognition.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsLocalBoardingProofText(message);
+    return message;
+  } catch {
+    return 'Protected records local boarding proof failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+let asJson = false;
+const args = process.argv.slice(2);
+for (const arg of args) {
+  if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+try {
+  const report = runProtectedRecordsLocalBoardingProof();
+  assertProtectedRecordsLocalBoardingProof(report);
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatProtectedRecordsLocalBoardingProofSummary(report);
+  assertNoUnsafeProtectedRecordsLocalBoardingProofText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

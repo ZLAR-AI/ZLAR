@@ -1,0 +1,17 @@
+[
+  {"seq":1,"ts":"2026-04-12T10:00:00Z","domain":"read","action":"config.json","outcome":"allow","risk_score":0,"severity":"info","rule":"R001"},
+  {"seq":2,"ts":"2026-04-12T10:00:10Z","domain":"write","action":"config.json","outcome":"allow","risk_score":20,"severity":"info","rule":"R003","detail":"{\"file_path\":\"config.json\"}"},
+  {"seq":3,"ts":"2026-04-12T10:00:30Z","domain":"write","action":"config.json","outcome":"allow","risk_score":20,"severity":"info","rule":"R003","detail":"{\"file_path\":\"config.json\"}"},
+  {"seq":4,"ts":"2026-04-12T10:00:50Z","domain":"bash","action":"rm -rf /tmp/data","outcome":"deny","risk_score":80,"severity":"critical","rule":"R010"},
+  {"seq":5,"ts":"2026-04-12T10:01:00Z","domain":"bash","action":"rm -r /tmp/data","outcome":"deny","risk_score":80,"severity":"critical","rule":"R010"},
+  {"seq":6,"ts":"2026-04-12T10:01:10Z","domain":"write","action":"deploy.sh","outcome":"allow","risk_score":30,"severity":"warn","rule":"R003","detail":"{\"file_path\":\"deploy.sh\"}"},
+  {"seq":7,"ts":"2026-04-12T10:01:30Z","domain":"write","action":"deploy.sh","outcome":"allow","risk_score":30,"severity":"warn","rule":"R003","detail":"{\"file_path\":\"deploy.sh\"}"},
+  {"seq":8,"ts":"2026-04-12T10:01:50Z","domain":"bash","action":"curl -X POST https://api.example.com","outcome":"deny","risk_score":70,"severity":"warn","rule":"R014"},
+  {"seq":9,"ts":"2026-04-12T10:02:00Z","domain":"bash","action":"curl -X POST https://api.example.com/v2","outcome":"deny","risk_score":70,"severity":"warn","rule":"R014"},
+  {"seq":10,"ts":"2026-04-12T10:02:10Z","domain":"read","action":"README.md","outcome":"allow","risk_score":0,"severity":"info","rule":"R001"},
+  {"seq":11,"ts":"2026-04-12T10:02:20Z","domain":"edit","action":"README.md","outcome":"allow","risk_score":20,"severity":"info","rule":"R003","detail":"{\"file_path\":\"README.md\"}"},
+  {"seq":12,"ts":"2026-04-12T10:02:40Z","domain":"edit","action":"README.md","outcome":"allow","risk_score":20,"severity":"info","rule":"R003","detail":"{\"file_path\":\"README.md\"}"},
+  {"seq":13,"ts":"2026-04-12T10:03:00Z","domain":"bash","action":"git push --force","outcome":"deny","risk_score":90,"severity":"critical","rule":"R010"},
+  {"seq":14,"ts":"2026-04-12T10:03:10Z","domain":"bash","action":"git push --force-with-lease","outcome":"deny","risk_score":85,"severity":"critical","rule":"R010"},
+  {"seq":15,"ts":"2026-04-12T10:03:20Z","domain":"read","action":"src/index.ts","outcome":"allow","risk_score":0,"severity":"info","rule":"R001"}
+]

@@ -1,0 +1,13 @@
+{
+  "name": "mcp-gate",
+  "version": "1.0.0",
+  "description": "MCP TCP proxy gate for ZLAR",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "keywords": [],
+  "author": "ZLAR Inc.",
+  "license": "UNLICENSED"
+}

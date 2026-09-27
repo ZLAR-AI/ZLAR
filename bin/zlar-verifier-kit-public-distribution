@@ -1,0 +1,111 @@
+#!/usr/bin/env node
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  assertNoUnsafeVerifierKitPublicDistributionText,
+  assertVerifierKitPublicDistributionReport,
+  buildVerifierKitPublicDistributionReport,
+  formatVerifierKitPublicDistributionSummary,
+} from '../lib/verifier-kit-public-distribution.mjs';
+
+function usage() {
+  console.error('Usage: zlar verifier-kit-public-distribution --release-tag <vX.Y.Z> --release-assets-json <file> --reproducibility <file> [--asset-dir <dir>] [--json|--json-out <file>] [--require-public]');
+  console.error('Audits whether verifier-kit release assets and reproducibility evidence support a public distribution posture.');
+  console.error('This command does not publish assets, create external attestation, or prove production publisher key custody.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function readJson(path, label) {
+  if (!existsSync(path)) die(`${label} file not found: ${path}`, 2);
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    die(`Could not parse ${label} JSON: ${err.message}`, 2);
+  }
+}
+
+const args = process.argv.slice(2);
+let releaseTag = '';
+let releaseAssetsJsonPath = '';
+let reproducibilityPath = '';
+let assetDir = '';
+let asJson = false;
+let jsonOut = '';
+let requirePublic = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--release-tag') {
+    releaseTag = args[++i] || '';
+    if (!releaseTag) die('--release-tag requires a value', 2);
+  } else if (arg === '--release-assets-json') {
+    releaseAssetsJsonPath = args[++i] || '';
+    if (!releaseAssetsJsonPath) die('--release-assets-json requires a file', 2);
+  } else if (arg === '--reproducibility') {
+    reproducibilityPath = args[++i] || '';
+    if (!reproducibilityPath) die('--reproducibility requires a file', 2);
+  } else if (arg === '--asset-dir') {
+    assetDir = args[++i] || '';
+    if (!assetDir) die('--asset-dir requires a directory', 2);
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--json-out') {
+    jsonOut = args[++i] || '';
+    if (!jsonOut) die('--json-out requires a file', 2);
+  } else if (arg === '--require-public') {
+    requirePublic = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die(`Unsupported option: ${arg}`, 2);
+  }
+}
+
+if (!releaseTag || !releaseAssetsJsonPath || !reproducibilityPath) {
+  usage();
+  die('--release-tag, --release-assets-json, and --reproducibility are required', 2);
+}
+if (jsonOut && existsSync(jsonOut)) {
+  die(`--json-out refuses to overwrite existing file: ${jsonOut}`, 2);
+}
+
+try {
+  if (!existsSync(reproducibilityPath)) die(`reproducibility file not found: ${reproducibilityPath}`, 2);
+  const reproducibilityBytes = readFileSync(reproducibilityPath);
+  let reproducibilityJson;
+  try {
+    reproducibilityJson = JSON.parse(reproducibilityBytes.toString('utf8'));
+  } catch (err) {
+    die(`Could not parse reproducibility JSON: ${err.message}`, 2);
+  }
+  const report = buildVerifierKitPublicDistributionReport({
+    releaseTag,
+    releaseAssetsJson: readJson(releaseAssetsJsonPath, 'release assets'),
+    reproducibility: reproducibilityJson,
+    reproducibilitySha256: createHash('sha256').update(reproducibilityBytes).digest('hex'),
+    assetDir,
+  });
+  assertVerifierKitPublicDistributionReport(report);
+  const output = asJson || jsonOut
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatVerifierKitPublicDistributionSummary(report);
+  assertNoUnsafeVerifierKitPublicDistributionText(output);
+
+  if (jsonOut) {
+    writeFileSync(jsonOut, output);
+  } else {
+    process.stdout.write(output);
+  }
+
+  if (requirePublic && report.ready_for_public_distribution_claim !== true) {
+    process.exit(1);
+  }
+} catch (err) {
+  die(err.message);
+}

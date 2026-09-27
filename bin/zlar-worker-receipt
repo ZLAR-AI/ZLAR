@@ -1,0 +1,65 @@
+#!/usr/bin/env node
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import {
+  projectWorkerReceipt,
+  validateWorkerReceipt
+} from '../lib/worker-receipt.mjs';
+
+function usage() {
+  console.error('Usage: zlar-worker-receipt --append <path> [--rule-description <text>] [--policy-key-id <id>] [--approval-channel <name>]');
+}
+
+const args = process.argv.slice(2);
+let appendPath = '';
+const metadata = {};
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--append') {
+    appendPath = args[++i] || '';
+  } else if (arg === '--rule-description') {
+    metadata.ruleDescription = args[++i] || '';
+  } else if (arg === '--policy-key-id') {
+    metadata.policyKeyId = args[++i] || '';
+  } else if (arg === '--approval-channel') {
+    metadata.approvalChannel = args[++i] || '';
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    console.error(`ERROR: Unsupported option: ${arg}`);
+    usage();
+    process.exit(2);
+  }
+}
+
+if (!appendPath) {
+  console.error('ERROR: --append is required.');
+  usage();
+  process.exit(2);
+}
+
+let event;
+try {
+  const input = readFileSync(0, 'utf8');
+  event = JSON.parse(input);
+} catch {
+  console.error('ERROR: Could not parse audit event JSON from stdin.');
+  process.exit(1);
+}
+
+try {
+  const receipt = projectWorkerReceipt(event, metadata);
+  if (!receipt) {
+    process.exit(0);
+  }
+
+  validateWorkerReceipt(receipt);
+  const outPath = resolve(appendPath);
+  mkdirSync(dirname(outPath), { recursive: true, mode: 0o700 });
+  appendFileSync(outPath, `${JSON.stringify(receipt)}\n`, { encoding: 'utf8', mode: 0o600 });
+} catch (err) {
+  console.error(`ERROR: ${err.message}`);
+  process.exit(1);
+}

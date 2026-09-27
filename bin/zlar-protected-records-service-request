@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+
+console.error('ERROR: e2_direct_request_factory_source_retired');
+process.exit(1);

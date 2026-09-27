@@ -1,0 +1,379 @@
+{
+  "artifact_type": "zlar-protected-records-service-profile-preflight-artifact-v1",
+  "canonicalization": "zlar-canonical-json-v1",
+  "generator": "zlar protected-records-service-preflight --artifact",
+  "hash_scope": "canonical artifact body without integrity",
+  "payload": {
+    "profile": {
+      "profile_type": "zlar-protected-records-service-profile-v1",
+      "profile_id": "protected-records-service-fixture-profile",
+      "profile_status": "sample_not_active",
+      "deployment_posture": "deployable_profile_preflight_only",
+      "action_class": "records.write",
+      "service_type": "local-protected-records-downstream-service-v1",
+      "service_command": "zlar protected-records-service-request --config <file|-> --input <file|->",
+      "result_type": "protected-records-service-result-v1",
+      "recognition_boundary": "downstream-recognition-before-service-mutation",
+      "mutation_authoritative_route": "receipt-recognition-before-service-state-append",
+      "state_model": "bounded-jsonl-service-state-entry",
+      "consumed_receipt_store": "persistent-single-use-receipt-id-store",
+      "replay_scope": "per-service-consumed-receipt-store",
+      "environment_boundary": {
+        "boundary_id": "local-disposable-cli-service-boundary",
+        "boundary_type": "local-disposable-cli-process",
+        "service_entrypoint": "zlar protected-records-service-request --config <file|-> --input <file|->",
+        "service_process_boundary": "separate-cli-process",
+        "authoritative_route": "receipt-recognition-before-service-state-append",
+        "effect_boundary": "bounded-jsonl-service-state-entry",
+        "fixture_mode_required": true,
+        "launcher_owned_config_required": true,
+        "request_stream_authority_material_allowed": false,
+        "request_stream_allowed_fields": [
+          "receipt",
+          "record_update"
+        ],
+        "runtime_activation": false,
+        "live_profile_installed": false,
+        "direct_filesystem_write_to_fixture_paths_closed": false
+      },
+      "recognition_rule_contract": {
+        "deployment_scope": "protected-records-service-profile-fixture",
+        "accepted_policy_versions": [
+          "recognition-policy-v1"
+        ],
+        "accepted_domains": [
+          "records"
+        ],
+        "accepted_tools": [
+          "records.write"
+        ],
+        "accepted_outcomes": [
+          "allow",
+          "authorized"
+        ],
+        "max_age_seconds": 120,
+        "required_audit_event_id": "protected-record-service-profile-001",
+        "required_issuer_status": "active",
+        "required_detail_binding": "receipt.payload.detail_hash == sha256(canonical(record_update))"
+      },
+      "required_cases": [
+        "recognized_profile_service_write_first_process",
+        "replay_profile_refused_after_service_restart",
+        "missing_receipt_profile_refused_before_service_mutation",
+        "unrecognized_receipt_profile_refused_before_service_mutation",
+        "invalid_receipt_profile_refused_before_service_mutation",
+        "unknown_issuer_profile_refused_before_service_mutation",
+        "wrong_policy_profile_refused_before_service_mutation",
+        "stale_receipt_profile_refused_before_service_mutation",
+        "request_stream_authority_material_profile_refused_before_service_mutation",
+        "direct_api_profile_without_receipt_refused_before_service_mutation",
+        "direct_api_profile_receipt_present_refused_before_service_mutation"
+      ],
+      "known_open_boundaries": [
+        "direct_filesystem_write_to_configured_fixture_paths",
+        "live_records_system",
+        "production_records_service",
+        "runtime_profile_not_installed",
+        "unrouted_records_paths"
+      ],
+      "non_claims": [
+        "This profile is a sample deployable preflight profile, not an active runtime profile.",
+        "This preflight does not inspect a live records system.",
+        "This preflight does not prove production records service deployment.",
+        "This preflight does not close direct filesystem writes to configured fixture paths.",
+        "This preflight does not prove current-machine governance, live MCP coverage, or live approval-channel health.",
+        "This preflight does not prove external attestation, enterprise readiness, production authority, or sovereign recognition.",
+        "This preflight does not prove coverage of unrouted records paths."
+      ]
+    },
+    "preflight": {
+      "preflight_type": "zlar-protected-records-service-profile-preflight-v1",
+      "evidence_model": "local-disposable-config-backed-profile-preflight-fixture",
+      "live_probing": false,
+      "safe_claim_ceiling": "ZLAR can preflight a sample protected-records downstream service profile, showing the launcher-owned-config local fixture service path accepts one recognized receipt and refuses replay, missing, unrecognized, invalid, unknown-issuer, wrong-policy, stale, request-stream authority-material, no-receipt direct API, and direct-API-with-receipt attempts before service-state mutation.",
+      "deployment_posture": "deployable_profile_preflight_only",
+      "profile": {
+        "profile_type": "zlar-protected-records-service-profile-v1",
+        "profile_id": "protected-records-service-fixture-profile",
+        "profile_status": "sample_not_active",
+        "profile_sha256": "d7924fef6f98cdd68647c55ab3a88fdd3b2f75c2d1f48a5313cfc814415d03ee"
+      },
+      "environment_boundary": {
+        "boundary_id": "local-disposable-cli-service-boundary",
+        "boundary_type": "local-disposable-cli-process",
+        "service_entrypoint": "zlar protected-records-service-request --config <file|-> --input <file|->",
+        "service_process_boundary": "separate-cli-process",
+        "authoritative_route": "receipt-recognition-before-service-state-append",
+        "effect_boundary": "bounded-jsonl-service-state-entry",
+        "fixture_mode_required": true,
+        "launcher_owned_config_required": true,
+        "request_stream_authority_material_allowed": false,
+        "request_stream_allowed_fields": [
+          "receipt",
+          "record_update"
+        ],
+        "runtime_activation": false,
+        "live_profile_installed": false,
+        "direct_filesystem_write_to_fixture_paths_closed": false
+      },
+      "recognition_rule_contract": {
+        "deployment_scope": "protected-records-service-profile-fixture",
+        "accepted_policy_versions": [
+          "recognition-policy-v1"
+        ],
+        "accepted_domains": [
+          "records"
+        ],
+        "accepted_tools": [
+          "records.write"
+        ],
+        "accepted_outcomes": [
+          "allow",
+          "authorized"
+        ],
+        "max_age_seconds": 120,
+        "required_audit_event_id": "protected-record-service-profile-001",
+        "required_issuer_status": "active",
+        "required_detail_binding": "receipt.payload.detail_hash == sha256(canonical(record_update))"
+      },
+      "cases": [
+        {
+          "case_id": "recognized_profile_service_write_first_process",
+          "command": "zlar protected-records-service-request --config <file|-> --input <file|-> --require-written",
+          "process_boundary": "separate-cli-process",
+          "process_invocation": 1,
+          "separate_process_from_accepted": false,
+          "exit_status": 0,
+          "stdout_json_emitted": true,
+          "stderr_empty": true,
+          "service_write_accepted": true,
+          "reason_code": "recognized",
+          "state_entry_count_before": 0,
+          "state_entry_count_after": 1,
+          "state_entry_count_delta": 1,
+          "consumed_receipt_count": 1,
+          "consumed_store_exists_after": true,
+          "direct_api_attempted": false
+        },
+        {
+          "case_id": "replay_profile_refused_after_service_restart",
+          "command": "zlar protected-records-service-request --config <file|-> --input <file|-> --require-refused",
+          "process_boundary": "separate-cli-process",
+          "process_invocation": 2,
+          "separate_process_from_accepted": true,
+          "exit_status": 0,
+          "stdout_json_emitted": true,
+          "stderr_empty": true,
+          "service_write_accepted": false,
+          "reason_code": "receipt_replay",
+          "state_entry_count_before": 1,
+          "state_entry_count_after": 1,
+          "state_entry_count_delta": 0,
+          "consumed_receipt_count": 1,
+          "consumed_store_exists_after": true,
+          "direct_api_attempted": false
+        },
+        {
+          "case_id": "missing_receipt_profile_refused_before_service_mutation",
+          "command": "zlar protected-records-service-request --config <file|-> --input <file|-> --require-refused",
+          "process_boundary": "separate-cli-process",
+          "process_invocation": 3,
+          "separate_process_from_accepted": true,
+          "exit_status": 0,
+          "stdout_json_emitted": true,
+          "stderr_empty": true,
+          "service_write_accepted": false,
+          "reason_code": "receipt_missing",
+          "state_entry_count_before": 0,
+          "state_entry_count_after": 0,
+          "state_entry_count_delta": 0,
+          "consumed_receipt_count": 0,
+          "consumed_store_exists_after": false,
+          "direct_api_attempted": false
+        },
+        {
+          "case_id": "unrecognized_receipt_profile_refused_before_service_mutation",
+          "command": "zlar protected-records-service-request --config <file|-> --input <file|-> --require-refused",
+          "process_boundary": "separate-cli-process",
+          "process_invocation": 4,
+          "separate_process_from_accepted": true,
+          "exit_status": 0,
+          "stdout_json_emitted": true,
+          "stderr_empty": true,
+          "service_write_accepted": false,
+          "reason_code": "detail_hash_mismatch",
+          "state_entry_count_before": 0,
+          "state_entry_count_after": 0,
+          "state_entry_count_delta": 0,
+          "consumed_receipt_count": 0,
+          "consumed_store_exists_after": false,
+          "direct_api_attempted": false
+        },
+        {
+          "case_id": "invalid_receipt_profile_refused_before_service_mutation",
+          "command": "zlar protected-records-service-request --config <file|-> --input <file|-> --require-refused",
+          "process_boundary": "separate-cli-process",
+          "process_invocation": 5,
+          "separate_process_from_accepted": true,
+          "exit_status": 0,
+          "stdout_json_emitted": true,
+          "stderr_empty": true,
+          "service_write_accepted": false,
+          "reason_code": "receipt_invalid",
+          "state_entry_count_before": 0,
+          "state_entry_count_after": 0,
+          "state_entry_count_delta": 0,
+          "consumed_receipt_count": 0,
+          "consumed_store_exists_after": false,
+          "direct_api_attempted": false
+        },
+        {
+          "case_id": "unknown_issuer_profile_refused_before_service_mutation",
+          "command": "zlar protected-records-service-request --config <file|-> --input <file|-> --require-refused",
+          "process_boundary": "separate-cli-process",
+          "process_invocation": 6,
+          "separate_process_from_accepted": true,
+          "exit_status": 0,
+          "stdout_json_emitted": true,
+          "stderr_empty": true,
+          "service_write_accepted": false,
+          "reason_code": "unknown_issuer",
+          "state_entry_count_before": 0,
+          "state_entry_count_after": 0,
+          "state_entry_count_delta": 0,
+          "consumed_receipt_count": 0,
+          "consumed_store_exists_after": false,
+          "direct_api_attempted": false
+        },
+        {
+          "case_id": "wrong_policy_profile_refused_before_service_mutation",
+          "command": "zlar protected-records-service-request --config <file|-> --input <file|-> --require-refused",
+          "process_boundary": "separate-cli-process",
+          "process_invocation": 7,
+          "separate_process_from_accepted": true,
+          "exit_status": 0,
+          "stdout_json_emitted": true,
+          "stderr_empty": true,
+          "service_write_accepted": false,
+          "reason_code": "policy_not_recognized",
+          "state_entry_count_before": 0,
+          "state_entry_count_after": 0,
+          "state_entry_count_delta": 0,
+          "consumed_receipt_count": 0,
+          "consumed_store_exists_after": false,
+          "direct_api_attempted": false
+        },
+        {
+          "case_id": "stale_receipt_profile_refused_before_service_mutation",
+          "command": "zlar protected-records-service-request --config <file|-> --input <file|-> --require-refused",
+          "process_boundary": "separate-cli-process",
+          "process_invocation": 8,
+          "separate_process_from_accepted": true,
+          "exit_status": 0,
+          "stdout_json_emitted": true,
+          "stderr_empty": true,
+          "service_write_accepted": false,
+          "reason_code": "receipt_stale",
+          "state_entry_count_before": 0,
+          "state_entry_count_after": 0,
+          "state_entry_count_delta": 0,
+          "consumed_receipt_count": 0,
+          "consumed_store_exists_after": false,
+          "direct_api_attempted": false
+        },
+        {
+          "case_id": "request_stream_authority_material_profile_refused_before_service_mutation",
+          "command": "zlar protected-records-service-request --config <file|-> --input <file|-> --require-refused",
+          "process_boundary": "separate-cli-process",
+          "process_invocation": 9,
+          "separate_process_from_accepted": true,
+          "exit_status": 0,
+          "stdout_json_emitted": true,
+          "stderr_empty": true,
+          "service_write_accepted": false,
+          "reason_code": "request_stream_authority_material",
+          "state_entry_count_before": 0,
+          "state_entry_count_after": 0,
+          "state_entry_count_delta": 0,
+          "consumed_receipt_count": 0,
+          "consumed_store_exists_after": false,
+          "direct_api_attempted": false
+        },
+        {
+          "case_id": "direct_api_profile_without_receipt_refused_before_service_mutation",
+          "command": "zlar protected-records-service-request --config <file|-> --input <file|-> --require-refused",
+          "process_boundary": "separate-cli-process",
+          "process_invocation": 10,
+          "separate_process_from_accepted": true,
+          "exit_status": 0,
+          "stdout_json_emitted": true,
+          "stderr_empty": true,
+          "service_write_accepted": false,
+          "reason_code": "request_stream_forbidden_fields",
+          "state_entry_count_before": 0,
+          "state_entry_count_after": 0,
+          "state_entry_count_delta": 0,
+          "consumed_receipt_count": 0,
+          "consumed_store_exists_after": false,
+          "direct_api_attempted": true
+        },
+        {
+          "case_id": "direct_api_profile_receipt_present_refused_before_service_mutation",
+          "command": "zlar protected-records-service-request --config <file|-> --input <file|-> --require-refused",
+          "process_boundary": "separate-cli-process",
+          "process_invocation": 11,
+          "separate_process_from_accepted": true,
+          "exit_status": 0,
+          "stdout_json_emitted": true,
+          "stderr_empty": true,
+          "service_write_accepted": false,
+          "reason_code": "request_stream_forbidden_fields",
+          "state_entry_count_before": 0,
+          "state_entry_count_after": 0,
+          "state_entry_count_delta": 0,
+          "consumed_receipt_count": 0,
+          "consumed_store_exists_after": false,
+          "direct_api_attempted": true
+        }
+      ],
+      "side_door_report": {
+        "direct_api_without_receipt_refused": true,
+        "direct_api_with_receipt_refused": true,
+        "direct_filesystem_write_to_fixture_paths_closed": false,
+        "external_attestation": false,
+        "launcher_owned_config_required": true,
+        "live_approval_channel_health_checked": false,
+        "live_mcp_coverage_checked": false,
+        "live_profile_installed": false,
+        "live_records_system_checked": false,
+        "production_records_service_checked": false,
+        "request_stream_authority_material_allowed": false,
+        "request_stream_authority_material_refused": true,
+        "request_stream_forbidden_fields_refused": true,
+        "runtime_profile_activation_checked": false,
+        "sovereign_recognition": false,
+        "unrouted_records_paths_checked": false
+      },
+      "known_open_boundaries": [
+        "direct_filesystem_write_to_configured_fixture_paths",
+        "live_records_system",
+        "production_records_service",
+        "runtime_profile_not_installed",
+        "unrouted_records_paths"
+      ],
+      "non_claims": [
+        "This profile is a sample deployable preflight profile, not an active runtime profile.",
+        "This preflight does not inspect a live records system.",
+        "This preflight does not prove production records service deployment.",
+        "This preflight does not close direct filesystem writes to configured fixture paths.",
+        "This preflight does not prove current-machine governance, live MCP coverage, or live approval-channel health.",
+        "This preflight does not prove external attestation, enterprise readiness, production authority, or sovereign recognition.",
+        "This preflight does not prove coverage of unrouted records paths."
+      ]
+    }
+  },
+  "integrity": {
+    "algorithm": "SHA-256",
+    "body_sha256": "36a3aadfa920ea3da2ac3199b5af79f937e783e42604bfa3318d6ac8824b190c"
+  }
+}

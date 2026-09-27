@@ -1,0 +1,197 @@
+{
+  "_comment": "ZLAR Canonicalization Test Vectors v1.0. Each entry has an 'input' (JSON value) and 'expected' (canonical string). Implementations MUST produce byte-identical output for every vector.",
+  "vectors": [
+    {
+      "id": "C001",
+      "description": "Empty object",
+      "input": {},
+      "expected": "{}"
+    },
+    {
+      "id": "C002",
+      "description": "Empty array",
+      "input": [],
+      "expected": "[]"
+    },
+    {
+      "id": "C003",
+      "description": "Null value",
+      "input": null,
+      "expected": "null"
+    },
+    {
+      "id": "C004",
+      "description": "Boolean true",
+      "input": true,
+      "expected": "true"
+    },
+    {
+      "id": "C005",
+      "description": "Boolean false",
+      "input": false,
+      "expected": "false"
+    },
+    {
+      "id": "C006",
+      "description": "Integer zero",
+      "input": 0,
+      "expected": "0"
+    },
+    {
+      "id": "C007",
+      "description": "Negative integer",
+      "input": -1,
+      "expected": "-1"
+    },
+    {
+      "id": "C008",
+      "description": "Large safe integer",
+      "input": 9007199254740991,
+      "expected": "9007199254740991"
+    },
+    {
+      "id": "C009",
+      "description": "Negative large safe integer",
+      "input": -9007199254740991,
+      "expected": "-9007199254740991"
+    },
+    {
+      "id": "C010",
+      "description": "Empty string",
+      "input": "",
+      "expected": "\"\""
+    },
+    {
+      "id": "C011",
+      "description": "Simple string",
+      "input": "hello",
+      "expected": "\"hello\""
+    },
+    {
+      "id": "C012",
+      "description": "String with special characters",
+      "input": "line1\nline2\ttab",
+      "expected": "\"line1\\nline2\\ttab\""
+    },
+    {
+      "id": "C013",
+      "description": "String with quotes and backslash",
+      "input": "say \"hello\" and \\",
+      "expected": "\"say \\\"hello\\\" and \\\\\""
+    },
+    {
+      "id": "C014",
+      "description": "String with Unicode (non-ASCII value, which is allowed)",
+      "input": "\u65e5\u672c\u8a9e",
+      "expected": "\"\u65e5\u672c\u8a9e\""
+    },
+    {
+      "id": "C015",
+      "description": "Key ordering — alphabetical",
+      "input": {"c": 3, "a": 1, "b": 2},
+      "expected": "{\"a\":1,\"b\":2,\"c\":3}"
+    },
+    {
+      "id": "C016",
+      "description": "Key ordering — case sensitive (uppercase before lowercase in ASCII)",
+      "input": {"b": 2, "A": 1, "a": 3},
+      "expected": "{\"A\":1,\"a\":3,\"b\":2}"
+    },
+    {
+      "id": "C017",
+      "description": "Key ordering — numbers sort before letters in ASCII",
+      "input": {"b": 2, "1": 1, "a": 3},
+      "expected": "{\"1\":1,\"a\":3,\"b\":2}"
+    },
+    {
+      "id": "C018",
+      "description": "Nested objects — keys sorted recursively",
+      "input": {"z": {"b": 2, "a": 1}, "a": {"d": 4, "c": 3}},
+      "expected": "{\"a\":{\"c\":3,\"d\":4},\"z\":{\"a\":1,\"b\":2}}"
+    },
+    {
+      "id": "C019",
+      "description": "Array of objects — each object sorted, array order preserved",
+      "input": [{"z": 1, "a": 2}, {"m": 3, "b": 4}],
+      "expected": "[{\"a\":2,\"z\":1},{\"b\":4,\"m\":3}]"
+    },
+    {
+      "id": "C020",
+      "description": "Deeply nested structure",
+      "input": {"c": {"f": {"i": 9, "h": 8}, "e": 5}, "a": {"d": [3, 2, 1], "b": null}},
+      "expected": "{\"a\":{\"b\":null,\"d\":[3,2,1]},\"c\":{\"e\":5,\"f\":{\"h\":8,\"i\":9}}}"
+    },
+    {
+      "id": "C021",
+      "description": "Mixed types in array",
+      "input": [1, "two", true, null, {"a": 3}],
+      "expected": "[1,\"two\",true,null,{\"a\":3}]"
+    },
+    {
+      "id": "C022",
+      "description": "Empty nested structures",
+      "input": {"a": {}, "b": [], "c": ""},
+      "expected": "{\"a\":{},\"b\":[],\"c\":\"\"}"
+    },
+    {
+      "id": "C023",
+      "description": "Receipt-shaped structure (realistic)",
+      "input": {
+        "receipt_version": "0.1.0",
+        "id": "test-receipt-001",
+        "governed_action": {
+          "tool": "Bash",
+          "domain": "file",
+          "detail_hash": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        },
+        "decision": {
+          "outcome": "deny",
+          "rule": "R002",
+          "authorizer": "policy",
+          "timestamp": "2026-04-06T14:00:00.000Z"
+        },
+        "evidence": {
+          "policy_version": "2.6.0",
+          "manifest_version": null,
+          "manifest_agent_id": null,
+          "manifest_principal": null,
+          "delegation_chain": [],
+          "audit_event_id": "test-event-001",
+          "audit_prev_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "prev_receipt_hash": null
+      },
+      "expected": "{\"decision\":{\"authorizer\":\"policy\",\"outcome\":\"deny\",\"rule\":\"R002\",\"timestamp\":\"2026-04-06T14:00:00.000Z\"},\"evidence\":{\"audit_event_id\":\"test-event-001\",\"audit_prev_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"delegation_chain\":[],\"manifest_agent_id\":null,\"manifest_principal\":null,\"manifest_version\":null,\"policy_version\":\"2.6.0\"},\"governed_action\":{\"detail_hash\":\"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\",\"domain\":\"file\",\"tool\":\"Bash\"},\"id\":\"test-receipt-001\",\"prev_receipt_hash\":null,\"receipt_version\":\"0.1.0\"}"
+    },
+    {
+      "id": "C024",
+      "description": "Key ordering — underscore sorts after uppercase Z in ASCII",
+      "input": {"_private": 1, "Zpublic": 2, "apublic": 3},
+      "expected": "{\"Zpublic\":2,\"_private\":1,\"apublic\":3}"
+    },
+    {
+      "id": "C025",
+      "description": "Integer boundary — zero, one, negative one",
+      "input": {"neg": -1, "pos": 1, "zero": 0},
+      "expected": "{\"neg\":-1,\"pos\":1,\"zero\":0}"
+    },
+    {
+      "id": "C026",
+      "description": "Null fields in object",
+      "input": {"a": null, "b": null, "c": 1},
+      "expected": "{\"a\":null,\"b\":null,\"c\":1}"
+    },
+    {
+      "id": "C027",
+      "description": "Array of nulls",
+      "input": [null, null, null],
+      "expected": "[null,null,null]"
+    },
+    {
+      "id": "C028",
+      "description": "String with control character (backspace)",
+      "input": "a\bb",
+      "expected": "\"a\\bb\""
+    }
+  ]
+}

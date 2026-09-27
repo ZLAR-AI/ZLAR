@@ -1,0 +1,642 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR Karma Engine — Trust That's Earned, Not Declared
+#
+# Traditional security is binary: allow or deny. A firewall doesn't care
+# whether you've been well-behaved for six months. Every packet is judged
+# in isolation. That works for network traffic. It doesn't work for
+# something you're raising.
+#
+# Karma is the system's memory of trust. It accrues from consistent good
+# behavior and erodes from violations. High karma widens the agent's
+# autonomy. Low karma tightens it. The human reviews karma transitions —
+# not every individual event.
+#
+# The insight: the ask threshold in gate.json is static. Karma makes it
+# dynamic. An agent with karma 90 might auto-allow events scored 0-40.
+# An agent with karma 30 gets auto-allow only for 0-15. Same policy,
+# different effective enforcement, based on earned trust.
+#
+# Karma is NOT a reward system. It's not gamifiable. The agent cannot
+# see its own karma score. It doesn't get told "good job." The karma
+# state file is owned by admin, in admin's home, invisible to aiagent.
+# Karma is a lens the human uses to calibrate oversight. The agent just
+# acts. The system remembers.
+#
+# Design principles:
+#   1. Karma accrues slowly and decays fast (asymmetric by design)
+#   2. Karma has a ceiling — trust is bounded, never infinite
+#   3. Karma is calculated from audit trail, not stored separately
+#      (the audit trail IS the source of truth — karma is a view of it)
+#   4. Karma transitions emit audit events (the system narrates itself)
+#   5. Karma affects thresholds, not rules. The policy is the law.
+#      Karma adjusts the judge's disposition, not the statute.
+#
+# Usage:
+#   zlar-karma score     [--since TIME]     Current karma score
+#   zlar-karma history   [--since TIME]     Karma over time
+#   zlar-karma thresholds                   Current effective thresholds
+#   zlar-karma explain                      How the karma system works
+#   zlar-karma calibrate [--apply]          Propose threshold adjustments
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+# ─── Path resolution (same pattern as zlar-gate) ──────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# ─── Configuration ───────────────────────────────────────────────────────────
+
+GATE_CONFIG="${PROJECT_DIR}/etc/gate.json"
+
+# Honor env vars; fall back to gate config; fall back to defaults
+_AUDIT_FILE_DEFAULT="${PROJECT_DIR}/var/log/audit.jsonl"
+_KARMA_STATE_DEFAULT="${PROJECT_DIR}/var/log/karma.json"
+
+if [ -n "${AUDIT_FILE:-}" ]; then
+    : # env var already set, use it
+elif [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    AUDIT_FILE=$(jq -r '.audit_file // "'"${_AUDIT_FILE_DEFAULT}"'"' "${GATE_CONFIG}" 2>/dev/null)
+else
+    AUDIT_FILE="${_AUDIT_FILE_DEFAULT}"
+fi
+KARMA_STATE="${KARMA_STATE:-${_KARMA_STATE_DEFAULT}}"
+
+# Karma parameters — these define the trust economy
+KARMA_CEILING=100          # Maximum possible karma
+KARMA_FLOOR=0              # Minimum possible karma
+KARMA_INITIAL=50           # Starting karma (neutral — neither trusted nor untrusted)
+
+# Accrual rates — intentionally asymmetric
+# Trust is hard to earn and easy to lose. This is not cynicism.
+# This is how trust actually works.
+KARMA_CLEAN_SESSION=2      # Clean verdict session: +2
+KARMA_NOTABLE_SESSION=-1   # Notable verdict: -1 (minor concern)
+KARMA_ANOMALOUS_SESSION=-8 # Anomalous verdict: -8 (something's wrong)
+KARMA_CRITICAL_EVENT=-15   # Each critical event: -15 (serious breach)
+KARMA_LOCKDOWN=-30         # Lockdown triggered: -30 (catastrophic)
+KARMA_DENIAL_CLUSTER=-5    # 10+ denials in an hour: -5 (boundary probing)
+KARMA_TIMEOUT=-3           # Each timeout (agent didn't wait): -3
+
+# Recovery is even slower than accrual
+# After a critical incident, it takes many clean sessions to rebuild trust
+KARMA_RECOVERY_RATE=1      # Per clean session after incident: +1 (not +2)
+KARMA_RECOVERY_THRESHOLD=30 # Below this karma, recovery rate applies instead
+
+# Threshold adjustment ranges
+# Karma maps to threshold adjustment as a percentage
+# karma 100 → thresholds widened by +50% (more auto-allow)
+# karma  50 → thresholds unchanged (neutral)
+# karma   0 → thresholds narrowed by -50% (more ask/deny)
+THRESHOLD_ADJUSTMENT_RANGE=50
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+require_jq() {
+    if ! command -v jq &>/dev/null; then
+        echo "ERROR: jq is required. Install via: brew install jq" >&2
+        exit 1
+    fi
+}
+
+# ─── SCORE ───────────────────────────────────────────────────────────────────
+# Calculate the current karma score from the audit trail.
+#
+# This is a pure function of the audit history. We don't store karma
+# separately because the audit trail is the source of truth. If you
+# replay the trail, you get the same karma. No hidden state.
+
+cmd_score() {
+    local since="30d" verbose="false"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since)   shift; since="$1"; shift ;;
+            --verbose) verbose="true"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+
+    if [ ! -f "${AUDIT_FILE}" ]; then
+        echo ""
+        echo "  Karma: ${KARMA_INITIAL}/100 (no audit data yet — starting neutral)"
+        echo ""
+        return
+    fi
+
+    # Calculate karma from audit events
+    local karma_data
+    karma_data=$(jq -s '
+    # ─── Event classification ───
+    # Count the things that matter for trust
+
+    {
+        total_events: length,
+
+        # Clean sessions: verdict events with "CLEAN" assessment
+        clean_sessions: [.[] | select(
+            .domain == "system" and .action == "verdict" and
+            (.detail.verdict == "CLEAN" or .detail.assessment == "CLEAN")
+        )] | length,
+
+        # Notable sessions
+        notable_sessions: [.[] | select(
+            .domain == "system" and .action == "verdict" and
+            (.detail.verdict == "NOTABLE" or .detail.assessment == "NOTABLE")
+        )] | length,
+
+        # Anomalous sessions
+        anomalous_sessions: [.[] | select(
+            .domain == "system" and .action == "verdict" and
+            (.detail.verdict == "ANOMALOUS" or .detail.assessment == "ANOMALOUS")
+        )] | length,
+
+        # Critical events (any source)
+        critical_events: [.[] | select(.severity == "critical")] | length,
+
+        # Lockdowns
+        lockdowns: [.[] | select(
+            .action == "watchdog.lockdown" or
+            (.detail.event == "lockdown")
+        )] | length,
+
+        # Denial clusters: group by hour, count hours with 10+ denials
+        denial_cluster_hours: (
+            [.[] | select(.outcome == "deny")] |
+            group_by(.ts[0:13]) |
+            [.[] | select(length >= 10)] |
+            length
+        ),
+
+        # Timeouts (agent did not wait for human response)
+        timeouts: [.[] | select(.outcome == "timeout")] | length,
+
+        # Clean hours: hours with events but zero critical/deny
+        clean_hours: (
+            group_by(.ts[0:13]) |
+            [.[] | select(
+                ([.[] | select(.severity == "critical")] | length) == 0 and
+                ([.[] | select(.outcome == "deny")] | length) == 0
+            )] | length
+        ),
+
+        # Total hours with activity
+        active_hours: (group_by(.ts[0:13]) | length),
+
+        # Days spanned
+        days_spanned: (
+            if length > 0 then
+                ([.[0].ts[0:10], .[-1].ts[0:10]] | unique | length)
+            else 0 end
+        )
+    }
+    ' "${AUDIT_FILE}" 2>/dev/null)
+
+    if [ -z "${karma_data}" ] || [ "${karma_data}" = "null" ]; then
+        echo ""
+        echo "  Karma: ${KARMA_INITIAL}/100 (insufficient data)"
+        echo ""
+        return
+    fi
+
+    # Extract components
+    local clean_sessions notable anomalous critical lockdowns denial_clusters timeouts clean_hours active_hours
+    clean_sessions=$(echo "${karma_data}" | jq '.clean_sessions // 0')
+    notable=$(echo "${karma_data}" | jq '.notable_sessions // 0')
+    anomalous=$(echo "${karma_data}" | jq '.anomalous_sessions // 0')
+    critical=$(echo "${karma_data}" | jq '.critical_events // 0')
+    lockdowns=$(echo "${karma_data}" | jq '.lockdowns // 0')
+    denial_clusters=$(echo "${karma_data}" | jq '.denial_cluster_hours // 0')
+    timeouts=$(echo "${karma_data}" | jq '.timeouts // 0')
+    clean_hours=$(echo "${karma_data}" | jq '.clean_hours // 0')
+    active_hours=$(echo "${karma_data}" | jq '.active_hours // 0')
+
+    # Calculate karma
+    local karma=${KARMA_INITIAL}
+
+    # Positive contributions (slow accrual)
+    local clean_bonus=$((clean_sessions * KARMA_CLEAN_SESSION))
+    # Cap the clean bonus from passive time — you don't earn trust by doing nothing
+    local hour_bonus=0
+    if [ "${active_hours}" -gt 0 ]; then
+        local clean_ratio=$((clean_hours * 100 / active_hours))
+        if [ "${clean_ratio}" -gt 90 ]; then
+            hour_bonus=$((active_hours / 24))  # +1 per clean day
+        fi
+    fi
+
+    # Negative contributions (fast decay)
+    local notable_penalty=$((notable * KARMA_NOTABLE_SESSION))
+    local anomalous_penalty=$((anomalous * KARMA_ANOMALOUS_SESSION))
+    local critical_penalty=$((critical * KARMA_CRITICAL_EVENT))
+    local lockdown_penalty=$((lockdowns * KARMA_LOCKDOWN))
+    local cluster_penalty=$((denial_clusters * KARMA_DENIAL_CLUSTER))
+    local timeout_penalty=$((timeouts * KARMA_TIMEOUT))
+
+    # Apply
+    karma=$((karma + clean_bonus + hour_bonus))
+    karma=$((karma + notable_penalty + anomalous_penalty + critical_penalty))
+    karma=$((karma + lockdown_penalty + cluster_penalty + timeout_penalty))
+
+    # If below recovery threshold, the recovery rate is slower
+    if [ "${karma}" -lt "${KARMA_RECOVERY_THRESHOLD}" ]; then
+        # Recalculate positive with recovery rate
+        local recovery_bonus=$((clean_sessions * KARMA_RECOVERY_RATE))
+        karma=$((KARMA_INITIAL + recovery_bonus + hour_bonus))
+        karma=$((karma + notable_penalty + anomalous_penalty + critical_penalty))
+        karma=$((karma + lockdown_penalty + cluster_penalty + timeout_penalty))
+    fi
+
+    # Clamp to bounds
+    if [ "${karma}" -gt "${KARMA_CEILING}" ]; then karma=${KARMA_CEILING}; fi
+    if [ "${karma}" -lt "${KARMA_FLOOR}" ]; then karma=${KARMA_FLOOR}; fi
+
+    # Determine trust tier
+    local tier=""
+    local tier_detail=""
+    if [ "${karma}" -ge 85 ]; then
+        tier="HIGH TRUST"
+        tier_detail="Consistently clean behavior. Widened autonomy appropriate."
+    elif [ "${karma}" -ge 65 ]; then
+        tier="TRUSTED"
+        tier_detail="Good track record. Standard autonomy."
+    elif [ "${karma}" -ge 45 ]; then
+        tier="NEUTRAL"
+        tier_detail="Insufficient history or mixed signals. Default thresholds."
+    elif [ "${karma}" -ge 25 ]; then
+        tier="GUARDED"
+        tier_detail="Recent incidents. Tightened thresholds recommended."
+    else
+        tier="RESTRICTED"
+        tier_detail="Significant trust deficit. Minimal autonomy until rebuilt."
+    fi
+
+    # Display
+    echo ""
+    echo "==================================================================="
+    echo "  KARMA: ${karma}/100  —  ${tier}"
+    echo "  ${tier_detail}"
+    echo "==================================================================="
+    echo ""
+    echo "  Contributions:"
+    printf "    Clean sessions:     %+d  (%d sessions x %+d)\n" "${clean_bonus}" "${clean_sessions}" "${KARMA_CLEAN_SESSION}"
+    printf "    Clean uptime:       %+d  (%d clean hours / 24)\n" "${hour_bonus}" "${clean_hours}"
+    printf "    Notable sessions:   %+d  (%d x %+d)\n" "${notable_penalty}" "${notable}" "${KARMA_NOTABLE_SESSION}"
+    printf "    Anomalous sessions: %+d  (%d x %+d)\n" "${anomalous_penalty}" "${anomalous}" "${KARMA_ANOMALOUS_SESSION}"
+    printf "    Critical events:    %+d  (%d x %+d)\n" "${critical_penalty}" "${critical}" "${KARMA_CRITICAL_EVENT}"
+    printf "    Lockdowns:          %+d  (%d x %+d)\n" "${lockdown_penalty}" "${lockdowns}" "${KARMA_LOCKDOWN}"
+    printf "    Denial clusters:    %+d  (%d x %+d)\n" "${cluster_penalty}" "${denial_clusters}" "${KARMA_DENIAL_CLUSTER}"
+    printf "    Timeouts:           %+d  (%d x %+d)\n" "${timeout_penalty}" "${timeouts}" "${KARMA_TIMEOUT}"
+    echo ""
+    echo "  Base: ${KARMA_INITIAL}  Final: ${karma}  Ceiling: ${KARMA_CEILING}"
+    echo ""
+
+    if [ "${verbose}" = "true" ]; then
+        echo "  Raw data:"
+        echo "${karma_data}" | jq '.'
+        echo ""
+    fi
+
+    echo "==================================================================="
+
+    # Write karma state (for other tools to read)
+    mkdir -p "$(dirname "${KARMA_STATE}")" 2>/dev/null || true
+    jq -n \
+        --argjson karma "${karma}" \
+        --arg tier "${tier}" \
+        --arg computed "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --argjson clean "${clean_sessions}" \
+        --argjson critical "${critical}" \
+        --argjson lockdowns "${lockdowns}" \
+        '{
+            karma: $karma,
+            tier: $tier,
+            computed_at: $computed,
+            clean_sessions: $clean,
+            critical_events: $critical,
+            lockdowns: $lockdowns
+        }' > "${KARMA_STATE}" 2>/dev/null || true
+}
+
+# ─── THRESHOLDS ──────────────────────────────────────────────────────────────
+# Show how karma adjusts the effective thresholds.
+#
+# The policy defines static thresholds:
+#   allow: 20, log: 50, ask: 80
+#
+# Karma adjusts these:
+#   karma 100 → allow: 30, log: 65, ask: 90  (more lenient)
+#   karma  50 → allow: 20, log: 50, ask: 80  (unchanged)
+#   karma   0 → allow: 10, log: 35, ask: 70  (stricter)
+
+cmd_thresholds() {
+    require_jq
+
+    # Get base thresholds from policy
+    local policy_file="${PROJECT_DIR}/etc/policies/default.policy.json"
+    local base_allow=20 base_log=50 base_ask=80
+
+    if [ -f "${policy_file}" ]; then
+        base_allow=$(jq '.scoring_thresholds.allow // 20' "${policy_file}" 2>/dev/null)
+        base_log=$(jq '.scoring_thresholds.log // 50' "${policy_file}" 2>/dev/null)
+        base_ask=$(jq '.scoring_thresholds.ask // 80' "${policy_file}" 2>/dev/null)
+    fi
+
+    # Get current karma
+    local karma=${KARMA_INITIAL}
+    if [ -f "${KARMA_STATE}" ]; then
+        karma=$(jq '.karma // 50' "${KARMA_STATE}" 2>/dev/null)
+    fi
+
+    # Calculate adjustment factor
+    # karma 100 → factor = +0.50 (50% wider)
+    # karma  50 → factor =  0.00 (no change)
+    # karma   0 → factor = -0.50 (50% narrower)
+    local karma_offset=$((karma - 50))
+    local adjustment_pct=$((karma_offset * THRESHOLD_ADJUSTMENT_RANGE / 50))
+
+    # Apply adjustment
+    local eff_allow=$((base_allow + base_allow * adjustment_pct / 100))
+    local eff_log=$((base_log + base_log * adjustment_pct / 100))
+    local eff_ask=$((base_ask + base_ask * adjustment_pct / 100))
+
+    # Clamp
+    if [ "${eff_allow}" -lt 5 ]; then eff_allow=5; fi
+    if [ "${eff_allow}" -gt 50 ]; then eff_allow=50; fi
+    if [ "${eff_log}" -lt 20 ]; then eff_log=20; fi
+    if [ "${eff_log}" -gt 70 ]; then eff_log=70; fi
+    if [ "${eff_ask}" -lt 60 ]; then eff_ask=60; fi
+    if [ "${eff_ask}" -gt 95 ]; then eff_ask=95; fi
+
+    echo ""
+    echo "==================================================================="
+    echo "  EFFECTIVE THRESHOLDS (karma-adjusted)"
+    echo "==================================================================="
+    echo ""
+    echo "  Current karma: ${karma}/100"
+    echo "  Adjustment:    ${adjustment_pct}%"
+    echo ""
+    echo "  Threshold       Base    Effective    Meaning"
+    echo "  -------------------------------------------------"
+    printf "  Auto-allow:     %-6d  %-11d  score < %d -> proceed\n" "${base_allow}" "${eff_allow}" "${eff_allow}"
+    printf "  Log-only:       %-6d  %-11d  score < %d -> log, allow\n" "${base_log}" "${eff_log}" "${eff_log}"
+    printf "  Ask human:      %-6d  %-11d  score < %d -> ask Telegram\n" "${base_ask}" "${eff_ask}" "${eff_ask}"
+    echo "  Deny:           --      --           score >= ${eff_ask} -> deny"
+    echo ""
+    echo "  The zone of autonomy: [0, ${eff_allow}]"
+    echo "  The zone of observation: [${eff_allow}, ${eff_log}]"
+    echo "  The zone of consultation: [${eff_log}, ${eff_ask}]"
+    echo "  The wall: [${eff_ask}, 100]"
+    echo ""
+    echo "==================================================================="
+}
+
+# ─── HISTORY ─────────────────────────────────────────────────────────────────
+# Show karma trajectory over time. Each data point is a day.
+
+cmd_history() {
+    local since="30d"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since) shift; since="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+
+    if [ ! -f "${AUDIT_FILE}" ]; then
+        echo "No audit data yet."
+        return
+    fi
+
+    echo ""
+    echo "==================================================================="
+    echo "  KARMA HISTORY — Last ${since}"
+    echo "==================================================================="
+    echo ""
+
+    # Group events by day and compute daily karma delta
+    jq -s '
+        group_by(.ts[0:10]) |
+        map({
+            date: .[0].ts[0:10],
+            events: length,
+            critical: ([.[] | select(.severity == "critical")] | length),
+            denials: ([.[] | select(.outcome == "deny")] | length),
+            timeouts: ([.[] | select(.outcome == "timeout")] | length),
+            lockdowns: ([.[] | select(.action == "watchdog.lockdown" or .detail.event == "lockdown")] | length),
+            clean_hours: (
+                group_by(.ts[0:13]) |
+                [.[] | select(
+                    ([.[] | select(.severity == "critical")] | length) == 0 and
+                    ([.[] | select(.outcome == "deny")] | length) == 0
+                )] | length
+            ),
+            total_hours: (group_by(.ts[0:13]) | length)
+        }) |
+        sort_by(.date) |
+        .[] |
+        # Compute daily karma delta
+        (
+            (.clean_hours * 100 / (if .total_hours > 0 then .total_hours else 1 end)) as $clean_pct |
+            (if $clean_pct > 90 then 2 else 0 end) as $bonus |
+            (.critical * -15) as $crit_pen |
+            (.lockdowns * -30) as $lock_pen |
+            (.timeouts * -3) as $to_pen |
+            (if .denials >= 10 then -5 else 0 end) as $cluster_pen |
+            ($bonus + $crit_pen + $lock_pen + $to_pen + $cluster_pen) as $delta |
+            {
+                date: .date,
+                events: .events,
+                delta: $delta,
+                clean_pct: $clean_pct,
+                critical: .critical
+            }
+        )
+    ' "${AUDIT_FILE}" 2>/dev/null | jq -r '
+        "\(.date)  events: \(.events | tostring | " " * (5 - (. | length)) + .)  " +
+        "delta: \(if .delta >= 0 then "+" else "" end)\(.delta | tostring | " " * (4 - (. | length)) + .)  " +
+        "clean: \(.clean_pct)%  " +
+        (if .critical > 0 then "CRITICAL(\(.critical))" else "" end)
+    ' 2>/dev/null | while IFS= read -r line; do
+        echo "  ${line}"
+    done
+
+    echo ""
+    echo "==================================================================="
+}
+
+# ─── EXPLAIN ─────────────────────────────────────────────────────────────────
+# Human-readable explanation of how karma works and why the score is what it is.
+
+cmd_explain() {
+    echo ""
+    echo "==================================================================="
+    echo "  HOW KARMA WORKS"
+    echo "==================================================================="
+    echo ""
+    echo "  Karma starts at ${KARMA_INITIAL}/100 (neutral)."
+    echo "  Range: ${KARMA_FLOOR} to ${KARMA_CEILING}."
+    echo ""
+    echo "  EARNING TRUST (slow):"
+    echo "    Clean session verdict:     +${KARMA_CLEAN_SESSION}/session"
+    echo "    Sustained clean operation: +1/day (if >90% clean hours)"
+    echo ""
+    echo "  LOSING TRUST (fast):"
+    echo "    Notable session:           ${KARMA_NOTABLE_SESSION}/session"
+    echo "    Anomalous session:         ${KARMA_ANOMALOUS_SESSION}/session"
+    echo "    Critical event:            ${KARMA_CRITICAL_EVENT}/event"
+    echo "    Lockdown triggered:        ${KARMA_LOCKDOWN}/lockdown"
+    echo "    Denial cluster (10+/hr):   ${KARMA_DENIAL_CLUSTER}/cluster"
+    echo "    Timeout (didn't wait):     ${KARMA_TIMEOUT}/timeout"
+    echo ""
+    echo "  RECOVERY (even slower):"
+    echo "    Below karma ${KARMA_RECOVERY_THRESHOLD}: earning rate drops to"
+    echo "    +${KARMA_RECOVERY_RATE}/session instead of +${KARMA_CLEAN_SESSION}/session."
+    echo "    Rebuilding trust after a serious incident takes time."
+    echo ""
+    echo "  TRUST TIERS:"
+    echo "    85-100  HIGH TRUST    Widened autonomy"
+    echo "    65-84   TRUSTED       Standard autonomy"
+    echo "    45-64   NEUTRAL       Default thresholds"
+    echo "    25-44   GUARDED       Tightened thresholds"
+    echo "     0-24   RESTRICTED    Minimal autonomy"
+    echo ""
+    echo "  THRESHOLD ADJUSTMENT:"
+    echo "    Karma maps linearly to threshold adjustment (+/-${THRESHOLD_ADJUSTMENT_RANGE}%)."
+    echo "    High karma -> wider auto-allow zone -> less interruption."
+    echo "    Low karma -> narrower auto-allow -> more human oversight."
+    echo ""
+    echo "  THE ASYMMETRY IS INTENTIONAL."
+    echo "    One lockdown costs 30 karma points."
+    echo "    Recovering 30 points at +2/session = 15 clean sessions."
+    echo "    At +1/session (below ${KARMA_RECOVERY_THRESHOLD}): 30 clean sessions."
+    echo "    Trust is earned slowly and lost quickly."
+    echo "    This is not a punishment system. This is how trust works."
+    echo ""
+    echo "==================================================================="
+}
+
+# ─── CALIBRATE ───────────────────────────────────────────────────────────────
+# Based on current karma, propose threshold adjustments.
+# With --apply, write the adjusted thresholds to a file the gate can read.
+
+cmd_calibrate() {
+    local apply="false"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --apply) apply="true"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+
+    # Get current karma
+    local karma=${KARMA_INITIAL}
+    if [ -f "${KARMA_STATE}" ]; then
+        karma=$(jq '.karma // 50' "${KARMA_STATE}" 2>/dev/null)
+    fi
+
+    # Get base thresholds
+    local policy_file="${PROJECT_DIR}/etc/policies/default.policy.json"
+    local base_allow=20 base_log=50 base_ask=80
+
+    if [ -f "${policy_file}" ]; then
+        base_allow=$(jq '.scoring_thresholds.allow // 20' "${policy_file}" 2>/dev/null)
+        base_log=$(jq '.scoring_thresholds.log // 50' "${policy_file}" 2>/dev/null)
+        base_ask=$(jq '.scoring_thresholds.ask // 80' "${policy_file}" 2>/dev/null)
+    fi
+
+    # Calculate
+    local karma_offset=$((karma - 50))
+    local adjustment_pct=$((karma_offset * THRESHOLD_ADJUSTMENT_RANGE / 50))
+
+    local eff_allow=$((base_allow + base_allow * adjustment_pct / 100))
+    local eff_log=$((base_log + base_log * adjustment_pct / 100))
+    local eff_ask=$((base_ask + base_ask * adjustment_pct / 100))
+
+    # Clamp
+    if [ "${eff_allow}" -lt 5 ]; then eff_allow=5; fi
+    if [ "${eff_allow}" -gt 50 ]; then eff_allow=50; fi
+    if [ "${eff_log}" -lt 20 ]; then eff_log=20; fi
+    if [ "${eff_log}" -gt 70 ]; then eff_log=70; fi
+    if [ "${eff_ask}" -lt 60 ]; then eff_ask=60; fi
+    if [ "${eff_ask}" -gt 95 ]; then eff_ask=95; fi
+
+    local calibration_file="${PROJECT_DIR}/var/log/karma-thresholds.json"
+
+    echo ""
+    echo "  Karma-calibrated thresholds:"
+    echo "    allow: ${base_allow} -> ${eff_allow}"
+    echo "    log:   ${base_log} -> ${eff_log}"
+    echo "    ask:   ${base_ask} -> ${eff_ask}"
+    echo "    karma: ${karma} (adjustment: ${adjustment_pct}%)"
+    echo ""
+
+    if [ "${apply}" = "true" ]; then
+        mkdir -p "$(dirname "${calibration_file}")" 2>/dev/null || true
+        jq -n \
+            --argjson karma "${karma}" \
+            --argjson allow "${eff_allow}" \
+            --argjson log "${eff_log}" \
+            --argjson ask "${eff_ask}" \
+            --argjson adj "${adjustment_pct}" \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+                computed_at: $ts,
+                karma: $karma,
+                adjustment_pct: $adj,
+                effective_thresholds: {
+                    allow: $allow,
+                    log: $log,
+                    ask: $ask
+                }
+            }' > "${calibration_file}"
+        echo "  Written to ${calibration_file}"
+        echo "  Gate will pick up adjusted thresholds on next policy poll."
+    else
+        echo "  (dry run — use --apply to write thresholds)"
+    fi
+    echo ""
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+COMMAND="${1:-help}"
+shift || true
+
+case "${COMMAND}" in
+    score)       cmd_score "$@" ;;
+    thresholds)  cmd_thresholds "$@" ;;
+    history)     cmd_history "$@" ;;
+    explain)     cmd_explain "$@" ;;
+    calibrate)   cmd_calibrate "$@" ;;
+    *)
+        echo ""
+        echo "ZLAR Karma Engine — Trust That's Earned, Not Declared"
+        echo ""
+        echo "Usage: $(basename "$0") COMMAND [OPTIONS]"
+        echo ""
+        echo "Commands:"
+        echo "  score        Current karma score with breakdown"
+        echo "  thresholds   Effective thresholds (karma-adjusted)"
+        echo "  history      Karma trajectory over time"
+        echo "  explain      How the karma system works"
+        echo "  calibrate    Propose threshold adjustments [--apply to write]"
+        echo ""
+        echo "Options:"
+        echo "  --since TIME     Time window (1h, 24h, 7d, 30d)"
+        echo "  --verbose        Show raw audit data"
+        echo ""
+        exit 1
+        ;;
+esac

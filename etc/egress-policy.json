@@ -1,0 +1,194 @@
+{
+  "version": "1.0.0",
+  "description": "ZLAR-NT default egress policy — deny by default, allow known-good destinations",
+  "default_action": "deny",
+  "rules": [
+    {
+      "id": "N001",
+      "type": "cidr",
+      "action": "deny",
+      "pattern": "10.0.0.0/8",
+      "reason": "RFC 1918 — private network (lateral movement)"
+    },
+    {
+      "id": "N002",
+      "type": "cidr",
+      "action": "deny",
+      "pattern": "172.16.0.0/12",
+      "reason": "RFC 1918 — private network (lateral movement)"
+    },
+    {
+      "id": "N003",
+      "type": "cidr",
+      "action": "deny",
+      "pattern": "192.168.0.0/16",
+      "reason": "RFC 1918 — private network (lateral movement)"
+    },
+    {
+      "id": "N004",
+      "type": "ip",
+      "action": "deny",
+      "pattern": "169.254.169.254",
+      "reason": "Cloud metadata endpoint — SSRF target"
+    },
+    {
+      "id": "N005",
+      "type": "cidr",
+      "action": "deny",
+      "pattern": "169.254.0.0/16",
+      "reason": "Link-local — cloud metadata range"
+    },
+    {
+      "id": "N006",
+      "type": "cidr",
+      "action": "deny",
+      "pattern": "100.64.0.0/10",
+      "reason": "CGNAT range — Tailscale/VPN peers"
+    },
+    {
+      "id": "N010",
+      "type": "domain",
+      "action": "allow",
+      "pattern": "github.com",
+      "ports": [443],
+      "reason": "Source code hosting"
+    },
+    {
+      "id": "N011",
+      "type": "domain",
+      "action": "allow",
+      "pattern": "*.github.com",
+      "ports": [443],
+      "reason": "GitHub subdomains (API, raw content)"
+    },
+    {
+      "id": "N012",
+      "type": "domain",
+      "action": "allow",
+      "pattern": "*.githubusercontent.com",
+      "ports": [443],
+      "reason": "GitHub raw content"
+    },
+    {
+      "id": "N020",
+      "type": "domain",
+      "action": "allow",
+      "pattern": "registry.npmjs.org",
+      "ports": [443],
+      "reason": "npm package registry"
+    },
+    {
+      "id": "N021",
+      "type": "domain",
+      "action": "allow",
+      "pattern": "pypi.org",
+      "ports": [443],
+      "reason": "Python package index"
+    },
+    {
+      "id": "N022",
+      "type": "domain",
+      "action": "allow",
+      "pattern": "*.pypi.org",
+      "ports": [443],
+      "reason": "PyPI subdomains"
+    },
+    {
+      "id": "N023",
+      "type": "domain",
+      "action": "allow",
+      "pattern": "crates.io",
+      "ports": [443],
+      "reason": "Rust package registry"
+    },
+    {
+      "id": "N024",
+      "type": "domain",
+      "action": "allow",
+      "pattern": "rubygems.org",
+      "ports": [443],
+      "reason": "Ruby package registry"
+    },
+    {
+      "id": "N030",
+      "type": "domain",
+      "action": "allow",
+      "pattern": "api.anthropic.com",
+      "ports": [443],
+      "reason": "Anthropic API"
+    },
+    {
+      "id": "N031",
+      "type": "domain",
+      "action": "allow",
+      "pattern": "api.openai.com",
+      "ports": [443],
+      "reason": "OpenAI API"
+    },
+    {
+      "id": "N040",
+      "type": "domain",
+      "action": "allow",
+      "pattern": "stackoverflow.com",
+      "ports": [443],
+      "reason": "Developer reference"
+    },
+    {
+      "id": "N041",
+      "type": "domain",
+      "action": "allow",
+      "pattern": "*.stackexchange.com",
+      "ports": [443],
+      "reason": "Stack Exchange network"
+    },
+    {
+      "id": "N050",
+      "type": "domain",
+      "action": "deny",
+      "pattern": "*.onion",
+      "reason": "Tor hidden services"
+    },
+    {
+      "id": "N051",
+      "type": "domain",
+      "action": "deny",
+      "pattern": "pastebin.com",
+      "reason": "Common exfiltration target"
+    },
+    {
+      "id": "N052",
+      "type": "domain",
+      "action": "deny",
+      "pattern": "*.ngrok.io",
+      "reason": "Tunnel service — data exfiltration risk"
+    },
+    {
+      "id": "N053",
+      "type": "domain",
+      "action": "deny",
+      "pattern": "*.ngrok-free.app",
+      "reason": "Tunnel service — data exfiltration risk"
+    },
+    {
+      "id": "N054",
+      "type": "domain",
+      "action": "deny",
+      "pattern": "*.serveo.net",
+      "reason": "Tunnel service — data exfiltration risk"
+    },
+    {
+      "id": "N055",
+      "type": "domain",
+      "action": "deny",
+      "pattern": "webhook.site",
+      "reason": "Webhook capture — data exfiltration risk"
+    },
+    {
+      "id": "N056",
+      "type": "domain",
+      "action": "deny",
+      "pattern": "*.requestbin.com",
+      "reason": "Request capture — data exfiltration risk"
+    }
+  ]
+}

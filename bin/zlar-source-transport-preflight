@@ -1,0 +1,91 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import {
+  assertNoUnsafeSourceTransportPreflightText,
+  formatSourceTransportPreflight,
+  runSourceTransportPreflight,
+  writeSourceTransportPreflightReport
+} from '../lib/zlar-source-transport-preflight.mjs';
+
+function usage() {
+  return `Usage: zlar-source-transport-preflight --input <file|-> [--json] [--json-out <file>]
+
+Validates a local no-secret source-transport authority packet before any future
+GitHub App installation-token source movement. This command cannot mint tokens,
+call GitHub, push, move refs, or change git configuration.
+
+Options:
+  --input <file|->  Read the authority packet JSON from a file or stdin.
+  --json            Print JSON to stdout.
+  --json-out <file> Write JSON under the proof-owned build scratch root.
+  --help            Show this help.
+`;
+}
+
+function readStdin() {
+  return readFileSync(0, 'utf8');
+}
+
+function parseArgs(argv) {
+  try {
+    assertNoUnsafeSourceTransportPreflightText(argv.join('\n'));
+  } catch {
+    throw new Error('unsafe argument rejected');
+  }
+  const args = {
+    input: null,
+    json: false,
+    jsonOut: null,
+    help: false
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--help' || arg === '-h') {
+      args.help = true;
+    } else if (arg === '--json') {
+      args.json = true;
+    } else if (arg === '--input') {
+      args.input = argv[++i];
+    } else if (arg === '--json-out') {
+      args.jsonOut = argv[++i];
+    } else {
+      throw new Error('unsupported argument');
+    }
+  }
+  if (!args.help && !args.input) throw new Error('--input is required');
+  if (args.input === undefined || args.jsonOut === undefined) throw new Error('missing argument value');
+  return args;
+}
+
+function readPacketInput(input) {
+  if (input === '-') return readStdin();
+  try {
+    return readFileSync(input, 'utf8');
+  } catch {
+    throw new Error('input file could not be read');
+  }
+}
+
+function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
+  if (args.help) {
+    process.stdout.write(usage());
+    return 0;
+  }
+  const packetText = readPacketInput(args.input);
+  const report = runSourceTransportPreflight(packetText);
+  if (args.jsonOut) {
+    writeSourceTransportPreflightReport(report, args.jsonOut);
+  }
+  process.stdout.write(args.json || args.jsonOut
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatSourceTransportPreflight(report));
+  return report.preflight_status === 'passed' ? 0 : 2;
+}
+
+try {
+  process.exit(main());
+} catch (err) {
+  process.stderr.write(`${err?.message || err}\n`);
+  process.exit(1);
+}

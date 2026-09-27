@@ -1,0 +1,177 @@
+#!/usr/bin/env node
+import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
+import {
+  PROTECTED_RECORDS_REPLACEMENT_DOWNSTREAM_CONSUMER_IDS_V2,
+  buildProtectedRecordsReplacementDownstreamProjectionV2,
+  protectedRecordsReplacementArtifactSetManifestSchemaContractSha256V2,
+  verifyProtectedRecordsReplacementArtifactSetManifestV2RawBytes,
+  verifyProtectedRecordsReplacementArtifactSetV2FromRawBytes,
+} from '../lib/protected-records-replacement-artifact-set-v2.mjs';
+
+const MAX_INPUT_BYTES = 8 * 1024 * 1024;
+const SHA256_RE = /^[a-f0-9]{64}$/;
+
+function usage() {
+  console.error(
+    'Usage: zlar protected-records-replacement-artifact-set-v2 verify --manifest <file> --service <file> --terminal <file> --require-manifest-sha <sha256> --require-grant-sha <sha256> --require-manifest-schema-sha <sha256> --consumer <all|declared-id> --json',
+  );
+  console.error(
+    'Verification-only: imports no runtime, crossing, key-generation, or signing module and cannot re-execute the consequence.',
+  );
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const args = [...argv];
+  if (args[0] === '--help' || args[0] === '-h') {
+    usage();
+    process.exit(0);
+  }
+  if (args.shift() !== 'verify') {
+    usage();
+    die('verify is required.', 2);
+  }
+  const options = {
+    manifestPath: '',
+    servicePath: '',
+    terminalPath: '',
+    requiredManifestSha256: '',
+    requiredGrantSha256: '',
+    requiredManifestSchemaSha256: '',
+    consumer: '',
+    json: false,
+  };
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--manifest') options.manifestPath = args[++index] || '';
+    else if (arg === '--service') options.servicePath = args[++index] || '';
+    else if (arg === '--terminal') options.terminalPath = args[++index] || '';
+    else if (arg === '--require-manifest-sha') {
+      options.requiredManifestSha256 = args[++index] || '';
+    } else if (arg === '--require-grant-sha') {
+      options.requiredGrantSha256 = args[++index] || '';
+    } else if (arg === '--require-manifest-schema-sha') {
+      options.requiredManifestSchemaSha256 = args[++index] || '';
+    } else if (arg === '--consumer') options.consumer = args[++index] || '';
+    else if (arg === '--json') options.json = true;
+    else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die(`Unsupported option: ${arg}`, 2);
+    }
+  }
+  for (const [label, value] of [
+    ['--manifest', options.manifestPath],
+    ['--service', options.servicePath],
+    ['--terminal', options.terminalPath],
+    ['--require-manifest-sha', options.requiredManifestSha256],
+    ['--require-grant-sha', options.requiredGrantSha256],
+    ['--require-manifest-schema-sha', options.requiredManifestSchemaSha256],
+    ['--consumer', options.consumer],
+  ]) {
+    if (!value) die(`${label} is required.`, 2);
+  }
+  for (const [label, value] of [
+    ['manifest', options.requiredManifestSha256],
+    ['grant', options.requiredGrantSha256],
+    ['manifest schema', options.requiredManifestSchemaSha256],
+  ]) {
+    if (!SHA256_RE.test(value)) die(`Required ${label} SHA-256 is invalid.`, 2);
+  }
+  if (
+    options.consumer !== 'all' &&
+    !PROTECTED_RECORDS_REPLACEMENT_DOWNSTREAM_CONSUMER_IDS_V2.includes(
+      options.consumer,
+    )
+  ) {
+    die('Consumer is not declared by the no-reexecution route.', 2);
+  }
+  if (!options.json) die('--json is required.', 2);
+  return options;
+}
+
+function readRegularFile(path, label) {
+  const resolved = resolve(path);
+  const status = lstatSync(resolved);
+  if (status.isSymbolicLink() || !status.isFile()) {
+    throw new Error(`${label} must be a regular non-symlink file`);
+  }
+  const raw = readFileSync(realpathSync(resolved));
+  if (raw.length < 2 || raw.length > MAX_INPUT_BYTES) {
+    throw new Error(`${label} size is outside the accepted boundary`);
+  }
+  return raw;
+}
+
+try {
+  const options = parseArgs(process.argv.slice(2));
+  if (
+    options.requiredManifestSchemaSha256 !==
+    protectedRecordsReplacementArtifactSetManifestSchemaContractSha256V2()
+  ) {
+    throw new Error('Required manifest schema does not match this verifier');
+  }
+  const manifestRawBytes = readRegularFile(options.manifestPath, 'Manifest');
+  const serviceArtifactRawBytes = readRegularFile(options.servicePath, 'Service artifact');
+  const terminalArtifactRawBytes = readRegularFile(options.terminalPath, 'Terminal artifact');
+  const manifest = verifyProtectedRecordsReplacementArtifactSetManifestV2RawBytes(
+    manifestRawBytes,
+    { expectedArtifactBodySha256: options.requiredManifestSha256 },
+  );
+  if (
+    manifest.payload.authority_binding.authority_grant_contract_sha256 !==
+      options.requiredGrantSha256 ||
+    manifest.payload.schema_binding
+      .artifact_set_manifest_schema_contract_sha256 !==
+      options.requiredManifestSchemaSha256
+  ) {
+    throw new Error('Externally required grant or manifest schema mismatch');
+  }
+  const rawArtifactSet = {
+    expectedManifestArtifactBodySha256: options.requiredManifestSha256,
+    manifestRawBytes,
+    serviceArtifactRawBytes,
+    terminalArtifactRawBytes,
+  };
+  const verification =
+    verifyProtectedRecordsReplacementArtifactSetV2FromRawBytes(rawArtifactSet);
+  const consumers = options.consumer === 'all'
+    ? PROTECTED_RECORDS_REPLACEMENT_DOWNSTREAM_CONSUMER_IDS_V2
+    : [options.consumer];
+  const downstreamProjections = Object.fromEntries(
+    consumers.map((consumerId) => [
+      consumerId,
+      buildProtectedRecordsReplacementDownstreamProjectionV2(
+        consumerId,
+        rawArtifactSet,
+      ),
+    ]),
+  );
+  process.stdout.write(`${JSON.stringify({
+    verification_type:
+      'zlar.protected-records.replacement-artifact-set-independent-verification.v2',
+    verification_only: true,
+    verified: true,
+    consequence_reexecution_performed: false,
+    runtime_module_imported: false,
+    crossing_driver_imported: false,
+    manifest_artifact_body_sha256:
+      verification.manifest_artifact_body_sha256,
+    authority_grant_contract_sha256:
+      verification.authority_binding.authority_grant_contract_sha256,
+    manifest_schema_contract_sha256:
+      options.requiredManifestSchemaSha256,
+    downstream_projections: downstreamProjections,
+    rightful_issuance_projected: false,
+    lifecycle_closed: false,
+  })}\n`);
+} catch (error) {
+  die(error?.message || 'Artifact-set verification failed closed.');
+}

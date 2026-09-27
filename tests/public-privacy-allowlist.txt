@@ -1,0 +1,12 @@
+# Public privacy guard allowlist.
+#
+# Each non-comment line is:
+#
+#   <guard label><TAB><extended regular expression>
+#
+# The regular expression is matched against git-grep output in the form
+# `path:line:content`, but only for the named guard label. Keep entries
+# path-scoped and narrow. This file may allow placeholders or preserved
+# provenance, never real secrets, hardware identifiers, numeric human IDs, or
+# stronger public claims.
+no public private absolute local paths outside placeholders	^docs/cli-reference\.md:[0-9]+:[[:space:]]*Claude legacy/current hook target:[[:space:]]+/Users/yourname/\.claude/zlar-gate\.sh$

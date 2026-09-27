@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zlar.dev/schemas/receipt/0.1.0",
+  "title": "ZLAR Governed Action Receipt (v0 — DEPRECATED)",
+  "deprecated": true,
+  "description": "DEPRECATED. The v0 Governed Action Receipt schema has been superseded by Governed Action Receipt v1. New receipts MUST use etc/receipt-v1.schema.json (envelope) and etc/receipt-v1-payload.schema.json (payload). Verifiers that resolve this URL should treat any document matching it as a legacy v0 receipt, validate under the v0 schema at the historical URL, and prefer v1. This stub exists so that an unwary resolver receives an explicit deprecated marker instead of a silently-loaded v0 schema. The normative v1 specification is spec/governed-action-receipt-v1.md.",
+  "x-deprecated-since": "2026-04-16",
+  "x-successor": "https://zlar.dev/schemas/receipt/v1",
+  "x-successor-envelope": "etc/receipt-v1.schema.json",
+  "x-successor-payload": "etc/receipt-v1-payload.schema.json",
+  "x-successor-spec": "spec/governed-action-receipt-v1.md",
+  "type": "object",
+  "not": {},
+  "description_of_not": "The 'not: {}' clause means no document validates under this schema. Any verifier that reaches this schema MUST treat validation as failing and either (a) fall back to the v1 schema at the x-successor URL or (b) reject the document. Receipts produced by a ZLAR gate since v3.1.1 are v1 and carry an explicit 'v:1' version marker in the envelope — a v0 receipt encountered today is either legacy or forged."
+}

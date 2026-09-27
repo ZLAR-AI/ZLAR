@@ -1,0 +1,256 @@
+{
+  "artifact_type": "zlar.legacy-runtime-v1-e3-source-disposition-overlay.v0",
+  "schema_version": 0,
+  "verification_mode": "source-only-static-overlay",
+  "decision": "add_temporal_source_disposition_without_parent_reclassification",
+  "consequence_class": "protected-records local-fixture records.write",
+  "selected_consequence_path": "protected-records.installed-runtime-profile.terminal-chain.records.write",
+  "authority_domain_context": "protected-records.local-disposable-fixture",
+  "authority_domain_evaluated": false,
+  "source_checkpoint": {
+    "repository_id": "ZLAR_Repo",
+    "analyzed_source_commit_oid": "9f726e6e14b423af60e45d647573a4f4838b170c",
+    "loaded_source_matches_commit_by_exact_file_hashes": true,
+    "dynamic_reachability_proven": false,
+    "runtime_observation_performed": false
+  },
+  "source_inventory": [
+    {"path": "bin/zlar-protected-records-runtime-service", "file_sha256": "4e5e08a6862ce0ea3f3801f684131934f377a1e6ccc06aba8b191d4387b34002"},
+    {"path": "bin/zlar-protected-records-runtime-profile-proof", "file_sha256": "40f1bd2e4222b82f9a5a1e27c3dc4148da9e425d0ad0816fac39896ebb4425e7"},
+    {"path": "bin/zlar-protected-records-runtime-profile-preflight", "file_sha256": "5abfc96d19c312f22a01175473531316bc1d0beaef550e26e3c49e3c08863c63"},
+    {"path": "bin/zlar-protected-records-runtime-activation-preflight", "file_sha256": "048d6764cbac0caea8fc6ea72ea202f4decc9a68198077d102d698102bb81527"},
+    {"path": "bin/zlar-protected-records-installed-runtime-profile-recognition-proof", "file_sha256": "e745cfbf32054b0cbc7cba21d93ad435fd014b8059b93bcf98c405352eb4d106"},
+    {"path": "bin/zlar-protected-records-installed-runtime-profile-service-proof", "file_sha256": "45b866d7f18db7fd5b5ecb598bc1f324e0cc7c0a015d0f3c7db9e363518f8191"},
+    {"path": "bin/zlar-protected-records-active-persistent-profile-lifecycle", "file_sha256": "04a5f99d811b625e1bcf4f579e03d47b5468f562541fa33cd9285395b5631c54"},
+    {"path": "bin/zlar-protected-records-installed-runtime-profile-terminal-chain", "file_sha256": "f0ed8d8eb3b1b9de9b03c00590b0a3ba7e5fa21f70ab6af944f355e06a62ec2b"},
+    {"path": "lib/protected-records-runtime-profile.mjs", "file_sha256": "5d02ecdc643fb5f3e256bb76d6e15946553a17c5e6aaa41e88ef6ce414d5103a"},
+    {"path": "lib/protected-records-runtime-profile-preflight.mjs", "file_sha256": "506b47c9ca33788d8a7659bec90573ec37faffb5b5e4bf8038ec87d30bef32f4"},
+    {"path": "lib/protected-records-runtime-activation-preflight.mjs", "file_sha256": "a00ff776db5148e1bb513cb1164842844eaeb47972f4267312eaed476d54952c"},
+    {"path": "lib/protected-records-installed-runtime-profile-recognition-proof.mjs", "file_sha256": "860a68d3135d571eef1b909c6ca7e21d31cc16f2be2f2ac75b36bbef86ea297f"},
+    {"path": "lib/protected-records-installed-runtime-profile-service-proof.mjs", "file_sha256": "93c8d4bfce6f985e70ecfbdd6fe526da6305fbf6912e63db77da5fb86fefa009"},
+    {"path": "lib/protected-records-active-persistent-profile-lifecycle.mjs", "file_sha256": "85e27bc3552bd403e5bac4e5ab84ee9c4907aa31daf8431c3ceae0561fa7ad99"},
+    {"path": "lib/protected-records-runtime-profile-installation.mjs", "file_sha256": "fedb88a9002cc161c8526749103b8965f7723e1119e78efc5fa23ca426c66a73"},
+    {"path": "lib/protected-records-runtime-local-activation.mjs", "file_sha256": "24c65a5e66e730d306841f889ac8b4470a33bfd8834f8f35630388d5646c9e0f"},
+    {"path": "lib/protected-records-installed-runtime-profile-terminal-chain.mjs", "file_sha256": "3feba1864577fa471a517cac5d7a50d627fe785dbc3dfab33113f01090ed3b3e"}
+  ],
+  "architecture_decision": {
+    "accepted_option": "additive_temporal_overlay",
+    "rejected_options": [
+      {
+        "option": "mutate_parent_dependency_map_or_reachability_delta",
+        "reason": "Those artifacts are immutable historical source checkpoints and must continue to describe their analyzed source."
+      },
+      {
+        "option": "delete_or_split_verifier_bearing_wrappers",
+        "reason": "The fixed endpoints already establish the new temporal source fact; wrapper deletion would add no topology evidence and could damage verification linkage."
+      },
+      {
+        "option": "claim_e3_elimination_or_runtime_unreachability",
+        "reason": "Old installed copies, historical Git objects, custom source, loaders, same-user mutation, and non-source routes remain outside this source checkpoint."
+      }
+    ]
+  },
+  "immutable_dependencies": {
+    "consequence_path_coverage_dependency_map_v0": {
+      "file_sha256": "a275b74cb7e468bed6a8376c8ccc0aab81937d945e240d69090293ae9b38a4de",
+      "body_sha256": "b39767ba79435bede70784d416b25ad52c47a6fb1c22df195a32b4af115f6b9b",
+      "mutated": false
+    },
+    "source_bound_static_reachability_delta_v0": {
+      "file_sha256": "15d84e7b569b9fef928d2d7fe619efbca6047de135379b7e50bbfec6c7abf973",
+      "body_sha256": "219d36fa18b01de5477ff2bebf0e00892868c65fead36446227a86838db23f89",
+      "source_inventory_sha256": "20451df27fb00b5e11e0c6f25dceb6c3f26a71f55a452c2f6a7e6d092cb41642",
+      "mutated": false
+    },
+    "direct_entry_disposition_v0": {
+      "path": "spec/legacy-runtime-v1-governed-disposition-v0.json",
+      "file_sha256": "649f1e5e13c6c658d04e2780e6a47a70bddeb118f695260348b4d182e30aef24",
+      "body_sha256": "ec322d0bdc43c889c409ac17685bce2c47970cdf326d09e5602fd4826e609d8a",
+      "retired_entry_file_sha256": "4e5e08a6862ce0ea3f3801f684131934f377a1e6ccc06aba8b191d4387b34002",
+      "mutated": false
+    },
+    "direct_factory_disposition_v0": {
+      "path": "spec/legacy-runtime-v1-direct-factory-disposition-v0.json",
+      "file_sha256": "edf1bb84bab8e310b2d74ea81eebd7390f1dc528b1fcaf59b3a70e205d288d4b",
+      "body_sha256": "82ae2feb5378753074e865f0236e779d3092bea5b53dbb792579a2fb177f6a35",
+      "retired_factory_module_sha256": "5d02ecdc643fb5f3e256bb76d6e15946553a17c5e6aaa41e88ef6ce414d5103a",
+      "retired_factory_slice_sha256": "587c307590197b3e30abcc91975b49a3951d0f386041766bbca17faeb88659fc",
+      "mutated": false
+    }
+  },
+  "e3_disposition": {
+    "effect_node_id": "E3.legacy-runtime-process-private-state-v1",
+    "historical_node_identity_retained": true,
+    "historical_relationship_to_selected_e4": "distinct_effect",
+    "parent_coverage_dispositions_retained": [
+      "observed_uncovered",
+      "unclassified",
+      "fresh_effect_gate_marker_observed_refusal_unproven"
+    ],
+    "current_source_projection": "historical_effect_node_with_nine_static_route_projections_each_containing_a_fixed_refusal_boundary_before_e3_and_one_terminal_chain_historical_evidence_view",
+    "identified_static_v1_route_positive_source_available": false,
+    "historical_positive_factory_body_present_in_current_module": false,
+    "current_factory_returns_apply_request": false,
+    "runtime_unreachability_proven": false,
+    "e3_eliminated": false,
+    "installed_copy_eliminated": false,
+    "authorized_outside_coverage": false,
+    "governed_lifecycle_proven": false
+  },
+  "fixed_refusal_endpoints": [
+    {
+      "endpoint_id": "legacy-v1-direct-cli-refusal",
+      "source_path": "bin/zlar-protected-records-runtime-service",
+      "file_sha256": "4e5e08a6862ce0ea3f3801f684131934f377a1e6ccc06aba8b191d4387b34002",
+      "reason_code": "legacy_runtime_v1_direct_entry_surface_retired",
+      "input_independent": true,
+      "creates_service_or_apply_request": false
+    },
+    {
+      "endpoint_id": "legacy-v1-exported-factory-refusal",
+      "source_path": "lib/protected-records-runtime-profile.mjs",
+      "file_sha256": "5d02ecdc643fb5f3e256bb76d6e15946553a17c5e6aaa41e88ef6ce414d5103a",
+      "reason_code": "legacy_runtime_v1_exported_factory_retired",
+      "input_independent": true,
+      "creates_service_or_apply_request": false
+    }
+  ],
+  "surface_disposition_delta": [
+    {
+      "surface_id": "source-discovered:bin/zlar-protected-records-runtime-service-v1",
+      "entrypoint": "bin/zlar-protected-records-runtime-service",
+      "historical_relationship": "distinct_effect",
+      "current_e3_projection": "refusal_only",
+      "terminating_endpoint_id": "legacy-v1-direct-cli-refusal",
+      "other_effect_node_projections": []
+    },
+    {
+      "surface_id": "known-static-uncatalogued:bin/zlar-protected-records-runtime-profile-proof",
+      "entrypoint": "bin/zlar-protected-records-runtime-profile-proof",
+      "historical_relationship": "wrapper",
+      "current_e3_projection": "wrapper_to_refusal",
+      "terminating_endpoint_id": "legacy-v1-direct-cli-refusal",
+      "other_effect_node_projections": []
+    },
+    {
+      "surface_id": "known-static-uncatalogued:bin/zlar-protected-records-runtime-profile-preflight",
+      "entrypoint": "bin/zlar-protected-records-runtime-profile-preflight",
+      "historical_relationship": "wrapper",
+      "current_e3_projection": "ancestor_to_refusal",
+      "terminating_endpoint_id": "legacy-v1-direct-cli-refusal",
+      "other_effect_node_projections": []
+    },
+    {
+      "surface_id": "known-static-uncatalogued:bin/zlar-protected-records-runtime-activation-preflight",
+      "entrypoint": "bin/zlar-protected-records-runtime-activation-preflight",
+      "historical_relationship": "wrapper",
+      "current_e3_projection": "ancestor_to_refusal",
+      "terminating_endpoint_id": "legacy-v1-direct-cli-refusal",
+      "other_effect_node_projections": []
+    },
+    {
+      "surface_id": "known-static-uncatalogued:bin/zlar-protected-records-installed-runtime-profile-recognition-proof",
+      "entrypoint": "bin/zlar-protected-records-installed-runtime-profile-recognition-proof",
+      "historical_relationship": "wrapper",
+      "current_e3_projection": "wrapper_to_refusal",
+      "terminating_endpoint_id": "legacy-v1-exported-factory-refusal",
+      "other_effect_node_projections": []
+    },
+    {
+      "surface_id": "known-static-uncatalogued:bin/zlar-protected-records-installed-runtime-profile-service-proof",
+      "entrypoint": "bin/zlar-protected-records-installed-runtime-profile-service-proof",
+      "historical_relationship": "wrapper",
+      "current_e3_projection": "wrapper_to_refusal",
+      "terminating_endpoint_id": "legacy-v1-direct-cli-refusal",
+      "other_effect_node_projections": []
+    },
+    {
+      "surface_id": "known-static-uncatalogued:bin/zlar-protected-records-active-persistent-profile-lifecycle",
+      "entrypoint": "bin/zlar-protected-records-active-persistent-profile-lifecycle",
+      "historical_relationship": "wrapper",
+      "current_e3_projection": "ancestor_to_refusal",
+      "terminating_endpoint_id": "legacy-v1-direct-cli-refusal",
+      "other_effect_node_projections": [
+        "E5.active-persistent-proof-target-marker-v1"
+      ]
+    },
+    {
+      "surface_id": "protected-records.runtime.profile-installation.records.write",
+      "entrypoint": "lib/protected-records-runtime-profile-installation.mjs",
+      "historical_relationship": "wrapper",
+      "current_e3_projection": "wrapper_to_both_fixed_refusals",
+      "terminating_endpoint_id": "legacy-v1-exported-factory-refusal and legacy-v1-direct-cli-refusal",
+      "other_effect_node_projections": []
+    },
+    {
+      "surface_id": "protected-records.runtime.records.write",
+      "entrypoint": "lib/protected-records-runtime-local-activation.mjs",
+      "historical_relationship": "wrapper",
+      "current_e3_projection": "ancestor_to_refusal",
+      "terminating_endpoint_id": "legacy-v1-direct-cli-refusal",
+      "other_effect_node_projections": []
+    },
+    {
+      "surface_id": "source-discovered:bin/zlar-protected-records-installed-runtime-profile-terminal-chain",
+      "entrypoint": "bin/zlar-protected-records-installed-runtime-profile-terminal-chain",
+      "historical_relationship": "wrapper",
+      "current_e3_projection": "historical_evidence_view",
+      "terminating_endpoint_id": null,
+      "other_effect_node_projections": []
+    }
+  ],
+  "lifecycle_delta": {
+    "map_status_before": "mapped_open",
+    "map_status_after": "mapped_open",
+    "obligation_status_changes": [],
+    "new_lifecycle_evidence_added": false,
+    "equivalent_route_closure": false,
+    "domain_inventory_complete": false,
+    "outside_coverage_authority_inferred": false
+  },
+  "claim_delta": {
+    "new_true_claim": "At exact source checkpoint 9f726e6e14b423af60e45d647573a4f4838b170c, each of nine overlayed static E3 route projections contains an identified fixed-refusal boundary before a legacy-v1 service object or applyRequest can be created; source-recorded guards may refuse earlier. The installed terminal-chain E3 association is a historical evidence view that does not invoke the service-proof generator.",
+    "historical_distinct_effect_claim_removed": false,
+    "coverage_disposition_changed": false,
+    "lifecycle_claim_changed": false
+  },
+  "authority_status": {
+    "route_and_source_authority_present": true,
+    "consequence_authority_present": false,
+    "authority_domain_assignment_present": false,
+    "outside_coverage_authority_present": false,
+    "active_authority_present": false
+  },
+  "claim_boundary": {
+    "exact_checkpoint_static_e3_fixed_refusal_boundary": true,
+    "historical_e3_identity_retained": true,
+    "runtime_unreachability": false,
+    "e3_elimination": false,
+    "installed_copy_refusal": false,
+    "domain_inventory_completeness": false,
+    "equivalent_route_closure": false,
+    "lifecycle_closure": false,
+    "side_door_closure": false,
+    "current_machine_governance": false,
+    "production_governance": false,
+    "public_attestation": false,
+    "all_surface_governance": false
+  },
+  "side_doors": [
+    "old-installed-or-copied-positive-v1-source",
+    "historical-git-objects-and-checkouts",
+    "custom-import-of-old-or-mutated-source",
+    "NODE_OPTIONS-loaders-preloads-and-interpreter-substitution",
+    "same-user-source-mutation",
+    "raw-filesystem-writes-around-fixture-storage",
+    "dynamic-or-generated-entrypoints-absent-from-overlay-inventory",
+    "other-effect-projections-on-mixed-surfaces-including-E5",
+    "shell-MCP-browser-app-control-filesystem-and-network-routes-not-bound-to-E3",
+    "source-drift-after-checkpoint"
+  ],
+  "integrity": {
+    "algorithm": "SHA-256",
+    "scope": "canonical artifact body without integrity",
+    "body_sha256": "5acaedb62413361c14389e270207d9b2c6ca60982559ec187cbdbcba611b9525"
+  }
+}

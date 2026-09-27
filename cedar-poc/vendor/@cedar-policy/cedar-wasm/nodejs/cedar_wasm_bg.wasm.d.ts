@@ -1,0 +1,34 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const getCedarSDKVersion: () => [number, number];
+export const getValidRequestEnvsPolicy: (a: any, b: any) => any;
+export const getValidRequestEnvsTemplate: (a: any, b: any) => any;
+export const getCedarVersion: () => [number, number];
+export const isAuthorized: (a: any) => any;
+export const isAuthorizedPartial: (a: any) => any;
+export const preparsePolicySet: (a: number, b: number, c: any) => any;
+export const preparseSchema: (a: number, b: number, c: any) => any;
+export const statefulIsAuthorized: (a: any) => any;
+export const checkParseContext: (a: any) => any;
+export const checkParseEntities: (a: any) => any;
+export const checkParsePolicySet: (a: any) => any;
+export const checkParseSchema: (a: any) => any;
+export const formatPolicies: (a: any) => any;
+export const validate: (a: any) => any;
+export const policySetTextToParts: (a: number, b: number) => any;
+export const policyToJson: (a: any) => any;
+export const policyToText: (a: any) => any;
+export const schemaToJson: (a: any) => any;
+export const schemaToJsonWithResolvedTypes: (a: number, b: number) => any;
+export const schemaToText: (a: any) => any;
+export const templateToJson: (a: any) => any;
+export const templateToText: (a: any) => any;
+export const getCedarLangVersion: () => [number, number];
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_start: () => void;

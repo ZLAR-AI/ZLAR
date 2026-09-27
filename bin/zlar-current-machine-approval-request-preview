@@ -1,0 +1,75 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import {
+  assertCurrentMachineApprovalRequestPreviewReport,
+  formatCurrentMachineApprovalRequestPreviewReport,
+  previewCurrentMachineApprovalRequestFromText,
+} from '../lib/current-machine-approval-request-preview.mjs';
+import { assertNoUnsafeCurrentMachineApprovalPacketText } from '../lib/current-machine-approval-packet.mjs';
+
+function usage() {
+  console.error('Usage: zlar current-machine-approval-request-preview --intake <file|-> [--json]');
+  console.error('Verifies a current-machine approval intake report before preparing any future human install/config authority request preview.');
+  console.error('Refuses unless authority_request_allowed=true, authority_request_made=false, packet verification is complete, and no install/config/live/current-machine governance claim is present.');
+  console.error('This command is not install authority, not an approval, does not request authority, does not install or activate, does not write hooks/profiles/services/user/machine configuration, does not use Telegram, and does not prove current-machine governance.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeCurrentMachineApprovalPacketText(message);
+    return message;
+  } catch {
+    return 'Current-machine approval request preview failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+function readTextInput(path) {
+  try {
+    return path === '-' ? readFileSync(0, 'utf8') : readFileSync(path, 'utf8');
+  } catch {
+    die('Could not read current-machine approval intake report.', 2);
+  }
+}
+
+const args = process.argv.slice(2);
+let intakePath = '';
+let asJson = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--intake') {
+    intakePath = args[++i] || '';
+    if (!intakePath) {
+      usage();
+      die('Missing value for --intake.', 2);
+    }
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported current-machine approval request preview option provided.', 2);
+  }
+}
+
+if (!intakePath) {
+  usage();
+  die('Missing required --intake <file|->.', 2);
+}
+
+const report = previewCurrentMachineApprovalRequestFromText(readTextInput(intakePath));
+assertCurrentMachineApprovalRequestPreviewReport(report);
+
+const output = asJson
+  ? `${JSON.stringify(report, null, 2)}\n`
+  : formatCurrentMachineApprovalRequestPreviewReport(report);
+assertNoUnsafeCurrentMachineApprovalPacketText(output);
+process.stdout.write(output);
+process.exit(report.preview_can_be_prepared ? 0 : 1);

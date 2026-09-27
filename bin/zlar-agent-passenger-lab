@@ -1,0 +1,62 @@
+#!/usr/bin/env node
+import {
+  assertNoUnsafeAgentPassengerLabText,
+  formatAgentPassengerLabReport,
+  runAgentPassengerLab,
+  writeAgentPassengerLabReport,
+} from '../lib/agent-passenger-lab.mjs';
+
+function usage() {
+  console.error('Usage: zlar agent-passenger-lab [--json|--json-out <file>]');
+  console.error('Runs the local fixture Agent Passenger Lab / Governed Crossing Test Harness.');
+  console.error('This command observes proposal-to-crossing fixture attempts only. It does not spawn live agents, inspect private reasoning, surveil model thoughts, create authority, prove current-machine governance, prove production governance, create external attestation, or upgrade any public claim.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+let asJson = false;
+let jsonOut = '';
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--json-out') {
+    jsonOut = args[++i] || '';
+    if (!jsonOut) {
+      usage();
+      die('Missing value for --json-out.', 2);
+    }
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (asJson && jsonOut) {
+  usage();
+  die('Cannot combine --json with --json-out.', 2);
+}
+
+try {
+  const report = runAgentPassengerLab();
+  if (jsonOut) {
+    writeAgentPassengerLabReport(report, jsonOut);
+    process.exit(0);
+  }
+
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatAgentPassengerLabReport(report);
+  assertNoUnsafeAgentPassengerLabText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

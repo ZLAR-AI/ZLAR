@@ -1,0 +1,166 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import {
+  ACTIVE_PERSISTENT_PROFILE_CANONICAL_RUNTIME_PROFILE_SOURCE,
+  ACTIVE_PERSISTENT_PROFILE_REQUIRED_RUNTIME_PROFILE_SHA256,
+} from '../lib/protected-records-active-persistent-profile-preflight.mjs';
+import {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText,
+} from '../lib/protected-records-runtime-profile.mjs';
+import {
+  formatProtectedRecordsActivePersistentProfileActionCrossing,
+  runProtectedRecordsActivePersistentProfileActionCrossing,
+  writeProtectedRecordsActivePersistentProfileActionCrossingReport,
+} from '../lib/protected-records-active-persistent-profile-action-crossing.mjs';
+
+function usage() {
+  console.error('Usage: zlar protected-records-active-persistent-profile-action-crossing --activation-root <explicit-temp-or-proof-owned-root> --expected-profile profiles/protected-records-runtime-fixture.profile.json --profile-id protected-records-runtime-fixture-profile --profile-sha256 e632931d5ab89c5b01a63a85b5bf0273c729e14c78b58929f39ac4ff6f131469 --proof-target <explicit-temp-or-proof-owned-file> [--now-epoch <seconds>] [--json] [--report <file>]');
+  console.error('Proves one bounded records.write action crosses the already-active named persistent profile before local disposable service mutation.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(message);
+    return message;
+  } catch {
+    return 'Active persistent profile action crossing failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+function parseNowEpoch(value) {
+  if (!value) return Math.floor(Date.now() / 1000);
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    die('--now-epoch must be a positive integer.', 2);
+  }
+  return parsed;
+}
+
+function readProfile(path) {
+  try {
+    const text = readFileSync(path, 'utf8');
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(text);
+    return JSON.parse(text);
+  } catch {
+    die('Could not read the expected active persistent action crossing profile.', 2);
+  }
+}
+
+let activationRoot = '';
+let expectedProfilePath = '';
+let profileId = '';
+let profileSha256 = '';
+let proofTarget = '';
+let nowEpochText = '';
+let allowNamedLiveRoot = false;
+let asJson = false;
+let reportOutput = '';
+
+const args = process.argv.slice(2);
+for (let index = 0; index < args.length; index++) {
+  const arg = args[index];
+  if (arg === '--activation-root') {
+    activationRoot = args[++index] || '';
+    if (!activationRoot) {
+      usage();
+      die('Missing value for --activation-root.', 2);
+    }
+  } else if (arg === '--expected-profile') {
+    expectedProfilePath = args[++index] || '';
+    if (!expectedProfilePath) {
+      usage();
+      die('Missing value for --expected-profile.', 2);
+    }
+  } else if (arg === '--profile-id') {
+    profileId = args[++index] || '';
+    if (!profileId) {
+      usage();
+      die('Missing value for --profile-id.', 2);
+    }
+  } else if (arg === '--profile-sha256') {
+    profileSha256 = args[++index] || '';
+    if (!profileSha256) {
+      usage();
+      die('Missing value for --profile-sha256.', 2);
+    }
+  } else if (arg === '--proof-target') {
+    proofTarget = args[++index] || '';
+    if (!proofTarget) {
+      usage();
+      die('Missing value for --proof-target.', 2);
+    }
+  } else if (arg === '--now-epoch') {
+    nowEpochText = args[++index] || '';
+    if (!nowEpochText) {
+      usage();
+      die('Missing value for --now-epoch.', 2);
+    }
+  } else if (arg === '--allow-named-live-root') {
+    allowNamedLiveRoot = true;
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--report') {
+    reportOutput = args[++index] || '';
+    if (!reportOutput) {
+      usage();
+      die('Missing value for --report.', 2);
+    }
+  } else if (arg === '--latest') {
+    die('--latest is not accepted for active persistent action crossing.', 2);
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (!activationRoot || !expectedProfilePath || !profileId || !profileSha256 || !proofTarget) {
+  usage();
+  die('Required --activation-root, --expected-profile, --profile-id, --profile-sha256, and --proof-target.', 2);
+}
+if (
+  expectedProfilePath !== ACTIVE_PERSISTENT_PROFILE_CANONICAL_RUNTIME_PROFILE_SOURCE &&
+  expectedProfilePath !== `./${ACTIVE_PERSISTENT_PROFILE_CANONICAL_RUNTIME_PROFILE_SOURCE}`
+) {
+  die('The expected profile must be profiles/protected-records-runtime-fixture.profile.json.', 2);
+}
+if (profileId !== 'protected-records-runtime-fixture-profile') {
+  die('The active persistent action crossing profile id must be protected-records-runtime-fixture-profile.', 2);
+}
+if (profileSha256 !== ACTIVE_PERSISTENT_PROFILE_REQUIRED_RUNTIME_PROFILE_SHA256) {
+  die('The active persistent action crossing profile SHA-256 does not match the pinned profile.', 2);
+}
+
+try {
+  const report = runProtectedRecordsActivePersistentProfileActionCrossing({
+    activationRoot,
+    expectedProfile: readProfile(expectedProfilePath),
+    profileId,
+    profileSha256,
+    proofTarget,
+    nowEpoch: parseNowEpoch(nowEpochText),
+    allowNamedLiveRoot,
+  });
+  let output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatProtectedRecordsActivePersistentProfileActionCrossing(report);
+  if (reportOutput) {
+    const sha = writeProtectedRecordsActivePersistentProfileActionCrossingReport({
+      report,
+      outputPath: reportOutput,
+      activationRoot,
+    });
+    output += `report_written=true\nreport_sha256=${sha}\n`;
+  }
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

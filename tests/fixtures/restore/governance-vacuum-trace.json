@@ -1,0 +1,22 @@
+[
+  {"seq":1,"ts":"2026-04-12T15:00:00Z","domain":"read","action":"README.md","outcome":"allow","risk_score":0,"severity":"info","rule":"R061","authorizer":"policy"},
+  {"seq":2,"ts":"2026-04-12T15:00:05Z","domain":"glob","action":"src/**/*.ts","outcome":"allow","risk_score":0,"severity":"info","rule":"R061","authorizer":"policy"},
+  {"seq":3,"ts":"2026-04-12T15:00:12Z","domain":"read","action":"lib/gate.mjs","outcome":"allow","risk_score":0,"severity":"info","rule":"R061","authorizer":"policy"},
+  {"seq":4,"ts":"2026-04-12T15:00:20Z","domain":"write","action":"docs/README.md","outcome":"ask_pending","risk_score":60,"severity":"warn","rule":"R035","authorizer":"gate"},
+  {"seq":5,"ts":"2026-04-12T15:00:22Z","domain":"write","action":"docs/README.md","outcome":"denied","risk_score":60,"severity":"warn","rule":"R035","authorizer":"gate:error"},
+  {"seq":6,"ts":"2026-04-12T15:00:30Z","domain":"bash","action":"cat > /tmp/output.md","outcome":"ask_pending","risk_score":60,"severity":"warn","rule":"R018","authorizer":"gate"},
+  {"seq":7,"ts":"2026-04-12T15:00:32Z","domain":"bash","action":"cat > /tmp/output.md","outcome":"denied","risk_score":60,"severity":"warn","rule":"R018","authorizer":"gate:error"},
+  {"seq":8,"ts":"2026-04-12T15:00:45Z","domain":"edit","action":"lib/restore-trigger.mjs","outcome":"ask_pending","risk_score":60,"severity":"warn","rule":"R041E","authorizer":"gate"},
+  {"seq":9,"ts":"2026-04-12T15:00:47Z","domain":"edit","action":"lib/restore-trigger.mjs","outcome":"denied","risk_score":60,"severity":"warn","rule":"R041E","authorizer":"gate:error"},
+  {"seq":10,"ts":"2026-04-12T15:01:00Z","domain":"write","action":"ZLAR-2.0/research/analysis.md","outcome":"ask_pending","risk_score":60,"severity":"warn","rule":"R035","authorizer":"gate"},
+  {"seq":11,"ts":"2026-04-12T15:01:02Z","domain":"write","action":"ZLAR-2.0/research/analysis.md","outcome":"denied","risk_score":60,"severity":"warn","rule":"R035","authorizer":"gate:error"},
+  {"seq":12,"ts":"2026-04-12T15:01:15Z","domain":"bash","action":"echo test > /tmp/test.txt","outcome":"ask_pending","risk_score":60,"severity":"warn","rule":"R018","authorizer":"gate"},
+  {"seq":13,"ts":"2026-04-12T15:01:17Z","domain":"bash","action":"echo test > /tmp/test.txt","outcome":"denied","risk_score":60,"severity":"warn","rule":"R018","authorizer":"gate:error"},
+  {"seq":14,"ts":"2026-04-12T15:01:30Z","domain":"read","action":"lib/receipt.mjs","outcome":"allow","risk_score":0,"severity":"info","rule":"R061","authorizer":"policy"},
+  {"seq":15,"ts":"2026-04-12T15:01:45Z","domain":"grep","action":"authorizer","outcome":"allow","risk_score":0,"severity":"info","rule":"R061","authorizer":"policy"},
+  {"seq":16,"ts":"2026-04-12T15:02:00Z","domain":"bash","action":"git status","outcome":"ask_pending","risk_score":60,"severity":"warn","rule":"R018","authorizer":"gate"},
+  {"seq":17,"ts":"2026-04-12T15:02:02Z","domain":"bash","action":"git status","outcome":"denied","risk_score":60,"severity":"warn","rule":"R018","authorizer":"gate:error"},
+  {"seq":18,"ts":"2026-04-12T15:02:15Z","domain":"write","action":"session-notes.md","outcome":"ask_pending","risk_score":60,"severity":"warn","rule":"R035","authorizer":"gate"},
+  {"seq":19,"ts":"2026-04-12T15:02:17Z","domain":"write","action":"session-notes.md","outcome":"denied","risk_score":60,"severity":"warn","rule":"R035","authorizer":"gate:error"},
+  {"seq":20,"ts":"2026-04-12T15:02:30Z","domain":"read","action":"CHANGELOG.md","outcome":"allow","risk_score":0,"severity":"info","rule":"R061","authorizer":"policy"}
+]

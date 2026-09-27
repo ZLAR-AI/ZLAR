@@ -1,0 +1,121 @@
+{
+  "generatedAt": "2026-06-18T16:01:00Z",
+  "event_id": "bash-fixture-event-001",
+  "surface_id": "bash.pre_tool_use",
+  "boarding_lane": "Bash gate PreToolUse boarding lane",
+  "checkpoint_path": "bash-gate:PreToolUse->zlar-gate",
+  "hook": {
+    "configured": true,
+    "routed": true,
+    "name": "PreToolUse",
+    "gate_target": "zlar-gate"
+  },
+  "heartbeat": {
+    "state": "on",
+    "last_heartbeat_epoch": 5000,
+    "now_epoch": 5030,
+    "freshness_seconds": 120
+  },
+  "policy": {
+    "active_version": "coverage-policy-v1",
+    "evidence_version": "coverage-policy-v1",
+    "expected_version": "coverage-policy-v1",
+    "signature_valid": true,
+    "acknowledged": true,
+    "key_id": "fixture-policy-key",
+    "active_policy_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "policy_pubkey_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "verification_source": "fixture-policy-verification"
+  },
+  "audit_event": {
+    "id": "bash-fixture-event-001",
+    "ts": "2026-06-18T16:00:00Z",
+    "seq": 1,
+    "source": "gate",
+    "host": "fixture-host",
+    "user": "fixture-user",
+    "agent_id": "fixture-agent",
+    "session_id": "fixture-session",
+    "domain": "bash",
+    "action": "Bash",
+    "outcome": "deny",
+    "risk_score": 80,
+    "detail": {
+      "command": "printf fixture-bash-evidence"
+    },
+    "rule": "RTEST_BASH_EVIDENCE",
+    "rule_description": "Fixture bash coverage evidence rule.",
+    "policy_version": "coverage-policy-v1",
+    "policy_key_id": "fixture-policy-key",
+    "severity": "critical",
+    "prev_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "authorizer": "policy",
+    "signature_algorithm": "Ed25519",
+    "hash_algorithm": "SHA-256",
+    "public_key_id": "fixture-audit-key",
+    "signature": "fixture-signature"
+  },
+  "worker_receipt": {
+    "worker_receipt_version": "0.1.0",
+    "type": "worker-receipt",
+    "event": {
+      "id": "bash-fixture-event-001",
+      "source": "gate",
+      "surface": "bash-gate",
+      "audit_prev_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "audit_hash": "eaa213c2a3fdcdc1cd0c0cf3d1807a6ffd6a1152d3715d07870d9137ea3413ec"
+    },
+    "time": {
+      "observed_at": "2026-06-18T16:00:00Z",
+      "source": "local_clock",
+      "statement": "Timestamp was recorded by the local ZLAR host clock."
+    },
+    "action": {
+      "class": "Bash",
+      "domain": "bash",
+      "summary": "Bash: printf fixture-bash-evidence",
+      "detail_hash": "74e593beeee10e531e3f4edf2e0a210a883ed816501e3ff6948c91ab620ef02a"
+    },
+    "decision": {
+      "outcome": "deny",
+      "label": "Denied by policy",
+      "rule_id": "RTEST_BASH_EVIDENCE",
+      "rule_description": "Fixture bash coverage evidence rule.",
+      "policy_version": "coverage-policy-v1",
+      "policy_key_id": "fixture-policy-key",
+      "authorizer": "policy",
+      "authorizer_summary": "Policy rule decided this action.",
+      "approval_channel": "none"
+    },
+    "limitations": {
+      "scope": "This Worker Receipt only describes a single action routed through the ZLAR bash gate.",
+      "non_claims": [
+        "It does not prove agent intent.",
+        "It does not prove operator understanding.",
+        "It does not prove ZLAR governed actions outside this gate."
+      ]
+    },
+    "contest": {
+      "status": "not_implemented",
+      "handle": null,
+      "statement": "/contest is not implemented in Worker Receipt v0.1."
+    }
+  },
+  "downstream_refusal": {
+    "proved": true,
+    "applicable": true,
+    "mechanism": "Fixture bash gate denial stops this supplied event before downstream execution."
+  },
+  "surface_non_claims": [
+    "This fixture describes one supplied bash PreToolUse event routed through the ZLAR gate.",
+    "This fixture does not claim adjacent clients, tools, or unrouted shell access.",
+    "This fixture does not claim current-machine governance or live machine coverage."
+  ],
+  "non_claims": [
+    "This is supplied fixture evidence for one bash-gate lane.",
+    "No live probing is performed by this evidence assembler.",
+    "This fixture does not prove live machine coverage or coverage of unrouted surfaces.",
+    "This fixture does not create outside attestation, deployment authority, or recognition-boundary claims.",
+    "/contest is not implemented."
+  ]
+}

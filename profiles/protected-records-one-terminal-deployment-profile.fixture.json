@@ -1,0 +1,48 @@
+{
+  "profile_type": "zlar-protected-records-one-terminal-deployment-profile-v1",
+  "profile_id": "protected-records-one-terminal-deployment-profile-fixture",
+  "profile_status": "sample_not_active",
+  "deployment_model": "one-terminal-local-fixture",
+  "action_class": "records.write",
+  "selected_runtime_profile": {
+    "source": "deployment-owned-profile-artifact",
+    "profile_path": "profiles/protected-records-runtime-fixture.profile.json",
+    "profile_id": "protected-records-runtime-fixture-profile",
+    "runtime_profile_id": "protected-records-disposable-runtime-profile",
+    "profile_sha256": "e632931d5ab89c5b01a63a85b5bf0273c729e14c78b58929f39ac4ff6f131469",
+    "selected_by_explicit_id_and_sha": true,
+    "selects_latest_profile": false
+  },
+  "authority_boundary": {
+    "deployment_owned_profile_artifact": true,
+    "profile_selected_by_id_and_sha": true,
+    "request_stream_authority_material_accepted": false,
+    "recognition_rule_supplied_by_agent": false,
+    "fixture_mode_supplied_by_agent": false,
+    "unsupported_request_fields_accepted": false,
+    "agent_supplied_authority_material_accepted": false
+  },
+  "request_contract": "receipt-record-update-and-routing-metadata-only",
+  "proof_boundary": {
+    "local_fixture_only": true,
+    "persistent_install": false,
+    "activation_performed": false,
+    "live_runtime_service": false,
+    "live_records_system": false,
+    "production_downstream_recognition": false,
+    "production_authority": false,
+    "current_machine_governance": false,
+    "enterprise_readiness": false,
+    "external_attestation": false,
+    "sovereign_recognition": false,
+    "unrouted_surface_coverage": false
+  },
+  "proof_command": "zlar protected-records-one-terminal-deployment-profile --sample",
+  "non_claims": [
+    "This deployment profile is a local fixture artifact, not an active enterprise deployment.",
+    "This proof does not install, activate, or persist a runtime profile.",
+    "This proof does not start a live runtime service or inspect a live records system.",
+    "This proof does not write hook, user, machine, production, receipt, audit, or records-system configuration.",
+    "This proof does not prove production downstream recognition, production authority, enterprise readiness, current-machine governance, external attestation, sovereign recognition, or coverage of unrouted surfaces."
+  ]
+}

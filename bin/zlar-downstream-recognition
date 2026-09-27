@@ -1,0 +1,112 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import {
+  assertRecognized,
+  assertRefused,
+  evaluateDownstreamRecognition,
+} from '../lib/downstream-recognition-rule.mjs';
+
+const UNSAFE_OUTPUT_PATTERNS = Object.freeze([
+  { label: 'private operator path', pattern: /\/Users\/[^\s"'`]+/ },
+  { label: 'home path', pattern: /\/home\/[^\s"'`]+/ },
+  { label: 'private path', pattern: /\/private\/[^\s"'`]+/ },
+  { label: 'temp path', pattern: /\/tmp\/[^\s"'`]+/ },
+  { label: 'numeric human identifier', pattern: /\bhuman:[0-9]/ },
+  { label: 'chat id field', pattern: /\bchat_id\b/i },
+  { label: 'private key material', pattern: /BEGIN [A-Z ]*PRIVATE KEY/ },
+  { label: 'public key material', pattern: /BEGIN PUBLIC KEY/ },
+  {
+    label: 'key-value credential',
+    pattern: /\b(?:token|secret|password|api[_-]?key)\s*[:=]\s*[^&\s"'`,;})\]]+/i,
+  },
+  {
+    label: 'authorization credential',
+    pattern: /\bauthorization\s*[:=]\s*(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{6,}/i,
+  },
+  { label: 'GitHub token', pattern: /\bghp_[A-Za-z0-9_]{10,}\b/ },
+  { label: 'GitHub fine-grained token', pattern: /\bgithub_pat_[A-Za-z0-9_]{10,}\b/ },
+  { label: 'Slack token', pattern: /\bxox(?:b|p|a|r|s)-[A-Za-z0-9-]{10,}\b/ },
+  { label: 'AWS access key', pattern: /\bAKIA[0-9A-Z]{12,}\b/ },
+  { label: 'OpenAI-style key', pattern: /\b(?:sk|pk)-[A-Za-z0-9_-]{12,}\b/ },
+  { label: 'bot token', pattern: /\bbot[0-9]{6,}:[A-Za-z0-9_-]{6,}\b/ },
+]);
+
+function usage() {
+  console.error('Usage: zlar downstream-recognition --input <file|-> [--require-refused|--require-recognized]');
+  console.error('Input JSON supplies receipt, recognition_rule, and optional now_epoch.');
+  console.error('This command evaluates supplied evidence only; it does not live probe, choose --latest, or inspect runtime state.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function assertNoUnsafeOutput(value) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  for (const { label, pattern } of UNSAFE_OUTPUT_PATTERNS) {
+    if (pattern.test(text)) {
+      throw new Error(`downstream recognition output contains ${label}`);
+    }
+  }
+  return true;
+}
+
+const args = process.argv.slice(2);
+let inputPath = '';
+let requireRefused = false;
+let requireRecognized = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--input') {
+    inputPath = args[++i] || '';
+  } else if (arg === '--require-refused') {
+    requireRefused = true;
+  } else if (arg === '--require-recognized') {
+    requireRecognized = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (!inputPath) {
+  usage();
+  die('--input is required; live probing is not implemented in this slice.', 2);
+}
+
+if (requireRefused && requireRecognized) {
+  usage();
+  die('--require-refused and --require-recognized are mutually exclusive.', 2);
+}
+
+let rawInput = '';
+try {
+  rawInput = inputPath === '-'
+    ? readFileSync(0, 'utf8')
+    : readFileSync(inputPath, 'utf8');
+} catch {
+  die('Could not read downstream recognition input.');
+}
+
+let input;
+try {
+  input = JSON.parse(rawInput);
+} catch (err) {
+  die(`Could not parse downstream recognition JSON: ${err.message}`);
+}
+
+try {
+  const decision = evaluateDownstreamRecognition(input);
+  if (requireRefused) assertRefused(decision);
+  if (requireRecognized) assertRecognized(decision);
+  const output = `${JSON.stringify(decision, null, 2)}\n`;
+  assertNoUnsafeOutput(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

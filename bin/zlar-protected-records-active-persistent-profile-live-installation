@@ -1,0 +1,267 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import {
+  ACTIVE_PERSISTENT_PROFILE_CANONICAL_RUNTIME_PROFILE_SOURCE,
+  ACTIVE_PERSISTENT_PROFILE_REQUIRED_RUNTIME_PROFILE_SHA256,
+} from '../lib/protected-records-active-persistent-profile-preflight.mjs';
+import {
+  closeActivePersistentProfileLiveInstallation,
+  assertActivePersistentProfileLiveReportOutputPath,
+  formatActivePersistentProfileLiveCloseout,
+  formatActivePersistentProfileLiveInstallationReport,
+  formatActivePersistentProfileLiveStatus,
+  inspectActivePersistentProfileLiveStatus,
+  runActivePersistentProfileLiveInstallation,
+  writeActivePersistentProfileLiveReport,
+} from '../lib/protected-records-active-persistent-profile-live-installation.mjs';
+import {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText,
+} from '../lib/protected-records-runtime-profile.mjs';
+
+function usage() {
+  console.error('Usage: zlar protected-records-active-persistent-profile-live-installation install --activation-root <dir> --profile profiles/protected-records-runtime-fixture.profile.json --runtime-profile-id protected-records-disposable-runtime-profile --runtime-profile-sha256 e632931d5ab89c5b01a63a85b5bf0273c729e14c78b58929f39ac4ff6f131469 --expires-at <future-iso8601> [--allow-named-live-root] [--replace-closed-root] [--now-epoch <seconds>] [--json] [--report <file>]');
+  console.error('       zlar protected-records-active-persistent-profile-live-installation status --activation-root <dir> [--allow-named-live-root] [--now-epoch <seconds>] [--json]');
+  console.error('       zlar protected-records-active-persistent-profile-live-installation closeout --activation-root <dir> --closed-at <iso8601> --reason <reason> [--allow-named-live-root] [--now-epoch <seconds>] [--json]');
+  console.error('Current authority: status is read-only; install and closeout refuse as active_persistent_profile_mutation_authority_absent before root inspection or mutation.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(message);
+    return message;
+  } catch {
+    return 'Active persistent profile live installation failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+function parseNowEpoch(value) {
+  if (!value) return Math.floor(Date.now() / 1000);
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    die('--now-epoch must be a positive integer.', 2);
+  }
+  return parsed;
+}
+
+function readProfile(path) {
+  if (!path) {
+    die('--profile is required.', 2);
+  }
+  try {
+    const text = readFileSync(path, 'utf8');
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(text);
+    return JSON.parse(text);
+  } catch (err) {
+    die(`Could not read protected-records runtime profile: ${err.message}`, 2);
+  }
+}
+
+function runStatus(argv) {
+  let activationRoot = '';
+  let nowEpochText = '';
+  let allowNamedLiveRoot = false;
+  let asJson = false;
+
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg === '--activation-root') {
+      activationRoot = argv[++index] || '';
+    } else if (arg === '--now-epoch') {
+      nowEpochText = argv[++index] || '';
+    } else if (arg === '--allow-named-live-root') {
+      allowNamedLiveRoot = true;
+    } else if (arg === '--json') {
+      asJson = true;
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die('Unsupported status option provided.', 2);
+    }
+  }
+
+  if (!activationRoot) {
+    usage();
+    die('status requires --activation-root.', 2);
+  }
+
+  const status = inspectActivePersistentProfileLiveStatus({
+    activationRoot,
+    nowEpoch: parseNowEpoch(nowEpochText),
+    allowNamedLiveRoot,
+  });
+  const output = asJson
+    ? `${JSON.stringify(status, null, 2)}\n`
+    : formatActivePersistentProfileLiveStatus(status);
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+}
+
+function runCloseout(argv) {
+  let activationRoot = '';
+  let closedAt = '';
+  let reason = 'operator_closeout';
+  let nowEpochText = '';
+  let allowNamedLiveRoot = false;
+  let asJson = false;
+
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg === '--activation-root') {
+      activationRoot = argv[++index] || '';
+    } else if (arg === '--closed-at') {
+      closedAt = argv[++index] || '';
+    } else if (arg === '--reason') {
+      reason = argv[++index] || '';
+    } else if (arg === '--now-epoch') {
+      nowEpochText = argv[++index] || '';
+    } else if (arg === '--allow-named-live-root') {
+      allowNamedLiveRoot = true;
+    } else if (arg === '--json') {
+      asJson = true;
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die('Unsupported closeout option provided.', 2);
+    }
+  }
+
+  if (!activationRoot || !closedAt) {
+    usage();
+    die('closeout requires --activation-root and --closed-at.', 2);
+  }
+
+  const closeout = closeActivePersistentProfileLiveInstallation({
+    activationRoot,
+    closedAt,
+    reason,
+    nowEpoch: parseNowEpoch(nowEpochText),
+    allowNamedLiveRoot,
+  });
+  const output = asJson
+    ? `${JSON.stringify(closeout, null, 2)}\n`
+    : formatActivePersistentProfileLiveCloseout(closeout);
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+}
+
+function runInstall(argv) {
+  let activationRoot = '';
+  let profilePath = '';
+  let runtimeProfileId = '';
+  let runtimeProfileSha256 = '';
+  let expiresAt = '';
+  let nowEpochText = '';
+  let reportOutput = '';
+  let allowNamedLiveRoot = false;
+  let replaceClosedRoot = false;
+  let asJson = false;
+
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg === '--activation-root') {
+      activationRoot = argv[++index] || '';
+    } else if (arg === '--profile') {
+      profilePath = argv[++index] || '';
+    } else if (arg === '--runtime-profile-id') {
+      runtimeProfileId = argv[++index] || '';
+    } else if (arg === '--runtime-profile-sha256') {
+      runtimeProfileSha256 = argv[++index] || '';
+    } else if (arg === '--expires-at') {
+      expiresAt = argv[++index] || '';
+    } else if (arg === '--now-epoch') {
+      nowEpochText = argv[++index] || '';
+    } else if (arg === '--report') {
+      reportOutput = argv[++index] || '';
+      if (!reportOutput) {
+        usage();
+        die('Missing value for --report.', 2);
+      }
+    } else if (arg === '--allow-named-live-root') {
+      allowNamedLiveRoot = true;
+    } else if (arg === '--replace-closed-root') {
+      replaceClosedRoot = true;
+    } else if (arg === '--json') {
+      asJson = true;
+    } else if (arg === '--latest') {
+      die('--latest is not accepted for active persistent live installation.', 2);
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die('Unsupported install option provided.', 2);
+    }
+  }
+
+  if (!activationRoot || !profilePath || !runtimeProfileId || !runtimeProfileSha256 || !expiresAt) {
+    usage();
+    die('install requires --activation-root, --profile, --runtime-profile-id, --runtime-profile-sha256, and --expires-at.', 2);
+  }
+  if (profilePath !== ACTIVE_PERSISTENT_PROFILE_CANONICAL_RUNTIME_PROFILE_SOURCE &&
+      profilePath !== `./${ACTIVE_PERSISTENT_PROFILE_CANONICAL_RUNTIME_PROFILE_SOURCE}`) {
+    die('The canonical runtime profile artifact must be profiles/protected-records-runtime-fixture.profile.json.', 2);
+  }
+  if (runtimeProfileSha256 !== ACTIVE_PERSISTENT_PROFILE_REQUIRED_RUNTIME_PROFILE_SHA256) {
+    die('The active persistent live runtime profile SHA-256 does not match the pinned profile.', 2);
+  }
+  if (reportOutput) {
+    assertActivePersistentProfileLiveReportOutputPath({
+      outputPath: reportOutput,
+      activationRoot,
+    });
+  }
+
+  const report = runActivePersistentProfileLiveInstallation({
+    activationRoot,
+    profile: readProfile(profilePath),
+    profileSource: ACTIVE_PERSISTENT_PROFILE_CANONICAL_RUNTIME_PROFILE_SOURCE,
+    runtimeProfileId,
+    runtimeProfileSha256,
+    expiresAt,
+    nowEpoch: parseNowEpoch(nowEpochText),
+    allowNamedLiveRoot,
+    replaceClosedRoot,
+  });
+  let output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatActivePersistentProfileLiveInstallationReport(report);
+  if (reportOutput) {
+    const sha = writeActivePersistentProfileLiveReport({
+      report,
+      outputPath: reportOutput,
+      activationRoot,
+    });
+    output += `report_written=true\nreport_sha256=${sha}\n`;
+  }
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+}
+
+const args = process.argv.slice(2);
+const command = args[0] || 'install';
+
+try {
+  if (command === 'status') {
+    runStatus(args.slice(1));
+  } else if (command === 'closeout') {
+    runCloseout(args.slice(1));
+  } else if (command === 'install') {
+    runInstall(args.slice(1));
+  } else if (command === '--help' || command === '-h') {
+    usage();
+  } else {
+    usage();
+    die('Unsupported active persistent profile live installation command.', 2);
+  }
+} catch (err) {
+  die(err.message);
+}

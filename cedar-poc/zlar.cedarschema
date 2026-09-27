@@ -1,0 +1,32 @@
+// ZLAR Governance Schema — Cedar PoC
+// Maps the gate's domain model to Cedar's principal/action/resource/context
+
+namespace ZLAR {
+
+  // The AI agent requesting a tool call
+  entity Agent;
+
+  // The tool domain (bash, read, write, edit, etc.)
+  entity Domain;
+
+  // A specific tool call being evaluated
+  entity ToolCall = {
+    // For bash: the command string
+    "command": String,
+    // For read/write/edit: the file path
+    "path": String,
+    // Computed risk score (max of irreversibility, consequence, blast_radius)
+    "risk_score": Long,
+  };
+
+  // Gate actions — map to ZLAR policy outcomes
+  action "evaluate" appliesTo {
+    principal: [Agent],
+    resource: [ToolCall],
+    context: {
+      "domain": String,
+      "severity": String,
+      "policy_version": String,
+    },
+  };
+}

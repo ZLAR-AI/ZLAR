@@ -1,0 +1,112 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import {
+  assertConsequenceLifecycleMap,
+  assertNoUnsafeConsequenceLifecycleText,
+  buildConsequenceLifecycleMap,
+  formatConsequenceLifecycleMapSummary,
+} from '../lib/consequence-lifecycle-map.mjs';
+
+const SAMPLE_ARTIFACT = fileURLToPath(
+  new URL(
+    '../tests/fixtures/protected-records-installed-runtime-profile-terminal-chain-artifact-v1.json',
+    import.meta.url
+  )
+);
+
+function usage() {
+  console.error('Usage: zlar consequence-lifecycle (--input <file|->|--sample) [--json] [--require-closed]');
+  console.error('This command maps one supplied terminal-chain artifact. It does not live probe, install, configure, harden, or prove lifecycle closure.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function safeFailureMessage(err) {
+  const message = String(err?.message || 'Terminal-chain artifact validation failed.');
+  try {
+    assertNoUnsafeConsequenceLifecycleText(message);
+    return message;
+  } catch {
+    return 'Terminal-chain artifact validation failed.';
+  }
+}
+
+const args = process.argv.slice(2);
+let inputPath = '';
+let sampleRequested = false;
+let json = false;
+let requireClosed = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--input') {
+    if (inputPath || sampleRequested) {
+      usage();
+      die('consequence-lifecycle accepts only one input source.', 2);
+    }
+    const candidate = args[++i] || '';
+    if (!candidate || (candidate !== '-' && candidate.startsWith('-'))) {
+      usage();
+      die('--input requires <file|-> and cannot consume another option.', 2);
+    }
+    inputPath = candidate;
+  } else if (arg === '--sample') {
+    if (inputPath || sampleRequested) {
+      usage();
+      die('consequence-lifecycle accepts only one input source.', 2);
+    }
+    sampleRequested = true;
+  } else if (arg === '--json') {
+    json = true;
+  } else if (arg === '--require-closed') {
+    requireClosed = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (sampleRequested) {
+  inputPath = SAMPLE_ARTIFACT;
+}
+
+if (!inputPath) {
+  usage();
+  die('live probing is not implemented; --input <file|-> or --sample is required.', 2);
+}
+
+let raw = '';
+try {
+  raw = inputPath === '-' ? readFileSync(0, 'utf8') : readFileSync(inputPath, 'utf8');
+} catch {
+  die('Could not read terminal-chain artifact input.');
+}
+
+let artifact;
+try {
+  artifact = JSON.parse(raw);
+} catch {
+  die('Could not parse terminal-chain artifact JSON.');
+}
+
+try {
+  const report = buildConsequenceLifecycleMap(artifact);
+  assertConsequenceLifecycleMap(report, artifact);
+  if (requireClosed && report.closure.lifecycle_closed !== true) {
+    die(`--require-closed failed; closure_status=${report.closure.closure_status}`);
+  }
+  const output = json
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : `${formatConsequenceLifecycleMapSummary(report)}\n`;
+  assertNoUnsafeConsequenceLifecycleText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(safeFailureMessage(err));
+}

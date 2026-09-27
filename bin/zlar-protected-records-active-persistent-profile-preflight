@@ -1,0 +1,289 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import {
+  ACTIVE_PERSISTENT_PROFILE_CANONICAL_RUNTIME_PROFILE_SOURCE,
+  buildActivePersistentProfileCloseout,
+  buildActivePersistentProfileSourceManifest,
+  formatActivePersistentProfileCloseout,
+  formatActivePersistentProfileSourcePreflight,
+  formatActivePersistentProfileSourceStatus,
+  inspectActivePersistentProfileSourceStatus,
+  runActivePersistentProfileSourcePreflight,
+  assertSourcePreflightIoPathNotRealActivationRoot,
+  writeActivePersistentProfileCloseout,
+  writeActivePersistentProfileSourcePreflightReport,
+} from '../lib/protected-records-active-persistent-profile-preflight.mjs';
+import {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText,
+} from '../lib/protected-records-runtime-profile.mjs';
+import {
+  assertProtectedRecordsRuntimePreflightProfile,
+} from '../lib/protected-records-runtime-profile-preflight.mjs';
+
+function usage() {
+  console.error('Usage: zlar protected-records-active-persistent-profile-preflight --surrogate-root <dir> --activation-root <dir> --proof-target <file> --profile profiles/protected-records-runtime-fixture.profile.json --runtime-profile-id protected-records-disposable-runtime-profile --runtime-profile-sha256 e632931d5ab89c5b01a63a85b5bf0273c729e14c78b58929f39ac4ff6f131469 --expires-at <future-iso8601> [--now-epoch <seconds>] [--json] [--report <file>]');
+  console.error('       zlar protected-records-active-persistent-profile-preflight status --surrogate-root <dir> --activation-root <dir> [--now-epoch <seconds>] [--json]');
+  console.error('       zlar protected-records-active-persistent-profile-preflight closeout --manifest <file|-> --closed-at <iso8601> --reason <reason> [--json] [--output <file>]');
+  console.error('Source-only preflight for a future active persistent protected-records profile installation. Requires explicit proof-owned surrogate paths and never defaults to a live activation root.');
+  console.error('The preflight command does not install, activate, write hooks/config, start services, use credentials, use network, or touch a current-machine activation root.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(message);
+    return message;
+  } catch {
+    return 'Active persistent profile source preflight failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+function readJsonInput(path, label) {
+  let raw = '';
+  try {
+    if (path === '-') {
+      raw = readFileSync(0, 'utf8');
+    } else {
+      assertSourcePreflightIoPathNotRealActivationRoot(
+        path,
+        `active persistent profile ${label} input path`
+      );
+      raw = readFileSync(path, 'utf8');
+    }
+  } catch {
+    die(`Could not read active persistent profile ${label}.`);
+  }
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(raw);
+    return JSON.parse(raw);
+  } catch (err) {
+    die(`Could not parse active persistent profile ${label} JSON: ${err.message}`);
+  }
+}
+
+function normalizeDisplayPath(path) {
+  return path.startsWith('./') ? path.slice(2) : path;
+}
+
+function parseNowEpoch(value) {
+  if (!value) return Math.floor(Date.now() / 1000);
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    die('--now-epoch must be a positive integer.', 2);
+  }
+  return parsed;
+}
+
+function runStatusCommand(argv) {
+  let surrogateRoot = '';
+  let activationRoot = '';
+  let nowEpochText = '';
+  let asJson = false;
+
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg === '--surrogate-root') {
+      surrogateRoot = argv[++index] || '';
+    } else if (arg === '--activation-root') {
+      activationRoot = argv[++index] || '';
+    } else if (arg === '--now-epoch') {
+      nowEpochText = argv[++index] || '';
+    } else if (arg === '--json') {
+      asJson = true;
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die('Unsupported status option provided.', 2);
+    }
+  }
+
+  if (!surrogateRoot || !activationRoot) {
+    usage();
+    die('status requires --surrogate-root and --activation-root.', 2);
+  }
+
+  const status = inspectActivePersistentProfileSourceStatus({
+    surrogateRoot,
+    activationRoot,
+    nowEpoch: parseNowEpoch(nowEpochText),
+  });
+  const output = asJson
+    ? `${JSON.stringify(status, null, 2)}\n`
+    : formatActivePersistentProfileSourceStatus(status);
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+}
+
+function runCloseoutCommand(argv) {
+  let manifestPath = '';
+  let closedAt = '';
+  let reason = 'operator_closeout';
+  let outputPath = '';
+  let asJson = false;
+
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg === '--manifest') {
+      manifestPath = argv[++index] || '';
+    } else if (arg === '--closed-at') {
+      closedAt = argv[++index] || '';
+    } else if (arg === '--reason') {
+      reason = argv[++index] || '';
+    } else if (arg === '--output') {
+      outputPath = argv[++index] || '';
+      if (!outputPath) {
+        usage();
+        die('Missing value for --output.', 2);
+      }
+    } else if (arg === '--json') {
+      asJson = true;
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die('Unsupported closeout option provided.', 2);
+    }
+  }
+
+  if (!manifestPath || !closedAt) {
+    usage();
+    die('closeout requires --manifest and --closed-at.', 2);
+  }
+
+  const manifest = readJsonInput(manifestPath, 'source preflight manifest');
+  const closeout = buildActivePersistentProfileCloseout(manifest, { closedAt, reason });
+  let output = asJson
+    ? `${JSON.stringify(closeout, null, 2)}\n`
+    : formatActivePersistentProfileCloseout(closeout);
+  if (outputPath) {
+    const sha = writeActivePersistentProfileCloseout(closeout, outputPath);
+    output += `closeout_written=true\ncloseout_sha256=${sha}\n`;
+  }
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+}
+
+const args = process.argv.slice(2);
+
+if (args[0] === 'status') {
+  try {
+    runStatusCommand(args.slice(1));
+  } catch (err) {
+    die(err.message);
+  }
+  process.exit(0);
+}
+
+if (args[0] === 'closeout') {
+  try {
+    runCloseoutCommand(args.slice(1));
+  } catch (err) {
+    die(err.message);
+  }
+  process.exit(0);
+}
+
+let surrogateRoot = '';
+let activationRoot = '';
+let proofTarget = '';
+let profilePath = '';
+let runtimeProfileId = '';
+let runtimeProfileSha256 = '';
+let expiresAt = '';
+let nowEpochText = '';
+let asJson = false;
+let reportOutput = '';
+
+for (let index = 0; index < args.length; index++) {
+  const arg = args[index];
+  if (arg === '--surrogate-root') {
+    surrogateRoot = args[++index] || '';
+  } else if (arg === '--activation-root') {
+    activationRoot = args[++index] || '';
+  } else if (arg === '--proof-target') {
+    proofTarget = args[++index] || '';
+  } else if (arg === '--profile') {
+    profilePath = args[++index] || '';
+  } else if (arg === '--runtime-profile-id') {
+    runtimeProfileId = args[++index] || '';
+  } else if (arg === '--runtime-profile-sha256') {
+    runtimeProfileSha256 = args[++index] || '';
+  } else if (arg === '--expires-at') {
+    expiresAt = args[++index] || '';
+  } else if (arg === '--now-epoch') {
+    nowEpochText = args[++index] || '';
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--report') {
+    reportOutput = args[++index] || '';
+    if (!reportOutput) {
+      usage();
+      die('Missing value for --report.', 2);
+    }
+  } else if (arg === '--latest') {
+    usage();
+    die('--latest is not accepted for active persistent profile source preflight.', 2);
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (
+  !surrogateRoot ||
+  !activationRoot ||
+  !proofTarget ||
+  !profilePath ||
+  !runtimeProfileId ||
+  !runtimeProfileSha256 ||
+  !expiresAt
+) {
+  usage();
+  die('--surrogate-root, --activation-root, --proof-target, --profile, --runtime-profile-id, --runtime-profile-sha256, and --expires-at are required.', 2);
+}
+
+const profileSource = normalizeDisplayPath(profilePath);
+if (profileSource !== ACTIVE_PERSISTENT_PROFILE_CANONICAL_RUNTIME_PROFILE_SOURCE) {
+  usage();
+  die('The canonical runtime profile artifact must be profiles/protected-records-runtime-fixture.profile.json.', 2);
+}
+
+const profile = readJsonInput(profilePath, 'runtime profile');
+
+try {
+  assertProtectedRecordsRuntimePreflightProfile(profile);
+  const report = runActivePersistentProfileSourcePreflight({
+    surrogateRoot,
+    activationRoot,
+    proofTarget,
+    profile,
+    profileSource,
+    runtimeProfileId,
+    runtimeProfileSha256,
+    expiresAt,
+    nowEpoch: parseNowEpoch(nowEpochText),
+  });
+  let output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatActivePersistentProfileSourcePreflight(report);
+  if (reportOutput) {
+    const sha = writeActivePersistentProfileSourcePreflightReport(report, reportOutput);
+    output += `report_written=true\nreport_sha256=${sha}\n`;
+    const manifest = buildActivePersistentProfileSourceManifest(report);
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(JSON.stringify(manifest));
+  }
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

@@ -1,0 +1,109 @@
+#!/usr/bin/env node
+import {
+  assertProtectedRecordsNamedDeploymentProfileRealBoundaryProof,
+  defaultNamedDeploymentProfileActivationRoot,
+  defaultNamedDeploymentProfileProofRoot,
+  formatProtectedRecordsNamedDeploymentProfileRealBoundaryProof,
+  runProtectedRecordsNamedDeploymentProfileRealBoundaryProof,
+} from '../lib/protected-records-named-deployment-profile-real-boundary.mjs';
+import {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText,
+} from '../lib/protected-records-runtime-profile.mjs';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+
+function usage() {
+  console.error('Usage: zlar protected-records-named-deployment-profile-real-boundary --run [--json] [--artifact <file>] [--activation-root <dir>] [--proof-root <dir>] [--reset-activation-root]');
+  console.error('This machine-local named route is refusal-only until separately authorized.');
+  console.error('Default activation root: ~/.zlar/protected-records/deployments/protected-records-private-operator-records-terminal');
+  console.error('Default proof root: ../ZLAR-Draft/build');
+  console.error('This command does not touch real personal records, hooks/config outside the named root, credentials, GitHub, website, tags, releases, Actions, external services, or production authority.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(message);
+    return message;
+  } catch {
+    return 'Protected records named deployment profile real-boundary proof failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+function writeArtifact(path, report) {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const output = `${JSON.stringify(report, null, 2)}\n`;
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  writeFileSync(path, output, { mode: 0o600 });
+}
+
+const args = process.argv.slice(2);
+let shouldRun = false;
+let asJson = false;
+let artifactPath = '';
+let activationRoot = defaultNamedDeploymentProfileActivationRoot();
+let proofRoot = defaultNamedDeploymentProfileProofRoot();
+let resetActivationRoot = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--run') {
+    shouldRun = true;
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--artifact') {
+    artifactPath = args[++i] || '';
+    if (!artifactPath) {
+      usage();
+      die('Missing value for --artifact.', 2);
+    }
+  } else if (arg === '--activation-root') {
+    activationRoot = args[++i] || '';
+    if (!activationRoot) {
+      usage();
+      die('Missing value for --activation-root.', 2);
+    }
+  } else if (arg === '--proof-root') {
+    proofRoot = args[++i] || '';
+    if (!proofRoot) {
+      usage();
+      die('Missing value for --proof-root.', 2);
+    }
+  } else if (arg === '--reset-activation-root') {
+    resetActivationRoot = true;
+  } else if (arg === '-h' || arg === '--help') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die(`Unknown argument: ${arg}`, 2);
+  }
+}
+
+if (!shouldRun) {
+  usage();
+  die('--run is required to evaluate the machine-local named-route authority refusal.', 2);
+}
+
+try {
+  const report = runProtectedRecordsNamedDeploymentProfileRealBoundaryProof({
+    activationRoot,
+    proofRoot,
+    resetActivationRoot,
+  });
+  assertProtectedRecordsNamedDeploymentProfileRealBoundaryProof(report);
+  if (artifactPath) {
+    writeArtifact(artifactPath, report);
+  }
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatProtectedRecordsNamedDeploymentProfileRealBoundaryProof(report);
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message || String(err));
+}

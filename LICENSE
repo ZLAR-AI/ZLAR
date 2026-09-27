@@ -1,0 +1,79 @@
+ZLAR PRIVATE CORE SOURCE LICENSE NOTICE
+
+Copyright (c) 2026 ZLAR Inc.
+
+Current Private-Core Source
+---------------------------
+
+The current private-core ZLAR source tree is proprietary and commercial source
+of ZLAR Inc. It is published so that anyone can read it. Unless ZLAR Inc. or
+Vincent Nijjar grants written permission (including the Permission to Evaluate
+below) or a separate written agreement applies, no rights are granted to use, copy, modify, distribute, sublicense, publish, host,
+provide as a service, benchmark for publication, or create derivative works
+from current private-core source.
+
+Paid support, enterprise features, hosted service access, customer
+distribution, or any use beyond the Permission to Evaluate require separate
+written terms. This
+notice is not a customer agreement and does not create production support,
+maintenance, service-level, warranty, indemnity, source-access, or deployment
+obligations.
+
+Permission to Evaluate
+----------------------
+
+ZLAR Inc. and Vincent Nijjar give anyone permission to download this source and
+run it on their own computers, including with the help of AI tools, solely to
+study and evaluate it. For that purpose you may also change your own local copy.
+Offering changes back to ZLAR, for example as a pull request to this repository,
+is also permitted.
+
+This permission does not extend to using the source in production or for any
+other purpose, providing it as a service, distributing it or any changed version
+of it, publishing benchmarks of it, or creating derivative works for any purpose
+other than evaluation. Those require separate written permission. This
+permission may be withdrawn for future use by updating this notice.
+
+Prior Apache-2.0 Public Distributions
+-------------------------------------
+
+Prior ZLAR source distributions that were made public under the Apache License
+2.0 remain under the Apache License 2.0. Making the current private core
+proprietary/commercial does not revoke, narrow, claw back, or alter rights in
+those prior public copies.
+
+The Apache License 2.0 text preserved for prior public distributions and
+public/thin verifier artifacts is available at:
+
+    LICENSES/Apache-2.0-prior-public.txt
+
+Verifier-Kit / Thin Public Artifact Boundary
+--------------------------------------------
+
+Some verifier-kit or thin public proof artifacts may be intentionally packaged
+under Apache-2.0 or another explicitly named license. Those artifacts must name
+their own license boundary. They do not change the license of the current
+private-core source tree, and the current private-core source tree does not
+automatically change their license.
+
+No Support Or Release Promise
+-----------------------------
+
+Publishing this source for reading and evaluation does not promise support,
+installation help, releases, or that any version works for any purpose.
+
+No Warranty
+-----------
+
+ZLAR private-core source is provided only under the written terms that apply to
+a particular access grant. Unless those terms say otherwise, it is provided
+without warranties of any kind, express or implied, including warranties of
+merchantability, fitness for a particular purpose, non-infringement, continuous
+operation, security, or suitability for any deployment.
+
+Contact
+-------
+
+For source-review, evaluation, commercial, or licensing requests, contact:
+
+    hello@zlar.ai

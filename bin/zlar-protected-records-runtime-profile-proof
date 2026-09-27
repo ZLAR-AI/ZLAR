@@ -1,0 +1,54 @@
+#!/usr/bin/env node
+import {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText,
+  assertProtectedRecordsRuntimeProfileProof,
+  formatProtectedRecordsRuntimeProfileProofSummary,
+  runProtectedRecordsRuntimeProfileProof,
+} from '../lib/protected-records-runtime-profile.mjs';
+
+function usage() {
+  console.error('Usage: zlar protected-records-runtime-profile-proof [--json]');
+  console.error('The exact one-use fixture grant is exhausted. This command refuses before scratch-root creation or proof execution.');
+  console.error('This command does not live probe, choose --latest, inspect a live records system, install a persistent profile, prove production-grade anti-rollback, close host process side doors, or claim production deployment.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(message);
+    return message;
+  } catch {
+    return 'Protected records runtime profile proof failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+let asJson = false;
+
+for (const arg of args) {
+  if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+try {
+  const report = runProtectedRecordsRuntimeProfileProof();
+  assertProtectedRecordsRuntimeProfileProof(report);
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatProtectedRecordsRuntimeProfileProofSummary(report);
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

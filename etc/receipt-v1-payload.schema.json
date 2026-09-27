@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zlar.dev/schemas/receipt-payload/1.0.0",
+  "title": "ZLAR Receipt v1 Payload",
+  "description": "The governance fields inside a v1 receipt envelope. This JSON is canonicalized per ZLAR Canonicalization Spec v1.0, then base64url-encoded into the envelope's 'payload' field.",
+  "type": "object",
+  "required": ["tool", "domain", "detail_hash", "outcome", "rule", "authorizer", "ts", "policy_version", "audit_event_id", "audit_prev_hash"],
+  "additionalProperties": false,
+  "properties": {
+    "tool": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Tool name as received by the gate (e.g., Bash, Edit, Write)."
+    },
+    "domain": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Policy domain classification (e.g., file, network, bash, mcp)."
+    },
+    "detail_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hash of the canonical detail object. Proves what action was governed without leaking specifics."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["allow", "deny", "authorized", "denied", "timeout"],
+      "description": "Governance decision."
+    },
+    "rule": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Policy rule that matched."
+    },
+    "authorizer": {
+      "type": "string",
+      "enum": ["policy", "human", "gate", "timeout", "manifest"],
+      "description": "Who made the final decision."
+    },
+    "ts": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "description": "Decision timestamp. ISO 8601 UTC, always 3 decimal places (e.g., 2026-04-06T14:00:00.000Z)."
+    },
+    "policy_version": {
+      "type": "string",
+      "description": "Version of the policy that was evaluated."
+    },
+    "manifest_agent_id": {
+      "type": ["string", "null"],
+      "description": "Agent identity from the manifest, or null. Declared identity: what the agent claims to be under its signed manifest."
+    },
+    "manifest_principal": {
+      "type": ["string", "null"],
+      "description": "Human principal accountable for the agent, or null. Declared identity: from the signed manifest."
+    },
+    "agent_config_hash": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 (hex, lowercase) of the primary governing configuration artifact actually in effect at decision time. Hashes the raw file bytes as loaded by the gate — no line-ending normalization, no encoding conversion. Null when no governing artifact is present in the resolution set. Proves the identity of the primary governing artifact, not the full transitive instruction/context surface. Resolution order (first match wins): project CLAUDE.md, user CLAUDE.md (~/.claude/CLAUDE.md), project soul.md, project should.md."
+    },
+    "agent_config_source": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "enum": ["project_claude_md", "user_claude_md", "project_soul_md", "project_should_md"] }
+      ],
+      "description": "Which precedence tier produced agent_config_hash. Null iff agent_config_hash is null. Enables verifiers to distinguish same-content hashes across different source tiers."
+    },
+    "agent_fingerprint": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{16}$",
+      "description": "Short identity handle — first 16 hex chars of SHA-256('agent_type:agent_config_hash:policy_version'). Convenience index for correlation across receipts; not normative evidence. Null when agent_config_hash is null."
+    },
+    "delegation_chain": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["agent_id", "depth"],
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": { "type": "string" },
+          "depth": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "description": "Delegation chain. Empty array if no delegation."
+    },
+    "audit_event_id": {
+      "type": "string",
+      "description": "ID of the source audit trail entry."
+    },
+    "audit_prev_hash": {
+      "type": "string",
+      "description": "prev_hash from the audit entry. Anchors receipt to the hash chain."
+    },
+    "escalation_source": {
+      "type": ["string", "null"],
+      "description": "Escalation routing source for this action (e.g., restore, canary). Null when not applicable."
+    },
+    "h15_elapsed_seconds": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "H15 audit field (canary v1 Element D). Actual response time in seconds, integer (ZLAR canonicalization forbids floats — see lib/canonicalize.mjs). Sub-second elapsed times round/truncate to 0; this is acceptable because (a) H14 variance threshold is 4s, much larger than 1s noise, and (b) sub-second elapsed is the canary signal regardless of exact value. Null when not measured (e.g., gate-side decisions, errors before timing capture)."
+    },
+    "h15_floor_seconds": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "H15 audit field (canary v1 Element D). The H15 response-time floor that would have applied to this severity, integer seconds (ZLAR canonical form forbids floats). Floor values today are whole-second (3/10/30) so no precision loss. Null when no floor applies."
+    },
+    "h15_below_floor": {
+      "type": ["boolean", "null"],
+      "description": "H15 audit field (canary v1 Element D). True iff h15_elapsed_seconds < h15_floor_seconds. Audit-significant for warn/info severities once Element A ships canary-zone semantics; for critical severities a true value should not occur in normal flow. Null when either elapsed or floor is null. Optional for backward compatibility."
+    },
+    "h14_alert_tier": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3,
+      "description": "H14 audit field (canary v1 Element D). Canary alert tier emitted alongside this decision. 0 = no alert (default), 1 = banner, 2 = pre-confirm, 3 = forced pause. Tiers 1+ require Elements B+E behavior to be live; emission emits 0 in this slice. See doctrine/roadmap/human-attention-canary.md."
+    },
+    "h14_alert_ack_receipt_id": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]+$",
+      "minLength": 12,
+      "description": "H14 audit field (canary v1 Element D). Receipt ID of a prior canary alert acknowledgement that preceded this decision, if any. Null when no canary ack flow occurred. Format matches the envelope id pattern. Optional for backward compatibility."
+    }
+  }
+}

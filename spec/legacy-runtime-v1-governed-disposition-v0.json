@@ -1,0 +1,964 @@
+{
+  "artifact_type": "zlar.legacy-runtime-v1-governed-disposition.v0",
+  "schema_version": 0,
+  "verification_mode": "source-only",
+  "decision": "retire_and_refuse_direct_entry_surface",
+  "consequence_class": "protected-records local-fixture records.write",
+  "selected_consequence_path": "protected-records.installed-runtime-profile.terminal-chain.records.write",
+  "selected_e4_effect_node_id": "E4.replacement-runtime-process-private-state-v2",
+  "north_star_posture": {
+    "north_star_1": "historical_boarding_and_effect_evidence",
+    "north_star_2": "mapped_open",
+    "lifecycle_status_changed": false
+  },
+  "authority_domain_context": "protected-records.local-disposable-fixture",
+  "authority_domain_membership_proven": false,
+  "selected_surface": {
+    "surface_id": "source-discovered:bin/zlar-protected-records-runtime-service-v1",
+    "source_path": "bin/zlar-protected-records-runtime-service",
+    "source_mode": "legacy-v1",
+    "existing_mutation_node_candidate": "E3.legacy-runtime-process-private-state-v1",
+    "relationship_to_selected_e4": "distinct_effect",
+    "pre_retirement_source_path_resolved_to_e3": true,
+    "post_retirement_source_level_refusal": true,
+    "e3_eliminated": false,
+    "e3_runtime_unreachable": false
+  },
+  "source_checkpoint": {
+    "starting_commit_oid": "765767f92ed32a64aa498244a63ea4b8a6b2c5fb",
+    "pre_retirement_entry_file_sha256": "8aec7c8eed3a3e0072818c6a8d5110fcf66707ad4b48073308d8679af4370493",
+    "post_retirement_entry_file_sha256": "4e5e08a6862ce0ea3f3801f684131934f377a1e6ccc06aba8b191d4387b34002",
+    "post_retirement_entry_git_mode": "100755",
+    "post_retirement_source_commit_recording": "required-in-private-draft-after-source-commit"
+  },
+  "immutable_dependencies": {
+    "parent_dependency_map": {
+      "file_sha256": "a275b74cb7e468bed6a8376c8ccc0aab81937d945e240d69090293ae9b38a4de",
+      "body_sha256": "b39767ba79435bede70784d416b25ad52c47a6fb1c22df195a32b4af115f6b9b",
+      "mutated": false
+    },
+    "source_bound_static_reachability_delta": {
+      "file_sha256": "15d84e7b569b9fef928d2d7fe619efbca6047de135379b7e50bbfec6c7abf973",
+      "body_sha256": "219d36fa18b01de5477ff2bebf0e00892868c65fead36446227a86838db23f89",
+      "analyzed_source_inventory_sha256": "20451df27fb00b5e11e0c6f25dceb6c3f26a71f55a452c2f6a7e6d092cb41642",
+      "mutated": false
+    },
+    "frozen_source_evidence_implementations": {
+      "dependency_map_library_sha256": "e2227bf2a0834cf769973ca792816d9ff1f353337af8a3f31b176b516dd5a698",
+      "reachability_delta_library_sha256": "c1b91de8fbe777f3822b85601e9a729b8a110d99da6438e05dd44b6cfaa2a5f1"
+    },
+    "replacement_e4_unchanged_source": {
+      "driver_path": "lib/protected-records-replacement-crossing-driver-v2.mjs",
+      "driver_file_sha256": "caac0ed07d79bfb538671c6eda3bbe8d5f78fa374aa5d4c81c14c8a2898ce879",
+      "child_path": "lib/protected-records-replacement-runtime-child-v2.mjs",
+      "child_file_sha256": "00d43a598b85865600168db87e5b7aa742df3da3455dd6f1199e48b4f05acbcd"
+    }
+  },
+  "historical_source_reconstruction": {
+    "analyzed_source_commit_oid": "e7c621927df35eb31cf3f0dfc1ea2a42df6d5dd5",
+    "helper_path": "tests/source-bound-historical-source-v0.mjs",
+    "helper_sha256": "fea6e5fd742c50aa949240a207fa1a0d725a454555355a50af7d0c66f0cb6917",
+    "reads_only_git_blobs_from_exact_historical_commit": true,
+    "durable_positive_source_copy_added": false,
+    "normal_cleanup_uses_try_finally": true,
+    "abnormal_termination_cleanup_guaranteed": false,
+    "historical_git_object_required_for_local_baseline_suites": true,
+    "current_checkout_required_to_refuse_as_source_drift": true
+  },
+  "freshness_gate_decision": {
+    "decision": "no_go_refusal_theater",
+    "reason": "The current freshness assertion projects one mutable source-recorded exhausted grant and does not authenticate a trusted proof caller or bind the supplied legacy config to that grant.",
+    "would_reopen_if_source_status_changed": true,
+    "durable_governed_disposition_established": false,
+    "implemented": false
+  },
+  "retirement_contract": {
+    "fixed_reason_code": "legacy_runtime_v1_direct_entry_surface_retired",
+    "committed_script_body_contains_one_unconditional_refusal_path": true,
+    "refuses_before_config_read": true,
+    "refuses_before_stdin_read": true,
+    "imports_target_module": false,
+    "imports_any_module": false,
+    "reads_argv": false,
+    "script_body_reads_process_environment": false,
+    "reads_filesystem": false,
+    "interpreter_path_resolution_closed": false,
+    "pre_script_loader_execution_closed": false,
+    "accepts_internal_mode": false,
+    "accepts_capability_token": false,
+    "accepts_caller_identity": false,
+    "positive_bypass_added": false,
+    "replacement_e4_driver_or_child_changed": false,
+    "retired_entry_remains_in_v2_source_completeness_contract": true,
+    "prior_e4_source_precondition_matches_current_checkout": false,
+    "historical_e4_authority_reusable": false
+  },
+  "consumers": [
+    {
+      "consumer_id": "main-shell-dispatch",
+      "caller": "bin/zlar",
+      "mode": "protected-records-runtime-service",
+      "entrypoint_kind": "executable-dispatch",
+      "source_bound_edge_chain": [
+        "bin/zlar protected-records-runtime-service case",
+        "bin/zlar-protected-records-runtime-service fixed refusal"
+      ],
+      "legitimate_fixture_or_proof_dependency": null,
+      "e3_projection": "removed_from_this_surface_only",
+      "guard_or_refusal_posture": "unconditional-import-free-refusal",
+      "imported_environment_and_interpreter_dependencies": [
+        "unqualified-node-in-bin-zlar",
+        "BASH_ENV",
+        "exported-shell-functions",
+        "PATH",
+        "NODE_OPTIONS",
+        "loaders-and-preloads"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-esm-factory-import",
+        "interpreter-and-loader-substitution",
+        "old-installed-or-copied-entry-source",
+        "same-user-source-mutation"
+      ],
+      "retirement_impact": "direct positive legacy-v1 entry removed",
+      "disposition": "retired"
+    },
+    {
+      "consumer_id": "installer-copy-glob",
+      "caller": "install.sh",
+      "mode": "planned wrapper inventory and authorized installation copy",
+      "entrypoint_kind": "packaging-consumer",
+      "source_bound_edge_chain": [
+        "bin/zlar-* glob",
+        "copy_installed_bin_wrappers",
+        "future authorized install destination"
+      ],
+      "legitimate_fixture_or_proof_dependency": "installation packaging only; no install was performed in this lane",
+      "e3_projection": "none-from-copy-alone",
+      "guard_or_refusal_posture": "future authorized installs copy the retired stub; existing installed or copied versions are not inspected",
+      "imported_environment_and_interpreter_dependencies": [
+        "installer-source-directory",
+        "install-destination",
+        "shell-glob-expansion"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "existing-installed-copy-not-inspected",
+        "alternate-install-source",
+        "same-user-installed-file-replacement"
+      ],
+      "retirement_impact": "source package now contains the stub; current-machine installation state remains unproven",
+      "disposition": "packaging-reference-no-install"
+    },
+    {
+      "consumer_id": "runtime-profile-proof-cli",
+      "caller": "bin/zlar-protected-records-runtime-profile-proof",
+      "mode": "generate",
+      "entrypoint_kind": "proof-generator-cli-wrapper",
+      "source_bound_edge_chain": [
+        "runProtectedRecordsRuntimeProfileProof",
+        "runtime-profile runRuntimeService",
+        "bin/zlar protected-records-runtime-service"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical runtime-profile positive and refusal proof generation",
+      "e3_projection": "expected-via-child-before-retirement",
+      "guard_or_refusal_posture": "fresh-effect guard precedes scratch creation and child spawn",
+      "imported_environment_and_interpreter_dependencies": [
+        "inherited-process-env",
+        "BASH_ENV",
+        "exported-shell-functions",
+        "PATH",
+        "NODE_OPTIONS",
+        "loaders-and-preloads"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-runtime-factory-import",
+        "alternate-child-or-custom-loader",
+        "historical-positive-source-copy"
+      ],
+      "retirement_impact": "at this source checkpoint the outer source-recorded exhausted-status guard refuses generation; caller-authenticated current runtime refusal is unproven, and future positive generation requires a new versioned design",
+      "disposition": "generation-dependency-retired"
+    },
+    {
+      "consumer_id": "runtime-profile-proof-child-helper",
+      "caller": "lib/protected-records-runtime-profile.mjs",
+      "mode": "runRuntimeService with 25 call sites",
+      "entrypoint_kind": "internal-child-helper",
+      "source_bound_edge_chain": [
+        "runProtectedRecordsRuntimeProfileProof",
+        "runRuntimeService",
+        "spawnSync absolute bin/zlar",
+        "protected-records-runtime-service dispatch"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical accepted, replay, corruption, rollback, issuer, grant, and partial-transition cases",
+      "e3_projection": "expected-via-child-before-retirement",
+      "guard_or_refusal_posture": "outer fresh-effect guard dominates helper calls in the exported generator",
+      "imported_environment_and_interpreter_dependencies": [
+        "inherited-process-env",
+        "unqualified-node-dispatch",
+        "PATH",
+        "NODE_OPTIONS"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "callers-bypassing-exported-generator-guard",
+        "direct-runtime-factory-import",
+        "interpreter-or-loader-substitution"
+      ],
+      "retirement_impact": "helper now receives fixed direct-entry retirement refusal",
+      "disposition": "generation-dependency-retired"
+    },
+    {
+      "consumer_id": "runtime-profile-preflight",
+      "caller": "bin/zlar-protected-records-runtime-profile-preflight and lib/protected-records-runtime-profile-preflight.mjs",
+      "mode": "generate",
+      "entrypoint_kind": "preflight-wrapper",
+      "source_bound_edge_chain": [
+        "runProtectedRecordsRuntimeProfilePreflight",
+        "runProtectedRecordsRuntimeProfileProof",
+        "runtime-profile child helper"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical runtime-profile preflight generation",
+      "e3_projection": "transitive-expected-before-retirement",
+      "guard_or_refusal_posture": "fresh-effect guard precedes nested proof generation",
+      "imported_environment_and_interpreter_dependencies": [
+        "transitive-child-environment"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-nested-library-import",
+        "caller-supplied-historical-artifact-view",
+        "alternate-generated-entrypoint"
+      ],
+      "retirement_impact": "generation dependency retired; supplied-artifact validation remains separate",
+      "disposition": "generation-dependency-retired"
+    },
+    {
+      "consumer_id": "runtime-activation-preflight",
+      "caller": "bin/zlar-protected-records-runtime-activation-preflight and lib/protected-records-runtime-activation-preflight.mjs",
+      "mode": "generate",
+      "entrypoint_kind": "preflight-wrapper",
+      "source_bound_edge_chain": [
+        "runProtectedRecordsRuntimeActivationPreflight",
+        "runProtectedRecordsRuntimeProfilePreflight",
+        "runProtectedRecordsRuntimeProfileProof",
+        "runtime-profile child helper"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical runtime activation preflight generation",
+      "e3_projection": "transitive-expected-before-retirement",
+      "guard_or_refusal_posture": "fresh-effect guard precedes nested proof generation",
+      "imported_environment_and_interpreter_dependencies": [
+        "transitive-child-environment"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-nested-library-import",
+        "caller-supplied-verification-input",
+        "alternate-generated-entrypoint"
+      ],
+      "retirement_impact": "generation dependency retired; supplied-artifact validation remains separate",
+      "disposition": "generation-dependency-retired"
+    },
+    {
+      "consumer_id": "runtime-local-activation",
+      "caller": "bin/zlar-protected-records-runtime-local-activation and lib/protected-records-runtime-local-activation.mjs",
+      "mode": "generate",
+      "entrypoint_kind": "proof-generator-wrapper",
+      "source_bound_edge_chain": [
+        "runProtectedRecordsRuntimeLocalActivationProof",
+        "runProtectedRecordsRuntimeProfileProof",
+        "runtime-profile child helper"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical disposable local activation proof",
+      "e3_projection": "transitive-expected-before-retirement",
+      "guard_or_refusal_posture": "fresh-effect guard precedes nested proof generation",
+      "imported_environment_and_interpreter_dependencies": [
+        "transitive-child-environment"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-runtime-factory-import",
+        "caller-supplied-verification-input",
+        "alternate-generated-entrypoint"
+      ],
+      "retirement_impact": "generation dependency retired; the artifact verification branch is preserved and intended read-only, but import-time side-effect closure is unproven",
+      "disposition": "generation-dependency-retired"
+    },
+    {
+      "consumer_id": "records-write-terminal-proof",
+      "caller": "bin/zlar-records-write-terminal-proof and lib/records-write-terminal-proof.mjs",
+      "mode": "generate",
+      "entrypoint_kind": "terminal-proof-wrapper",
+      "source_bound_edge_chain": [
+        "buildRecordsWriteTerminalProof",
+        "runProtectedRecordsRuntimeLocalActivationProof",
+        "runProtectedRecordsRuntimeProfileProof",
+        "runtime-profile child helper"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical records.write terminal proof generation",
+      "e3_projection": "transitive-expected-before-retirement",
+      "guard_or_refusal_posture": "runtime-local-activation fresh-effect guard precedes nested proof and child execution",
+      "imported_environment_and_interpreter_dependencies": [
+        "transitive-child-environment",
+        "bin-zlar-dispatch"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-runtime-local-activation-import",
+        "raw-fixture-storage-write",
+        "alternate-terminal-builder"
+      ],
+      "retirement_impact": "positive terminal generation remains authority-inactive; no verifier for this direct proof command is claimed",
+      "disposition": "generation-dependency-retired"
+    },
+    {
+      "consumer_id": "runtime-profile-installation",
+      "caller": "bin/zlar-protected-records-runtime-profile-installation and lib/protected-records-runtime-profile-installation.mjs",
+      "mode": "generate-and-agent-authority-refusal-probes",
+      "entrypoint_kind": "proof-generator-wrapper-and-direct-factory-negative-probe",
+      "source_bound_edge_chain": [
+        "runProtectedRecordsRuntimeProfileInstallationProof",
+        "runRequestAuthorityGuardSummary direct factory refusals",
+        "runProtectedRecordsRuntimeProfileProof child path"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical disposable installation proof and refusal probes",
+      "e3_projection": "negative direct probes plus transitive expected child projection before retirement",
+      "guard_or_refusal_posture": "fresh-effect guard precedes install root, direct probes, and nested child proof",
+      "imported_environment_and_interpreter_dependencies": [
+        "transitive-child-environment",
+        "direct-esm-import"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-runtime-factory-import",
+        "raw-install-root-or-fixture-storage-write",
+        "alternate-generated-entrypoint"
+      ],
+      "retirement_impact": "child generation dependency retired; direct factory negative probes remain a source side door but are outer-guarded",
+      "disposition": "generation-dependency-retired-direct-import-remains"
+    },
+    {
+      "consumer_id": "local-proof-pack",
+      "caller": "bin/zlar-local-proof-pack and lib/local-proof-pack.mjs",
+      "mode": "generate and buildLocalProofPackArtifact default generation",
+      "entrypoint_kind": "composite-proof-wrapper",
+      "source_bound_edge_chain": [
+        "runLocalProofPack",
+        "runtime activation, local activation, and installation components",
+        "runtime-profile child helper"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical composite local proof generation",
+      "e3_projection": "transitive-expected-before-retirement",
+      "guard_or_refusal_posture": "pack fresh-effect guard precedes component execution",
+      "imported_environment_and_interpreter_dependencies": [
+        "transitive-child-environment"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-component-import",
+        "caller-supplied-verification-input",
+        "alternate-proof-pack-builder"
+      ],
+      "retirement_impact": "positive generation remains authority-inactive; supplied-artifact verify mode does not invoke the direct CLI",
+      "disposition": "generation-dependency-retired-verification-preserved"
+    },
+    {
+      "consumer_id": "product-proof-path",
+      "caller": "bin/zlar-product-proof-path and lib/product-proof-path.mjs",
+      "mode": "runProductProofPath and default artifact construction",
+      "entrypoint_kind": "composite-product-proof-wrapper",
+      "source_bound_edge_chain": [
+        "runProductProofPath or buildProductProofPathReport",
+        "runLocalProofPack",
+        "runtime activation, local activation, and installation components",
+        "runtime-profile child helper"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical Product Proof Path generation",
+      "e3_projection": "transitive-expected-before-retirement",
+      "guard_or_refusal_posture": "local-proof-pack fresh-effect guard precedes component execution",
+      "imported_environment_and_interpreter_dependencies": [
+        "transitive-child-environment",
+        "bin-zlar-dispatch"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-local-proof-pack-import",
+        "alternate-product-proof-builder",
+        "historical-artifact-view"
+      ],
+      "retirement_impact": "positive generation remains authority-inactive; this command has no standalone verify mode and downstream consumers must use their own pinned evidence contracts",
+      "disposition": "generation-dependency-retired-no-direct-verifier"
+    },
+    {
+      "consumer_id": "installed-service-proof-cli",
+      "caller": "bin/zlar-protected-records-installed-runtime-profile-service-proof",
+      "mode": "generate",
+      "entrypoint_kind": "proof-generator-cli-wrapper",
+      "source_bound_edge_chain": [
+        "runProtectedRecordsInstalledRuntimeProfileServiceProof",
+        "installed-service runRuntimeService",
+        "bin/zlar protected-records-runtime-service"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical installed-service positive and refusal proof generation",
+      "e3_projection": "expected-via-child-before-retirement",
+      "guard_or_refusal_posture": "CLI and library generation guards precede child spawn",
+      "imported_environment_and_interpreter_dependencies": [
+        "inherited-process-env",
+        "PATH",
+        "NODE_OPTIONS"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-installed-service-library-import",
+        "interpreter-or-loader-substitution",
+        "caller-supplied-verification-input"
+      ],
+      "retirement_impact": "generation dependency retired; the verify branch is preserved and intended read-only, but import-time side-effect closure is unproven",
+      "disposition": "generation-dependency-retired-verification-preserved"
+    },
+    {
+      "consumer_id": "installed-service-proof-child-helper",
+      "caller": "lib/protected-records-installed-runtime-profile-service-proof.mjs",
+      "mode": "runRuntimeService with 9 call sites",
+      "entrypoint_kind": "internal-child-helper",
+      "source_bound_edge_chain": [
+        "runProtectedRecordsInstalledRuntimeProfileServiceProof",
+        "runRuntimeService",
+        "spawnSync absolute bin/zlar",
+        "protected-records-runtime-service dispatch"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical installed-profile service cases",
+      "e3_projection": "expected-via-child-before-retirement",
+      "guard_or_refusal_posture": "fresh-effect guard precedes scratch creation and child calls",
+      "imported_environment_and_interpreter_dependencies": [
+        "inherited-process-env",
+        "unqualified-node-dispatch",
+        "PATH",
+        "NODE_OPTIONS"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "callers-bypassing-exported-generator-guard",
+        "direct-runtime-factory-import",
+        "interpreter-or-loader-substitution"
+      ],
+      "retirement_impact": "helper now receives fixed direct-entry retirement refusal",
+      "disposition": "generation-dependency-retired"
+    },
+    {
+      "consumer_id": "installed-recognition-direct-factory",
+      "caller": "bin/zlar-protected-records-installed-runtime-profile-recognition-proof and lib/protected-records-installed-runtime-profile-recognition-proof.mjs",
+      "mode": "generate",
+      "entrypoint_kind": "direct-esm-factory-consumer",
+      "source_bound_edge_chain": [
+        "runProtectedRecordsInstalledRuntimeProfileRecognitionProof",
+        "createProtectedRecordsRuntimeService",
+        "returned applyRequest",
+        "E3 candidate"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical installed recognition proof",
+      "e3_projection": "direct-in-process-remains",
+      "guard_or_refusal_posture": "fresh-effect guard precedes scratch and key generation",
+      "imported_environment_and_interpreter_dependencies": [
+        "direct-esm-import",
+        "NODE_OPTIONS",
+        "loaders-and-preloads"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-runtime-factory-import-remains-effect-adjacent",
+        "custom-module-import-or-loader",
+        "raw-fixture-storage-write"
+      ],
+      "retirement_impact": "unaffected by CLI retirement and remains an explicit E3 side door",
+      "disposition": "observed-uncovered-direct-import"
+    },
+    {
+      "consumer_id": "active-persistent-action-crossing",
+      "caller": "bin/zlar-protected-records-active-persistent-profile-action-crossing and lib/protected-records-active-persistent-profile-action-crossing.mjs",
+      "mode": "generate",
+      "entrypoint_kind": "proof-generator-wrapper",
+      "source_bound_edge_chain": [
+        "runProtectedRecordsActivePersistentProfileActionCrossing",
+        "runProtectedRecordsInstalledRuntimeProfileServiceProof",
+        "installed-service child helper"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical active-persistent proof crossing",
+      "e3_projection": "transitive-expected-before-retirement",
+      "guard_or_refusal_posture": "fresh-effect guard precedes root inspection and nested service proof",
+      "imported_environment_and_interpreter_dependencies": [
+        "transitive-child-environment"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-installed-service-library-import",
+        "raw-active-root-or-fixture-storage-write",
+        "alternate-crossing-wrapper"
+      ],
+      "retirement_impact": "generation dependency retired",
+      "disposition": "generation-dependency-retired"
+    },
+    {
+      "consumer_id": "active-persistent-lifecycle",
+      "caller": "bin/zlar-protected-records-active-persistent-profile-lifecycle and lib/protected-records-active-persistent-profile-lifecycle.mjs",
+      "mode": "red-and-green-generation",
+      "entrypoint_kind": "lifecycle-proof-wrapper",
+      "source_bound_edge_chain": [
+        "runActivePersistentProfileLifecycleEvidence or runActivePersistentProfileRedPathRefusal",
+        "active action crossing or installed-service proof",
+        "installed-service child helper"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical active-persistent lifecycle evidence",
+      "e3_projection": "transitive-expected-before-retirement",
+      "guard_or_refusal_posture": "fresh-effect guards precede root or output creation",
+      "imported_environment_and_interpreter_dependencies": [
+        "transitive-child-environment"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-action-crossing-or-service-import",
+        "raw-lifecycle-output-or-fixture-storage-write",
+        "alternate-lifecycle-wrapper"
+      ],
+      "retirement_impact": "generation dependency retired; supplied-report composition remains separate",
+      "disposition": "generation-dependency-retired-verification-preserved"
+    },
+    {
+      "consumer_id": "named-deployment-real-boundary",
+      "caller": "bin/zlar-protected-records-named-deployment-profile-real-boundary and lib/protected-records-named-deployment-profile-real-boundary.mjs",
+      "mode": "runRuntimeChild with 2 dormant call sites",
+      "entrypoint_kind": "dormant-internal-child-helper",
+      "source_bound_edge_chain": [
+        "runProtectedRecordsNamedDeploymentProfileRealBoundaryProof",
+        "unconditional authority refusal",
+        "dead runRuntimeChild source"
+      ],
+      "legitimate_fixture_or_proof_dependency": "superseded named machine-local real-boundary experiment",
+      "e3_projection": "lexical-only-behind-unconditional-throw",
+      "guard_or_refusal_posture": "unconditional throw precedes activation root, keys, config, child, and target",
+      "imported_environment_and_interpreter_dependencies": [
+        "dormant inherited-process-env",
+        "dormant unqualified-node-dispatch"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-runtime-factory-import-outside-this-wrapper",
+        "source-mutation-removing-unconditional-refusal",
+        "alternate-named-boundary-implementation"
+      ],
+      "retirement_impact": "the source-bound unconditional refusal ordering is unchanged; generalized current runtime refusal remains unproven",
+      "disposition": "refusal-dominated-dormant-consumer"
+    },
+    {
+      "consumer_id": "proof-smoke-dynamic-wrapper",
+      "caller": "bin/zlar-proof-smoke",
+      "mode": "historical generation composition",
+      "entrypoint_kind": "dynamic-higher-level-command-wrapper",
+      "source_bound_edge_chain": [
+        "runJsonStep installed recognition or installed service or terminal chain",
+        "higher-level proof generator",
+        "direct factory or installed-service child path"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical proof-smoke generation",
+      "e3_projection": "transitive-through-higher-level-command",
+      "guard_or_refusal_posture": "proof-smoke generation is authority-inactive; artifact verify mode is separate",
+      "imported_environment_and_interpreter_dependencies": [
+        "dynamic-bin-zlar-dispatch",
+        "transitive-child-environment"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-higher-level-generator-import",
+        "dynamic-command-selection",
+        "caller-supplied-verification-input"
+      ],
+      "retirement_impact": "generation remains retired; pinned smoke verification remains separate",
+      "disposition": "generation-dependency-retired-verification-preserved"
+    },
+    {
+      "consumer_id": "north-star-readiness-dynamic-wrapper",
+      "caller": "bin/zlar-north-star-readiness",
+      "mode": "sample-build",
+      "entrypoint_kind": "dynamic-higher-level-command-wrapper",
+      "source_bound_edge_chain": [
+        "runZlarJson installed recognition or installed service or terminal chain",
+        "higher-level proof generator",
+        "direct factory or installed-service child path"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical North Star readiness composition",
+      "e3_projection": "transitive-through-higher-level-command",
+      "guard_or_refusal_posture": "at this source checkpoint the source-recorded exhausted-status guard refuses readiness generation; caller-authenticated current runtime refusal is unproven and verification inputs are separate",
+      "imported_environment_and_interpreter_dependencies": [
+        "dynamic-bin-zlar-dispatch",
+        "transitive-child-environment"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "direct-higher-level-generator-import",
+        "dynamic-command-selection",
+        "caller-supplied-verification-input"
+      ],
+      "retirement_impact": "sample generation dependency retired; supplied verification remains separate",
+      "disposition": "generation-dependency-retired-verification-preserved"
+    },
+    {
+      "consumer_id": "runtime-profile-positive-cli-test",
+      "caller": "tests/test-protected-records-runtime-profile-cli.mjs",
+      "mode": "legacy positive and refusal cases",
+      "entrypoint_kind": "authority-inactive-test",
+      "source_bound_edge_chain": [
+        "runZlar protected-records-runtime-service",
+        "legacy direct CLI",
+        "E3 candidate"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical positive regression",
+      "e3_projection": "direct-before-retirement",
+      "guard_or_refusal_posture": "machine-listed authority-inactive suite",
+      "imported_environment_and_interpreter_dependencies": [
+        "test-process-env",
+        "bin-zlar-dispatch"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "manual-execution-of-authority-inactive-suite",
+        "historical-positive-source-copy",
+        "interpreter-or-loader-substitution"
+      ],
+      "retirement_impact": "positive expectation intentionally retired",
+      "disposition": "historical-test-retired"
+    },
+    {
+      "consumer_id": "runtime-profile-direct-factory-test",
+      "caller": "tests/test-protected-records-runtime-profile.mjs",
+      "mode": "direct factory positive and refusal cases",
+      "entrypoint_kind": "authority-inactive-test",
+      "source_bound_edge_chain": [
+        "createProtectedRecordsRuntimeService",
+        "returned applyRequest",
+        "E3 candidate or refusal"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical factory regression",
+      "e3_projection": "direct-in-process-remains",
+      "guard_or_refusal_posture": "machine-listed authority-inactive suite",
+      "imported_environment_and_interpreter_dependencies": [
+        "direct-esm-import"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "manual-execution-of-authority-inactive-suite",
+        "custom-direct-factory-consumer",
+        "raw-fixture-storage-write"
+      ],
+      "retirement_impact": "unaffected source side door; suite remains inactive",
+      "disposition": "historical-test-direct-import-remains"
+    },
+    {
+      "consumer_id": "runtime-authority-v2-direct-cli-refusal-test",
+      "caller": "tests/test-protected-records-runtime-authority-v2.mjs",
+      "mode": "direct v2 refusal",
+      "entrypoint_kind": "refusal-test",
+      "source_bound_edge_chain": [
+        "process.execPath",
+        "bin/zlar-protected-records-runtime-service",
+        "fixed retirement refusal"
+      ],
+      "legitimate_fixture_or_proof_dependency": "negative direct-v2 refusal regression",
+      "e3_projection": "none",
+      "guard_or_refusal_posture": "fixed refusal before config read",
+      "imported_environment_and_interpreter_dependencies": [
+        "process.execPath",
+        "NODE_OPTIONS-if-inherited"
+      ],
+      "unresolved_alternate_paths_and_side_doors": [
+        "positive-v2-test-cases-in-the-same-suite-not-executed-here",
+        "pre-script-loader-execution",
+        "direct-replacement-child-route-is-distinct"
+      ],
+      "retirement_impact": "negative expectation changes from v2 detector to universal direct-entry retirement",
+      "disposition": "refusal-test-preserved"
+    },
+    {
+      "consumer_id": "v2-source-completeness-contract",
+      "caller": "lib/protected-records-fixture-authority-grant-v2.mjs",
+      "mode": "source-completeness manifest",
+      "entrypoint_kind": "source-contract-reference",
+      "source_bound_edge_chain": [
+        "runtime_service_cli_source_path",
+        "exact v2 source-precondition manifest"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical replacement crossing source completeness",
+      "e3_projection": "none",
+      "guard_or_refusal_posture": "stronger universal refusal preserves the direct-v2 refusal semantic but changes the source identity",
+      "imported_environment_and_interpreter_dependencies": [],
+      "unresolved_alternate_paths_and_side_doors": [
+        "historical-source-precondition-no-longer-matches",
+        "future-versioned-v2-source-contract-required-before-positive-use"
+      ],
+      "retirement_impact": "prior E4 source precondition no longer describes the current checkout and historical authority cannot be reused",
+      "disposition": "historical-source-contract-drifted"
+    },
+    {
+      "consumer_id": "v2-no-reexecution-graph",
+      "caller": "lib/protected-records-replacement-artifact-set-v2.mjs and spec/protected-records-no-reexecution-call-graph-v2.json",
+      "mode": "direct-v2-refusal node and edge contract",
+      "entrypoint_kind": "source-contract-reference",
+      "source_bound_edge_chain": [
+        "general runtime-service CLI node",
+        "direct-v2 refusal edge",
+        "dedicated replacement child"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical no-reexecution call graph",
+      "e3_projection": "none",
+      "guard_or_refusal_posture": "the universal stub still refuses direct v2, but exact source bytes changed",
+      "imported_environment_and_interpreter_dependencies": [],
+      "unresolved_alternate_paths_and_side_doors": [
+        "dedicated-e4-child-remains-distinct-and-unchanged",
+        "historical-source-binding-no-longer-matches-current-checkout"
+      ],
+      "retirement_impact": "graph semantic remains conservative; prior source binding is historical",
+      "disposition": "historical-source-contract-preserved-semantically-source-drifted"
+    },
+    {
+      "consumer_id": "v2-source-completeness-test",
+      "caller": "tests/test-protected-records-fixture-authority-grant-v2.mjs",
+      "mode": "source path and manifest refusal assertions",
+      "entrypoint_kind": "source-and-refusal-test",
+      "source_bound_edge_chain": [
+        "v2 source completeness path set",
+        "runtime service CLI source path"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical v2 source-precondition validation",
+      "e3_projection": "none",
+      "guard_or_refusal_posture": "not executed in this no-key source lane",
+      "imported_environment_and_interpreter_dependencies": [],
+      "unresolved_alternate_paths_and_side_doors": [
+        "positive-authority-test-paths-not-executed-in-this-lane",
+        "future-versioned-source-precondition-required"
+      ],
+      "retirement_impact": "source expectation requires a later versioned source-precondition lane before any positive use",
+      "disposition": "source-updated-or-superseded-test-not-executed"
+    },
+    {
+      "consumer_id": "immutable-source-evidence-validators",
+      "caller": "lib/consequence-path-coverage-dependency-map-v0.mjs and lib/source-bound-static-reachability-delta-v0.mjs",
+      "mode": "exact historical source reconstruction",
+      "entrypoint_kind": "source-evidence-validator",
+      "source_bound_edge_chain": [
+        "exact pre-retirement CLI byte markers",
+        "parent or delta artifact"
+      ],
+      "legitimate_fixture_or_proof_dependency": "historical topology baseline",
+      "e3_projection": "pre-retirement-source-observation-only",
+      "guard_or_refusal_posture": "changed live source must refuse exact historical reconstruction",
+      "imported_environment_and_interpreter_dependencies": [],
+      "unresolved_alternate_paths_and_side_doors": [
+        "historical-git-object-availability",
+        "private-parent-artifact-availability",
+        "current-source-drift-from-immutable-baseline"
+      ],
+      "retirement_impact": "artifacts and implementations remain byte-immutable; live-source suites are superseded by this additive disposition",
+      "disposition": "immutable-historical-baseline"
+    },
+    {
+      "consumer_id": "declarative-command-contracts",
+      "caller": "profiles and source validators containing the legacy service_command string",
+      "mode": "declarative historical contract",
+      "entrypoint_kind": "non-executable-evidence-view",
+      "source_bound_edge_chain": [],
+      "legitimate_fixture_or_proof_dependency": "historical artifact and plan identity",
+      "e3_projection": "none-without-an-executable-caller",
+      "guard_or_refusal_posture": "does not invoke the retired CLI",
+      "imported_environment_and_interpreter_dependencies": [],
+      "unresolved_alternate_paths_and_side_doors": [
+        "generated-or-dynamic-consumer-not-in-pinned-source-inventory",
+        "historical-command-text-misread-as-current-positive-routing"
+      ],
+      "retirement_impact": "retained only where required for historical artifact identity; not current positive routing",
+      "disposition": "historical-declarative-view"
+    }
+  ],
+  "declarative_command_contract_paths": [
+    "profiles/protected-records-runtime-fixture.profile.json",
+    "profiles/protected-records-runtime-activation-plan.fixture.json",
+    "profiles/protected-records-runtime-local-activation-plan.fixture.json",
+    "profiles/protected-records-runtime-profile-installation-plan.fixture.json",
+    "lib/protected-records-runtime-profile-preflight.mjs",
+    "lib/protected-records-runtime-activation-preflight.mjs",
+    "lib/protected-records-runtime-local-activation.mjs",
+    "lib/protected-records-runtime-profile-installation.mjs",
+    "lib/protected-records-installed-runtime-profile-preflight.mjs",
+    "lib/protected-records-installed-runtime-profile-service-proof.mjs",
+    "lib/protected-records-installed-proof-samples.mjs",
+    "lib/local-proof-pack.mjs",
+    "lib/north-star-readiness.mjs",
+    "lib/current-machine-governance-preview.mjs",
+    "lib/protected-records-named-deployment-profile-readiness.mjs",
+    "lib/protected-records-named-deployment-profile-real-boundary.mjs",
+    "lib/records-write-terminal-proof.mjs",
+    "lib/protected-records-fixture-authority-grant-v2.mjs",
+    "lib/protected-records-replacement-artifact-set-v2.mjs",
+    "spec/protected-records-no-reexecution-call-graph-v2.json",
+    "docs/north-star-2-consequence-artifact-v2.md",
+    "docs/cli-reference.md",
+    "README.md"
+  ],
+  "test_consumer_inventory": {
+    "authority_inactive_positive_suite_inventory_path": "tests/authority-inactive-test-suites.txt",
+    "authority_inactive_positive_suite_count": 37,
+    "active_refusal_and_source_test_paths": [
+      "tests/test-protected-records-fixture-authority-exhausted-routing.mjs",
+      "tests/test-protected-records-named-deployment-profile-real-boundary.mjs",
+      "tests/test-protected-records-named-deployment-profile-real-boundary-cli.mjs",
+      "tests/test-protected-records-runtime-authority-v2.mjs",
+      "tests/test-protected-records-fixture-authority-grant-v2.mjs",
+      "tests/test-consequence-path-coverage-dependency-map-v0.mjs",
+      "tests/test-source-bound-static-reachability-delta-v0.mjs",
+      "tests/test-legacy-runtime-v1-governed-disposition-v0.mjs"
+    ]
+  },
+  "preserved_verification_boundary": {
+    "verify_branch_precedes_named_generation_markers": true,
+    "intended_no_consequence_reexecution": true,
+    "filesystem_read_only_for_all_modes": false,
+    "import_time_side_effect_closure_proven": false,
+    "runtime_no_write_behavior_generalized": false
+  },
+  "preserved_verification_modes": [
+    {
+      "mode_id": "protected-records-active-persistent-profile-lifecycle.supplied-report-composition",
+      "entrypoint": "bin/zlar-protected-records-active-persistent-profile-lifecycle",
+      "selector_type": "non-run-supplied-report-composition",
+      "run_selector_marker": "if (args[0] === 'run')",
+      "run_generation_marker": "const result = runActivePersistentProfileLifecycleEvidence({",
+      "run_exit_marker": "process.exit(0);",
+      "supplied_report_builder_marker": "const report = buildActivePersistentProfileLifecycleReportFromFiles({",
+      "generation_boundary_markers": []
+    },
+    {
+      "mode_id": "protected-records-runtime-activation-preflight.verify",
+      "entrypoint": "bin/zlar-protected-records-runtime-activation-preflight",
+      "generation_boundary_markers": [
+        "const report = runProtectedRecordsRuntimeActivationPreflight(plan, profile);"
+      ]
+    },
+    {
+      "mode_id": "protected-records-runtime-local-activation.verify",
+      "entrypoint": "bin/zlar-protected-records-runtime-local-activation",
+      "generation_boundary_markers": [
+        "const report = runProtectedRecordsRuntimeLocalActivationProof(plan, profile);"
+      ]
+    },
+    {
+      "mode_id": "protected-records-runtime-profile-installation.verify",
+      "entrypoint": "bin/zlar-protected-records-runtime-profile-installation",
+      "generation_boundary_markers": [
+        "const report = runProtectedRecordsRuntimeProfileInstallationProof(plan, profile);"
+      ]
+    },
+    {
+      "mode_id": "protected-records-installed-runtime-profile-recognition-proof.verify",
+      "entrypoint": "bin/zlar-protected-records-installed-runtime-profile-recognition-proof",
+      "generation_boundary_markers": [
+        "assertProtectedRecordsCurrentFixtureAuthorityGrantFreshEffectAllowed(",
+        "const report = runProtectedRecordsInstalledRuntimeProfileRecognitionProof(artifact);"
+      ]
+    },
+    {
+      "mode_id": "protected-records-installed-runtime-profile-service-proof.verify",
+      "entrypoint": "bin/zlar-protected-records-installed-runtime-profile-service-proof",
+      "generation_boundary_markers": [
+        "assertProtectedRecordsCurrentFixtureAuthorityGrantFreshEffectAllowed(",
+        "const report = runProtectedRecordsInstalledRuntimeProfileServiceProof(artifact);"
+      ]
+    },
+    {
+      "mode_id": "protected-records-installed-runtime-profile-terminal-chain.verify",
+      "entrypoint": "bin/zlar-protected-records-installed-runtime-profile-terminal-chain",
+      "generation_boundary_markers": [
+        "assertProtectedRecordsCurrentFixtureAuthorityGrantFreshEffectAllowed(",
+        "const report = runProtectedRecordsInstalledRuntimeProfileTerminalChain(plan, profile);"
+      ]
+    },
+    {
+      "mode_id": "local-proof-pack.verify",
+      "entrypoint": "bin/zlar-local-proof-pack",
+      "generation_boundary_markers": [
+        "const report = runLocalProofPack();"
+      ]
+    },
+    {
+      "mode_id": "proof-smoke.verify",
+      "entrypoint": "bin/zlar-proof-smoke",
+      "generation_boundary_markers": [
+        "assertProtectedRecordsCurrentFixtureAuthorityGrantFreshEffectAllowed("
+      ]
+    }
+  ],
+  "future_reactivation_boundary": {
+    "governed_internal_fixture_only_design_required": true,
+    "authorized_in_this_lane": false,
+    "retired_direct_surface_reopen_allowed": false,
+    "hidden_direct_cli_mode_allowed": false,
+    "requires_new_versioned_non_dispatched_internal_capability": true,
+    "requires_consumer_migration": true,
+    "requires_separate_authority_before_implementation": true
+  },
+  "authority_status": {
+    "route_and_source_authority_present": true,
+    "consequence_authority_present": false,
+    "outside_coverage_authority_present": false,
+    "active_authority_present": false
+  },
+  "source_authority_evidence": {
+    "observation_surface": "control_tower_active_turn_user_message",
+    "scope": "route_and_source_only",
+    "embedded_authority_record": false,
+    "portable": false,
+    "reusable": false,
+    "consequence_authority": false
+  },
+  "bounded_verification_observation": {
+    "exact_local_refusal_probe_observed": true,
+    "exact_interpreter": "process.execPath",
+    "sanitized_environment": true,
+    "direct_script_probe_count": 4,
+    "main_dispatch_probe_count": 1,
+    "config_or_target_effect_input_supplied": false,
+    "generalized_current_machine_refusal_proven": false
+  },
+  "claim_boundary": {
+    "source_level_named_entry_refusal": true,
+    "current_runtime_refusal_generalized": false,
+    "verification_import_time_side_effect_closure": false,
+    "e3_runtime_unreachability": false,
+    "e3_elimination": false,
+    "effect_capability": false,
+    "effect_occurrence": false,
+    "rightful_issuance": false,
+    "current_authority": false,
+    "authority_domain_membership": false,
+    "governed_equivalent_route_coverage": false,
+    "equivalent_route_closure": false,
+    "same_route_closeout": false,
+    "domain_inventory_completeness": false,
+    "lifecycle_closure": false,
+    "exactly_once": false,
+    "crash_atomicity": false,
+    "recovery": false,
+    "side_door_closure": false,
+    "current_machine_governance": false,
+    "production": false,
+    "enterprise": false,
+    "public_attestation": false,
+    "sovereign_recognition": false,
+    "all_surface_governance": false
+  },
+  "side_doors": [
+    "direct-esm-import-of-createProtectedRecordsRuntimeService",
+    "direct-internal-e4-child-or-module-invocation",
+    "installed-recognition-direct-factory-generation-source",
+    "runtime-installation-direct-factory-negative-probe-source",
+    "custom-loaders-and-preloads-before-stub-execution",
+    "NODE_OPTIONS",
+    "BASH_ENV",
+    "exported-shell-functions",
+    "direct-shebang-/usr/bin/env-node-PATH-resolution",
+    "unqualified-node-and-PATH-substitution-in-bin-zlar",
+    "alternate-interpreter-invocation-of-source-files",
+    "old-commit-or-copied-positive-executable",
+    "existing-installed-or-machine-local-copy-not-inspected",
+    "generated-or-dynamic-entrypoints-not-in-the-inventory",
+    "raw-filesystem-writes-around-fixture-storage",
+    "same-user-source-mutation",
+    "verification-branch-transitive-import-time-side-effects-unproven",
+    "abnormal-termination-historical-source-temp-residue",
+    "shell-mcp-browser-app-control-filesystem-and-network-paths-not-bound-to-the-named-surface",
+    "source-drift-after-the-checkpoint"
+  ],
+  "integrity": {
+    "algorithm": "SHA-256",
+    "scope": "canonical artifact body without integrity",
+    "body_sha256": "ec322d0bdc43c889c409ac17685bce2c47970cdf326d09e5602fd4826e609d8a"
+  }
+}

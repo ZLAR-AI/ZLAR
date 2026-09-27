@@ -1,0 +1,82 @@
+{
+  "profile_type": "zlar-protected-records-service-profile-v1",
+  "profile_id": "protected-records-service-fixture-profile",
+  "profile_status": "sample_not_active",
+  "deployment_posture": "deployable_profile_preflight_only",
+  "action_class": "records.write",
+  "service_type": "local-protected-records-downstream-service-v1",
+  "service_command": "zlar protected-records-service-request --config <file|-> --input <file|->",
+  "result_type": "protected-records-service-result-v1",
+  "recognition_boundary": "downstream-recognition-before-service-mutation",
+  "mutation_authoritative_route": "receipt-recognition-before-service-state-append",
+  "state_model": "bounded-jsonl-service-state-entry",
+  "consumed_receipt_store": "persistent-single-use-receipt-id-store",
+  "replay_scope": "per-service-consumed-receipt-store",
+  "environment_boundary": {
+    "boundary_id": "local-disposable-cli-service-boundary",
+    "boundary_type": "local-disposable-cli-process",
+    "service_entrypoint": "zlar protected-records-service-request --config <file|-> --input <file|->",
+    "service_process_boundary": "separate-cli-process",
+    "authoritative_route": "receipt-recognition-before-service-state-append",
+    "effect_boundary": "bounded-jsonl-service-state-entry",
+    "fixture_mode_required": true,
+    "launcher_owned_config_required": true,
+    "request_stream_authority_material_allowed": false,
+    "request_stream_allowed_fields": [
+      "receipt",
+      "record_update"
+    ],
+    "runtime_activation": false,
+    "live_profile_installed": false,
+    "direct_filesystem_write_to_fixture_paths_closed": false
+  },
+  "recognition_rule_contract": {
+    "deployment_scope": "protected-records-service-profile-fixture",
+    "accepted_policy_versions": [
+      "recognition-policy-v1"
+    ],
+    "accepted_domains": [
+      "records"
+    ],
+    "accepted_tools": [
+      "records.write"
+    ],
+    "accepted_outcomes": [
+      "allow",
+      "authorized"
+    ],
+    "max_age_seconds": 120,
+    "required_audit_event_id": "protected-record-service-profile-001",
+    "required_issuer_status": "active",
+    "required_detail_binding": "receipt.payload.detail_hash == sha256(canonical(record_update))"
+  },
+  "required_cases": [
+    "recognized_profile_service_write_first_process",
+    "replay_profile_refused_after_service_restart",
+    "missing_receipt_profile_refused_before_service_mutation",
+    "unrecognized_receipt_profile_refused_before_service_mutation",
+    "invalid_receipt_profile_refused_before_service_mutation",
+    "unknown_issuer_profile_refused_before_service_mutation",
+    "wrong_policy_profile_refused_before_service_mutation",
+    "stale_receipt_profile_refused_before_service_mutation",
+    "request_stream_authority_material_profile_refused_before_service_mutation",
+    "direct_api_profile_without_receipt_refused_before_service_mutation",
+    "direct_api_profile_receipt_present_refused_before_service_mutation"
+  ],
+  "known_open_boundaries": [
+    "direct_filesystem_write_to_configured_fixture_paths",
+    "live_records_system",
+    "production_records_service",
+    "runtime_profile_not_installed",
+    "unrouted_records_paths"
+  ],
+  "non_claims": [
+    "This profile is a sample deployable preflight profile, not an active runtime profile.",
+    "This preflight does not inspect a live records system.",
+    "This preflight does not prove production records service deployment.",
+    "This preflight does not close direct filesystem writes to configured fixture paths.",
+    "This preflight does not prove current-machine governance, live MCP coverage, or live approval-channel health.",
+    "This preflight does not prove external attestation, enterprise readiness, production authority, or sovereign recognition.",
+    "This preflight does not prove coverage of unrouted records paths."
+  ]
+}

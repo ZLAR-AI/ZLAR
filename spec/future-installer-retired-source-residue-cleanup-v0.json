@@ -1,0 +1,210 @@
+{
+  "artifact_type": "zlar.future-installer-retired-source-residue-cleanup.v0",
+  "schema_version": 0,
+  "verification_mode": "source-only-static-and-no-write-plan-overlay",
+  "decision": "remove_only_exact_retired_e1_e2_installed_source_residue_on_future_accepted_existing_install_modes",
+  "consequence_class": "future authorized local installer deletion of four exact retired positive source files",
+  "north_star_1_status": "historical",
+  "north_star_2_status": "mapped_open",
+  "source_checkpoint": {
+    "repository_id": "ZLAR_Repo",
+    "baseline_commit_oid": "dca5edbf7311c9af9c3152a33d9b810e52410850",
+    "baseline_private_remote_oid": "dca5edbf7311c9af9c3152a33d9b810e52410850",
+    "loaded_source_matches_inventory_by_exact_file_hashes": true,
+    "installer_executed": false,
+    "current_machine_installation_inspected": false,
+    "positive_effect_execution_performed": false,
+    "authority_material_created_or_used": false,
+    "resulting_commit_recorded_after_commit": false
+  },
+  "route_decisions": {
+    "e4_source_retirement": "NO-GO",
+    "e4_reason": "sole selected authoritative one-terminal route; retirement would create a historical-only product posture and satisfy no lifecycle gate",
+    "e5_latent_body_retirement": "NO-GO",
+    "e5_reason": "first executable boundary already fixed-refuses; removing the latent body changes no current positive route or acceptance gate",
+    "installer_stale_residue_cleanup": "GO",
+    "installer_reason": "future accepted repair, upgrade, and reinstall previously omitted retired E1/E2 files from copies but left exact stale installed copies in place"
+  },
+  "source_inventory": [
+    {
+      "path": "install.sh",
+      "file_sha256": "8ce1e6b5ce7114d41060beb3dc409e704da017c6aeb34a27433f798b5c58e61a"
+    },
+    {
+      "path": "README.md",
+      "file_sha256": "598fd2ad4233bb63f95ccaf0cdb627f028c87b1231b6334e4a57e27344e1d76c"
+    },
+    {
+      "path": "docs/cli-reference.md",
+      "file_sha256": "7d12a2e3c6bbe7bf97e9012c3b28f285464bc9cb4af61e7cc8366c0f570ea305"
+    },
+    {
+      "path": "docs/governed-surface-coverage-map.md",
+      "file_sha256": "df97e89ed07c772ce93e3f444af1bf2732e64fb1e511ca5dc4c54e803763466b"
+    },
+    {
+      "path": "docs/trusted-receipt-issuer.md",
+      "file_sha256": "0bc7625830ae55161b4f954e233c2877c1b88495c30db223a51d820e620577b7"
+    },
+    {
+      "path": "tests/test-install-plan-dry-run.sh",
+      "file_sha256": "f3ac522c124ddb6adb0876dbbf4fa31dc2fdfb63a1ff60fe5ad8c7296c2c0454"
+    },
+    {
+      "path": "tests/superseded-source-bound-test-suites.txt",
+      "file_sha256": "1b02e8ce79091846757facdaf7bfb4c3b65dbb0440cdfed6cc1464d5dfc52faf"
+    },
+    {
+      "path": "tests/test-authority-inactive-test-routing.sh",
+      "file_sha256": "eb94258df37f7e7534a1b4e395bd4ccbe385d96f3a14acd80d8c98365d6842ba"
+    },
+    {
+      "path": "lib/protected-records-adapter.mjs",
+      "file_sha256": "b25fb44e6bb69d1067251d1a54db3262e880286986bdd7df37fcf20bac14a6ea"
+    },
+    {
+      "path": "lib/protected-records-service.mjs",
+      "file_sha256": "ffc9d6a8456a17afd66f0a69ea9c4b8c9c4440a74372b9d2c0fb5c18923c88e2"
+    }
+  ],
+  "cleanup_contract": {
+    "exact_paths": [
+      "bin/zlar-protected-records-write",
+      "bin/zlar-protected-records-service-request",
+      "lib/protected-records-adapter.mjs",
+      "lib/protected-records-service.mjs"
+    ],
+    "accepted_existing_install_operations": [
+      "repair",
+      "upgrade",
+      "reinstall"
+    ],
+    "excluded_operations": [
+      "fresh_install",
+      "no_op",
+      "refusal"
+    ],
+    "validates_before_installer_writes": true,
+    "revalidates_before_delete": true,
+    "regular_files_removable": true,
+    "symlinks_removable_as_links": true,
+    "unexpected_file_types_refused": true,
+    "real_directory_parents_required": true,
+    "symlinked_parents_refused": true,
+    "non_directory_parents_refused": true,
+    "recursive_delete_forbidden": true,
+    "glob_delete_forbidden": true,
+    "quiescent_filesystem_required_for_exact_path_claim": true,
+    "concurrent_parent_or_leaf_substitution_closed": false
+  },
+  "source_effect_consumer_delta": {
+    "source_before": "future installer copy filters omitted the retired E1/E2 direct wrapper and module files but defined no deletion for an already installed copy",
+    "source_after": "future accepted repair, upgrade, and reinstall validate and remove only the four exact retired paths before replacement copies",
+    "current_effect_node_delta": "none; no protected-records effect node was executed or removed",
+    "future_installer_effect_delta": "four exact local file deletions become part of a later separately authorized accepted existing-install operation",
+    "dry_run_consumer_delta": "the no-write JSON reports exact planned removals and unexpected-file-type refusals using home-relative paths",
+    "main_cli_dispatch_delta": "none",
+    "e4_route_delta": "none",
+    "e5_route_delta": "none"
+  },
+  "no_write_plan_evidence": {
+    "test_path": "tests/test-install-plan-dry-run.sh",
+    "accepted_upgrade_with_four_regular_files_plans_four_exact_removals": true,
+    "accepted_repair_and_reinstall_plan_exact_present_paths": true,
+    "fresh_install_no_op_and_refused_modes_plan_zero_removals": true,
+    "unexpected_file_type_is_reported_and_blocks_projected_writes": true,
+    "temporary_home_bytes_unchanged_before_and_after": true,
+    "absolute_temporary_home_path_redacted": true,
+    "real_installer_execution_performed": false
+  },
+  "prior_retirement_overlay": {
+    "path": "spec/e1-direct-adapter-factory-source-retirement-v0.json",
+    "file_sha256": "73facf0d8159a30d022e3c2a6333aad1385fb222f2036e8a2695cc24825ed661",
+    "body_sha256": "b1c3bbcd0cd6d5ce448f337e7a243a415b89e0f601697bda87a82ce353fa2b1d"
+  },
+  "unchanged_e4_source_boundary": [
+    {
+      "path": "bin/zlar-protected-records-replacement-crossing-v2",
+      "file_sha256": "750a48f5329374b419943a0790e35b85ebd26701417cf5a2e2d30adb715b02dc"
+    },
+    {
+      "path": "lib/protected-records-replacement-crossing-cli-v2.mjs",
+      "file_sha256": "66c62e5d9e60bc636daa802219f81a51a526af9d22d322e9c6f6a625bc8426c5"
+    },
+    {
+      "path": "lib/protected-records-replacement-crossing-driver-v2.mjs",
+      "file_sha256": "caac0ed07d79bfb538671c6eda3bbe8d5f78fa374aa5d4c81c14c8a2898ce879"
+    },
+    {
+      "path": "lib/protected-records-replacement-runtime-child-v2.mjs",
+      "file_sha256": "00d43a598b85865600168db87e5b7aa742df3da3455dd6f1199e48b4f05acbcd"
+    },
+    {
+      "path": "lib/protected-records-runtime-profile.mjs",
+      "file_sha256": "5d02ecdc643fb5f3e256bb76d6e15946553a17c5e6aaa41e88ef6ce414d5103a"
+    }
+  ],
+  "unchanged_historical_fixtures": [
+    {
+      "path": "tests/fixtures/proof-smoke-v1-report.json",
+      "file_sha256": "69d567c4708642393c470f3cffca015d1c39096a99191d720252aaf5a33b0635"
+    },
+    {
+      "path": "tests/fixtures/local-proof-pack-artifact-v1.json",
+      "file_sha256": "7147445a29974c634d8574dd9eb8051ebed0541111ce4cb21b149282f9c8ebf8"
+    }
+  ],
+  "test_routing": {
+    "prior_stage_5_source_snapshot_superseded": true,
+    "current_cleanup_suite_active": true,
+    "positive_e1_e2_suites_remain_retired": true,
+    "authority_inactive_positive_suites_remain_skipped": true,
+    "broad_harness_required_for_this_lane": false
+  },
+  "authority_status": {
+    "source_change_authorized": true,
+    "installer_execution_authorized": false,
+    "machine_mutation_authorized": false,
+    "key_or_secret_use_authorized": false,
+    "positive_crossing_authorized": false,
+    "public_claim_movement_authorized": false
+  },
+  "claim_ceiling": {
+    "current_machine_retirement_proven": false,
+    "installed_copy_retirement_proven": false,
+    "runtime_unreachability_proven": false,
+    "e1_elimination_proven": false,
+    "e2_elimination_proven": false,
+    "equivalent_route_closure_proven": false,
+    "lifecycle_closure_proven": false,
+    "side_door_closure_proven": false,
+    "concurrency_safe_cleanup_proven": false,
+    "current_authority_proven": false,
+    "fresh_effect_proven": false,
+    "product_or_enterprise_readiness_proven": false
+  },
+  "side_doors": [
+    "current or old installed E1/E2 copies until a separately authorized installer run and post-install verification",
+    "copied loaded historical or mutated source",
+    "selected positive E4 crossing route",
+    "direct E4 runtime-child invocation",
+    "direct createProtectedRecordsRuntimeServiceV2 import or call",
+    "loaders preloads NODE_OPTIONS PATH or interpreter substitution",
+    "raw filesystem mutation outside named terminals",
+    "dynamic generated external non-Node or unknown routes",
+    "process-private E4 state that cannot be independently re-observed",
+    "uninspected machine installation and hook configuration",
+    "same-user concurrent parent or leaf substitution between validation and deletion"
+  ],
+  "integrity": {
+    "algorithm": "SHA-256",
+    "scope": "canonical artifact body without integrity",
+    "body_sha256": "f9ae31f2e3c1e50ed843ac351b9b7c6f00aa94de38e51a1f9d272edb55cf433e",
+    "projects_current_authority": false,
+    "projects_fresh_effect": false,
+    "projects_installed_copy_retirement": false,
+    "projects_runtime_unreachability": false,
+    "projects_lifecycle_closure": false,
+    "projects_side_door_closure": false
+  }
+}

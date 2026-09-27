@@ -1,0 +1,348 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zlar.ai/spec/trusted-receipt-issuers-v2.schema.json",
+  "title": "ZLAR Trusted Receipt Issuers v2",
+  "type": "object",
+  "required": [
+    "registry_type",
+    "registry_id",
+    "version",
+    "evidence_model",
+    "live_probing",
+    "deployment_scope",
+    "effective_at",
+    "expires_at",
+    "trusted_issuers",
+    "accepted_policy_versions",
+    "accepted_domains",
+    "accepted_tools",
+    "accepted_outcomes",
+    "freshness_requirements",
+    "replay_protection",
+    "required_audit_event_id",
+    "required_detail_hash",
+    "claim_boundary",
+    "non_claims"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "registry_type": {
+      "const": "trusted-receipt-issuers-v2"
+    },
+    "version": {
+      "const": 2
+    },
+    "registry_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "live_probing": {
+      "const": false
+    },
+    "deployment_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "effective_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "trusted_issuers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": [
+          "kid",
+          "public_key_pem",
+          "trust_anchor_sha256",
+          "status",
+          "status_reason",
+          "effective_at",
+          "expires_at",
+          "status_transition",
+          "custody_posture"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "public_key_pem": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^-----BEGIN PUBLIC KEY-----"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trust_anchor_sha256": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "active",
+              "retired",
+              "revoked",
+              "compromised"
+            ]
+          },
+          "status_reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "effective_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status_transition": {
+            "type": "object",
+            "required": [
+              "previous_status",
+              "transition_type",
+              "transition_at",
+              "reason"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "previous_status": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "active",
+                      "retired",
+                      "revoked",
+                      "compromised"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "transition_type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "transition_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "custody_posture": {
+            "type": "object",
+            "required": [
+              "declaration",
+              "private_key_material_included",
+              "hardware_custody_proven",
+              "custody_proof_provided"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "declaration": {
+                "type": "string",
+                "minLength": 1
+              },
+              "private_key_material_included": {
+                "const": false
+              },
+              "hardware_custody_proven": {
+                "const": false
+              },
+              "custody_proof_provided": {
+                "const": false
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "active"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "public_key_pem": {
+                      "type": "string",
+                      "pattern": "^-----BEGIN PUBLIC KEY-----"
+                    }
+                  },
+                  "required": [
+                    "public_key_pem"
+                  ]
+                },
+                {
+                  "properties": {
+                    "trust_anchor_sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  },
+                  "required": [
+                    "trust_anchor_sha256"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "accepted_policy_versions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "accepted_domains": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "accepted_tools": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "accepted_outcomes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "freshness_requirements": {
+      "type": "object",
+      "required": [
+        "max_age_seconds",
+        "future_tolerance_seconds"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "max_age_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "future_tolerance_seconds": {
+          "const": 0
+        }
+      }
+    },
+    "replay_protection": {
+      "type": "object",
+      "required": [
+        "receipt_id_required",
+        "replay_cache_required",
+        "atomic_consume_required"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "receipt_id_required": {
+          "const": true
+        },
+        "replay_cache_required": {
+          "const": true
+        },
+        "atomic_consume_required": {
+          "const": true
+        }
+      }
+    },
+    "required_audit_event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "required_detail_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "claim_boundary": {
+      "type": "object",
+      "required": [
+        "current_machine_governance_proven",
+        "enterprise_readiness",
+        "hardware_custody_proven",
+        "key_custody_proven",
+        "live_issuer_status_proven",
+        "live_trust_registry_state",
+        "production_authority",
+        "production_downstream_recognition_proven",
+        "production_trust_registry_proven",
+        "public_external_attestation",
+        "revocation_truth_proven",
+        "sovereign_recognition"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "current_machine_governance_proven": { "const": false },
+        "enterprise_readiness": { "const": false },
+        "hardware_custody_proven": { "const": false },
+        "key_custody_proven": { "const": false },
+        "live_issuer_status_proven": { "const": false },
+        "live_trust_registry_state": { "const": false },
+        "production_authority": { "const": false },
+        "production_downstream_recognition_proven": { "const": false },
+        "production_trust_registry_proven": { "const": false },
+        "public_external_attestation": { "const": false },
+        "revocation_truth_proven": { "const": false },
+        "sovereign_recognition": { "const": false }
+      }
+    },
+    "non_claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "_comment": "Agent-specific policy overrides. Signed with the policy-signing key.",
+  "_schema": "agent-policy-bindings/1.0.0",
+  "version": "1.0.0",
+  "bindings": [
+    {
+      "agent_id": "claude-code",
+      "policy_version": "2.6.0",
+      "effective_since": "2026-04-02T00:00:00Z",
+      "standing_approvals": [],
+      "velocity_limit": {
+        "calls_per_minute": 30,
+        "escalate_at": 25
+      },
+      "denial_handlers": {
+        "on_repeated_denial": "escalate_to_human",
+        "threshold": 5
+      },
+      "delegation": {
+        "max_depth": 2,
+        "depth_rules": [
+          { "depth": 1, "standing_approvals": ["SA001", "SA004"] },
+          { "depth": 2, "standing_approvals": [] }
+        ]
+      },
+      "budgets": [
+        { "rule": "R016", "max_per_day": 20, "on_exceed": "ask" },
+        { "rule": "R014", "max_per_day": 10, "on_exceed": "ask" }
+      ],
+      "notes": "Default production agent — human review required for ask-tier actions"
+    }
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zlar.ai/spec/trusted-receipt-issuers-v1.schema.json",
+  "title": "ZLAR Trusted Receipt Issuers v1",
+  "type": "object",
+  "required": [
+    "registry_type",
+    "version",
+    "evidence_model",
+    "live_probing",
+    "deployment_scope",
+    "trusted_issuers",
+    "accepted_policy_versions",
+    "accepted_domains",
+    "accepted_tools",
+    "accepted_outcomes",
+    "non_claims"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "registry_type": {
+      "const": "trusted-receipt-issuers-v1"
+    },
+    "version": {
+      "const": 1
+    },
+    "evidence_model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "live_probing": {
+      "const": false
+    },
+    "deployment_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "trusted_issuers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "kid",
+          "public_key_pem",
+          "status"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "public_key_pem": {
+            "type": "string",
+            "pattern": "^-----BEGIN PUBLIC KEY-----"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "retired",
+              "compromised"
+            ]
+          }
+        }
+      }
+    },
+    "accepted_policy_versions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "accepted_domains": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "accepted_tools": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "accepted_outcomes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "required_audit_event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "required_detail_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "non_claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

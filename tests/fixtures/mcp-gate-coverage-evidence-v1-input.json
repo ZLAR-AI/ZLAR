@@ -1,0 +1,128 @@
+{
+  "generatedAt": "2026-06-18T16:11:00Z",
+  "event_id": "mcp-fixture-event-001",
+  "surface_id": "mcp.tools_call",
+  "boarding_lane": "Routed MCP tools/call boarding lane",
+  "checkpoint_path": "mcp-gate:tools/call->fixture-upstream",
+  "mcp_registration": {
+    "configured": true,
+    "routed": true,
+    "zlar_routed": true,
+    "configured_server_count": 1,
+    "server_name": "zlar-routed-fixture",
+    "transport": "stdio",
+    "direct_upstream_observed": false,
+    "extra_registration_observed": false,
+    "gate_target": "mcp-gate"
+  },
+  "heartbeat": {
+    "state": "on",
+    "last_heartbeat_epoch": 6000,
+    "now_epoch": 6030,
+    "freshness_seconds": 120
+  },
+  "policy": {
+    "active_version": "coverage-policy-v1",
+    "evidence_version": "coverage-policy-v1",
+    "expected_version": "coverage-policy-v1",
+    "signature_valid": true,
+    "acknowledged": true,
+    "key_id": "fixture-policy-key",
+    "active_policy_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "policy_pubkey_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "verification_source": "fixture-policy-verification"
+  },
+  "audit_event": {
+    "id": "mcp-fixture-event-001",
+    "ts": "2026-06-18T16:10:00Z",
+    "seq": 2,
+    "source": "mcp-gate",
+    "host": "fixture-host",
+    "user": "fixture-user",
+    "agent_id": "fixture-agent",
+    "session_id": "fixture-session",
+    "transport": "stdio",
+    "domain": "mcp",
+    "action": "fixture.write_record",
+    "outcome": "deny",
+    "risk_score": 80,
+    "detail": {
+      "tool": "fixture.write_record"
+    },
+    "rule": "RTEST_MCP_EVIDENCE",
+    "rule_description": "Fixture MCP coverage evidence rule.",
+    "policy_version": "coverage-policy-v1",
+    "policy_key_id": "fixture-policy-key",
+    "severity": "critical",
+    "prev_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+    "authorizer": "policy",
+    "signature_algorithm": "Ed25519",
+    "hash_algorithm": "SHA-256",
+    "public_key_id": "fixture-audit-key",
+    "signature": "fixture-signature"
+  },
+  "worker_receipt": {
+    "worker_receipt_version": "0.1.0",
+    "type": "worker-receipt",
+    "event": {
+      "id": "mcp-fixture-event-001",
+      "source": "mcp-gate",
+      "surface": "mcp-gate",
+      "audit_prev_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+      "audit_hash": "026193b39936673f9d5dadc7dd968da20b9f7f011913616b03a58f3cd4141b1f"
+    },
+    "time": {
+      "observed_at": "2026-06-18T16:10:00Z",
+      "source": "local_clock",
+      "statement": "Timestamp was recorded by the local ZLAR host clock."
+    },
+    "action": {
+      "class": "MCP tool call",
+      "domain": "mcp",
+      "summary": "MCP tool: fixture.write_record",
+      "detail_hash": "0341c83dfabf4fe2393c2f3376d87c60b1e9a7a694b7cd641b98bb1895861fbf"
+    },
+    "decision": {
+      "outcome": "deny",
+      "label": "Denied by policy",
+      "rule_id": "RTEST_MCP_EVIDENCE",
+      "rule_description": "Fixture MCP coverage evidence rule.",
+      "policy_version": "coverage-policy-v1",
+      "policy_key_id": "fixture-policy-key",
+      "authorizer": "policy",
+      "authorizer_summary": "Policy rule decided this action.",
+      "approval_channel": "none"
+    },
+    "limitations": {
+      "scope": "This Worker Receipt only describes a single MCP tool call routed through the ZLAR MCP gate.",
+      "non_claims": [
+        "It does not prove agent intent.",
+        "It does not prove operator understanding.",
+        "It does not prove ZLAR governed actions outside this gate."
+      ]
+    },
+    "contest": {
+      "status": "not_implemented",
+      "handle": null,
+      "statement": "/contest is not implemented in Worker Receipt v0.1."
+    }
+  },
+  "downstream_refusal": {
+    "proved": true,
+    "applicable": true,
+    "upstream_observed_on_deny": false,
+    "mechanism": "Fixture deny decision did not reach the upstream effect server."
+  },
+  "surface_non_claims": [
+    "This fixture describes one supplied MCP tools/call event routed through the ZLAR MCP gate.",
+    "This fixture does not claim direct MCP registrations, extra MCP servers, adjacent clients, or non-MCP tools.",
+    "This fixture does not claim current-machine governance or live machine coverage."
+  ],
+  "non_claims": [
+    "This is supplied fixture evidence for one MCP tools/call lane.",
+    "No live probing is performed by this evidence assembler.",
+    "This fixture does not prove live MCP coverage, live machine coverage, or coverage of unrouted surfaces.",
+    "This fixture does not create outside attestation, deployment authority, or recognition-boundary claims.",
+    "/contest is not implemented."
+  ]
+}

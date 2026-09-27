@@ -1,0 +1,391 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR Morning Brief — What Happened While You Slept
+#
+# This is the single command you run when you pick up your phone.
+#
+# It combines verdict + karma + drift + queued events into one screen.
+# Designed for a phone: short, scannable, decisive. Either everything
+# is fine and you move on, or something needs your attention and you
+# know exactly what.
+#
+# The brief is opinionated. It doesn't show you everything — it shows
+# you what matters. If nothing matters, it says so in one line.
+#
+# This is the most human-facing part of the system. Every other tool
+# is for analysis. This one is for the glance between brushing your
+# teeth and making coffee.
+#
+# Usage:
+#   zlar-brief              Default: last 12h
+#   zlar-brief --since 24h  Custom window
+#   zlar-brief --json       Machine-readable output
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -euo pipefail
+
+# ─── Path Resolution ───────────────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# ─── Configuration ─────────────────────────────────────────────────────────
+
+ZLAR_ROOT="${ZLAR_ROOT:-${PROJECT_DIR}/etc}"
+GATE_CONFIG="${ZLAR_ROOT}/gate.json"
+
+# Honor env vars first; fall back to gate config; fall back to defaults
+if [ -n "${AUDIT_FILE:-}" ]; then
+    : # env var already set
+elif [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    AUDIT_FILE=$(jq -r '.audit_file // "'"${PROJECT_DIR}/var/log/audit.jsonl"'"' "${GATE_CONFIG}" 2>/dev/null)
+else
+    AUDIT_FILE="${PROJECT_DIR}/var/log/audit.jsonl"
+fi
+
+KARMA_STATE="${KARMA_STATE:-${PROJECT_DIR}/var/log/karma.json}"
+
+if [ -n "${AWAY_QUEUE:-}" ]; then
+    : # env var already set
+elif [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    AWAY_QUEUE=$(jq -r '.availability.away_queue_file // "'"${PROJECT_DIR}/var/log/away-queue.jsonl"'"' "${GATE_CONFIG}" 2>/dev/null)
+else
+    AWAY_QUEUE="${PROJECT_DIR}/var/log/away-queue.jsonl"
+fi
+
+if [ -n "${AVAIL_STATE:-}" ]; then
+    : # env var already set
+elif [ -f "${GATE_CONFIG}" ] && command -v jq &>/dev/null; then
+    AVAIL_STATE=$(jq -r '.availability.state_file // "'"${PROJECT_DIR}/var/run/zlar-availability.state"'"' "${GATE_CONFIG}" 2>/dev/null)
+else
+    AVAIL_STATE="${PROJECT_DIR}/var/run/zlar-availability.state"
+fi
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+require_jq() {
+    if ! command -v jq &>/dev/null; then
+        echo "ERROR: jq required. brew install jq" >&2
+        exit 1
+    fi
+}
+
+since_to_filter() {
+    local since="${1:-12h}"
+    local seconds=0
+
+    if [[ "${since}" =~ ^[0-9]+h$ ]]; then
+        seconds=$(( ${since%h} * 3600 ))
+    elif [[ "${since}" =~ ^[0-9]+d$ ]]; then
+        seconds=$(( ${since%d} * 86400 ))
+    elif [[ "${since}" =~ ^[0-9]+m$ ]]; then
+        seconds=$(( ${since%m} * 60 ))
+    elif [[ "${since}" =~ ^[0-9]{4}-[0-9]{2} ]]; then
+        echo "${since}"
+        return
+    else
+        seconds=43200  # default 12h
+    fi
+
+    local cutoff_epoch=$(( $(date +%s) - seconds ))
+    date -u -r "${cutoff_epoch}" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
+        date -u -d "@${cutoff_epoch}" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
+        echo "1970-01-01T00:00:00Z"
+}
+
+# ─── The Brief ───────────────────────────────────────────────────────────────
+
+cmd_brief() {
+    local since="12h" format="text"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --since)  shift; since="$1"; shift ;;
+            --json)   format="json"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    require_jq
+
+    local since_ts
+    since_ts=$(since_to_filter "${since}")
+
+    # ── Gather data ──────────────────────────────────────────────
+
+    local has_audit="false"
+    if [ -f "${AUDIT_FILE}" ]; then has_audit="true"; fi
+
+    # Current availability mode (state file is JSON with .mode field)
+    local avail_mode="unknown"
+    if [ -f "${AVAIL_STATE}" ] && command -v jq &>/dev/null; then
+        avail_mode=$(jq -r '.mode // "unknown"' "${AVAIL_STATE}" 2>/dev/null)
+        if [ -z "${avail_mode}" ] || [ "${avail_mode}" = "null" ]; then
+            avail_mode="unknown"
+        fi
+    fi
+
+    # Karma
+    local karma=50 karma_tier="NEUTRAL"
+    if [ -f "${KARMA_STATE}" ]; then
+        karma=$(jq '.karma // 50' "${KARMA_STATE}" 2>/dev/null)
+        karma_tier=$(jq -r '.tier // "NEUTRAL"' "${KARMA_STATE}" 2>/dev/null)
+    fi
+
+    # Core metrics from audit trail
+    local metrics='{"total":0,"denials":0,"critical":0,"asks":0,"timeouts":0,"halts":0,"lockdowns":0}'
+    if [ "${has_audit}" = "true" ]; then
+        metrics=$(jq -s --arg since "${since_ts}" '
+            [.[] | select(.ts >= $since)] |
+            {
+                total: length,
+                denials: ([.[] | select(.outcome == "deny")] | length),
+                critical: ([.[] | select(.severity == "critical")] | length),
+                asks: ([.[] | select(.outcome == "ask" or .domain == "ask")] | length),
+                timeouts: ([.[] | select(.outcome == "timeout")] | length),
+                halts: ([.[] | select(.detail.event == "away_halt")] | length),
+                lockdowns: ([.[] | select(.action == "watchdog.lockdown" or .detail.event == "lockdown")] | length),
+                new_destinations: (
+                    [.[] | select(.ts >= $since and (.domain == "net.outbound" or .domain == "net.http")) |
+                    .detail.dst_host // empty] | unique | length
+                ),
+                new_binaries: (
+                    [.[] | select(.ts >= $since and .domain == "exec") |
+                    .detail.binary // empty] | unique | length
+                )
+            }
+        ' "${AUDIT_FILE}" 2>/dev/null || echo "${metrics}")
+    fi
+
+    local total denials critical asks timeouts halts lockdowns new_dests new_bins
+    total=$(echo "${metrics}" | jq '.total // 0')
+    denials=$(echo "${metrics}" | jq '.denials // 0')
+    critical=$(echo "${metrics}" | jq '.critical // 0')
+    asks=$(echo "${metrics}" | jq '.asks // 0')
+    timeouts=$(echo "${metrics}" | jq '.timeouts // 0')
+    halts=$(echo "${metrics}" | jq '.halts // 0')
+    lockdowns=$(echo "${metrics}" | jq '.lockdowns // 0')
+    new_dests=$(echo "${metrics}" | jq '.new_destinations // 0')
+    new_bins=$(echo "${metrics}" | jq '.new_binaries // 0')
+
+    # Queued items (from away mode)
+    local queued_count=0
+    if [ -f "${AWAY_QUEUE}" ]; then
+        queued_count=$(wc -l < "${AWAY_QUEUE}" 2>/dev/null | tr -d ' ')
+    fi
+
+    # ── Compute verdict ──────────────────────────────────────────
+
+    local score=0
+    score=$((score + critical * 25))
+    score=$((score + lockdowns * 40))
+    score=$((score + halts * 15))
+    score=$((score + timeouts * 10))
+    if [ "${denials}" -gt 20 ]; then score=$((score + 15)); fi
+    if [ "${denials}" -gt 50 ]; then score=$((score + 20)); fi
+
+    local verdict="CLEAN" verdict_emoji=""
+    if [ "${score}" -ge 80 ]; then
+        verdict="CRITICAL"
+    elif [ "${score}" -ge 40 ]; then
+        verdict="ANOMALOUS"
+    elif [ "${score}" -ge 15 ]; then
+        verdict="NOTABLE"
+    fi
+
+    # ── Determine if attention is needed ─────────────────────────
+
+    local needs_attention="false"
+    local attention_reasons=""
+
+    if [ "${critical}" -gt 0 ]; then
+        needs_attention="true"
+        attention_reasons="${attention_reasons}${critical} critical event(s). "
+    fi
+    if [ "${lockdowns}" -gt 0 ]; then
+        needs_attention="true"
+        attention_reasons="${attention_reasons}${lockdowns} lockdown(s). "
+    fi
+    if [ "${queued_count}" -gt 0 ]; then
+        needs_attention="true"
+        attention_reasons="${attention_reasons}${queued_count} queued decision(s) waiting. "
+    fi
+    if [ "${timeouts}" -gt 0 ]; then
+        needs_attention="true"
+        attention_reasons="${attention_reasons}${timeouts} timeout(s). "
+    fi
+
+    # ── JSON output ──────────────────────────────────────────────
+
+    if [ "${format}" = "json" ]; then
+        jq -n \
+            --arg since "${since}" \
+            --arg verdict "${verdict}" \
+            --argjson score "${score}" \
+            --argjson karma "${karma}" \
+            --arg karma_tier "${karma_tier}" \
+            --arg avail "${avail_mode}" \
+            --argjson total "${total}" \
+            --argjson denials "${denials}" \
+            --argjson critical "${critical}" \
+            --argjson asks "${asks}" \
+            --argjson timeouts "${timeouts}" \
+            --argjson halts "${halts}" \
+            --argjson lockdowns "${lockdowns}" \
+            --argjson queued "${queued_count}" \
+            --argjson new_dests "${new_dests}" \
+            --argjson new_bins "${new_bins}" \
+            --argjson needs_attention "${needs_attention}" \
+            --arg attention "${attention_reasons}" \
+            --arg generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+                generated_at: $generated,
+                window: $since,
+                verdict: $verdict,
+                score: $score,
+                karma: $karma,
+                karma_tier: $karma_tier,
+                availability: $avail,
+                events: $total,
+                denials: $denials,
+                critical: $critical,
+                asks: $asks,
+                timeouts: $timeouts,
+                halts: $halts,
+                lockdowns: $lockdowns,
+                queued_decisions: $queued,
+                unique_destinations: $new_dests,
+                unique_binaries: $new_bins,
+                needs_attention: $needs_attention,
+                attention_reasons: $attention
+            }'
+        return
+    fi
+
+    # ── Text output (phone-friendly) ─────────────────────────────
+
+    local now
+    now=$(date +"%H:%M %Z")
+    local date_str
+    date_str=$(date +"%a %b %d")
+
+    echo ""
+    echo "┌───────────────────────────────────────────────────────┐"
+    echo "│                 ZLAR BRIEF                             │"
+    echo "│                 ${date_str}  ${now}                   │"
+    echo "└───────────────────────────────────────────────────────┘"
+    echo ""
+
+    # ── The headline ─────────────────────────────────────────────
+    # This is the one line that matters most.
+
+    if [ "${needs_attention}" = "true" ]; then
+        echo "  ATTENTION NEEDED"
+        echo "  ${attention_reasons}"
+        echo ""
+    elif [ "${total}" -eq 0 ]; then
+        echo "  No activity in the last ${since}."
+        echo ""
+    else
+        echo "  All clear. ${total} events, verdict ${verdict}."
+        echo ""
+    fi
+
+    # ── Dashboard ────────────────────────────────────────────────
+
+    echo "  ┌─────────────┬──────────────┬──────────────┐"
+    printf "  │ Verdict: %-3s│ Karma: %-5s │ Mode: %-6s │\n" "${verdict}" "${karma}" "${avail_mode}"
+    echo "  └─────────────┴──────────────┴──────────────┘"
+    echo ""
+
+    # ── Numbers ──────────────────────────────────────────────────
+
+    if [ "${total}" -gt 0 ]; then
+        echo "  Last ${since}:"
+        printf "    Events: %-8d  Denials: %-5d  Critical: %d\n" "${total}" "${denials}" "${critical}"
+        printf "    Asks:   %-8d  Timeouts: %-4d  Lockdowns: %d\n" "${asks}" "${timeouts}" "${lockdowns}"
+        printf "    Binaries: %-6d  Destinations: %d\n" "${new_bins}" "${new_dests}"
+        echo ""
+    fi
+
+    # ── Queued decisions ─────────────────────────────────────────
+
+    if [ "${queued_count}" -gt 0 ]; then
+        echo "  QUEUED (from away mode):"
+        echo "  ─────────────────────────────────────────────────"
+        if [ -f "${AWAY_QUEUE}" ]; then
+            head -5 "${AWAY_QUEUE}" 2>/dev/null | while IFS= read -r event; do
+                local qts qdomain qdetail
+                qts=$(echo "${event}" | jq -r '.ts[11:16] // "?"' 2>/dev/null)
+                qdomain=$(echo "${event}" | jq -r '.domain // "?"' 2>/dev/null)
+                qdetail=$(echo "${event}" | jq -r '
+                    .detail |
+                    if .command then .command[:50]
+                    elif .binary then .binary
+                    elif .dst_host then .dst_host
+                    elif .path then .path[:50]
+                    else "—"
+                    end' 2>/dev/null)
+                printf "    %s  %-12s  %s\n" "${qts}" "${qdomain}" "${qdetail}"
+            done
+            if [ "${queued_count}" -gt 5 ]; then
+                echo "    ... and $((queued_count - 5)) more"
+            fi
+        fi
+        echo ""
+        echo "  Run: zlar-availability review"
+        echo ""
+    fi
+
+    # ── Critical events (if any) ─────────────────────────────────
+
+    if [ "${critical}" -gt 0 ] && [ "${has_audit}" = "true" ]; then
+        echo "  CRITICAL EVENTS:"
+        echo "  ─────────────────────────────────────────────────"
+        jq -c "select(.ts >= \"${since_ts}\" and .severity == \"critical\")" \
+            "${AUDIT_FILE}" 2>/dev/null | head -5 | while IFS= read -r event; do
+            local cts cdomain cdetail
+            cts=$(echo "${event}" | jq -r '.ts[11:16] // "?"')
+            cdomain=$(echo "${event}" | jq -r '.domain // "?"')
+            cdetail=$(echo "${event}" | jq -r '
+                .detail |
+                if .command then .command[:50]
+                elif .binary then .binary
+                elif .dst_host then .dst_host
+                elif .path then .path[:50]
+                elif .event then .event
+                else "—"
+                end' 2>/dev/null)
+            printf "    %s  %-14s  %s\n" "${cts}" "${cdomain}" "${cdetail}"
+        done
+        echo ""
+    fi
+
+    # ── Next actions ─────────────────────────────────────────────
+
+    echo "  ─────────────────────────────────────────────────"
+    if [ "${needs_attention}" = "true" ]; then
+        echo "  Next steps:"
+        if [ "${critical}" -gt 0 ]; then
+            echo "    zlar-audit timeline --since ${since}   # What happened"
+        fi
+        if [ "${queued_count}" -gt 0 ]; then
+            echo "    zlar-availability review               # Process queue"
+        fi
+        if [ "${lockdowns}" -gt 0 ]; then
+            echo "    zlar-watchdog status                   # Check recovery"
+        fi
+        echo "    zlar-karma score                        # Trust impact"
+    else
+        echo "  Nothing requires your attention."
+        if [ "${total}" -gt 50 ]; then
+            echo "  Optional: zlar-audit evolve --since ${since}"
+        fi
+    fi
+    echo ""
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+cmd_brief "$@"

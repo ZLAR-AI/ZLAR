@@ -1,0 +1,7 @@
+test-consequence-path-coverage-dependency-map-v0.mjs
+test-source-bound-static-reachability-delta-v0.mjs
+test-legacy-runtime-v1-governed-disposition-v0.mjs
+test-e2-positive-proof-generator-retirement-v0.mjs
+test-e2-direct-request-factory-source-retirement-v0.mjs
+test-e1-positive-proof-generator-retirement-v0.mjs
+test-e1-direct-adapter-factory-source-retirement-v0.mjs

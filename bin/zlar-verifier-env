@@ -1,0 +1,381 @@
+#!/bin/bash
+# ZLAR verifier environment preflight.
+#
+# This is intentionally bash-only so a verifier can diagnose prerequisites
+# before running the longer Node-backed verification packet.
+set -euo pipefail
+
+usage() {
+    echo "Usage: zlar verifier-env [--json|--json-out <file>]"
+    echo ""
+    echo "Checks verifier workstation prerequisites for the external verifier packet."
+    echo "This command checks local tool availability only. It does not run ZLAR proof"
+    echo "commands, contact a verifier, inspect private operator state, or claim"
+    echo "external attestation."
+    echo ""
+    echo "Options:"
+    echo "  --json              emit a redacted machine-readable environment report"
+    echo "  --json-out <file>   write the redacted report to a new file and keep text output"
+}
+
+JSON_MODE=0
+JSON_OUT=""
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        --json)
+            JSON_MODE=1
+            shift
+            ;;
+        --json-out)
+            if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+                usage >&2
+                echo "ERROR: --json-out requires a file path" >&2
+                exit 2
+            fi
+            JSON_OUT="$2"
+            shift 2
+            ;;
+        *)
+            usage >&2
+            echo "ERROR: unsupported option: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [ "${JSON_MODE}" -eq 1 ] && [ -n "${JSON_OUT}" ]; then
+    usage >&2
+    echo "ERROR: use either --json or --json-out, not both" >&2
+    exit 2
+fi
+
+if [ -n "${JSON_OUT}" ] && [ -e "${JSON_OUT}" ]; then
+    echo "ERROR: JSON output file already exists" >&2
+    exit 2
+fi
+
+failures=0
+CHECK_JSONS=()
+
+redact_text() {
+    local value="$1"
+    printf "%s\n" "${value}" | sed -E \
+        -e 's#/(Users|home|private|tmp|var)(/[^[:space:]"'"'"'<>]*)*#/[REDACTED_PATH]#g' \
+        -e 's#([Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd])=[^[:space:]]+#\1=[REDACTED]#g' \
+        -e 's#([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:[[:space:]]*[Bb][Ee][Aa][Rr][Ee][Rr])[[:space:]]+[^[:space:]]+#\1 [REDACTED]#g' \
+        -e 's#-----BEGIN [^-]*PRIVATE KEY-----#[REDACTED_PRIVATE_KEY_MARKER]#g' \
+        -e 's#-----END [^-]*PRIVATE KEY-----#[REDACTED_PRIVATE_KEY_MARKER]#g' \
+        -e 's#[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}#[REDACTED_EMAIL]#g' \
+        | sed -n '1,8p'
+}
+
+redact_detail() {
+    redact_text "$1" | sed -n '1p'
+}
+
+json_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    printf "%s" "${value}"
+}
+
+json_lines_array() {
+    local text="$1"
+    local first=1
+    local line
+
+    printf "["
+    if [ -n "${text}" ]; then
+        while IFS= read -r line; do
+            if [ "${first}" -eq 0 ]; then
+                printf ","
+            fi
+            first=0
+            printf "\"%s\"" "$(json_escape "${line}")"
+        done <<< "${text}"
+    fi
+    printf "]"
+}
+
+record_json_check() {
+    local label="$1"
+    local status="$2"
+    local detail
+    local observed
+    local remediation
+    local item
+
+    detail="$(redact_detail "$3")"
+    observed="$(redact_text "${4:-}")"
+    remediation="$(redact_text "${5:-}")"
+
+    item="{\"id\":\"$(json_escape "${label}")\",\"status\":\"${status}\",\"detail\":\"$(json_escape "${detail}")\""
+    if [ -n "${observed}" ]; then
+        item="${item},\"observed\":$(json_lines_array "${observed}")"
+    fi
+    if [ -n "${remediation}" ]; then
+        item="${item},\"remediation\":$(json_lines_array "${remediation}")"
+    fi
+    item="${item}}"
+    CHECK_JSONS[${#CHECK_JSONS[@]}]="${item}"
+}
+
+record_ok() {
+    local label="$1"
+    local detail
+    detail="$(redact_detail "$2")"
+    if [ "${JSON_MODE}" -eq 0 ]; then
+        printf "  %-18s OK    %s\n" "${label}:" "${detail}"
+    fi
+    record_json_check "${label}" "OK" "${detail}"
+}
+
+record_fail() {
+    local label="$1"
+    local detail
+    local observed
+    local remediation
+    detail="$(redact_detail "$2")"
+    observed="$(redact_text "${3:-}")"
+    remediation="$(redact_text "${4:-}")"
+    failures=$((failures + 1))
+    if [ "${JSON_MODE}" -eq 0 ]; then
+        printf "  %-18s FAIL  %s\n" "${label}:" "${detail}"
+    fi
+    record_json_check "${label}" "FAIL" "${detail}" "${observed}" "${remediation}"
+}
+
+print_observed() {
+    local observed
+    observed="$(redact_text "$1")"
+    [ "${JSON_MODE}" -eq 0 ] || return 0
+    [ -n "${observed}" ] || return 0
+    printf "%s\n" "${observed}" | sed 's/^/      observed: /'
+}
+
+print_remediation() {
+    local remediation
+    local line
+    remediation="$(redact_text "$1")"
+    [ "${JSON_MODE}" -eq 0 ] || return 0
+    [ -n "${remediation}" ] || return 0
+    while IFS= read -r line; do
+        printf "      fix: %s\n" "${line}"
+    done <<< "${remediation}"
+}
+
+openssl_remediation() {
+    case "$(uname -s 2>/dev/null || echo unknown)" in
+        Darwin)
+            echo "install/select an OpenSSL 3 build with Ed25519 support, such as Homebrew openssl@3."
+            echo "put that OpenSSL bin directory before Apple LibreSSL on PATH, then rerun this command."
+            ;;
+        Linux)
+            echo "upgrade/select OpenSSL 1.1.1+ or OpenSSL 3 with Ed25519 support, then rerun this command."
+            ;;
+        *)
+            echo "upgrade/select an OpenSSL build with Ed25519 support, then rerun this command."
+            ;;
+    esac
+}
+
+emit_json_report() {
+    local result="PASS"
+    local schema="zlar-verifier-env-readiness-report-v0"
+    local failure_evidence_only="false"
+    local idx
+
+    if [ "${failures}" -ne 0 ]; then
+        result="FAIL"
+        schema="zlar-verifier-env-failure-report-v0"
+        failure_evidence_only="true"
+    fi
+
+    printf "{\n"
+    printf "  \"schema\": \"%s\",\n" "${schema}"
+    printf "  \"report_type\": \"zlar-verifier-env-v0\",\n"
+    printf "  \"evidence_model\": \"local-verifier-environment-readiness\",\n"
+    printf "  \"read_only\": true,\n"
+    printf "  \"live_probing\": false,\n"
+    printf "  \"result\": \"%s\",\n" "${result}"
+    printf "  \"failure_count\": %d,\n" "${failures}"
+    printf "  \"failure_evidence_only\": %s,\n" "${failure_evidence_only}"
+    printf "  \"private_by_default\": true,\n"
+    printf "  \"external_attestation\": false,\n"
+    printf "  \"key_custody_proven\": false,\n"
+    printf "  \"live_issuer_status_proven\": false,\n"
+    printf "  \"production_authority_proven\": false,\n"
+    printf "  \"redaction_policy\": {\n"
+    printf "    \"excluded\": [\n"
+    printf "      \"usernames\",\n"
+    printf "      \"hostnames\",\n"
+    printf "      \"raw_PATH\",\n"
+    printf "      \"private_filesystem_paths\",\n"
+    printf "      \"tokens\",\n"
+    printf "      \"emails\",\n"
+    printf "      \"private_key_material\",\n"
+    printf "      \"telegram_identifiers\",\n"
+    printf "      \"verifier_identity\"\n"
+    printf "    ]\n"
+    printf "  },\n"
+    printf "  \"privacy\": {\n"
+    printf "    \"raw_environment_included\": false,\n"
+    printf "    \"home_paths_included\": false,\n"
+    printf "    \"tmp_paths_included\": false,\n"
+    printf "    \"credentials_included\": false,\n"
+    printf "    \"private_key_material_included\": false\n"
+    printf "  },\n"
+    printf "  \"non_claims\": [\n"
+    printf "    \"Verifier environment readiness only.\",\n"
+    printf "    \"This is not a verifier pass.\",\n"
+    printf "    \"This is not a ZLAR proof run.\",\n"
+    printf "    \"This is not external attestation.\",\n"
+    printf "    \"This is not key custody.\",\n"
+    printf "    \"This is not production authority.\",\n"
+    printf "    \"This is not current-machine governance.\"\n"
+    printf "  ],\n"
+    printf "  \"checks\": [\n"
+    for idx in "${!CHECK_JSONS[@]}"; do
+        if [ "${idx}" -gt 0 ]; then
+            printf ",\n"
+        fi
+        printf "    %s" "${CHECK_JSONS[$idx]}"
+    done
+    printf "\n  ],\n"
+    printf "  \"boundary\": {\n"
+    printf "    \"claim\": \"verifier_environment_readiness_only\",\n"
+    printf "    \"not\": [\n"
+    printf "      \"verifier_pass\",\n"
+    printf "      \"zlar_proof_run\",\n"
+    printf "      \"external_attestation\",\n"
+    printf "      \"current_machine_governance\",\n"
+    printf "      \"key_custody\",\n"
+    printf "      \"production_authority\",\n"
+    printf "      \"sovereign_recognition\",\n"
+    printf "      \"unrouted_surface_coverage\"\n"
+    printf "    ]\n"
+    printf "  }\n"
+    printf "}\n"
+}
+
+if [ "${JSON_MODE}" -eq 0 ]; then
+    echo "ZLAR Verifier Environment Preflight v0"
+    echo
+    echo "Required tools:"
+fi
+
+if command -v git >/dev/null 2>&1; then
+    record_ok "git" "$(git --version 2>/dev/null || echo "version unavailable")"
+else
+    record_fail "git" "not found"
+fi
+
+bash_major="${BASH_VERSINFO[0]:-0}"
+bash_minor="${BASH_VERSINFO[1]:-0}"
+if [ "${bash_major}" -gt 3 ] || { [ "${bash_major}" -eq 3 ] && [ "${bash_minor}" -ge 2 ]; }; then
+    record_ok "bash" "${BASH_VERSION:-unknown} (3.2+ supported)"
+else
+    record_fail "bash" "${BASH_VERSION:-unknown} (3.2+ required)"
+fi
+
+if command -v node >/dev/null 2>&1; then
+    node_version="$(node --version 2>/dev/null || echo "unknown")"
+    node_major="${node_version#v}"
+    node_major="${node_major%%.*}"
+    case "${node_major}" in
+        ''|*[!0-9]*)
+            record_fail "node" "${node_version} (could not parse major version; 18+ required)"
+            ;;
+        *)
+            if [ "${node_major}" -ge 18 ]; then
+                record_ok "node" "${node_version} (18+ required)"
+            else
+                record_fail "node" "${node_version} (18+ required)"
+            fi
+            ;;
+    esac
+else
+    record_fail "node" "not found (18+ required)"
+fi
+
+if command -v jq >/dev/null 2>&1; then
+    record_ok "jq" "$(jq --version 2>/dev/null || echo "version unavailable")"
+else
+    record_fail "jq" "not found"
+fi
+
+openssl_cmd=""
+if command -v openssl >/dev/null 2>&1; then
+    openssl_cmd="$(command -v openssl)"
+    openssl_version="$(openssl version 2>/dev/null || echo "version unavailable")"
+    record_ok "openssl" "${openssl_version}"
+else
+    record_fail "openssl" "not found"
+fi
+
+tmpdir=""
+if [ -n "${openssl_cmd}" ]; then
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/zlar-verifier-env.XXXXXX")"
+    if openssl genpkey -algorithm ED25519 -out /dev/null >"${tmpdir}/openssl-ed25519.out" 2>&1; then
+        record_ok "openssl_ed25519" "openssl genpkey -algorithm ED25519 -out /dev/null"
+    else
+        observed="$(sed -n '1,8p' "${tmpdir}/openssl-ed25519.out" 2>/dev/null || true)"
+        remediation="$(openssl_remediation)"
+        record_fail "openssl_ed25519" "openssl genpkey -algorithm ED25519 -out /dev/null" "${observed}" "${remediation}"
+        print_observed "${observed}"
+        print_remediation "${remediation}"
+    fi
+fi
+
+if [ -n "${tmpdir}" ]; then
+    rm -rf "${tmpdir}"
+fi
+
+if [ "${JSON_MODE}" -eq 0 ]; then
+    echo
+    echo "Boundary:"
+    echo "  Verifier environment readiness only. This is not a verifier pass, not a"
+    echo "  ZLAR proof run, not external attestation, not current-machine governance,"
+    echo "  not key custody, not production authority, not sovereign recognition, and"
+    echo "  not coverage of unrouted surfaces."
+    echo
+fi
+
+json_payload=""
+if [ "${JSON_MODE}" -eq 1 ] || [ -n "${JSON_OUT}" ]; then
+    json_payload="$(emit_json_report)"
+fi
+
+if [ -n "${JSON_OUT}" ]; then
+    if ! { printf "%s\n" "${json_payload}" >"${JSON_OUT}"; } 2>/dev/null; then
+        echo "ERROR: could not write JSON output file" >&2
+        exit 2
+    fi
+    if [ "${JSON_MODE}" -eq 0 ]; then
+        echo "Artifact: verifier environment JSON report written"
+    fi
+fi
+
+if [ "${JSON_MODE}" -eq 1 ]; then
+    printf "%s\n" "${json_payload}"
+fi
+
+if [ "${failures}" -eq 0 ]; then
+    if [ "${JSON_MODE}" -eq 0 ]; then
+        echo "Result: PASS"
+    fi
+    exit 0
+fi
+
+if [ "${JSON_MODE}" -eq 0 ]; then
+    echo "Result: FAIL (${failures} prerequisite issue(s))"
+fi
+exit 1

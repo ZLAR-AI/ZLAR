@@ -1,0 +1,271 @@
+{
+  "artifact_type": "zlar.e2-positive-proof-generator-retirement.v0",
+  "schema_version": 0,
+  "verification_mode": "source-only-static-retirement-overlay",
+  "decision": "retire_positive_e2_generation_preserve_pinned_historical_verification",
+  "consequence_class": "protected-records local-fixture records.write",
+  "effect_node_id": "E2.service-jsonl-state-append-v1",
+  "north_star_1_status": "historical",
+  "north_star_2_status": "mapped_open",
+  "source_checkpoint": {
+    "repository_id": "ZLAR_Repo",
+    "baseline_commit_oid": "f369b6779dff1f1cb339ffb6e58f0a0f67f0832b",
+    "loaded_source_matches_inventory_by_exact_file_hashes": true,
+    "runtime_observation_performed": false,
+    "positive_e2_execution_performed": false,
+    "resulting_commit_recorded_after_commit": false
+  },
+  "source_inventory": [
+    {
+      "path": "lib/protected-records-service-proof.mjs",
+      "file_sha256": "98deff58a01053816701fdfad4e306995eeaa3b096b9814435a97af823492cd8"
+    },
+    {
+      "path": "bin/zlar-protected-records-service-proof",
+      "file_sha256": "f1daccb3cda27a5ee842f80141b34519a900b2435ae8024ba0ae7362add1c72c"
+    },
+    {
+      "path": "lib/protected-records-service-profile.mjs",
+      "file_sha256": "f971f357dbe69daf625ef0e9a79af18fb96a0ac52900aee30055831c1e10a47f"
+    },
+    {
+      "path": "bin/zlar-protected-records-service-preflight",
+      "file_sha256": "84d1ee73768a1e4ae231a5399e7cbde75777ce58598efdadc9a319c7cad5948b"
+    },
+    {
+      "path": "lib/local-proof-pack.mjs",
+      "file_sha256": "2ceb303634c56da621411a8e50f87a8a2e3adbc69fbd7d7591caecf1a81821aa"
+    },
+    {
+      "path": "bin/zlar-local-proof-pack",
+      "file_sha256": "5db2f7e4762dd9727d24a5f9fbf3d24ecf97137955a836f23cad24e79a219203"
+    },
+    {
+      "path": "lib/product-proof-path.mjs",
+      "file_sha256": "6653ff38cd47b7a618c0023afe19250af5a590e3e41f90761ee92482b26d997e"
+    },
+    {
+      "path": "bin/zlar-product-proof-path",
+      "file_sha256": "d5fe15ce245a959ad7c877346568cf577cef714fbef3b9bdaa83f8cb5dfeab42"
+    },
+    {
+      "path": "lib/north-star-readiness.mjs",
+      "file_sha256": "a397ebb97872682a2906997a96631a36f50df6ab9ab2b4d59b91c9260e63e2f2"
+    },
+    {
+      "path": "bin/zlar-north-star-readiness",
+      "file_sha256": "648207f1bcc274100ce7dc54149a77fd02144ea9b5a6434c59140bf2ae37357b"
+    },
+    {
+      "path": "tests/count-assertions.sh",
+      "file_sha256": "86dbbf7b42111461a44620849395d66e11de239d448940ee4423fc0629366d30"
+    },
+    {
+      "path": "tests/retired-positive-generator-test-suites.txt",
+      "file_sha256": "b2baed2898df9c67502b4424ebd1165fa9e9979f491fad4e1f2a793908725af5"
+    },
+    {
+      "path": "tests/current-positive-e2-test-suites.txt",
+      "file_sha256": "0b5649e287d8dabf2fb7a74dfcbefb41b120d8293191a55b2c0bc0d66cca55b8"
+    }
+  ],
+  "retired_surfaces": [
+    {
+      "surface_id": "e2-service-proof-export",
+      "source_path": "lib/protected-records-service-proof.mjs",
+      "entrypoint": "runProtectedRecordsServiceProof",
+      "reason_code": "e2_positive_service_proof_generation_retired",
+      "input_independent": true,
+      "positive_only_machinery_removed": true
+    },
+    {
+      "surface_id": "e2-service-proof-cli",
+      "source_path": "bin/zlar-protected-records-service-proof",
+      "entrypoint": "zlar protected-records-service-proof",
+      "reason_code": "e2_positive_service_proof_generation_retired",
+      "input_independent": false,
+      "generation_refusal_input_independent_after_help_dispatch": true,
+      "positive_only_machinery_removed": true
+    },
+    {
+      "surface_id": "e2-service-preflight-export",
+      "source_path": "lib/protected-records-service-profile.mjs",
+      "entrypoint": "runProtectedRecordsServiceProfilePreflight",
+      "reason_code": "e2_positive_service_preflight_generation_retired",
+      "input_independent": true,
+      "positive_only_machinery_removed": true
+    },
+    {
+      "surface_id": "e2-service-preflight-cli",
+      "source_path": "bin/zlar-protected-records-service-preflight",
+      "entrypoint": "zlar protected-records-service-preflight generation mode",
+      "reason_code": "e2_positive_service_preflight_generation_retired",
+      "input_independent": false,
+      "generation_refusal_input_independent_after_help_or_verify_dispatch": true,
+      "positive_only_machinery_removed": true
+    },
+    {
+      "surface_id": "local-proof-pack-run",
+      "source_path": "lib/local-proof-pack.mjs",
+      "entrypoint": "runLocalProofPack",
+      "reason_code": "local_proof_pack_fresh_generation_retired",
+      "input_independent": true,
+      "positive_only_machinery_removed": false
+    },
+    {
+      "surface_id": "local-proof-pack-default-artifact-fallback",
+      "source_path": "lib/local-proof-pack.mjs",
+      "entrypoint": "buildLocalProofPackArtifact without explicit report",
+      "reason_code": "local_proof_pack_default_artifact_generation_retired",
+      "input_independent": true,
+      "positive_only_machinery_removed": false
+    },
+    {
+      "surface_id": "local-proof-pack-cli",
+      "source_path": "bin/zlar-local-proof-pack",
+      "entrypoint": "zlar local-proof-pack generation mode",
+      "reason_code": "local_proof_pack_fresh_generation_retired",
+      "input_independent": false,
+      "generation_refusal_input_independent_after_help_or_verify_dispatch": true,
+      "positive_only_machinery_removed": false
+    },
+    {
+      "surface_id": "product-proof-path-build-and-run",
+      "source_path": "lib/product-proof-path.mjs",
+      "entrypoint": "buildProductProofPathReport and runProductProofPath",
+      "reason_code": "product_proof_path_fresh_generation_retired",
+      "input_independent": true,
+      "positive_only_machinery_removed": false
+    },
+    {
+      "surface_id": "product-proof-path-cli",
+      "source_path": "bin/zlar-product-proof-path",
+      "entrypoint": "zlar product-proof-path",
+      "reason_code": "product_proof_path_fresh_generation_retired",
+      "input_independent": false,
+      "generation_refusal_input_independent_after_help_dispatch": true,
+      "positive_only_machinery_removed": true
+    }
+  ],
+  "removed_consumer_edges": [
+    "bin/zlar-protected-records-service-proof -> runProtectedRecordsServiceProof",
+    "bin/zlar-protected-records-service-preflight generation -> runProtectedRecordsServiceProfilePreflight",
+    "lib/local-proof-pack.mjs -> runProtectedRecordsServiceProof",
+    "lib/local-proof-pack.mjs -> runProtectedRecordsServiceProfilePreflight",
+    "lib/product-proof-path.mjs -> runLocalProofPack",
+    "lib/product-proof-path.mjs -> buildLocalProofPackArtifact default generation",
+    "lib/north-star-readiness.mjs -> runProductProofPath",
+    "bin/zlar-north-star-readiness sample -> zlar product-proof-path"
+  ],
+  "historical_verification": {
+    "proof_smoke": {
+      "file_path": "tests/fixtures/proof-smoke-v1-report.json",
+      "file_sha256": "69d567c4708642393c470f3cffca015d1c39096a99191d720252aaf5a33b0635",
+      "canonical_report_sha256": "4e700bfeb3061589baa68071f534e1a74221a1b26e38100afdee62bbe6938c6f",
+      "verification_schema": "zlar-proof-smoke-historical-report-verification-v2"
+    },
+    "local_proof_pack": {
+      "file_path": "tests/fixtures/local-proof-pack-artifact-v1.json",
+      "file_sha256": "7147445a29974c634d8574dd9eb8051ebed0541111ce4cb21b149282f9c8ebf8",
+      "body_sha256": "777f66be5c4c5d9dcf5c5555c4e80653231815db22a82adf056c0908cf890ac0"
+    },
+    "service_preflight": {
+      "file_path": "tests/fixtures/protected-records-service-preflight-artifact-v1.json",
+      "file_sha256": "5d15cc460d2cd981cdcd21999629969b87af798a6311b80fe699ec78aba7b7f2",
+      "body_sha256": "36a3aadfa920ea3da2ac3199b5af79f937e783e42604bfa3318d6ac8824b190c"
+    },
+    "fresh_generation_performed": false,
+    "current_authority_projected": false,
+    "fresh_effect_projected": false,
+    "lifecycle_closure_projected": false
+  },
+  "unchanged_stage_3_and_e4_boundaries": {
+    "direct_e2_factory": {
+      "path": "lib/protected-records-service.mjs",
+      "file_sha256": "42fbe1a3be4d387f231559c7b747c2f602a414c156fe37b422e831b96a385b76",
+      "retired": false
+    },
+    "direct_e2_request_cli": {
+      "path": "bin/zlar-protected-records-service-request",
+      "file_sha256": "794f8f31f9fcb2716ad0f15e3c9f7a27c5e87af91d7d68f3e4576c2c3cefff27",
+      "retired": false
+    },
+    "future_install_copy_path": {
+      "path": "install.sh",
+      "file_sha256": "c50cb7679cec3c2fa6d32173cab405e3e83c6b143ab61533df09ad27fb8688a8",
+      "changed": false
+    },
+    "replacement_e4": {
+      "driver_path": "lib/protected-records-replacement-crossing-driver-v2.mjs",
+      "driver_file_sha256": "caac0ed07d79bfb538671c6eda3bbe8d5f78fa374aa5d4c81c14c8a2898ce879",
+      "child_path": "lib/protected-records-replacement-runtime-child-v2.mjs",
+      "child_file_sha256": "00d43a598b85865600168db87e5b7aa742df3da3455dd6f1199e48b4f05acbcd",
+      "changed": false
+    }
+  },
+  "test_routing": {
+    "retired_positive_generator_inventory": {
+      "path": "tests/retired-positive-generator-test-suites.txt",
+      "count": 4,
+      "classification": "historical success expectations for generators retired in current source"
+    },
+    "current_positive_e2_inventory": {
+      "path": "tests/current-positive-e2-test-suites.txt",
+      "count": 3,
+      "classification": "current positive direct request or factory routes; execution forbidden without consequence authority"
+    },
+    "broad_harness_executed": false,
+    "skip_status_proves_retirement": false,
+    "skip_status_proves_governance": false
+  },
+  "lifecycle_delta": {
+    "map_status_before": "mapped_open",
+    "map_status_after": "mapped_open",
+    "coverage_disposition_changed": false,
+    "authority_domain_membership_assigned": false,
+    "authorized_outside_coverage_assigned": false,
+    "lifecycle_obligation_status_changes": []
+  },
+  "claim_boundary": {
+    "exact_checked_out_source_generator_retirement": true,
+    "exact_historical_verification_preserved": true,
+    "direct_e2_request_factory_retirement": false,
+    "e2_runtime_unreachability": false,
+    "e2_elimination": false,
+    "installed_copy_retirement": false,
+    "authority_domain_membership": false,
+    "domain_inventory_complete": false,
+    "equivalent_route_closure": false,
+    "lifecycle_closure": false,
+    "side_door_closure": false,
+    "current_machine_governance": false,
+    "production_governance": false,
+    "public_attestation": false,
+    "all_surface_governance": false
+  },
+  "side_doors": [
+    "current-positive-direct-e2-request-cli",
+    "current-positive-exported-e2-factory",
+    "future-installer-copy-of-direct-e2-surfaces",
+    "old-installed-copied-or-historical-positive-source",
+    "explicit-report-artifact-packaging-and-write-exports",
+    "raw-filesystem-writes",
+    "NODE_OPTIONS-loaders-preloads-and-interpreter-substitution",
+    "same-user-source-mutation",
+    "dynamic-or-generated-entrypoints",
+    "source-drift-after-checkpoint"
+  ],
+  "authority_status": {
+    "route_and_source_authority_present": true,
+    "private_branch_stabilization_authority_present": true,
+    "consequence_authority_present": false,
+    "active_authority_present": false,
+    "signing_or_key_authority_present": false,
+    "install_or_machine_authority_present": false
+  },
+  "integrity": {
+    "algorithm": "SHA-256",
+    "scope": "canonical artifact body without integrity",
+    "body_sha256": "5e40dccf5aa6989c9d9941a0eb61227c041cf4375f09ece6018a764eb9d101c4"
+  }
+}

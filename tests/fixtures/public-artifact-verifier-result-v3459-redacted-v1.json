@@ -1,0 +1,44 @@
+{
+  "report_type": "zlar-public-artifact-verifier-result-v1",
+  "schema_version": 1,
+  "verifier_label": "public-artifact-outside-machine-review-v3459-001",
+  "target": {
+    "version": "v3.4.59",
+    "release_json_url": "https://zlar.ai/release.json",
+    "verifier_kit_url": "https://zlar.ai/verifier-kit/v3.4.59/",
+    "source_access_path": "public_release_assets_only"
+  },
+  "observed": {
+    "release_json_fetched": true,
+    "verifier_kit_tarball_fetched": true,
+    "verifier_kit_tarball_sha256": "930bb18e1d871c498ac47a5cdf2c78ef22d127773f805cefa4fe5fabdc73c6b7",
+    "sidecar_text": "930bb18e1d871c498ac47a5cdf2c78ef22d127773f805cefa4fe5fabdc73c6b7  zlar-verifier-kit-v0.1.0.tar.gz\n",
+    "sidecar_check_passed": true,
+    "reproducibility_json_fetched": true,
+    "proof_pack_manifest_fetched": true,
+    "proof_pack_sha256sums_fetched": true,
+    "source_access_used": false,
+    "github_access_used": false,
+    "credentials_used": false,
+    "deploy_key_used": false
+  },
+  "claim_boundary": {
+    "public_external_attestation": false,
+    "public_attribution": false,
+    "non_operator_review_proven": false,
+    "private_source_review": false,
+    "production_authority": false,
+    "enterprise_readiness": false,
+    "current_machine_governance": false,
+    "all_surface_governance": false,
+    "key_custody": false,
+    "revocation_truth": false,
+    "side_door_closure": false
+  },
+  "non_claims": [
+    "This report does not prove public external attestation.",
+    "This report does not prove private source review.",
+    "This report does not prove production authority or enterprise readiness.",
+    "This report does not prove current-machine governance, all-surface governance, key custody, revocation truth, or side-door closure."
+  ]
+}

@@ -1,0 +1,237 @@
+{
+  "artifact_type": "zlar.legacy-runtime-v1-direct-factory-disposition.v0",
+  "schema_version": 0,
+  "verification_mode": "source-only",
+  "decision": "retire_and_refuse_exported_v1_factory",
+  "consequence_class": "protected-records local-fixture records.write",
+  "north_star_posture": {
+    "north_star_1": "historical_boarding_and_effect_evidence",
+    "north_star_2": "mapped_open",
+    "lifecycle_status_changed": false
+  },
+  "selected_surface": {
+    "source_path": "lib/protected-records-runtime-profile.mjs",
+    "exported_symbol": "createProtectedRecordsRuntimeService",
+    "prior_effect_node_candidate": "E3.legacy-runtime-process-private-state-v1",
+    "current_disposition": "fixed_input_independent_refusal",
+    "fixed_reason_code": "legacy_runtime_v1_exported_factory_retired",
+    "returns_service_object": false,
+    "exposes_apply_request": false,
+    "authority_domain_membership_proven": false
+  },
+  "source_checkpoint": {
+    "starting_commit_oid": "abff0002460e61cb411dfe6a4b7a253c4cdcdde9",
+    "pre_change_module_sha256": "a99ad56f2b2b96944b266b51296b7d68cddb3d3ea849ec8f9b94b8e34a5ad5d2",
+    "pre_change_v1_factory_slice_sha256": "8e92bddc9e07dc0f4848e08a1fe52e006fccfdcd1e61502b0b007fd15310fd24",
+    "post_change_module_sha256": "5d02ecdc643fb5f3e256bb76d6e15946553a17c5e6aaa41e88ef6ce414d5103a",
+    "post_change_v1_factory_slice_sha256": "587c307590197b3e30abcc91975b49a3951d0f386041766bbca17faeb88659fc",
+    "unchanged_v2_factory_slice_sha256": "3522d9fae936a3e9b96f6d7c5e3dc3c9ef9720d8340779f3bf13076a280e562d"
+  },
+  "immutable_dependencies": {
+    "prior_direct_entry_disposition": {
+      "path": "spec/legacy-runtime-v1-governed-disposition-v0.json",
+      "file_sha256": "649f1e5e13c6c658d04e2780e6a47a70bddeb118f695260348b4d182e30aef24",
+      "body_sha256": "ec322d0bdc43c889c409ac17685bce2c47970cdf326d09e5602fd4826e609d8a",
+      "mutated": false
+    },
+    "parent_dependency_map": {
+      "file_sha256": "a275b74cb7e468bed6a8376c8ccc0aab81937d945e240d69090293ae9b38a4de",
+      "body_sha256": "b39767ba79435bede70784d416b25ad52c47a6fb1c22df195a32b4af115f6b9b",
+      "mutated": false
+    },
+    "reachability_delta": {
+      "file_sha256": "15d84e7b569b9fef928d2d7fe619efbca6047de135379b7e50bbfec6c7abf973",
+      "body_sha256": "219d36fa18b01de5477ff2bebf0e00892868c65fead36446227a86838db23f89",
+      "inventory_sha256": "20451df27fb00b5e11e0c6f25dceb6c3f26a71f55a452c2f6a7e6d092cb41642",
+      "mutated": false
+    },
+    "replacement_e4": {
+      "driver_path": "lib/protected-records-replacement-crossing-driver-v2.mjs",
+      "driver_sha256": "caac0ed07d79bfb538671c6eda3bbe8d5f78fa374aa5d4c81c14c8a2898ce879",
+      "child_path": "lib/protected-records-replacement-runtime-child-v2.mjs",
+      "child_sha256": "00d43a598b85865600168db87e5b7aa742df3da3455dd6f1199e48b4f05acbcd",
+      "behavioral_slice_changed": false
+    }
+  },
+  "freshness_gate_decision": {
+    "decision": "no_go_refusal_theater",
+    "reason": "A source-recorded exhausted fixture grant neither authenticates a direct importer nor creates a durable lifecycle disposition; changing that mutable status could reopen the positive body.",
+    "implemented": false
+  },
+  "current_refusal_contract": {
+    "named_export_retained": true,
+    "function_declares_no_parameters": true,
+    "unconditional_throw_is_first_statement": true,
+    "reads_config_or_getters": false,
+    "reads_environment_argv_or_time": false,
+    "reads_authority_status": false,
+    "reads_filesystem_stdin_network_or_child_state": false,
+    "internal_mode_or_positive_bypass_added": false
+  },
+  "historical_mutation_order": [
+    "validate_and_recognize_caller_supplied_config_and_request",
+    "evaluate_fixture_authority_grant",
+    "write_consumed_store_temp_fsync_rename_and_directory_fsync",
+    "write_anchor_temp_fsync_rename_and_directory_fsync",
+    "write_witness_temp_fsync_rename_and_directory_fsync",
+    "stateEntries.push"
+  ],
+  "historical_mutation_note": "The v1 factory could perform persistent store, anchor, and witness writes before the process-private E3 append. Those removed bytes are bound by the pre-change module and factory-slice hashes; they were not executed in this lane.",
+  "consumer_inventory": [
+    {
+      "id": "exported-v1-factory",
+      "file": "lib/protected-records-runtime-profile.mjs",
+      "symbol": "createProtectedRecordsRuntimeService",
+      "mode": "direct-esm-import",
+      "classification": "refusal_probe",
+      "edge_chain": ["direct importer", "fixed throw"],
+      "positive_or_refusal_behavior": "fixed_refusal",
+      "guard_dominance": "factory-body-unconditional",
+      "verification_linkage_required": true,
+      "current_success_required": false,
+      "retirement_impact": "no service object or applyRequest is created"
+    },
+    {
+      "id": "installed-recognition-generator",
+      "file": "lib/protected-records-installed-runtime-profile-recognition-proof.mjs",
+      "symbol": "runProtectedRecordsInstalledRuntimeProfileRecognitionProof",
+      "mode": "proof-generation",
+      "classification": "positive_generator",
+      "edge_chain": ["generator", "createProtectedRecordsRuntimeService", "applyRequest"],
+      "positive_or_refusal_behavior": "historical-positive-source-now-refused-at-factory",
+      "guard_dominance": "source-recorded-current-fixture-freshness-guard-precedes-scratch-and-factory",
+      "verification_linkage_required": true,
+      "current_success_required": false,
+      "retirement_impact": "verification import remains linkable; regeneration needs a new versioned design"
+    },
+    {
+      "id": "runtime-profile-installation-negative-probes",
+      "file": "lib/protected-records-runtime-profile-installation.mjs",
+      "symbol": "requestAuthorityGuardCase",
+      "mode": "proof-generation-negative-probe",
+      "classification": "refusal_probe",
+      "edge_chain": ["runProtectedRecordsRuntimeProfileInstallationProof", "runRequestAuthorityGuardSummary", "requestAuthorityGuardCase", "createProtectedRecordsRuntimeService", "applyRequest"],
+      "positive_or_refusal_behavior": "historical-refusal-probe-now-refused-at-factory",
+      "guard_dominance": "outer-source-recorded-current-fixture-freshness-guard-precedes-negative-probe-summary",
+      "verification_linkage_required": true,
+      "current_success_required": false,
+      "retirement_impact": "verification import remains linkable; old proof generation no longer reaches its inner probe"
+    },
+    {
+      "id": "runtime-profile-v1-test-suite",
+      "file": "tests/test-protected-records-runtime-profile.mjs",
+      "symbol": "createProtectedRecordsRuntimeService and returned applyRequest",
+      "mode": "historical-positive-and-refusal-test",
+      "classification": "historical_test",
+      "edge_chain": ["test", "factory", "applyRequest"],
+      "positive_or_refusal_behavior": "effect-capable-historical-suite-not-run",
+      "guard_dominance": "none-inside-direct-test-calls",
+      "verification_linkage_required": false,
+      "current_success_required": false,
+      "retirement_impact": "suite remains authority-inactive and historical"
+    },
+    {
+      "id": "current-direct-factory-disposition-validator",
+      "file": "tests/test-legacy-runtime-v1-direct-factory-disposition-v0.mjs",
+      "symbol": "createProtectedRecordsRuntimeService",
+      "mode": "fixed-refusal-and-linkage-validation",
+      "classification": "refusal_probe",
+      "edge_chain": ["validator", "factory", "fixed throw"],
+      "positive_or_refusal_behavior": "hostile-proxy-fixed-refusal-only",
+      "guard_dominance": "factory-body-unconditional",
+      "verification_linkage_required": true,
+      "current_success_required": false,
+      "retirement_impact": "validates that no config getter is read and no service object is returned"
+    },
+    {
+      "id": "prior-disposition-and-static-analyzers",
+      "file": "spec/legacy-runtime-v1-governed-disposition-v0.json and tests/test-legacy-runtime-v1-governed-disposition-v0.mjs",
+      "symbol": "source-bound createProtectedRecordsRuntimeService references",
+      "mode": "historical-source-evidence",
+      "classification": "evidence_only",
+      "edge_chain": ["immutable artifact", "historical source observations"],
+      "positive_or_refusal_behavior": "no-factory-execution-required-for-current-validation",
+      "guard_dominance": "not-applicable",
+      "verification_linkage_required": false,
+      "current_success_required": false,
+      "retirement_impact": "prior suite is routed as superseded; prior artifact remains byte-identical"
+    },
+    {
+      "id": "installation-copy",
+      "file": "install.sh",
+      "symbol": "cp source lib to installation lib",
+      "mode": "authorized-installation-only",
+      "classification": "packaging_copy",
+      "edge_chain": ["install.sh", "source lib glob", "installation lib"],
+      "positive_or_refusal_behavior": "copy-only-no-install-in-this-lane",
+      "guard_dominance": "installation-authority-boundary-outside-this-lane",
+      "verification_linkage_required": false,
+      "current_success_required": false,
+      "retirement_impact": "future authorized installs receive the stub; existing copies remain unproven"
+    },
+    {
+      "id": "replacement-v2-e4",
+      "file": "lib/protected-records-replacement-runtime-child-v2.mjs",
+      "symbol": "createProtectedRecordsRuntimeServiceV2 and returned applyRequest",
+      "mode": "replacement-crossing-child",
+      "classification": "distinct_e4",
+      "edge_chain": ["replacement driver", "replacement child", "v2 factory", "v2 applyRequest"],
+      "positive_or_refusal_behavior": "distinct-effect-source-not-executed",
+      "guard_dominance": "separate-v2-contract",
+      "verification_linkage_required": true,
+      "current_success_required": false,
+      "retirement_impact": "exact v2 slice, driver, and child remain unchanged"
+    }
+  ],
+  "import_search": {
+    "exact_static_v1_importers": [
+      "lib/protected-records-installed-runtime-profile-recognition-proof.mjs",
+      "lib/protected-records-runtime-profile-installation.mjs",
+      "tests/test-protected-records-runtime-profile.mjs",
+      "tests/test-legacy-runtime-v1-direct-factory-disposition-v0.mjs"
+    ],
+    "namespace_or_dynamic_v1_import_found_in_pinned_source": false,
+    "generated_entrypoint_found_in_pinned_source": false,
+    "custom_external_import_closed": false
+  },
+  "historical_identity_effect": {
+    "shared_module_whole_file_identity_changed": true,
+    "historical_e4_source_preconditions_further_superseded": true,
+    "historical_artifacts_rewritten": false,
+    "historical_authority_reusable": false
+  },
+  "authority_status": {
+    "route_and_source_authority_present": true,
+    "consequence_authority_present": false,
+    "active_authority_present": false,
+    "outside_coverage_authority_present": false
+  },
+  "claim_boundary": {
+    "checked_out_source_exported_v1_factory_refusal": true,
+    "returned_apply_request_non_creation": true,
+    "generalized_current_machine_refusal": false,
+    "installed_copy_refusal": false,
+    "e3_elimination": false,
+    "runtime_reachability": false,
+    "effect_capability_or_occurrence": false,
+    "authority_domain_membership": false,
+    "equivalent_route_closure": false,
+    "lifecycle_closure": false,
+    "side_door_closure": false
+  },
+  "side_doors": [
+    "existing-installed-or-copied-positive-v1-module",
+    "custom-import-of-old-or-mutated-source",
+    "NODE_OPTIONS-loaders-preloads-and-interpreter-substitution",
+    "same-user-source-mutation",
+    "direct-filesystem-write-around-fixture-storage",
+    "dynamic-or-generated-entrypoints-not-visible-in-pinned-source",
+    "shell-MCP-browser-app-control-filesystem-or-network-routes-not-bound-to-this-export",
+    "source-drift-after-checkpoint"
+  ],
+  "integrity": {
+    "algorithm": "SHA-256",
+    "scope": "canonical artifact body without integrity",
+    "body_sha256": "82ae2feb5378753074e865f0236e779d3092bea5b53dbb792579a2fb177f6a35"
+  }
+}

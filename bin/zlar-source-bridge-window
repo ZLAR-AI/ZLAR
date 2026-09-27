@@ -1,0 +1,88 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import {
+  assertNoUnsafeSourceBridgeWindowText,
+  formatSourceBridgeWindowAuthority,
+  runSourceBridgeWindowAuthority,
+  runSourceBridgeWindowSampleAuthority,
+  writeSourceBridgeWindowAuthorityReport,
+} from '../lib/zlar-source-bridge-window-authority.mjs';
+
+function usage() {
+  return `Usage: zlar-source-bridge-window (--input <file|->|--sample) [--json] [--json-out <file>]
+
+Validates a no-secret time-boxed source bridge window authority packet. This
+command does not read remote refs, push, call GitHub, mint credentials, inspect
+keys, or change configuration.
+
+Options:
+  --input <file|->  Read the authority packet JSON from a file or stdin.
+  --sample          Validate the committed no-secret sample packet with a fixed proof clock.
+  --json            Print JSON to stdout.
+  --json-out <file> Write JSON under the proof-owned build scratch root.
+  --help            Show this help.
+`;
+}
+
+function parseArgs(argv) {
+  assertNoUnsafeSourceBridgeWindowText(argv.join('\n'));
+  const args = {
+    input: null,
+    sample: false,
+    json: false,
+    jsonOut: null,
+    help: false,
+  };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--help' || arg === '-h') {
+      args.help = true;
+    } else if (arg === '--json') {
+      args.json = true;
+    } else if (arg === '--input') {
+      args.input = argv[++index];
+    } else if (arg === '--sample') {
+      args.sample = true;
+    } else if (arg === '--json-out') {
+      args.jsonOut = argv[++index];
+    } else {
+      throw new Error('unsupported argument');
+    }
+    if (argv[index] === undefined) throw new Error('missing argument value');
+  }
+  if (args.input && args.sample) throw new Error('choose --input or --sample, not both');
+  if (!args.help && !args.input && !args.sample) throw new Error('--input or --sample is required');
+  return args;
+}
+
+function readInput(input) {
+  if (input === '-') return readFileSync(0, 'utf8');
+  try {
+    return readFileSync(input, 'utf8');
+  } catch {
+    throw new Error('input file could not be read');
+  }
+}
+
+function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
+  if (args.help) {
+    process.stdout.write(usage());
+    return 0;
+  }
+  const report = args.sample
+    ? runSourceBridgeWindowSampleAuthority()
+    : runSourceBridgeWindowAuthority(readInput(args.input));
+  if (args.jsonOut) writeSourceBridgeWindowAuthorityReport(report, args.jsonOut);
+  process.stdout.write(args.json || args.jsonOut
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatSourceBridgeWindowAuthority(report));
+  return report.authority_status === 'accepted' ? 0 : 2;
+}
+
+try {
+  process.exit(main());
+} catch {
+  process.stderr.write('zlar-source-bridge-window refused: unsafe or invalid request\n');
+  process.exit(1);
+}

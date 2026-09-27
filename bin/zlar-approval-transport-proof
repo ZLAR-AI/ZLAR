@@ -1,0 +1,45 @@
+#!/usr/bin/env node
+import {
+  assertApprovalTransportProof,
+  assertNoUnsafeApprovalTransportProofText,
+  formatApprovalTransportProofSummary,
+  runApprovalTransportProof,
+} from '../lib/approval-transport-proof.mjs';
+
+function usage() {
+  console.error('Usage: zlar approval-transport-proof [--json]');
+  console.error('Runs a local hermetic channel-neutral approval transport proof.');
+  console.error('This command does not live probe, does not use Telegram, does not inspect runtime state, or claim production deployment.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+let asJson = false;
+
+for (const arg of args) {
+  if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+try {
+  const report = runApprovalTransportProof();
+  assertApprovalTransportProof(report);
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatApprovalTransportProofSummary(report);
+  assertNoUnsafeApprovalTransportProofText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

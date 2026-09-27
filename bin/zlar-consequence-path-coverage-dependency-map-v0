@@ -1,0 +1,219 @@
+#!/usr/bin/env node
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+} from 'node:fs';
+import { join, resolve } from 'node:path';
+import {
+  CONSEQUENCE_PATH_COVERAGE_SOURCE_PATHS_V0,
+  buildConsequencePathCoverageDependencyMapV0,
+  canonicalConsequencePathCoverageDependencyMapBytesV0,
+  formatConsequencePathCoverageDependencyMapSummaryV0,
+} from '../lib/consequence-path-coverage-dependency-map-v0.mjs';
+
+const MAX_INPUT_BYTES = 8 * 1024 * 1024;
+
+function usage() {
+  console.error(
+    'Usage: bin/zlar-consequence-path-coverage-dependency-map-v0 --repo-root <dir> --base-map <file> --overlay <file> --index <file> --require-base-map-file-sha <sha256> --require-base-map-sha <sha256> --require-overlay-file-sha <sha256> --require-overlay-sha <sha256> --require-index-file-sha <sha256> --require-index-body-sha <sha256> --require-historical-crossing-source-commit <git-sha1> --require-dependency-map-source-commit <git-sha1> --require-source-inventory-sha <sha256> [--json]',
+  );
+  console.error(
+    'Builds a verification-only source-marker catalogue and dependency projection. It does not execute a consequence, invoke Git, infer outside-coverage authority, or close the lifecycle.',
+  );
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const options = {
+    repoRoot: '',
+    baseMapPath: '',
+    overlayPath: '',
+    indexPath: '',
+    expectedBaseMapFileSha256: '',
+    expectedBaseMapSha256: '',
+    expectedOverlayFileSha256: '',
+    expectedOverlaySha256: '',
+    expectedIndexFileSha256: '',
+    expectedIndexBodySha256: '',
+    expectedHistoricalCrossingSourceCommitOid: '',
+    expectedDependencyMapSourceCommitOid: '',
+    expectedSourceInventorySha256: '',
+    json: false,
+  };
+  const valueFlags = new Map([
+    ['--repo-root', 'repoRoot'],
+    ['--base-map', 'baseMapPath'],
+    ['--overlay', 'overlayPath'],
+    ['--index', 'indexPath'],
+    ['--require-base-map-file-sha', 'expectedBaseMapFileSha256'],
+    ['--require-base-map-sha', 'expectedBaseMapSha256'],
+    ['--require-overlay-file-sha', 'expectedOverlayFileSha256'],
+    ['--require-overlay-sha', 'expectedOverlaySha256'],
+    ['--require-index-file-sha', 'expectedIndexFileSha256'],
+    ['--require-index-body-sha', 'expectedIndexBodySha256'],
+    [
+      '--require-historical-crossing-source-commit',
+      'expectedHistoricalCrossingSourceCommitOid',
+    ],
+    [
+      '--require-dependency-map-source-commit',
+      'expectedDependencyMapSourceCommitOid',
+    ],
+    ['--require-source-inventory-sha', 'expectedSourceInventorySha256'],
+  ]);
+  const seen = new Set();
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    }
+    if (
+      arg === '--require-closed' ||
+      arg === '--require-domain-inventory-complete' ||
+      arg === '--require-equivalent-route-closure'
+    ) {
+      die(`${arg} is unsupported by an explicitly open dependency map.`);
+    }
+    if (arg === '--json') {
+      if (seen.has(arg)) die('Duplicate flag: --json', 2);
+      seen.add(arg);
+      options.json = true;
+      continue;
+    }
+    const key = valueFlags.get(arg);
+    if (!key) {
+      usage();
+      die(`Unsupported option: ${arg}`, 2);
+    }
+    if (seen.has(arg)) die(`Duplicate flag: ${arg}`, 2);
+    seen.add(arg);
+    const value = argv[++index];
+    if (!value || value.startsWith('--')) {
+      die(`${arg} requires one value.`, 2);
+    }
+    options[key] = value;
+  }
+  for (const [flag, key] of valueFlags) {
+    if (!options[key]) die(`${flag} is required.`, 2);
+  }
+  return options;
+}
+
+function sameDescriptor(before, after) {
+  return (
+    before.dev === after.dev &&
+    before.ino === after.ino &&
+    before.mode === after.mode &&
+    before.nlink === after.nlink &&
+    before.size === after.size &&
+    before.mtimeMs === after.mtimeMs &&
+    before.ctimeMs === after.ctimeMs
+  );
+}
+
+function readBoundedRegularFile(path, label, identities) {
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    throw new Error(`${label} could not be opened as a no-follow file`);
+  }
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile()) {
+      throw new Error(`${label} must be a regular file`);
+    }
+    if (before.size < 2 || before.size > MAX_INPUT_BYTES) {
+      throw new Error(`${label} size is outside the accepted boundary`);
+    }
+    const identity = `${before.dev}:${before.ino}`;
+    if (identities.has(identity)) {
+      throw new Error(`${label} aliases another supplied input file`);
+    }
+    const raw = readFileSync(fd);
+    const after = fstatSync(fd);
+    if (raw.length !== before.size || !sameDescriptor(before, after)) {
+      throw new Error(`${label} changed while being read`);
+    }
+    identities.add(identity);
+    return raw;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function sourceFiles(repoRoot, identities) {
+  const resolvedRoot = resolve(repoRoot);
+  const rootStatus = lstatSync(resolvedRoot);
+  if (rootStatus.isSymbolicLink() || !rootStatus.isDirectory()) {
+    throw new Error('Repository root must be a non-symlink directory');
+  }
+  return Object.fromEntries(
+    Object.entries(CONSEQUENCE_PATH_COVERAGE_SOURCE_PATHS_V0).map(
+      ([role, relativePath]) => [
+        role,
+        readBoundedRegularFile(
+          join(resolvedRoot, relativePath),
+          `Coverage dependency source ${role}`,
+          identities,
+        ),
+      ],
+    ),
+  );
+}
+
+const options = parseArgs(process.argv.slice(2));
+
+try {
+  const identities = new Set();
+  const params = {
+    baseMapRawBytes: readBoundedRegularFile(
+      options.baseMapPath,
+      'Base consequence lifecycle map',
+      identities,
+    ),
+    overlayRawBytes: readBoundedRegularFile(
+      options.overlayPath,
+      'Replacement lifecycle overlay',
+      identities,
+    ),
+    indexRawBytes: readBoundedRegularFile(
+      options.indexPath,
+      'Post-effect route-evidence index',
+      identities,
+    ),
+    expectedBaseMapFileSha256: options.expectedBaseMapFileSha256,
+    expectedBaseMapSha256: options.expectedBaseMapSha256,
+    expectedOverlayFileSha256: options.expectedOverlayFileSha256,
+    expectedOverlaySha256: options.expectedOverlaySha256,
+    expectedIndexFileSha256: options.expectedIndexFileSha256,
+    expectedIndexBodySha256: options.expectedIndexBodySha256,
+    expectedHistoricalCrossingSourceCommitOid:
+      options.expectedHistoricalCrossingSourceCommitOid,
+    expectedDependencyMapSourceCommitOid:
+      options.expectedDependencyMapSourceCommitOid,
+    expectedSourceInventorySha256: options.expectedSourceInventorySha256,
+    sourceFiles: sourceFiles(options.repoRoot, identities),
+  };
+  const report = buildConsequencePathCoverageDependencyMapV0(params);
+  if (options.json) {
+    process.stdout.write(
+      canonicalConsequencePathCoverageDependencyMapBytesV0(report, params),
+    );
+  } else {
+    process.stdout.write(
+      `${formatConsequencePathCoverageDependencyMapSummaryV0(report, params)}\n`,
+    );
+  }
+} catch (error) {
+  die(error?.message || 'Coverage dependency map verification failed closed.');
+}

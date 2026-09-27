@@ -1,0 +1,434 @@
+#!/usr/bin/env node
+// ═══════════════════════════════════════════════════════════════════════════════
+// zlar-verify — Standalone Governed Action Receipt Verifier
+//
+// Verifies a ZLAR receipt with nothing but this script and a public key.
+// Verifies receipt signatures and structural integrity for both v0 and v1 formats.
+//
+// Usage:
+//   zlar-verify <receipt.json> --pubkey <key.pub>
+//   zlar-verify <receipt.json> --pubkey <key.pub> --json
+//   zlar-verify <receipt.json> --pubkey <key.pub> --verbose
+//   zlar-verify <receipt.json> --pubkey <key.pub> --require-format v1 --require-v1-only
+//   cat receipt.json | zlar-verify --pubkey <key.pub>
+//
+// Exit codes:
+//   0 = VALID           — signature checks out under supplied key
+//   1 = INVALID         — signature, semantic, or structural failure
+//   2 = ERROR           — bad arguments, missing files, etc.
+//   3 = UNKNOWN-SIGNER  — receipt kid does not match supplied public key
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Import the receipt library
+const libPath = join(__dirname, '..', 'lib', 'receipt.mjs');
+const {
+  receiptHash,
+  receiptHashV1,
+  verifyReceiptAny,
+} = await import(libPath);
+
+// ─── Argument Parsing ────────────────────────────────────────────────────────
+
+const args = process.argv.slice(2);
+let receiptPath = null;
+let pubkeyPath = null;
+let jsonOutput = false;
+let verbose = false;
+let allowV0 = false;
+let requireReceiptId = null;
+let requireReceiptSha = null;
+let requireKid = null;
+let requirePubkeySha = null;
+let requireFormat = null;
+let requireV1Only = false;
+
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const KID_PATTERN = /^[a-f0-9]{16}$/;
+const LOCAL_VERIFIER_NON_CLAIM =
+  'This local verifier result does not prove issuer status, key custody, revocation truth, downstream recognition, live receipt emission, or current-machine governance.';
+
+function die(message, code = 2) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function readRequiredValue(args, index, optionName) {
+  const value = args[index + 1];
+  if (!value || value.startsWith('-')) {
+    die(`${optionName} requires a value.`);
+  }
+  return value;
+}
+
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--pubkey' && i + 1 < args.length) {
+    pubkeyPath = args[++i];
+  } else if (args[i] === '--json') {
+    jsonOutput = true;
+  } else if (args[i] === '--verbose' || args[i] === '-v') {
+    verbose = true;
+  } else if (args[i] === '--allow-v0') {
+    allowV0 = true;
+  } else if (args[i] === '--require-receipt-id') {
+    requireReceiptId = readRequiredValue(args, i, '--require-receipt-id');
+    i++;
+  } else if (args[i] === '--require-receipt-sha') {
+    requireReceiptSha = readRequiredValue(args, i, '--require-receipt-sha');
+    i++;
+  } else if (args[i] === '--require-kid') {
+    requireKid = readRequiredValue(args, i, '--require-kid');
+    i++;
+  } else if (args[i] === '--require-pubkey-sha') {
+    requirePubkeySha = readRequiredValue(args, i, '--require-pubkey-sha');
+    i++;
+  } else if (args[i] === '--require-format') {
+    requireFormat = readRequiredValue(args, i, '--require-format');
+    i++;
+  } else if (args[i] === '--require-v1-only') {
+    requireV1Only = true;
+  } else if (args[i] === '--help' || args[i] === '-h') {
+    printUsage();
+    process.exit(0);
+  } else if (!args[i].startsWith('-') && !receiptPath) {
+    receiptPath = args[i];
+  } else {
+    die(`Unsupported option: ${args[i]}`);
+  }
+}
+
+function printUsage() {
+  console.log(`
+zlar-verify — Standalone Governed Action Receipt Verifier
+
+USAGE
+  zlar-verify <receipt.json> --pubkey <key.pub>
+  cat receipt.json | zlar-verify --pubkey <key.pub>
+
+OPTIONS
+  --pubkey <path>   Path to Ed25519 public key (PEM format)
+  --json            Output result as JSON
+  --verbose, -v     Show receipt details alongside verdict
+  --allow-v0        Accept legacy v0 receipts (off by default at Published v1.0)
+  --require-receipt-id <id>
+                   Refuse unless the verified receipt id matches exactly
+  --require-receipt-sha <sha256>
+                   Refuse unless the canonical signed receipt object SHA-256
+                   matches exactly; this is not raw JSON body SHA and not the
+                   v1 payload/signable hash
+  --require-kid <16hex>
+                   Refuse unless the receipt kid matches exactly
+  --require-pubkey-sha <sha256>
+                   Refuse unless the supplied public key PEM SHA-256 matches
+                   exactly
+  --require-format v1
+                   Refuse unless the receipt format is v1
+  --require-v1-only
+                   Refuse legacy v0 posture; fails if --allow-v0 is present
+  --help, -h        Show this help
+
+EXIT CODES
+  0   VALID           Signature verified under the supplied public key
+  1   INVALID         Signature, semantic, or structural failure
+  2   ERROR           Bad arguments or missing files
+  3   UNKNOWN-SIGNER  Receipt kid does not match the supplied public key
+
+WHAT THIS PROVES
+  A VALID local verifier result proves the receipt bytes verify under the
+  supplied public key and pass the receipt structural and semantic checks.
+
+WHAT THIS DOES NOT PROVE
+  Verification alone does not prove active issuer status, key custody,
+  revocation state, downstream recognition, live receipt emission, production
+  deployment, current-machine governance, external attestation, sovereign
+  recognition, or coverage of unrouted paths.
+`.trim());
+}
+
+// ─── Input Validation ────────────────────────────────────────────────────────
+
+if (requireReceiptSha && !SHA256_PATTERN.test(requireReceiptSha)) {
+  die('--require-receipt-sha must be a 64-character lowercase SHA-256 hex digest.');
+}
+if (requirePubkeySha && !SHA256_PATTERN.test(requirePubkeySha)) {
+  die('--require-pubkey-sha must be a 64-character lowercase SHA-256 hex digest.');
+}
+if (requireKid && !KID_PATTERN.test(requireKid)) {
+  die('--require-kid must be a 16-character lowercase hex digest.');
+}
+if (requireFormat && requireFormat !== 'v1') {
+  die('--require-format supports v1 only in this verifier stage.');
+}
+if (requireV1Only && allowV0) {
+  die('--require-v1-only cannot be combined with --allow-v0.');
+}
+
+if (!pubkeyPath) {
+  console.error('ERROR: --pubkey is required');
+  console.error('Usage: zlar-verify <receipt.json> --pubkey <key.pub>');
+  process.exit(2);
+}
+
+let receiptJson;
+
+if (receiptPath) {
+  try {
+    receiptJson = readFileSync(resolve(receiptPath), 'utf8');
+  } catch (err) {
+    console.error(`ERROR: Cannot read receipt file: ${receiptPath}`);
+    console.error(`  ${err.message}`);
+    process.exit(2);
+  }
+} else if (!process.stdin.isTTY) {
+  // Read from stdin
+  const chunks = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk);
+  }
+  receiptJson = Buffer.concat(chunks).toString('utf8');
+} else {
+  console.error('ERROR: No receipt provided. Pass a file path or pipe to stdin.');
+  console.error('Usage: zlar-verify <receipt.json> --pubkey <key.pub>');
+  process.exit(2);
+}
+
+let publicKeyPem;
+try {
+  publicKeyPem = readFileSync(resolve(pubkeyPath), 'utf8');
+} catch (err) {
+  console.error(`ERROR: Cannot read public key: ${pubkeyPath}`);
+  console.error(`  ${err.message}`);
+  process.exit(2);
+}
+
+let receipt;
+try {
+  receipt = JSON.parse(receiptJson);
+} catch (err) {
+  console.error('ERROR: Receipt is not valid JSON.');
+  console.error(`  ${err.message}`);
+  process.exit(2);
+}
+
+// ─── Verification ────────────────────────────────────────────────────────────
+
+const providedPubkeySha256 = createHash('sha256').update(publicKeyPem).digest('hex');
+const providedKid = providedPubkeySha256.slice(0, 16);
+const isReceiptV1Envelope = receipt && typeof receipt === 'object' && receipt.v === 1;
+const isReceiptV0 = receipt && typeof receipt === 'object' && typeof receipt.receipt_version === 'string';
+const detectedFormat = isReceiptV1Envelope ? 'v1' : isReceiptV0 ? 'v0' : null;
+const receiptKid = isReceiptV1Envelope && typeof receipt.kid === 'string'
+  ? receipt.kid
+  : isReceiptV0 && typeof receipt.signature?.key_id === 'string'
+  ? receipt.signature.key_id
+  : null;
+const receiptSha256 = isReceiptV1Envelope
+  ? receiptHashV1(receipt)
+  : isReceiptV0
+  ? receiptHash(receipt)
+  : null;
+
+const commandPosture = Object.freeze({
+  allow_v0: allowV0,
+  v1_only_required: requireV1Only,
+  required_format: requireFormat,
+  detected_format: detectedFormat,
+  output: jsonOutput ? 'json' : 'text',
+  verbose,
+});
+
+function buildRequiredIdentity() {
+  const receiptIdMatched = requireReceiptId ? receipt?.id === requireReceiptId : null;
+  const receiptShaMatched = requireReceiptSha ? receiptSha256 === requireReceiptSha : null;
+  const kidMatched = requireKid ? receiptKid === requireKid : null;
+  const pubkeyShaMatched = requirePubkeySha
+    ? providedPubkeySha256 === requirePubkeySha
+    : null;
+  const formatMatched = requireFormat ? detectedFormat === requireFormat : null;
+  const v1OnlyMatched = requireV1Only
+    ? detectedFormat === 'v1' && allowV0 === false
+    : null;
+  return {
+    receipt_id_required: Boolean(requireReceiptId),
+    receipt_id_matched: receiptIdMatched,
+    receipt_sha256_required: Boolean(requireReceiptSha),
+    receipt_sha256_matched: receiptShaMatched,
+    kid_required: Boolean(requireKid),
+    kid_matched: kidMatched,
+    pubkey_sha256_required: Boolean(requirePubkeySha),
+    pubkey_sha256_matched: pubkeyShaMatched,
+    format_required: Boolean(requireFormat),
+    format_matched: formatMatched,
+    v1_only_required: requireV1Only,
+    v1_only_matched: v1OnlyMatched,
+    command_posture: requireV1Only
+      ? 'receipt-verifier-v1-only-required'
+      : allowV0
+      ? 'receipt-verifier-legacy-v0-allowed'
+      : 'receipt-verifier-v1-default',
+  };
+}
+
+const requiredIdentity = buildRequiredIdentity();
+const requiredIdentityRequested = Boolean(
+  requireReceiptId ||
+  requireReceiptSha ||
+  requireKid ||
+  requirePubkeySha ||
+  requireFormat ||
+  requireV1Only
+);
+
+function requireMatch(flag, matched, label) {
+  if (flag && matched !== true) {
+    die(`Required identity mismatch: ${label}.`, 1);
+  }
+}
+
+if (requiredIdentityRequested && detectedFormat !== 'v1') {
+  if (requireFormat) {
+    die('Required identity mismatch: --require-format.', 1);
+  }
+  die('Required identity mismatch: required identity is v1-only in this verifier stage.', 1);
+}
+
+requireMatch(requireReceiptId, requiredIdentity.receipt_id_matched, '--require-receipt-id');
+requireMatch(requireReceiptSha, requiredIdentity.receipt_sha256_matched, '--require-receipt-sha');
+requireMatch(requireKid, requiredIdentity.kid_matched, '--require-kid');
+requireMatch(requirePubkeySha, requiredIdentity.pubkey_sha256_matched, '--require-pubkey-sha');
+requireMatch(requireFormat, requiredIdentity.format_matched, '--require-format');
+requireMatch(requireV1Only, requiredIdentity.v1_only_matched, '--require-v1-only');
+
+if (isReceiptV1Envelope && receiptKid && receiptKid.length === 16 && receiptKid !== providedKid) {
+  emitUnknownSigner(receiptKid, providedKid);
+  process.exit(3);
+}
+
+const result = verifyReceiptAny(receipt, publicKeyPem, { allowV0 });
+
+// Extract display fields (works for both v0 and v1)
+const isV1 = result.version === 'v1';
+const payload = isV1 ? result.payload : null;
+const displayId = receipt.id;
+const displayVersion = isV1 ? `v${receipt.v}` : receipt.receipt_version;
+const displayTool = isV1 ? payload?.tool : receipt.governed_action?.tool;
+const displayDomain = isV1 ? payload?.domain : receipt.governed_action?.domain;
+const displayOutcome = isV1 ? payload?.outcome : receipt.decision?.outcome;
+const displayRule = isV1 ? payload?.rule : receipt.decision?.rule;
+const displayAuthorizer = isV1 ? payload?.authorizer : receipt.decision?.authorizer;
+const displayTimestamp = isV1 ? payload?.ts : receipt.decision?.timestamp;
+const displayPolicy = isV1 ? payload?.policy_version : receipt.evidence?.policy_version;
+const displayAgentId = isV1 ? payload?.manifest_agent_id : receipt.evidence?.manifest_agent_id;
+const displayPrincipal = isV1 ? payload?.manifest_principal : receipt.evidence?.manifest_principal;
+const displayDelegation = isV1 ? payload?.delegation_chain : receipt.evidence?.delegation_chain;
+const displayAuditId = isV1 ? payload?.audit_event_id : receipt.evidence?.audit_event_id;
+const displayKeyId = isV1 ? receipt.kid : receipt.signature?.key_id;
+const displayAlgo = isV1 ? 'Ed25519' : receipt.signature?.algorithm;
+
+if (jsonOutput) {
+  const output = {
+    verdict: result.valid ? 'VALID' : 'INVALID',
+    reason: result.reason,
+    receipt_id: displayId,
+    receipt_sha256: receiptSha256,
+    receipt_version: displayVersion,
+    format: result.version,
+    receipt_kid: isV1 ? displayKeyId : null,
+    provided_kid: isV1 ? providedKid : null,
+    provided_pubkey_sha256: providedPubkeySha256,
+    kid_match: isV1 ? displayKeyId === providedKid : null,
+    command_posture: commandPosture,
+    required_identity: requiredIdentity
+  };
+  if (verbose && displayTool) {
+    output.tool = displayTool;
+    output.domain = displayDomain;
+    output.outcome = displayOutcome;
+    output.rule = displayRule;
+    output.authorizer = displayAuthorizer;
+    output.timestamp = displayTimestamp;
+  }
+  console.log(JSON.stringify(output, null, 2));
+} else {
+  if (result.valid) {
+    console.log(`VALID`);
+    console.log('');
+    console.log('Local verifier result: receipt bytes verify under the supplied public key and pass local receipt checks.');
+    console.log(result.reason);
+  } else {
+    console.log(`INVALID`);
+    console.log('');
+    console.log('Local verifier result: signature, semantic, or structural verification failed.');
+    console.log(result.reason);
+  }
+  console.log(LOCAL_VERIFIER_NON_CLAIM);
+
+  if (verbose && displayTool) {
+    console.log('');
+    console.log('--- Receipt Details ---');
+    console.log(`  ID:         ${displayId}`);
+    console.log(`  Version:    ${displayVersion} (${result.version})`);
+    console.log(`  Tool:       ${displayTool}`);
+    console.log(`  Domain:     ${displayDomain}`);
+    console.log(`  Outcome:    ${displayOutcome}`);
+    console.log(`  Rule:       ${displayRule}`);
+    console.log(`  Authorizer: ${displayAuthorizer}`);
+    console.log(`  Timestamp:  ${displayTimestamp}`);
+    console.log(`  Policy:     ${displayPolicy}`);
+    if (displayAgentId) {
+      console.log(`  Agent:      ${displayAgentId}`);
+      console.log(`  Principal:  ${displayPrincipal}`);
+    }
+    if (displayDelegation?.length > 0) {
+      console.log(`  Delegation: ${displayDelegation.map(d => d.agent_id).join(' -> ')}`);
+    }
+    console.log(`  Audit ID:   ${displayAuditId}`);
+    console.log(`  Signed by:  ${displayKeyId} (${displayAlgo})`);
+    console.log(`  Receipt SHA-256: ${receiptSha256 ?? 'not-available'}`);
+    console.log(`  Supplied public key SHA-256: ${providedPubkeySha256}`);
+    console.log('');
+    console.log('--- Local Identity Boundary ---');
+    console.log(`  Format: ${detectedFormat ?? 'unknown'}`);
+    console.log(`  Command posture: ${requiredIdentity.command_posture}`);
+    console.log(`  Required identity requested: ${requiredIdentityRequested}`);
+    console.log(`  Required receipt SHA matched: ${requiredIdentity.receipt_sha256_matched ?? 'not-requested'}`);
+    console.log(`  Required public key SHA matched: ${requiredIdentity.pubkey_sha256_matched ?? 'not-requested'}`);
+    console.log('  Claims not proven: issuer_status,key_custody,revocation_truth,downstream_recognition,live_receipt_emission,current_machine_governance');
+  }
+}
+
+process.exit(result.valid ? 0 : 1);
+
+function emitUnknownSigner(rkid, pkid) {
+  if (jsonOutput) {
+    console.log(JSON.stringify({
+      verdict: 'UNKNOWN-SIGNER',
+      reason: 'Receipt kid does not match provided public key.',
+      receipt_id: receipt && typeof receipt === 'object' && receipt.id ? receipt.id : null,
+      receipt_sha256: receiptSha256,
+      receipt_kid: rkid,
+      provided_kid: pkid,
+      provided_pubkey_sha256: providedPubkeySha256,
+      kid_match: false,
+      command_posture: commandPosture,
+      required_identity: requiredIdentity
+    }, null, 2));
+    return;
+  }
+
+  console.log('UNKNOWN-SIGNER');
+  console.log('');
+  console.log('Local verifier result: receipt kid does not match the supplied public key.');
+  console.log('This is a key mismatch, not revocation truth or live issuer-status truth.');
+  console.log(LOCAL_VERIFIER_NON_CLAIM);
+  console.log(`Receipt kid:      ${rkid}`);
+  console.log(`Provided key kid: ${pkid}`);
+}

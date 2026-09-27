@@ -1,0 +1,139 @@
+#!/usr/bin/env node
+import { existsSync, readFileSync } from 'node:fs';
+import {
+  assertNoUnsafeRecognizedEffectTargetShapeText,
+  buildRecognizedEffectTargetShapeSampleArtifact,
+  formatRecognizedEffectTargetShapeVerification,
+  parseRecognizedEffectTargetShapeArtifactText,
+  verifyRecognizedEffectTargetShapeArtifact,
+  writeRecognizedEffectTargetShapeArtifact,
+} from '../lib/recognized-effect-target-shape.mjs';
+
+function usage() {
+  console.error('Usage: zlar recognized-effect-target-shape --sample [--json] [--artifact <file|->]');
+  console.error('       zlar recognized-effect-target-shape verify (--input <file|->|--sample) [--json]');
+  console.error('Runs or verifies a no-secret fixture proof where raw ingress bytes do not become protected-records consequence unless they derive into recognized_effect_delta through the receipt/profile/issuer/state contract.');
+  console.error('This command does not live probe, select --latest, block OS filesystem writes, install hooks/config, prove side-door closure, or claim production governance.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function readInput(path) {
+  if (path === '-') return readFileSync(0, 'utf8');
+  if (!existsSync(path)) die('input file not found', 2);
+  return readFileSync(path, 'utf8');
+}
+
+function outputVerification(report, asJson) {
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatRecognizedEffectTargetShapeVerification(report);
+  assertNoUnsafeRecognizedEffectTargetShapeText(output);
+  process.stdout.write(output);
+}
+
+function runVerifyCommand(argv) {
+  let inputPath = '';
+  let useSample = false;
+  let asJson = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--input') {
+      inputPath = argv[++i] || '';
+      if (!inputPath) {
+        usage();
+        die('--input requires <file|->.', 2);
+      }
+    } else if (arg === '--sample') {
+      useSample = true;
+    } else if (arg === '--json') {
+      asJson = true;
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die(`Unsupported verify option: ${arg}`, 2);
+    }
+  }
+
+  if (inputPath && useSample) {
+    usage();
+    die('Cannot combine --input with --sample.', 2);
+  }
+  if (!inputPath && !useSample) {
+    usage();
+    die('verify requires --input <file|-> or --sample.', 2);
+  }
+
+  const artifact = useSample
+    ? buildRecognizedEffectTargetShapeSampleArtifact()
+    : parseRecognizedEffectTargetShapeArtifactText(readInput(inputPath));
+  outputVerification(verifyRecognizedEffectTargetShapeArtifact(artifact), asJson);
+}
+
+const args = process.argv.slice(2);
+if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  usage();
+  process.exit(args.length === 0 ? 2 : 0);
+}
+
+if (args[0] === 'verify') {
+  try {
+    runVerifyCommand(args.slice(1));
+  } catch (err) {
+    die(`recognized-effect target-shape verification failed: ${err.message}`);
+  }
+  process.exit(0);
+}
+
+let useSample = false;
+let asJson = false;
+let artifactOutput = '';
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--sample') {
+    useSample = true;
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--artifact') {
+    artifactOutput = args[++i] || '';
+    if (!artifactOutput) {
+      usage();
+      die('--artifact requires <file|->.', 2);
+    }
+  } else {
+    usage();
+    die(`Unsupported option: ${arg}`, 2);
+  }
+}
+
+if (!useSample) {
+  usage();
+  die('--sample is required; this verifier does not select live, latest, or current-machine evidence.', 2);
+}
+if (artifactOutput === '-' && asJson) {
+  usage();
+  die('Cannot combine --json with --artifact -.', 2);
+}
+
+try {
+  const artifact = buildRecognizedEffectTargetShapeSampleArtifact();
+  if (artifactOutput === '-') {
+    const output = `${JSON.stringify(artifact, null, 2)}\n`;
+    assertNoUnsafeRecognizedEffectTargetShapeText(output);
+    process.stdout.write(output);
+  } else {
+    if (artifactOutput) {
+      writeRecognizedEffectTargetShapeArtifact(artifact, artifactOutput);
+    }
+    outputVerification(verifyRecognizedEffectTargetShapeArtifact(artifact), asJson);
+  }
+} catch (err) {
+  die(`recognized-effect target-shape sample failed: ${err.message}`);
+}

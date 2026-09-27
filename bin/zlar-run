@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+import { runCli } from '../lib/zlar-owned-runner.mjs';
+
+process.exit(runCli(process.argv.slice(2)));

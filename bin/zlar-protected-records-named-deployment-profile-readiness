@@ -1,0 +1,64 @@
+#!/usr/bin/env node
+import {
+  assertProtectedRecordsNamedDeploymentProfileReadiness,
+  buildProtectedRecordsNamedDeploymentProfileReadiness,
+  formatProtectedRecordsNamedDeploymentProfileReadiness,
+} from '../lib/protected-records-named-deployment-profile-readiness.mjs';
+import {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText,
+} from '../lib/protected-records-runtime-profile.mjs';
+
+function usage() {
+  console.error('Usage: zlar protected-records-named-deployment-profile-readiness --sample [--json]');
+  console.error('Runs a local no-secret named deployment-profile rehearsal readiness report.');
+  console.error('This command does not install, activate, persist config, inspect live records, use credentials, or prove current-machine/production/enterprise/external claims.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(message);
+    return message;
+  } catch {
+    return 'Protected records named deployment profile readiness failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+let useSample = false;
+let asJson = false;
+
+for (const arg of args) {
+  if (arg === '--sample') {
+    useSample = true;
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '-h' || arg === '--help') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die(`Unknown argument: ${arg}`, 2);
+  }
+}
+
+if (!useSample) {
+  usage();
+  die('--sample is required; this command intentionally does not read live deployment-profile inputs.', 2);
+}
+
+try {
+  const report = buildProtectedRecordsNamedDeploymentProfileReadiness();
+  assertProtectedRecordsNamedDeploymentProfileReadiness(report);
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatProtectedRecordsNamedDeploymentProfileReadiness(report);
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message || String(err));
+}

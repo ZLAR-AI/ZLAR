@@ -1,0 +1,49 @@
+{
+  "fixture_type": "downstream-recognition-input-v1",
+  "now_epoch": 1781811030,
+  "receipt": {
+    "v": 1,
+    "id": "019edc370b408275544ae054d44772a41cf48ca5fe7c",
+    "kid": "cd7ab3dc1535b358",
+    "iat": 1781811000,
+    "type": "governed-action",
+    "payload": "eyJhZ2VudF9jb25maWdfaGFzaCI6bnVsbCwiYWdlbnRfY29uZmlnX3NvdXJjZSI6bnVsbCwiYWdlbnRfZmluZ2VycHJpbnQiOm51bGwsImF1ZGl0X2V2ZW50X2lkIjoiZG93bnN0cmVhbS1maXh0dXJlLWV2ZW50LTAwMSIsImF1ZGl0X3ByZXZfaGFzaCI6IjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJhdXRob3JpemVyIjoicG9saWN5IiwiZGVsZWdhdGlvbl9jaGFpbiI6W10sImRldGFpbF9oYXNoIjoiZDY1NzYwNDI2OGNlNzgxMGI2ZTBkNzA1M2IzMmY3ODNlNThkMjhiZjg5YTBjNWYxNTRjOGVmMGFlNzczZDNkNCIsImRvbWFpbiI6InJlY29yZHMiLCJlc2NhbGF0aW9uX3NvdXJjZSI6bnVsbCwiaDE0X2FsZXJ0X2Fja19yZWNlaXB0X2lkIjpudWxsLCJoMTRfYWxlcnRfdGllciI6MCwiaDE1X2JlbG93X2Zsb29yIjpudWxsLCJoMTVfZWxhcHNlZF9zZWNvbmRzIjpudWxsLCJoMTVfZmxvb3Jfc2Vjb25kcyI6bnVsbCwibWFuaWZlc3RfYWdlbnRfaWQiOm51bGwsIm1hbmlmZXN0X3ByaW5jaXBhbCI6bnVsbCwib3V0Y29tZSI6ImFsbG93IiwicG9saWN5X3ZlcnNpb24iOiJyZWNvZ25pdGlvbi1wb2xpY3ktb2xkIiwicnVsZSI6IlJSRUNPUkRTX0FMTE9XX0ZJWFRVUkUiLCJ0b29sIjoicmVjb3Jkcy53cml0ZSIsInRzIjoiMjAyNi0wNi0xOFQxOTozMDowMC4wMDBaIn0",
+    "sig": "x4OERDUaOeA0J3iiEW0aWXwqzTrec4XiLorhvSeA8k5Z0m7-nvBVnVCMwz4ppMr65nDkJh3Go1JBxS-8_FVKDg",
+    "prev": null
+  },
+  "recognition_rule": {
+    "deployment_scope": "fixture-records-terminal",
+    "accepted_issuers": [
+      {
+        "kid": "cd7ab3dc1535b358",
+        "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAaKLKviFqLl3ihwRQk/Sm3JIsrq9PeyqX2AjhuJQli6w=\n-----END PUBLIC KEY-----\n",
+        "status": "active"
+      }
+    ],
+    "accepted_policy_versions": [
+      "recognition-policy-v1"
+    ],
+    "accepted_domains": [
+      "records"
+    ],
+    "accepted_tools": [
+      "records.write"
+    ],
+    "accepted_outcomes": [
+      "allow",
+      "authorized"
+    ],
+    "max_age_seconds": 120,
+    "required_audit_event_id": "downstream-fixture-event-001",
+    "required_detail_hash": "d657604268ce7810b6e0d7053b32f783e58d28bf89a0c5f154c8ef0ae773d3d4"
+  },
+  "expected_decision": {
+    "decision": "refuse",
+    "reason_code": "policy_not_recognized"
+  },
+  "non_claims": [
+    "This fixture is supplied evidence only.",
+    "It does not prove live downstream integration.",
+    "It does not prove production deployment or external attestation."
+  ]
+}

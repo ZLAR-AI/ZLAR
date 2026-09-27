@@ -1,0 +1,173 @@
+#!/usr/bin/env node
+import { existsSync, readFileSync } from 'node:fs';
+import {
+  buildPrivateVerifierReadinessPacket,
+  buildPrivateVerifierReadinessVerification,
+  formatPrivateVerifierReadinessBuildResult,
+  formatPrivateVerifierReadinessVerification,
+  readPrivateVerifierReadinessPacketText,
+  writePrivateVerifierReadinessPacket,
+} from '../lib/private-verifier-readiness.mjs';
+
+function usage() {
+  console.error('Usage: zlar private-verifier-readiness build --evidence-dir <dir> --commit <sha> --evidence-source-commit <sha> --branch <branch> --output-dir <dir> [--repo <owner/name>] [--json]');
+  console.error('       zlar private-verifier-readiness verify --input <file|-> [--evidence-dir <dir>] [--require-commit <sha>] [--require-evidence-source-commit <sha>] [--require-artifact-set-sha <sha>] [--require-recomputed-evidence] [--json]');
+  console.error('Builds or verifies a local private verifier-readiness packet without sending it or claiming external attestation.');
+}
+
+function safeMessage(message) {
+  return String(message)
+    .replace(/\/Users\/[^\s"'`]+/g, '<private-path>')
+    .replace(/\/home\/[^\s"'`]+/g, '<private-path>')
+    .replace(/\/private\/[^\s"'`]+/g, '<private-path>')
+    .replace(/\/tmp\/[^\s"'`]+/g, '<private-path>')
+    .replace(/\/var\/[^\s"'`]+/g, '<private-path>');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeMessage(message)}`);
+  process.exit(code);
+}
+
+function readInput(path) {
+  if (path === '-') return readFileSync(0, 'utf8');
+  if (!existsSync(path)) die('input file not found', 2);
+  return readPrivateVerifierReadinessPacketText(path);
+}
+
+function parseJson(text, label) {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    die(`${label} is not valid JSON: ${err.message}`, 2);
+  }
+}
+
+const args = process.argv.slice(2);
+if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  usage();
+  process.exit(args.length === 0 ? 2 : 0);
+}
+
+const command = args.shift();
+if (!['build', 'verify'].includes(command)) {
+  usage();
+  die('unsupported private-verifier-readiness command', 2);
+}
+
+if (command === 'build') {
+  let evidenceDir = '';
+  let commit = '';
+  let evidenceSourceCommit = '';
+  let branch = '';
+  let outputDir = '';
+  let repo = 'ZLAR-AI/ZLAR';
+  let asJson = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--evidence-dir') {
+      evidenceDir = args[++i] || '';
+      if (!evidenceDir) die('--evidence-dir requires <dir>', 2);
+    } else if (arg === '--commit') {
+      commit = (args[++i] || '').toLowerCase();
+      if (!commit) die('--commit requires <sha>', 2);
+    } else if (arg === '--evidence-source-commit') {
+      evidenceSourceCommit = (args[++i] || '').toLowerCase();
+      if (!evidenceSourceCommit) die('--evidence-source-commit requires <sha>', 2);
+    } else if (arg === '--branch') {
+      branch = args[++i] || '';
+      if (!branch) die('--branch requires <branch>', 2);
+    } else if (arg === '--output-dir') {
+      outputDir = args[++i] || '';
+      if (!outputDir) die('--output-dir requires <dir>', 2);
+    } else if (arg === '--repo') {
+      repo = args[++i] || '';
+      if (!repo) die('--repo requires <owner/name>', 2);
+    } else if (arg === '--json') {
+      asJson = true;
+    } else {
+      usage();
+      die(`unsupported option: ${arg}`, 2);
+    }
+  }
+  if (!evidenceDir || !commit || !evidenceSourceCommit || !branch || !outputDir) {
+    usage();
+    die('build requires --evidence-dir, --commit, --evidence-source-commit, --branch, and --output-dir', 2);
+  }
+  try {
+    const packet = buildPrivateVerifierReadinessPacket({
+      evidenceDir,
+      commit,
+      evidenceSourceCommit,
+      branch,
+      repo,
+    });
+    const writeResult = writePrivateVerifierReadinessPacket({
+      packet,
+      outputDir,
+    });
+    const result = { packet, write_result: writeResult };
+    const output = asJson
+      ? `${JSON.stringify(result, null, 2)}\n`
+      : formatPrivateVerifierReadinessBuildResult({ packet, writeResult });
+    process.stdout.write(output);
+  } catch (err) {
+    die(`private verifier readiness build failed: ${err.message}`);
+  }
+} else {
+  let inputPath = '';
+  let evidenceDir = '';
+  let requireCommit = '';
+  let requireEvidenceSourceCommit = '';
+  let requireArtifactSetSha = '';
+  let requireRecomputedEvidence = false;
+  let asJson = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--input') {
+      inputPath = args[++i] || '';
+      if (!inputPath) die('--input requires <file|->', 2);
+    } else if (arg === '--evidence-dir') {
+      evidenceDir = args[++i] || '';
+      if (!evidenceDir) die('--evidence-dir requires <dir>', 2);
+    } else if (arg === '--require-commit') {
+      requireCommit = (args[++i] || '').toLowerCase();
+      if (!requireCommit) die('--require-commit requires <sha>', 2);
+    } else if (arg === '--require-evidence-source-commit') {
+      requireEvidenceSourceCommit = (args[++i] || '').toLowerCase();
+      if (!requireEvidenceSourceCommit) die('--require-evidence-source-commit requires <sha>', 2);
+    } else if (arg === '--require-artifact-set-sha') {
+      requireArtifactSetSha = (args[++i] || '').toLowerCase();
+      if (!requireArtifactSetSha) die('--require-artifact-set-sha requires <sha256>', 2);
+    } else if (arg === '--require-recomputed-evidence') {
+      requireRecomputedEvidence = true;
+    } else if (arg === '--json') {
+      asJson = true;
+    } else {
+      usage();
+      die(`unsupported option: ${arg}`, 2);
+    }
+  }
+  if (!inputPath) {
+    usage();
+    die('verify requires --input <file|->', 2);
+  }
+  try {
+    const packetText = readInput(inputPath);
+    const packet = parseJson(packetText, inputPath === '-' ? 'stdin' : 'input');
+    const verification = buildPrivateVerifierReadinessVerification(packet, {
+      evidenceDir,
+      packetText,
+      requiredCommit: requireCommit,
+      requiredEvidenceSourceCommit: requireEvidenceSourceCommit,
+      requireArtifactSetSha,
+      requireRecomputedEvidence,
+    });
+    const output = asJson
+      ? `${JSON.stringify(verification, null, 2)}\n`
+      : formatPrivateVerifierReadinessVerification(verification);
+    process.stdout.write(output);
+  } catch (err) {
+    die(`private verifier readiness verification failed: ${err.message}`);
+  }
+}

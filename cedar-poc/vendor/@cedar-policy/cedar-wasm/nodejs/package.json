@@ -1,0 +1,18 @@
+{
+  "name": "@cedar-policy/cedar-wasm",
+  "description": "Wasm bindings and typescript types for Cedar lib",
+  "version": "4.9.1",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cedar-policy/cedar"
+  },
+  "files": [
+    "cedar_wasm_bg.wasm",
+    "cedar_wasm.js",
+    "cedar_wasm.d.ts"
+  ],
+  "main": "cedar_wasm.js",
+  "types": "cedar_wasm.d.ts",
+  "type": "commonjs"
+}

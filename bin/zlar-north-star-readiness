@@ -1,0 +1,607 @@
+#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { canonicalize } from '../lib/canonicalize.mjs';
+import {
+  NORTH_STAR_READINESS_EVIDENCE_MODEL_RELEASE_FORWARD,
+  NORTH_STAR_READINESS_EVIDENCE_MODEL_SAMPLE,
+  assertNoUnsafeNorthStarReadinessText,
+  assertNorthStarReadinessReport,
+  buildNorthStarReadinessReport,
+  formatNorthStarReadinessSummary,
+} from '../lib/north-star-readiness.mjs';
+import {
+  buildVerifierKitPublicDistributionReport,
+} from '../lib/verifier-kit-public-distribution.mjs';
+import {
+  buildActivePersistentProfileLifecycleReport,
+} from '../lib/protected-records-active-persistent-profile-lifecycle.mjs';
+import {
+  buildProtectedRecordsInstalledRuntimeProfileTerminalChainArtifact,
+  verifyProtectedRecordsInstalledRuntimeProfileTerminalChainArtifact,
+} from '../lib/protected-records-installed-runtime-profile-terminal-chain.mjs';
+import {
+  assertProtectedRecordsCurrentFixtureAuthorityGrantFreshEffectAllowed,
+} from '../lib/protected-records-fixture-authority-status.mjs';
+import {
+  PROOF_SMOKE_HISTORICAL_V1_SAMPLE_FILE_SHA256,
+  PROOF_SMOKE_HISTORICAL_V1_SAMPLE_REPORT_SHA256,
+} from '../lib/proof-smoke-report.mjs';
+
+const PROJECT_DIR = fileURLToPath(new URL('..', import.meta.url));
+const ZLAR_BIN = fileURLToPath(new URL('zlar', import.meta.url));
+
+function usage() {
+  console.error('Usage: zlar north-star-readiness (--sample|--evidence-dir <dir> [--release-tag <vX.Y.Z>] [--private-verifier-result-verification <file>] [--private-verifier-zip-result-verification <file>] [--public-artifact-verifier-result-verification <file>] [--public-external-attestation-result-verification <file>]) [--json]');
+  console.error('The current schema composes fixture-rightful fields from an exhausted one-use grant and therefore refuses before sample execution or readiness projection.');
+  console.error('A demoted historical-only readiness schema or replacement fixture grant is required before rebuilding this report.');
+  console.error('When present, zlar-trusted-receipt-issuer-completion-proof-v1.json is verified as bounded recognized-authority-event evidence.');
+  console.error('The report is a closure/readiness audit, not a v3.4.0 readiness claim and not external attestation.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function runZlarJson(args) {
+  const result = spawnSync(ZLAR_BIN, args, {
+    cwd: PROJECT_DIR,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      NO_COLOR: '1',
+    },
+  });
+  if (result.status !== 0) {
+    if (result.stderr) process.stderr.write(result.stderr);
+    die(`zlar ${args.join(' ')} failed.`, result.status || 1);
+  }
+  if (result.stderr) {
+    process.stderr.write(result.stderr);
+    die(`zlar ${args.join(' ')} emitted unexpected stderr.`);
+  }
+  try {
+    return JSON.parse(result.stdout);
+  } catch (err) {
+    die(`zlar ${args.join(' ')} emitted invalid JSON: ${err.message}`);
+  }
+}
+
+function readJson(path, { required = true } = {}) {
+  const evidenceName = basename(path);
+  if (!existsSync(path)) {
+    if (required) die(`Required evidence file missing: ${evidenceName}`, 2);
+    return null;
+  }
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    die(`Could not parse evidence JSON ${evidenceName}: ${err.message}`);
+  }
+}
+
+function readJsonBytes(path, { required = true } = {}) {
+  const evidenceName = basename(path);
+  if (!existsSync(path)) {
+    if (required) die(`Required evidence file missing: ${evidenceName}`, 2);
+    return null;
+  }
+  try {
+    const bytes = readFileSync(path);
+    return {
+      json: JSON.parse(bytes.toString('utf8')),
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
+  } catch (err) {
+    die(`Could not parse evidence JSON ${evidenceName}: ${err.message}`);
+  }
+}
+
+function assertSha256(label, value) {
+  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) {
+    die(`${label} must be a SHA-256 hex string.`, 2);
+  }
+}
+
+function assertBasename(label, value) {
+  if (
+    typeof value !== 'string' ||
+    value.length < 1 ||
+    value !== basename(value) ||
+    value.includes('/') ||
+    value.includes('\\')
+  ) {
+    die(`${label} must be a basename, not a path.`, 2);
+  }
+}
+
+function exactManifestKeys(label, value, expectedKeys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    die(`${label} must be an object.`, 2);
+  }
+  const actual = Object.keys(value).sort();
+  const expected = [...expectedKeys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    die(`${label} contains unexpected fields.`, 2);
+  }
+}
+
+function readActivePersistentLifecycleEvidence(dir) {
+  const lifecyclePath = join(dir, 'zlar-active-persistent-profile-lifecycle-v1.json');
+  const lifecycleRead = readJsonBytes(lifecyclePath, { required: false });
+  if (!lifecycleRead) return null;
+
+  const bindingPath = join(dir, 'zlar-active-persistent-profile-lifecycle-source-binding-v1.json');
+  const bindingRead = readJsonBytes(bindingPath, { required: true });
+  const binding = bindingRead.json;
+  exactManifestKeys('Active persistent lifecycle source binding', binding, [
+    'current_installation',
+    'evidence_class',
+    'lifecycle_report_file',
+    'lifecycle_report_sha256',
+    'non_scoring',
+    'product_proof_path_completion',
+    'production_downstream_recognition',
+    'report_type',
+    'schema_version',
+    'source_reports',
+  ]);
+  if (
+    binding.report_type !== 'zlar-active-persistent-profile-lifecycle-source-binding-v1' ||
+    binding.schema_version !== 1 ||
+    binding.evidence_class !== 'historical_supplied_local_active_persistent_profile_lifecycle' ||
+    binding.lifecycle_report_file !== 'zlar-active-persistent-profile-lifecycle-v1.json' ||
+    binding.non_scoring !== true ||
+    binding.current_installation !== false ||
+    binding.product_proof_path_completion !== false ||
+    binding.production_downstream_recognition !== false
+  ) {
+    die('Active persistent lifecycle source binding boundary drifted.', 2);
+  }
+  assertSha256('Active persistent lifecycle report SHA-256', binding.lifecycle_report_sha256);
+  if (binding.lifecycle_report_sha256 !== lifecycleRead.sha256) {
+    die('Active persistent lifecycle source binding report hash mismatch.', 2);
+  }
+
+  exactManifestKeys('Active persistent lifecycle source reports', binding.source_reports, [
+    'closeout_report',
+    'green_report',
+    'install_report',
+    'red_report',
+  ]);
+  const sourceHashKeys = {
+    install_report: 'install_report_sha256',
+    green_report: 'green_report_sha256',
+    red_report: 'red_report_sha256',
+    closeout_report: 'closeout_report_sha256',
+  };
+  const sourceReportHashes = {};
+  const sourceReports = {};
+  const sourceReportLabels = {};
+  for (const [manifestKey, hashKey] of Object.entries(sourceHashKeys)) {
+    const entry = binding.source_reports[manifestKey];
+    exactManifestKeys(`Active persistent lifecycle ${manifestKey}`, entry, [
+      'file',
+      'sha256',
+    ]);
+    assertBasename(`Active persistent lifecycle ${manifestKey} file`, entry.file);
+    assertSha256(`Active persistent lifecycle ${manifestKey} SHA-256`, entry.sha256);
+    const sourcePath = join(dir, entry.file);
+    const sourceRead = readJsonBytes(sourcePath, { required: true });
+    if (sourceRead.sha256 !== entry.sha256) {
+      die(`Active persistent lifecycle ${manifestKey} source hash mismatch.`, 2);
+    }
+    const expectedFromLifecycle =
+      lifecycleRead.json?.supplied_reports?.hashes?.[hashKey];
+    if (entry.sha256 !== expectedFromLifecycle) {
+      die(`Active persistent lifecycle ${manifestKey} does not match lifecycle report.`, 2);
+    }
+    sourceReports[manifestKey] = sourceRead.json;
+    sourceReportLabels[manifestKey] = entry.file;
+    sourceReportHashes[hashKey] = entry.sha256;
+  }
+  const rebuiltLifecycle = buildActivePersistentProfileLifecycleReport({
+    installReport: sourceReports.install_report,
+    greenReport: sourceReports.green_report,
+    redReport: sourceReports.red_report,
+    closeoutReport: sourceReports.closeout_report,
+    inputReportHashes: sourceReportHashes,
+    inputReportLabels: sourceReportLabels,
+    expectedInputReportHashesBound: true,
+    generatedAt: lifecycleRead.json.generated_at,
+  });
+  if (canonicalize(rebuiltLifecycle) !== canonicalize(lifecycleRead.json)) {
+    die('Active persistent lifecycle report does not rebuild from source reports.', 2);
+  }
+
+  return {
+    report: lifecycleRead.json,
+    lifecycle_report_sha256: lifecycleRead.sha256,
+    binding_manifest_sha256: bindingRead.sha256,
+    source_report_hashes: sourceReportHashes,
+  };
+}
+
+function readText(path, { required = true } = {}) {
+  const evidenceName = basename(path);
+  if (!existsSync(path)) {
+    if (required) die(`Required evidence file missing: ${evidenceName}`, 2);
+    return '';
+  }
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (err) {
+    die(`Could not read evidence file ${evidenceName}: ${err.message}`);
+  }
+}
+
+function readPrivateVerifierResultVerification(path) {
+  if (!existsSync(path)) {
+    die('Private verifier result verification file missing.', 2);
+  }
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    die(`Could not parse private verifier result verification JSON: ${err.message}`);
+  }
+}
+
+function readPrivateVerifierZipResultVerification(path) {
+  if (!existsSync(path)) {
+    die('Private verifier ZIP result verification file missing.', 2);
+  }
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    die(`Could not parse private verifier ZIP result verification JSON: ${err.message}`);
+  }
+}
+
+function releaseTagAtLeast(releaseTag, major, minor, patch) {
+  const match = typeof releaseTag === 'string'
+    ? releaseTag.match(/^v(\d+)\.(\d+)\.(\d+)$/)
+    : null;
+  if (!match) return false;
+  const parsed = {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+  };
+  if (parsed.major !== major) return parsed.major > major;
+  if (parsed.minor !== minor) return parsed.minor > minor;
+  return parsed.patch >= patch;
+}
+
+function buildFromSample() {
+  const installedRuntimeProfileTerminalChain =
+    runZlarJson(['protected-records-installed-runtime-profile-terminal-chain', '--sample', '--json']);
+  const installedRuntimeProfileTerminalChainArtifact =
+    buildProtectedRecordsInstalledRuntimeProfileTerminalChainArtifact(
+      installedRuntimeProfileTerminalChain
+    );
+  const installedRuntimeProfileTerminalChainArtifactVerification =
+    verifyProtectedRecordsInstalledRuntimeProfileTerminalChainArtifact(
+      installedRuntimeProfileTerminalChainArtifact
+    );
+  return buildNorthStarReadinessReport({
+    evidenceModel: NORTH_STAR_READINESS_EVIDENCE_MODEL_SAMPLE,
+    productProofPathReport: null,
+    proofSmokeVerification: runZlarJson([
+      'proof-smoke',
+      'verify',
+      '--historical',
+      '--sample',
+      '--require-file-sha',
+      PROOF_SMOKE_HISTORICAL_V1_SAMPLE_FILE_SHA256,
+      '--require-sha',
+      PROOF_SMOKE_HISTORICAL_V1_SAMPLE_REPORT_SHA256,
+      '--json',
+    ]),
+    localProofPackVerification: runZlarJson(['local-proof-pack', 'verify', '--sample', '--json']),
+    servicePreflightVerification: runZlarJson(['protected-records-service-preflight', 'verify', '--sample', '--json']),
+    runtimeLocalActivationVerification: runZlarJson(['protected-records-runtime-local-activation', 'verify', '--sample', '--json']),
+    runtimeProfileInstallationVerification: runZlarJson(['protected-records-runtime-profile-installation', 'verify', '--sample', '--json']),
+    installedRuntimeProfilePreflightVerification: runZlarJson(['protected-records-installed-runtime-profile-preflight', 'verify', '--sample', '--json']),
+    installedRuntimeProfileRecognitionProof: runZlarJson(['protected-records-installed-runtime-profile-recognition-proof', '--sample', '--json']),
+    installedRuntimeProfileServiceProof: runZlarJson(['protected-records-installed-runtime-profile-service-proof', '--sample', '--json']),
+    installedRuntimeProfileServiceProofArtifactVerification: runZlarJson(['protected-records-installed-runtime-profile-service-proof', 'verify', '--sample', '--json']),
+    installedRuntimeProfileTerminalChain,
+    installedRuntimeProfileTerminalChainArtifact,
+    installedRuntimeProfileTerminalChainArtifactVerification,
+    coverageMap: runZlarJson(['coverage', '--sample', '--require-governed', '--json']),
+  });
+}
+
+function readPublicArtifactVerifierResultVerification(path) {
+  if (!existsSync(path)) {
+    die('Public artifact verifier result verification file missing.', 2);
+  }
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    die(`Could not parse public artifact verifier result verification JSON: ${err.message}`);
+  }
+}
+
+function readPublicExternalAttestationResultVerification(path) {
+  if (!existsSync(path)) {
+    die('Public external attestation result verification file missing.', 2);
+  }
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    die(`Could not parse public external attestation result verification JSON: ${err.message}`);
+  }
+}
+
+function buildFromEvidenceDir(
+  dir,
+  releaseTag,
+  privateVerifierResultVerificationPath = '',
+  privateVerifierZipResultVerificationPath = '',
+  publicArtifactVerifierResultVerificationPath = '',
+  publicExternalAttestationResultVerificationPath = '',
+) {
+  const productProofPath = join(dir, 'zlar-product-proof-path-v1.json');
+  const recognitionPath = join(dir, 'zlar-trusted-receipt-issuer-recognition.json');
+  const trustedReceiptIssuerCompletionPath =
+    join(dir, 'zlar-trusted-receipt-issuer-completion-proof-v1.json');
+  const malformedErrorPath = join(dir, 'zlar-trusted-receipt-issuer-recognition-malformed-registry-error.txt');
+  const verifierKitReproducibilityPath = join(dir, 'zlar-verifier-kit-reproducibility-v1.json');
+  const verifierKitReleaseAssetsPath = join(dir, 'zlar-verifier-kit-release-assets-v1.json');
+  const verifierKitPublicDistributionPath = join(dir, 'zlar-verifier-kit-public-distribution-v1.json');
+  const installedRuntimeProfileServiceProofPath =
+    join(dir, 'zlar-installed-runtime-profile-service-proof-v1.json');
+  const installedRuntimeProfileServiceProofArtifactVerificationPath =
+    join(dir, 'zlar-installed-runtime-profile-service-proof-artifact-verification-v1.json');
+  const installedRuntimeProfileTerminalChainPath =
+    join(dir, 'zlar-installed-runtime-profile-terminal-chain-v1.json');
+  const installedRuntimeProfileTerminalChainArtifactPath =
+    join(dir, 'zlar-installed-runtime-profile-terminal-chain-artifact-v1.json');
+  const installedRuntimeProfileTerminalChainArtifactVerificationPath =
+    join(dir, 'zlar-installed-runtime-profile-terminal-chain-artifact-verification-v1.json');
+  const requiresInstalledRuntimeProfileServiceProof =
+    releaseTagAtLeast(releaseTag, 3, 4, 11);
+  const requiresInstalledRuntimeProfileServiceProofArtifactVerification =
+    releaseTagAtLeast(releaseTag, 3, 4, 14);
+  const requiresInstalledRuntimeProfileTerminalChain =
+    releaseTagAtLeast(releaseTag, 3, 4, 15);
+  const verifierKitReproducibilityRead = readJsonBytes(
+    verifierKitReproducibilityPath,
+    { required: false }
+  );
+  const verifierKitReleaseAssets = readJson(
+    verifierKitReleaseAssetsPath,
+    { required: false }
+  );
+  let verifierKitPublicDistribution = readJson(
+    verifierKitPublicDistributionPath,
+    { required: false }
+  );
+  const verifierKitReleaseAssetsLiveRead =
+    verifierKitReleaseAssets?.report_type === 'zlar-verifier-kit-release-assets-live-v1' &&
+    verifierKitReleaseAssets?.evidence_model === 'github-release-assets-json-live-read';
+  const verifierKitStaticPublicArtifactSource =
+    verifierKitReleaseAssets?.evidence_model === 'static-public-artifact-source-live-read' &&
+    verifierKitReleaseAssets?.public_artifact_source === 'zlar.ai' &&
+    verifierKitReleaseAssets?.anonymous_access_verified === true;
+  const shouldRebuildPublicDistribution =
+    releaseTagAtLeast(releaseTag, 3, 4, 31) &&
+    verifierKitPublicDistribution?.ready_for_public_distribution_claim === true;
+  if (shouldRebuildPublicDistribution) {
+    if (!verifierKitReproducibilityRead) {
+      die('Verifier-kit reproducibility evidence is required to rebuild public distribution readiness.', 2);
+    }
+    if (!verifierKitReleaseAssetsLiveRead && !verifierKitStaticPublicArtifactSource) {
+      die('Verifier-kit release-asset live-read or static public artifact source evidence is required for public distribution readiness.', 2);
+    }
+    if (!verifierKitPublicDistribution) {
+      die('Verifier-kit public distribution evidence is required for public distribution readiness.', 2);
+    }
+    const rebuiltPublicDistribution = buildVerifierKitPublicDistributionReport({
+      releaseTag,
+      releaseAssetsJson: verifierKitReleaseAssets,
+      reproducibility: verifierKitReproducibilityRead.json,
+      reproducibilitySha256: verifierKitReproducibilityRead.sha256,
+      assetDir: dir,
+    });
+    if (canonicalize(rebuiltPublicDistribution) !== canonicalize(verifierKitPublicDistribution)) {
+      die('Verifier-kit public distribution report does not match rebuilt release-asset evidence.', 2);
+    }
+    if (rebuiltPublicDistribution.ready_for_public_distribution_claim !== true) {
+      die('Verifier-kit public distribution evidence is not ready for public distribution.', 2);
+    }
+    verifierKitPublicDistribution = rebuiltPublicDistribution;
+  }
+  const privateVerifierResultVerification = privateVerifierResultVerificationPath
+    ? readPrivateVerifierResultVerification(privateVerifierResultVerificationPath)
+    : null;
+  const privateVerifierZipResultVerification = privateVerifierZipResultVerificationPath
+    ? readPrivateVerifierZipResultVerification(privateVerifierZipResultVerificationPath)
+    : null;
+  const publicArtifactVerifierResultVerification = publicArtifactVerifierResultVerificationPath
+    ? readPublicArtifactVerifierResultVerification(publicArtifactVerifierResultVerificationPath)
+    : null;
+  const publicExternalAttestationResultVerification = publicExternalAttestationResultVerificationPath
+    ? readPublicExternalAttestationResultVerification(publicExternalAttestationResultVerificationPath)
+    : null;
+  const activePersistentProfileLifecycleEvidence =
+    readActivePersistentLifecycleEvidence(dir);
+  return buildNorthStarReadinessReport({
+    evidenceModel: NORTH_STAR_READINESS_EVIDENCE_MODEL_RELEASE_FORWARD,
+    productProofPathReport: readJson(productProofPath, { required: false }),
+    proofSmokeVerification: readJson(join(dir, 'zlar-proof-smoke-sample-verification.json')),
+    localProofPackVerification: readJson(join(dir, 'zlar-local-proof-pack-sample-verification.json')),
+    servicePreflightVerification: readJson(join(dir, 'zlar-service-preflight-sample-verification.json')),
+    runtimeLocalActivationVerification: readJson(join(dir, 'zlar-runtime-local-activation-sample-verification.json')),
+    runtimeProfileInstallationVerification: readJson(join(dir, 'zlar-runtime-profile-installation-sample-verification.json')),
+    installedRuntimeProfilePreflightVerification: readJson(join(dir, 'zlar-installed-runtime-profile-preflight-sample-verification.json')),
+    installedRuntimeProfileRecognitionProof: readJson(join(dir, 'zlar-installed-runtime-profile-recognition-proof-v1.json'), { required: false }),
+    installedRuntimeProfileServiceProof: readJson(
+      installedRuntimeProfileServiceProofPath,
+      { required: requiresInstalledRuntimeProfileServiceProof }
+    ),
+    installedRuntimeProfileServiceProofArtifactVerification: readJson(
+      installedRuntimeProfileServiceProofArtifactVerificationPath,
+      { required: requiresInstalledRuntimeProfileServiceProofArtifactVerification }
+    ),
+    installedRuntimeProfileTerminalChain: readJson(
+      installedRuntimeProfileTerminalChainPath,
+      { required: requiresInstalledRuntimeProfileTerminalChain }
+    ),
+    installedRuntimeProfileTerminalChainArtifact: readJson(
+      installedRuntimeProfileTerminalChainArtifactPath,
+      { required: requiresInstalledRuntimeProfileTerminalChain }
+    ),
+    installedRuntimeProfileTerminalChainArtifactVerification: readJson(
+      installedRuntimeProfileTerminalChainArtifactVerificationPath,
+      { required: requiresInstalledRuntimeProfileTerminalChain }
+    ),
+    coverageMap: readJson(join(dir, 'zlar-coverage-map-sample.json')),
+    trustedIssuerRecognition: readJson(recognitionPath, { required: false }),
+    trustedReceiptIssuerCompletionProof:
+      readJson(trustedReceiptIssuerCompletionPath, { required: false }),
+    malformedRegistryErrorText: readText(malformedErrorPath, { required: false }),
+    verifierKitReproducibility: verifierKitReproducibilityRead?.json || null,
+    verifierKitReleaseAssets,
+    verifierKitPublicDistribution,
+    privateVerifierResultVerification,
+    privateVerifierZipResultVerification,
+    publicArtifactVerifierResultVerification,
+    publicExternalAttestationResultVerification,
+    activePersistentProfileLifecycleEvidence,
+    releaseForwardTargetTag: releaseTag,
+  });
+}
+
+const args = process.argv.slice(2);
+let sample = false;
+let evidenceDir = '';
+let releaseTag = '';
+let privateVerifierResultVerificationPath = '';
+let privateVerifierZipResultVerificationPath = '';
+let publicArtifactVerifierResultVerificationPath = '';
+let publicExternalAttestationResultVerificationPath = '';
+let asJson = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--sample') {
+    if (evidenceDir || sample) {
+      usage();
+      die('north-star-readiness accepts only one evidence source.', 2);
+    }
+    sample = true;
+  } else if (arg === '--evidence-dir') {
+    if (evidenceDir || sample) {
+      usage();
+      die('north-star-readiness accepts only one evidence source.', 2);
+    }
+    evidenceDir = args[++i] || '';
+    if (!evidenceDir) {
+      usage();
+      die('--evidence-dir requires a directory.', 2);
+    }
+  } else if (arg === '--release-tag') {
+    releaseTag = args[++i] || '';
+    if (!releaseTag) {
+      usage();
+      die('--release-tag requires a value.', 2);
+    }
+    if (!/^v\d+\.\d+\.\d+$/.test(releaseTag)) {
+      usage();
+      die('--release-tag must look like vX.Y.Z.', 2);
+    }
+  } else if (arg === '--private-verifier-result-verification') {
+    privateVerifierResultVerificationPath = args[++i] || '';
+    if (!privateVerifierResultVerificationPath) {
+      usage();
+      die('--private-verifier-result-verification requires a file.', 2);
+    }
+  } else if (arg === '--private-verifier-zip-result-verification') {
+    privateVerifierZipResultVerificationPath = args[++i] || '';
+    if (!privateVerifierZipResultVerificationPath) {
+      usage();
+      die('--private-verifier-zip-result-verification requires a file.', 2);
+    }
+  } else if (arg === '--public-artifact-verifier-result-verification') {
+    publicArtifactVerifierResultVerificationPath = args[++i] || '';
+    if (!publicArtifactVerifierResultVerificationPath) {
+      usage();
+      die('--public-artifact-verifier-result-verification requires a file.', 2);
+    }
+  } else if (arg === '--public-external-attestation-result-verification') {
+    publicExternalAttestationResultVerificationPath = args[++i] || '';
+    if (!publicExternalAttestationResultVerificationPath) {
+      usage();
+      die('--public-external-attestation-result-verification requires a file.', 2);
+    }
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (!sample && !evidenceDir) {
+  usage();
+  die('--sample or --evidence-dir <dir> is required.', 2);
+}
+if (releaseTag && !evidenceDir) {
+  usage();
+  die('--release-tag is only valid with --evidence-dir.', 2);
+}
+if (privateVerifierResultVerificationPath && !evidenceDir) {
+  usage();
+  die('--private-verifier-result-verification is only valid with --evidence-dir.', 2);
+}
+if (privateVerifierZipResultVerificationPath && !evidenceDir) {
+  usage();
+  die('--private-verifier-zip-result-verification is only valid with --evidence-dir.', 2);
+}
+if (publicArtifactVerifierResultVerificationPath && !evidenceDir) {
+  usage();
+  die('--public-artifact-verifier-result-verification is only valid with --evidence-dir.', 2);
+}
+if (publicExternalAttestationResultVerificationPath && !evidenceDir) {
+  usage();
+  die('--public-external-attestation-result-verification is only valid with --evidence-dir.', 2);
+}
+
+try {
+  assertProtectedRecordsCurrentFixtureAuthorityGrantFreshEffectAllowed(
+    'North Star readiness fixture-rightful composition',
+  );
+} catch (err) {
+  die(err.message);
+}
+
+try {
+  const report = sample
+    ? buildFromSample()
+    : buildFromEvidenceDir(
+      evidenceDir,
+      releaseTag,
+      privateVerifierResultVerificationPath,
+      privateVerifierZipResultVerificationPath,
+      publicArtifactVerifierResultVerificationPath,
+      publicExternalAttestationResultVerificationPath
+    );
+  assertNorthStarReadinessReport(report);
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatNorthStarReadinessSummary(report);
+  assertNoUnsafeNorthStarReadinessText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

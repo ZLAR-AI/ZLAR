@@ -1,0 +1,45 @@
+#!/usr/bin/env node
+import {
+  assertHumanAuthorizationProof,
+  assertNoUnsafeHumanAuthorizationProofText,
+  formatHumanAuthorizationProofSummary,
+  runHumanAuthorizationProof,
+} from '../lib/human-authorization-proof.mjs';
+
+function usage() {
+  console.error('Usage: zlar human-authorization-proof [--json]');
+  console.error('Runs a local hermetic simulated-human authorization proof.');
+  console.error('This command does not live probe, does not use Telegram, does not inspect runtime state, or claim production deployment.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+let asJson = false;
+
+for (const arg of args) {
+  if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+try {
+  const report = runHumanAuthorizationProof();
+  assertHumanAuthorizationProof(report);
+  const output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatHumanAuthorizationProofSummary(report);
+  assertNoUnsafeHumanAuthorizationProofText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

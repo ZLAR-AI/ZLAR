@@ -1,0 +1,293 @@
+#!/usr/bin/env node
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+} from 'node:fs';
+import { resolve } from 'node:path';
+import {
+  assertProtectedRecordsPostEffectRouteEvidenceIndexV0,
+  buildProtectedRecordsPostEffectRouteEvidenceIndexV0,
+  canonicalProtectedRecordsPostEffectRouteEvidenceIndexBytesV0,
+  formatProtectedRecordsPostEffectRouteEvidenceIndexSummaryV0,
+} from '../lib/protected-records-post-effect-route-evidence-index-v0.mjs';
+
+const MAX_INPUT_BYTES = 8 * 1024 * 1024;
+const SHA256_RE = /^[a-f0-9]{64}$/;
+const GIT_SHA1_RE = /^[a-f0-9]{40}$/;
+
+function usage() {
+  console.error(
+    'Usage: bin/zlar-protected-records-post-effect-route-evidence-index-v0 --runtime-result <file> --service <file> --terminal <file> --manifest <file> --verification <file> --exhausted-status <file> --closeout <file> --require-runtime-result-file-sha <sha256> --require-service-file-sha <sha256> --require-terminal-file-sha <sha256> --require-manifest-file-sha <sha256> --require-verification-file-sha <sha256> --require-exhausted-status-file-sha <sha256> --require-closeout-file-sha <sha256> --require-service-body-sha <sha256> --require-terminal-body-sha <sha256> --require-manifest-body-sha <sha256> --require-manifest-schema-sha <sha256> --require-grant-sha <sha256> --require-crossing-binding-sha <sha256> --require-exhausted-status-body-sha <sha256> --require-crossing-source-commit <git-sha1> [--json]',
+  );
+  console.error(
+    'Verification-only: reads seven caller-pinned post-effect files, source-recomputes the artifact-set verification, and emits a separate index without loading runtime, crossing, receipt/signing, key, child-process, or write capability.',
+  );
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const options = {
+    runtimeResultPath: '',
+    servicePath: '',
+    terminalPath: '',
+    manifestPath: '',
+    verificationPath: '',
+    exhaustedStatusPath: '',
+    closeoutPath: '',
+    expectedRuntimeResultFileSha256: '',
+    expectedServiceFileSha256: '',
+    expectedTerminalFileSha256: '',
+    expectedManifestFileSha256: '',
+    expectedVerificationFileSha256: '',
+    expectedExhaustedStatusFileSha256: '',
+    expectedCloseoutFileSha256: '',
+    expectedServiceArtifactBodySha256: '',
+    expectedTerminalArtifactBodySha256: '',
+    expectedManifestArtifactBodySha256: '',
+    expectedManifestSchemaContractSha256: '',
+    expectedGrantContractSha256: '',
+    expectedCrossingBindingSha256: '',
+    expectedExhaustedStatusBodySha256: '',
+    expectedCrossingSourceCommitOid: '',
+    json: false,
+    jsonSeen: false,
+    requireClosed: false,
+    requireClosedSeen: false,
+  };
+  const valueFlags = new Map([
+    ['--runtime-result', 'runtimeResultPath'],
+    ['--service', 'servicePath'],
+    ['--terminal', 'terminalPath'],
+    ['--manifest', 'manifestPath'],
+    ['--verification', 'verificationPath'],
+    ['--exhausted-status', 'exhaustedStatusPath'],
+    ['--closeout', 'closeoutPath'],
+    ['--require-runtime-result-file-sha', 'expectedRuntimeResultFileSha256'],
+    ['--require-service-file-sha', 'expectedServiceFileSha256'],
+    ['--require-terminal-file-sha', 'expectedTerminalFileSha256'],
+    ['--require-manifest-file-sha', 'expectedManifestFileSha256'],
+    ['--require-verification-file-sha', 'expectedVerificationFileSha256'],
+    ['--require-exhausted-status-file-sha', 'expectedExhaustedStatusFileSha256'],
+    ['--require-closeout-file-sha', 'expectedCloseoutFileSha256'],
+    ['--require-service-body-sha', 'expectedServiceArtifactBodySha256'],
+    ['--require-terminal-body-sha', 'expectedTerminalArtifactBodySha256'],
+    ['--require-manifest-body-sha', 'expectedManifestArtifactBodySha256'],
+    ['--require-manifest-schema-sha', 'expectedManifestSchemaContractSha256'],
+    ['--require-grant-sha', 'expectedGrantContractSha256'],
+    ['--require-crossing-binding-sha', 'expectedCrossingBindingSha256'],
+    ['--require-exhausted-status-body-sha', 'expectedExhaustedStatusBodySha256'],
+    ['--require-crossing-source-commit', 'expectedCrossingSourceCommitOid'],
+  ]);
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (valueFlags.has(arg)) {
+      const key = valueFlags.get(arg);
+      if (options[key]) {
+        usage();
+        die(`${arg} may be supplied only once.`, 2);
+      }
+      const candidate = argv[++index] || '';
+      if (!candidate || candidate.startsWith('-')) {
+        usage();
+        die(`${arg} requires one explicit value.`, 2);
+      }
+      options[key] = candidate;
+    } else if (arg === '--json') {
+      if (options.jsonSeen) {
+        usage();
+        die('--json may be supplied only once.', 2);
+      }
+      options.json = true;
+      options.jsonSeen = true;
+    } else if (arg === '--require-closed') {
+      if (options.requireClosedSeen) {
+        usage();
+        die('--require-closed may be supplied only once.', 2);
+      }
+      options.requireClosed = true;
+      options.requireClosedSeen = true;
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die('Unsupported option or positional argument provided.', 2);
+    }
+  }
+
+  const required = [
+    ['--runtime-result', options.runtimeResultPath],
+    ['--service', options.servicePath],
+    ['--terminal', options.terminalPath],
+    ['--manifest', options.manifestPath],
+    ['--verification', options.verificationPath],
+    ['--exhausted-status', options.exhaustedStatusPath],
+    ['--closeout', options.closeoutPath],
+    ['--require-runtime-result-file-sha', options.expectedRuntimeResultFileSha256],
+    ['--require-service-file-sha', options.expectedServiceFileSha256],
+    ['--require-terminal-file-sha', options.expectedTerminalFileSha256],
+    ['--require-manifest-file-sha', options.expectedManifestFileSha256],
+    ['--require-verification-file-sha', options.expectedVerificationFileSha256],
+    ['--require-exhausted-status-file-sha', options.expectedExhaustedStatusFileSha256],
+    ['--require-closeout-file-sha', options.expectedCloseoutFileSha256],
+    ['--require-service-body-sha', options.expectedServiceArtifactBodySha256],
+    ['--require-terminal-body-sha', options.expectedTerminalArtifactBodySha256],
+    ['--require-manifest-body-sha', options.expectedManifestArtifactBodySha256],
+    ['--require-manifest-schema-sha', options.expectedManifestSchemaContractSha256],
+    ['--require-grant-sha', options.expectedGrantContractSha256],
+    ['--require-crossing-binding-sha', options.expectedCrossingBindingSha256],
+    ['--require-exhausted-status-body-sha', options.expectedExhaustedStatusBodySha256],
+    ['--require-crossing-source-commit', options.expectedCrossingSourceCommitOid],
+  ];
+  for (const [label, value] of required) {
+    if (!value) die(`${label} is required.`, 2);
+  }
+  for (const [label, value] of required.slice(7, 21)) {
+    if (!SHA256_RE.test(value)) {
+      die(`${label} must be a lowercase SHA-256 digest.`, 2);
+    }
+  }
+  if (!GIT_SHA1_RE.test(options.expectedCrossingSourceCommitOid)) {
+    die('--require-crossing-source-commit must be a lowercase SHA-1 Git object ID.', 2);
+  }
+  if (options.requireClosed) {
+    die(
+      '--require-closed is unsupported; lifecycle status change is not authorized by a post-effect evidence index.',
+    );
+  }
+  return options;
+}
+
+function descriptorIdentity(status) {
+  return [status.dev, status.ino, status.size, status.mtimeMs, status.ctimeMs]
+    .map(String)
+    .join(':');
+}
+
+function readExactRegularFile(path, label) {
+  if (!Number.isInteger(constants.O_NOFOLLOW)) {
+    throw new Error('No-follow file opening is unavailable');
+  }
+  let descriptor;
+  try {
+    descriptor = openSync(
+      resolve(path),
+      constants.O_RDONLY |
+        constants.O_NOFOLLOW |
+        (Number.isInteger(constants.O_CLOEXEC) ? constants.O_CLOEXEC : 0),
+    );
+    const before = fstatSync(descriptor);
+    if (!before.isFile()) {
+      throw new Error(`${label} is not a regular file`);
+    }
+    if (before.size < 2 || before.size > MAX_INPUT_BYTES) {
+      throw new Error(`${label} size is outside the accepted boundary`);
+    }
+    const raw = readFileSync(descriptor);
+    const after = fstatSync(descriptor);
+    if (
+      raw.length !== before.size ||
+      descriptorIdentity(before) !== descriptorIdentity(after)
+    ) {
+      throw new Error(`${label} changed while being read`);
+    }
+    return {
+      fileObjectIdentity: `${before.dev}:${before.ino}`,
+      raw,
+    };
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function assertDistinctFileObjects(records) {
+  const identities = records.map((record) => record.fileObjectIdentity);
+  if (new Set(identities).size !== identities.length) {
+    throw new Error('One filesystem object may not be assigned to multiple evidence roles');
+  }
+}
+
+function assertSafeOutput(value) {
+  const text = String(value);
+  if (
+    /\/Users\/[A-Za-z0-9._-]+\//.test(text) ||
+    /\/home\/[A-Za-z0-9._-]+\//.test(text) ||
+    /"lifecycle_closed"\s*:\s*true/i.test(text) ||
+    /\bZLAR governs all (?:AI|actions|agents)\b/i.test(text)
+  ) {
+    throw new Error('Post-effect route-evidence index output is unsafe');
+  }
+}
+
+try {
+  const options = parseArgs(process.argv.slice(2));
+  let inputs;
+  try {
+    inputs = {
+      runtime: readExactRegularFile(options.runtimeResultPath, 'Runtime result'),
+      service: readExactRegularFile(options.servicePath, 'Service artifact'),
+      terminal: readExactRegularFile(options.terminalPath, 'Terminal artifact'),
+      manifest: readExactRegularFile(options.manifestPath, 'Artifact-set manifest'),
+      verification: readExactRegularFile(
+        options.verificationPath,
+        'Persisted artifact-set verification',
+      ),
+      status: readExactRegularFile(
+        options.exhaustedStatusPath,
+        'Exhausted-status wrapper',
+      ),
+      closeout: readExactRegularFile(options.closeoutPath, 'Route closeout'),
+    };
+    assertDistinctFileObjects(Object.values(inputs));
+  } catch {
+    die('Could not read seven distinct exact regular evidence inputs.');
+  }
+
+  const params = {
+    closeoutRawBytes: inputs.closeout.raw,
+    exhaustedStatusRawBytes: inputs.status.raw,
+    expectedCloseoutFileSha256: options.expectedCloseoutFileSha256,
+    expectedCrossingBindingSha256: options.expectedCrossingBindingSha256,
+    expectedCrossingSourceCommitOid: options.expectedCrossingSourceCommitOid,
+    expectedExhaustedStatusBodySha256:
+      options.expectedExhaustedStatusBodySha256,
+    expectedExhaustedStatusFileSha256:
+      options.expectedExhaustedStatusFileSha256,
+    expectedGrantContractSha256: options.expectedGrantContractSha256,
+    expectedManifestArtifactBodySha256:
+      options.expectedManifestArtifactBodySha256,
+    expectedManifestFileSha256: options.expectedManifestFileSha256,
+    expectedManifestSchemaContractSha256:
+      options.expectedManifestSchemaContractSha256,
+    expectedRuntimeResultFileSha256:
+      options.expectedRuntimeResultFileSha256,
+    expectedServiceArtifactBodySha256:
+      options.expectedServiceArtifactBodySha256,
+    expectedServiceFileSha256: options.expectedServiceFileSha256,
+    expectedTerminalArtifactBodySha256:
+      options.expectedTerminalArtifactBodySha256,
+    expectedTerminalFileSha256: options.expectedTerminalFileSha256,
+    expectedVerificationFileSha256: options.expectedVerificationFileSha256,
+    manifestRawBytes: inputs.manifest.raw,
+    runtimeResultRawBytes: inputs.runtime.raw,
+    serviceArtifactRawBytes: inputs.service.raw,
+    terminalArtifactRawBytes: inputs.terminal.raw,
+    verificationRawBytes: inputs.verification.raw,
+  };
+  const report = buildProtectedRecordsPostEffectRouteEvidenceIndexV0(params);
+  assertProtectedRecordsPostEffectRouteEvidenceIndexV0(report, params);
+  const output = options.json
+    ? canonicalProtectedRecordsPostEffectRouteEvidenceIndexBytesV0(report, params)
+    : `${formatProtectedRecordsPostEffectRouteEvidenceIndexSummaryV0(report, params)}\n`;
+  assertSafeOutput(output);
+  process.stdout.write(output);
+} catch (error) {
+  die(error?.message || 'Post-effect route-evidence index verification failed closed.');
+}

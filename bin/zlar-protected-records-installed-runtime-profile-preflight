@@ -1,0 +1,232 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import {
+  bindRequiredBodySha256,
+  formatRequiredBodySha256Posture,
+} from '../lib/artifact-required-sha.mjs';
+import {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText,
+} from '../lib/protected-records-runtime-profile.mjs';
+import {
+  assertProtectedRecordsRuntimePreflightProfile,
+} from '../lib/protected-records-runtime-profile-preflight.mjs';
+import {
+  assertProtectedRecordsInstalledRuntimeProfilePreflight,
+  assertProtectedRecordsInstalledRuntimeProfilePreflightArtifact,
+  buildProtectedRecordsInstalledRuntimeProfilePreflightArtifact,
+  formatProtectedRecordsInstalledRuntimeProfilePreflightArtifactSummary,
+  formatProtectedRecordsInstalledRuntimeProfilePreflightArtifactVerification,
+  formatProtectedRecordsInstalledRuntimeProfilePreflightSummary,
+  parseProtectedRecordsInstalledRuntimeProfilePreflightArtifactText,
+  runProtectedRecordsInstalledRuntimeProfilePreflight,
+  verifyProtectedRecordsInstalledRuntimeProfilePreflightArtifact,
+  writeProtectedRecordsInstalledRuntimeProfilePreflightArtifact,
+} from '../lib/protected-records-installed-runtime-profile-preflight.mjs';
+import {
+  SAMPLE_PREFLIGHT_ARTIFACT_DISPLAY_PATH,
+  readCanonicalProtectedRecordsInstalledPreflightSampleArtifactText,
+} from '../lib/protected-records-installed-proof-samples.mjs';
+
+const SAMPLE_ARTIFACT_DISPLAY_PATH = SAMPLE_PREFLIGHT_ARTIFACT_DISPLAY_PATH;
+
+function usage() {
+  console.error('Usage: zlar protected-records-installed-runtime-profile-preflight --install-root <dir> --expected-profile <file|-> --profile-id <id> --profile-sha256 <sha256> [--json] [--artifact <file|->]');
+  console.error('       zlar protected-records-installed-runtime-profile-preflight verify (--input <file|->|--sample) [--json] [--require-sha <artifact_body_sha256>]');
+  console.error('Reads an explicit protected-records installed runtime profile root and validates active-profile selection metadata as proof-only evidence.');
+  console.error('Use --artifact <file> to write a portable checksummed installed-profile preflight artifact, or --artifact - to print it.');
+  console.error('Use verify --input <file|-> to verify a supplied installed-profile preflight artifact without reading an install root.');
+  console.error('Use verify --sample as the first safe run: it verifies the committed sample installed-profile preflight artifact without reading an install root.');
+  console.error('Use verify --require-sha <artifact_body_sha256> to refuse a valid artifact whose body hash is not the expected artifact identity.');
+  console.error(`Sample artifact: ${SAMPLE_ARTIFACT_DISPLAY_PATH}`);
+  console.error('This command requires explicit install root, expected profile, profile id, and profile SHA-256. It does not select --latest, inspect a default current-machine profile, install, activate, write config/hooks, start a runtime service, inspect a live records system, claim production deployment, or prove current-machine governance.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(message);
+    return message;
+  } catch {
+    return 'Protected records installed runtime profile preflight failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+function readJsonInput(path, label) {
+  let raw = '';
+  try {
+    raw = path === '-' ? readFileSync(0, 'utf8') : readFileSync(path, 'utf8');
+  } catch {
+    die(`Could not read protected records installed runtime profile ${label}.`);
+  }
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(raw);
+    return JSON.parse(raw);
+  } catch (err) {
+    die(`Could not parse protected records installed runtime profile ${label} JSON: ${err.message}`);
+  }
+}
+
+function readTextInput(path, label) {
+  try {
+    return path === '-' ? readFileSync(0, 'utf8') : readFileSync(path, 'utf8');
+  } catch {
+    die(`Could not read protected records installed runtime profile ${label}.`);
+  }
+}
+
+function readSampleArtifact() {
+  return readCanonicalProtectedRecordsInstalledPreflightSampleArtifactText();
+}
+
+function runVerifyCommand(argv) {
+  let inputPath = '';
+  let useSample = false;
+  let asJson = false;
+  let requiredSha = '';
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--input') {
+      inputPath = argv[++i] || '';
+      if (!inputPath) {
+        usage();
+        die('Missing value for --input.', 2);
+      }
+    } else if (arg === '--sample') {
+      useSample = true;
+    } else if (arg === '--json') {
+      asJson = true;
+    } else if (arg === '--require-sha') {
+      requiredSha = argv[++i] || '';
+      if (!requiredSha) {
+        usage();
+        die('Missing value for --require-sha.', 2);
+      }
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die('Unsupported verify option provided.', 2);
+    }
+  }
+
+  if (inputPath && useSample) {
+    usage();
+    die('Cannot combine --input with --sample.', 2);
+  }
+
+  if (!inputPath && !useSample) {
+    usage();
+    die('Missing required --input <file|-> or --sample.', 2);
+  }
+
+  const artifact = parseProtectedRecordsInstalledRuntimeProfilePreflightArtifactText(
+    useSample ? readSampleArtifact() : readTextInput(inputPath, 'artifact')
+  );
+  const baseVerification = verifyProtectedRecordsInstalledRuntimeProfilePreflightArtifact(artifact);
+  const verification = bindRequiredBodySha256(
+    baseVerification,
+    requiredSha,
+    'Protected records installed runtime profile preflight artifact'
+  );
+  const output = asJson
+    ? `${JSON.stringify(verification, null, 2)}\n`
+    : formatProtectedRecordsInstalledRuntimeProfilePreflightArtifactVerification(baseVerification) +
+      formatRequiredBodySha256Posture(verification);
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+}
+
+const args = process.argv.slice(2);
+
+if (args[0] === 'verify') {
+  try {
+    runVerifyCommand(args.slice(1));
+  } catch (err) {
+    die(err.message);
+  }
+  process.exit(0);
+}
+
+let installRoot = '';
+let expectedProfilePath = '';
+let profileId = '';
+let profileSha256 = '';
+let asJson = false;
+let artifactOutput = '';
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--install-root') {
+    installRoot = args[++i] || '';
+  } else if (arg === '--expected-profile') {
+    expectedProfilePath = args[++i] || '';
+  } else if (arg === '--profile-id') {
+    profileId = args[++i] || '';
+  } else if (arg === '--profile-sha256') {
+    profileSha256 = args[++i] || '';
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--artifact') {
+    artifactOutput = args[++i] || '';
+    if (!artifactOutput) {
+      usage();
+      die('Missing value for --artifact.', 2);
+    }
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (!installRoot || !expectedProfilePath || !profileId || !profileSha256) {
+  usage();
+  die('--install-root, --expected-profile, --profile-id, and --profile-sha256 are required; this preflight does not select --latest or inspect a default current-machine profile.', 2);
+}
+if (artifactOutput === '-' && asJson) {
+  usage();
+  die('Cannot combine --json with --artifact -.', 2);
+}
+
+const expectedProfile = readJsonInput(expectedProfilePath, 'expected profile');
+
+try {
+  assertProtectedRecordsRuntimePreflightProfile(expectedProfile);
+  const report = runProtectedRecordsInstalledRuntimeProfilePreflight({
+    installRoot,
+    expectedProfile,
+    profileId,
+    profileSha256,
+  });
+  assertProtectedRecordsInstalledRuntimeProfilePreflight(report);
+  let output;
+  if (artifactOutput === '-') {
+    const artifact = buildProtectedRecordsInstalledRuntimeProfilePreflightArtifact(report);
+    assertProtectedRecordsInstalledRuntimeProfilePreflightArtifact(artifact);
+    output = `${JSON.stringify(artifact, null, 2)}\n`;
+  } else {
+    let artifact = null;
+    if (artifactOutput) {
+      artifact = buildProtectedRecordsInstalledRuntimeProfilePreflightArtifact(report);
+      writeProtectedRecordsInstalledRuntimeProfilePreflightArtifact(artifact, artifactOutput);
+    }
+    output = asJson
+      ? `${JSON.stringify(report, null, 2)}\n`
+      : formatProtectedRecordsInstalledRuntimeProfilePreflightSummary(report);
+    if (artifact) {
+      output += formatProtectedRecordsInstalledRuntimeProfilePreflightArtifactSummary(artifact);
+    }
+  }
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

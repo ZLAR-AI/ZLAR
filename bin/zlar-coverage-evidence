@@ -1,0 +1,95 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import {
+  assertNoUnsafeBashGateCoverageEvidenceInput,
+  buildBashGateCoverageEvidenceInput,
+} from '../lib/bash-gate-coverage-evidence.mjs';
+import {
+  assertNoUnsafeMcpGateCoverageEvidenceInput,
+  buildMcpGateCoverageEvidenceInput,
+} from '../lib/mcp-gate-coverage-evidence.mjs';
+
+function usage() {
+  console.error('Usage: zlar coverage-evidence <lane> --input <file|-> --event-id <event-id>');
+  console.error('Lanes: bash, mcp');
+  console.error('This command assembles supplied event-scoped evidence only; it does not live probe or choose --latest.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+const lane = args.shift() || '';
+
+if (lane === '--help' || lane === '-h') {
+  usage();
+  process.exit(0);
+}
+
+if (!['bash', 'mcp'].includes(lane)) {
+  usage();
+  die('Unsupported coverage-evidence lane.', 2);
+}
+
+let inputPath = '';
+let eventId = '';
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--input') {
+    inputPath = args[++i] || '';
+  } else if (arg === '--event-id') {
+    eventId = args[++i] || '';
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (!inputPath) {
+  usage();
+  die('--input is required; live probing is not implemented in this slice.', 2);
+}
+
+if (!eventId) {
+  usage();
+  die('--event-id is required; automatic latest-event selection is not implemented.', 2);
+}
+
+let rawInput = '';
+try {
+  rawInput = inputPath === '-'
+    ? readFileSync(0, 'utf8')
+    : readFileSync(inputPath, 'utf8');
+} catch {
+  die(`Could not read ${lane} coverage evidence input.`);
+}
+
+let input;
+try {
+  input = JSON.parse(rawInput);
+} catch (err) {
+  die(`Could not parse ${lane} coverage evidence JSON: ${err.message}`);
+}
+
+try {
+  const builder = lane === 'mcp'
+    ? buildMcpGateCoverageEvidenceInput
+    : buildBashGateCoverageEvidenceInput;
+  const scanner = lane === 'mcp'
+    ? assertNoUnsafeMcpGateCoverageEvidenceInput
+    : assertNoUnsafeBashGateCoverageEvidenceInput;
+  const output = builder({
+    ...input,
+    event_id: eventId,
+  });
+  scanner(output);
+  process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+} catch (err) {
+  die(err.message);
+}

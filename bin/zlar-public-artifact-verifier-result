@@ -1,0 +1,117 @@
+#!/usr/bin/env node
+import { existsSync, readFileSync } from 'node:fs';
+import {
+  buildPublicArtifactVerifierResultFromTranscript,
+  buildPublicArtifactVerifierResultVerification,
+  formatPublicArtifactVerifierResultVerification,
+  samplePublicArtifactVerifierResult,
+  samplePublicArtifactVerifierTranscript,
+} from '../lib/public-artifact-verifier-result.mjs';
+
+function usage() {
+  console.error('Usage: zlar public-artifact-verifier-result verify (--input <file|->|--sample) [--json]');
+  console.error('       zlar public-artifact-verifier-result from-transcript (--input <file|->|--sample-transcript) [--json]');
+  console.error('Validates a redacted public-artifact verifier reply without creating public external attestation.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function readInput(path) {
+  if (path === '-') return readFileSync(0, 'utf8');
+  if (!existsSync(path)) die(`input file not found: ${path}`, 2);
+  return readFileSync(path, 'utf8');
+}
+
+function parseJson(text, label) {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    die(`${label} is not valid JSON: ${err.message}`, 2);
+  }
+}
+
+const args = process.argv.slice(2);
+if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  usage();
+  process.exit(args.length === 0 ? 2 : 0);
+}
+
+const command = args.shift();
+if (!['verify', 'from-transcript'].includes(command)) {
+  usage();
+  die('unsupported public-artifact-verifier-result command.', 2);
+}
+
+let inputPath = '';
+let sample = false;
+let sampleTranscript = false;
+let asJson = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--input') {
+    if (inputPath || sample || sampleTranscript) {
+      usage();
+      die('verify accepts only one input source.', 2);
+    }
+    inputPath = args[++i] || '';
+    if (!inputPath) {
+      usage();
+      die('--input requires <file|->.', 2);
+    }
+  } else if (arg === '--sample') {
+    if (command !== 'verify') {
+      usage();
+      die('--sample is only valid with verify.', 2);
+    }
+    if (inputPath || sample || sampleTranscript) {
+      usage();
+      die('verify accepts only one input source.', 2);
+    }
+    sample = true;
+  } else if (arg === '--sample-transcript') {
+    if (command !== 'from-transcript') {
+      usage();
+      die('--sample-transcript is only valid with from-transcript.', 2);
+    }
+    if (inputPath || sample || sampleTranscript) {
+      usage();
+      die('from-transcript accepts only one input source.', 2);
+    }
+    sampleTranscript = true;
+  } else if (arg === '--json') {
+    asJson = true;
+  } else {
+    usage();
+    die(`Unsupported option: ${arg}`, 2);
+  }
+}
+
+if (!inputPath && !sample && !sampleTranscript) {
+  usage();
+  die(`${command} requires --input <file|->${command === 'verify' ? ' or --sample' : ' or --sample-transcript'}.`, 2);
+}
+
+try {
+  let output;
+  if (command === 'from-transcript') {
+    const transcriptText = sampleTranscript ? samplePublicArtifactVerifierTranscript() : readInput(inputPath);
+    const report = buildPublicArtifactVerifierResultFromTranscript(transcriptText);
+    output = `${JSON.stringify(report, null, 2)}\n`;
+  } else {
+    const resultText = sample
+      ? `${JSON.stringify(samplePublicArtifactVerifierResult(), null, 2)}\n`
+      : readInput(inputPath);
+    const report = parseJson(resultText, sample ? 'sample' : inputPath);
+    const verification = buildPublicArtifactVerifierResultVerification(report, { resultText });
+    output = asJson
+      ? `${JSON.stringify(verification, null, 2)}\n`
+      : formatPublicArtifactVerifierResultVerification(verification);
+  }
+  process.stdout.write(output);
+} catch (err) {
+  die(`Public artifact verifier result verification failed: ${err.message}`);
+}

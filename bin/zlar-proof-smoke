@@ -1,0 +1,530 @@
+#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  PROOF_SMOKE_CLAIM_BOUNDARY,
+  PROOF_SMOKE_HISTORICAL_REPORT_VERIFICATION_TYPE,
+  PROOF_SMOKE_HISTORICAL_V1_SAMPLE_FILE_SHA256,
+  PROOF_SMOKE_NON_CLAIMS,
+  PROOF_SMOKE_SAMPLE_REPORT_PATH,
+  activationPreflightSampleArtifactBodySha256,
+  buildProofSmokeReport,
+  installedRuntimeProfilePreflightSampleArtifactBodySha256,
+  installedRuntimeProfileServiceProofSampleArtifactBodySha256,
+  installedRuntimeProfileTerminalChainSampleArtifactBodySha256,
+  assertNoUnsafeProofSmokeReportText,
+  localProofPackSampleArtifactBodySha256,
+  parseProofSmokeReportText,
+  proofSmokeReportSha256,
+  runtimeLocalActivationSampleArtifactBodySha256,
+  runtimeProfileInstallationSampleArtifactBodySha256,
+  serviceProfilePreflightSampleArtifactBodySha256,
+  verifyHistoricalProofSmokeReportText,
+} from '../lib/proof-smoke-report.mjs';
+import {
+  assertProtectedRecordsCurrentFixtureAuthorityGrantFreshEffectAllowed,
+} from '../lib/protected-records-fixture-authority-status.mjs';
+
+const PROJECT_DIR = fileURLToPath(new URL('..', import.meta.url));
+const SAMPLE_REPORT_INPUT = fileURLToPath(new URL(`../${PROOF_SMOKE_SAMPLE_REPORT_PATH}`, import.meta.url));
+
+function usage() {
+  console.error('Usage: zlar proof-smoke [--json]');
+  console.error('       zlar proof-smoke verify (--input <file|->|--sample) [--json] [--require-sha <report_sha256>]');
+  console.error('       zlar proof-smoke verify --historical (--input <file|->|--sample) --require-file-sha <file_sha256> --require-sha <report_sha256> [--json]');
+  console.error('The current one-use fixture authority grant is exhausted. Fresh smoke execution refuses before subprocess launch, and reports that project fixture-rightful issuance are not currently accepted.');
+  console.error('A replacement grant or a structurally demoted historical-only smoke schema is required before this command can pass.');
+  console.error('Use verify --require-sha <report_sha256> to refuse a valid report whose canonical report hash is not the expected report identity.');
+  console.error(`The exact historical v1 sample file SHA-256 is ${PROOF_SMOKE_HISTORICAL_V1_SAMPLE_FILE_SHA256}.`);
+  console.error('This command does not live probe, inspect runtime/key state, install, configure, or claim production deployment.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+
+function writeStdout(value) {
+  writeSync(1, value);
+}
+
+if (args[0] === 'verify') {
+  runVerify(args.slice(1));
+  process.exit(0);
+}
+
+let asJson = false;
+
+for (const arg of args) {
+  if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+try {
+  assertProtectedRecordsCurrentFixtureAuthorityGrantFreshEffectAllowed(
+    'Proof smoke fresh consequence execution and fixture-rightful projection',
+  );
+} catch (err) {
+  die(err.message);
+}
+
+function runZlar(args) {
+  const stdoutDir = mkdtempSync(join(tmpdir(), 'zlar-proof-smoke-'));
+  const stdoutPath = join(stdoutDir, 'stdout');
+  let stdoutFd = openSync(stdoutPath, 'w');
+  try {
+    const result = spawnSync(fileURLToPath(new URL('zlar', import.meta.url)), args, {
+      cwd: PROJECT_DIR,
+      encoding: 'utf8',
+      stdio: ['ignore', stdoutFd, 'pipe'],
+      env: {
+        ...process.env,
+        NO_COLOR: '1',
+      },
+    });
+    closeSync(stdoutFd);
+    stdoutFd = null;
+    result.stdout = readFileSync(stdoutPath, 'utf8');
+    return result;
+  } finally {
+    if (stdoutFd !== null) closeSync(stdoutFd);
+    rmSync(stdoutDir, { recursive: true, force: true });
+  }
+}
+
+function runStep(title, args) {
+  process.stdout.write(`\n[${title}]\n`);
+  const result = runZlar(args);
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.status !== 0) {
+    die(`${title} failed.`, result.status || 1);
+  }
+}
+
+function runJsonStep(title, args) {
+  const result = runZlar(args);
+  if (result.status !== 0) {
+    if (result.stderr) process.stderr.write(result.stderr);
+    die(`${title} failed.`, result.status || 1);
+  }
+  if (result.stderr) {
+    process.stderr.write(result.stderr);
+    die(`${title} emitted unexpected stderr.`, 1);
+  }
+  try {
+    return JSON.parse(result.stdout);
+  } catch (err) {
+    die(`${title} emitted invalid JSON: ${err.message}`);
+  }
+}
+
+function buildJsonReport() {
+  const sampleVerification = runJsonStep(
+    'sample artifact verification',
+    [
+      'local-proof-pack',
+      'verify',
+      '--sample',
+      '--require-sha',
+      localProofPackSampleArtifactBodySha256(),
+      '--json',
+    ]
+  );
+  const serviceProfilePreflightSampleVerification = runJsonStep(
+    'service-profile preflight sample artifact verification',
+    [
+      'protected-records-service-preflight',
+      'verify',
+      '--sample',
+      '--require-sha',
+      serviceProfilePreflightSampleArtifactBodySha256(),
+      '--json',
+    ]
+  );
+  const activationPreflightSampleVerification = runJsonStep(
+    'activation preflight sample artifact verification',
+    [
+      'protected-records-runtime-activation-preflight',
+      'verify',
+      '--sample',
+      '--require-sha',
+      activationPreflightSampleArtifactBodySha256(),
+      '--json',
+    ]
+  );
+  const runtimeLocalActivationSampleVerification = runJsonStep(
+    'runtime local activation sample artifact verification',
+    [
+      'protected-records-runtime-local-activation',
+      'verify',
+      '--sample',
+      '--require-sha',
+      runtimeLocalActivationSampleArtifactBodySha256(),
+      '--json',
+    ]
+  );
+  const runtimeProfileInstallationSampleVerification = runJsonStep(
+    'runtime profile installation sample artifact verification',
+    [
+      'protected-records-runtime-profile-installation',
+      'verify',
+      '--sample',
+      '--require-sha',
+      runtimeProfileInstallationSampleArtifactBodySha256(),
+      '--json',
+    ]
+  );
+  const installedRuntimeProfilePreflightSampleVerification = runJsonStep(
+    'installed runtime profile preflight sample artifact verification',
+    [
+      'protected-records-installed-runtime-profile-preflight',
+      'verify',
+      '--sample',
+      '--require-sha',
+      installedRuntimeProfilePreflightSampleArtifactBodySha256(),
+      '--json',
+    ]
+  );
+  const installedRuntimeProfileRecognitionProof = runJsonStep(
+    'installed runtime profile recognition proof',
+    ['protected-records-installed-runtime-profile-recognition-proof', '--sample', '--json']
+  );
+  const installedRuntimeProfileServiceProof = runJsonStep(
+    'installed runtime profile service proof',
+    ['protected-records-installed-runtime-profile-service-proof', '--sample', '--json']
+  );
+  const installedRuntimeProfileServiceProofArtifactVerification = runJsonStep(
+    'installed runtime profile service proof artifact verification',
+    [
+      'protected-records-installed-runtime-profile-service-proof',
+      'verify',
+      '--sample',
+      '--require-sha',
+      installedRuntimeProfileServiceProofSampleArtifactBodySha256(),
+      '--json',
+    ]
+  );
+  const installedRuntimeProfileTerminalChain = runJsonStep(
+    'installed runtime profile terminal chain',
+    ['protected-records-installed-runtime-profile-terminal-chain', '--sample', '--json']
+  );
+  const installedRuntimeProfileTerminalChainArtifactVerification = runJsonStep(
+    'installed runtime profile terminal chain artifact verification',
+    [
+      'protected-records-installed-runtime-profile-terminal-chain',
+      'verify',
+      '--sample',
+      '--require-sha',
+      installedRuntimeProfileTerminalChainSampleArtifactBodySha256(),
+      '--json',
+    ]
+  );
+  const configuredRecognitionReplayStoreProof = runJsonStep(
+    'configured recognition consumer replay-store proof',
+    ['configured-recognition-consumer-replay-store-proof', '--json']
+  );
+  const sourceBridgeWindowAuthority = runJsonStep(
+    'source bridge window authority sample',
+    ['source-bridge-window', '--sample', '--json']
+  );
+  const coverageMap = runJsonStep(
+    'fixture-input coverage map',
+    ['coverage', '--sample', '--require-governed', '--json']
+  );
+  return buildProofSmokeReport({
+    sampleVerification,
+    serviceProfilePreflightSampleVerification,
+    activationPreflightSampleVerification,
+    runtimeLocalActivationSampleVerification,
+    runtimeProfileInstallationSampleVerification,
+    installedRuntimeProfilePreflightSampleVerification,
+    installedRuntimeProfileRecognitionProof,
+    installedRuntimeProfileServiceProof,
+    installedRuntimeProfileServiceProofArtifactVerification,
+    installedRuntimeProfileTerminalChain,
+    installedRuntimeProfileTerminalChainArtifactVerification,
+    configuredRecognitionReplayStoreProof,
+    sourceBridgeWindowAuthority,
+    coverageMap,
+  });
+}
+
+function readReportInput(inputPath, { sample = false } = {}) {
+  try {
+    if (inputPath === '-') {
+      return readFileSync(0, 'utf8');
+    }
+    return readFileSync(inputPath, 'utf8');
+  } catch (err) {
+    if (sample) {
+      die('Unable to read proof smoke report input: committed sample report unavailable');
+    }
+    die(`Unable to read proof smoke report input: ${err.message}`);
+  }
+}
+
+function runVerify(verifyArgs) {
+  let inputPath = '';
+  let sampleRequested = false;
+  let verifyAsJson = false;
+  let requiredSha = '';
+  let historical = false;
+  let requiredFileSha = '';
+
+  for (let i = 0; i < verifyArgs.length; i++) {
+    const arg = verifyArgs[i];
+    if (arg === '--input') {
+      if (inputPath || sampleRequested) {
+        usage();
+        die('verify accepts only one input source.', 2);
+      }
+      inputPath = verifyArgs[++i] || '';
+      if (!inputPath) {
+        usage();
+        die('verify requires --input <file|-> or --sample.', 2);
+      }
+    } else if (arg === '--sample') {
+      if (inputPath || sampleRequested) {
+        usage();
+        die('verify accepts only one input source.', 2);
+      }
+      sampleRequested = true;
+    } else if (arg === '--json') {
+      verifyAsJson = true;
+    } else if (arg === '--require-sha') {
+      requiredSha = verifyArgs[++i] || '';
+      if (!requiredSha) {
+        usage();
+        die('Missing value for --require-sha.', 2);
+      }
+    } else if (arg === '--historical') {
+      historical = true;
+    } else if (arg === '--require-file-sha') {
+      requiredFileSha = verifyArgs[++i] || '';
+      if (!requiredFileSha) {
+        usage();
+        die('Missing value for --require-file-sha.', 2);
+      }
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die('Unsupported verify option provided.', 2);
+    }
+  }
+
+  if (sampleRequested) {
+    inputPath = SAMPLE_REPORT_INPUT;
+  }
+
+  if (!inputPath) {
+    usage();
+    die('verify requires --input <file|-> or --sample.', 2);
+  }
+
+  if (requiredSha && !/^[a-f0-9]{64}$/.test(requiredSha)) {
+    die('--require-sha must be a 64-character lowercase SHA-256 hex digest.', 2);
+  }
+  if (requiredFileSha && !/^[a-f0-9]{64}$/.test(requiredFileSha)) {
+    die('--require-file-sha must be a 64-character lowercase SHA-256 hex digest.', 2);
+  }
+  if (historical && !requiredFileSha) {
+    die('Historical proof smoke verification requires --require-file-sha.', 2);
+  }
+  if (historical && !requiredSha) {
+    die('Historical proof smoke verification requires --require-sha.', 2);
+  }
+  if (!historical && requiredFileSha) {
+    die('--require-file-sha is valid only with --historical.', 2);
+  }
+
+  const reportText = readReportInput(inputPath, { sample: sampleRequested });
+  let report;
+  let historicalVerification;
+  try {
+    if (historical) {
+      historicalVerification = verifyHistoricalProofSmokeReportText(reportText, {
+        expectedFileSha256: requiredFileSha,
+        expectedReportSha256: requiredSha,
+      });
+    } else {
+      report = parseProofSmokeReportText(reportText);
+    }
+  } catch (err) {
+    die(`Proof smoke report verification failed: ${err.message}`);
+  }
+  if (historical) {
+    if (historicalVerification.verification_type !== PROOF_SMOKE_HISTORICAL_REPORT_VERIFICATION_TYPE) {
+      die('Historical proof smoke verification type drifted.');
+    }
+    if (verifyAsJson) {
+      const output = `${JSON.stringify(historicalVerification, null, 2)}\n`;
+      assertNoUnsafeProofSmokeReportText(output);
+      writeStdout(output);
+      return;
+    }
+    process.stdout.write('ZLAR Historical Proof Smoke Report Verification v2\n');
+    process.stdout.write('verified=true\n');
+    process.stdout.write('historical_only=true\n');
+    process.stdout.write(`file_sha256=${historicalVerification.file_sha256}\n`);
+    process.stdout.write('required_file_sha256_matched=true\n');
+    process.stdout.write(`report_sha256=${historicalVerification.report_sha256}\n`);
+    process.stdout.write('required_report_sha256_matched=true\n');
+    process.stdout.write('fresh_proof_execution_performed=false\n');
+    process.stdout.write('current_projection_allowed=false\n');
+    process.stdout.write(`claim_boundary=${historicalVerification.claim_boundary}\n`);
+    return;
+  }
+  const reportSha256 = proofSmokeReportSha256(report);
+  if (requiredSha && reportSha256 !== requiredSha) {
+    die('Proof smoke report SHA-256 does not match required --require-sha value.');
+  }
+
+  const verification = {
+    verification_type: 'zlar-proof-smoke-report-verification-v1',
+    verified: true,
+    report_sha256: reportSha256,
+    required_report_sha256: requiredSha || null,
+    required_report_sha256_matched: requiredSha ? reportSha256 === requiredSha : null,
+    report_type: report.report_type,
+    evidence_model: report.evidence_model,
+    live_probing: report.live_probing,
+    claim_boundary: report.claim_boundary,
+    counts: report.counts,
+    non_claims: report.non_claims,
+  };
+
+  if (verifyAsJson) {
+    const output = `${JSON.stringify(verification, null, 2)}\n`;
+    assertNoUnsafeProofSmokeReportText(output);
+    writeStdout(output);
+    return;
+  }
+
+  process.stdout.write('ZLAR Proof Smoke Report Verification v1\n');
+  process.stdout.write('verified=true\n');
+  process.stdout.write(`report_sha256=${verification.report_sha256}\n`);
+  if (requiredSha) {
+    process.stdout.write(`required_report_sha256=${requiredSha}\n`);
+    process.stdout.write('required_report_sha256_matched=true\n');
+  }
+  process.stdout.write(`report_type=${verification.report_type}\n`);
+  process.stdout.write(`evidence_model=${verification.evidence_model}\n`);
+  process.stdout.write(`live_probing=${verification.live_probing}\n`);
+  process.stdout.write(`claim_boundary=${verification.claim_boundary}\n`);
+  process.stdout.write(
+    `counts: governed=${verification.counts.governed_lanes}/${verification.counts.counted_lanes}, boundary_entries=${verification.counts.boundary_entries}\n`
+  );
+  process.stdout.write('Non-claims preserved:\n');
+  for (const nonClaim of verification.non_claims) {
+    process.stdout.write(`- ${nonClaim}\n`);
+  }
+}
+
+if (asJson) {
+  const output = `${JSON.stringify(buildJsonReport(), null, 2)}\n`;
+  assertNoUnsafeProofSmokeReportText(output);
+  writeStdout(output);
+  process.exit(0);
+}
+
+process.stdout.write('ZLAR Committed Fixture Smoke Test v1\n');
+process.stdout.write('Evidence model: committed local fixtures; live probing=false\n');
+process.stdout.write(`Claim boundary: ${PROOF_SMOKE_CLAIM_BOUNDARY}\n`);
+
+runStep('sample artifact verification', [
+  'local-proof-pack',
+  'verify',
+  '--sample',
+  '--require-sha',
+  localProofPackSampleArtifactBodySha256(),
+]);
+runStep('service-profile preflight sample artifact verification', [
+  'protected-records-service-preflight',
+  'verify',
+  '--sample',
+  '--require-sha',
+  serviceProfilePreflightSampleArtifactBodySha256(),
+]);
+runStep('activation preflight sample artifact verification', [
+  'protected-records-runtime-activation-preflight',
+  'verify',
+  '--sample',
+  '--require-sha',
+  activationPreflightSampleArtifactBodySha256(),
+]);
+runStep('runtime local activation sample artifact verification', [
+  'protected-records-runtime-local-activation',
+  'verify',
+  '--sample',
+  '--require-sha',
+  runtimeLocalActivationSampleArtifactBodySha256(),
+]);
+runStep('runtime profile installation sample artifact verification', [
+  'protected-records-runtime-profile-installation',
+  'verify',
+  '--sample',
+  '--require-sha',
+  runtimeProfileInstallationSampleArtifactBodySha256(),
+]);
+runStep('installed runtime profile preflight sample artifact verification', [
+  'protected-records-installed-runtime-profile-preflight',
+  'verify',
+  '--sample',
+  '--require-sha',
+  installedRuntimeProfilePreflightSampleArtifactBodySha256(),
+]);
+runStep('installed runtime profile recognition proof', [
+  'protected-records-installed-runtime-profile-recognition-proof',
+  '--sample',
+]);
+runStep('installed runtime profile service proof', [
+  'protected-records-installed-runtime-profile-service-proof',
+  '--sample',
+]);
+runStep('installed runtime profile service proof artifact verification', [
+  'protected-records-installed-runtime-profile-service-proof',
+  'verify',
+  '--sample',
+  '--require-sha',
+  installedRuntimeProfileServiceProofSampleArtifactBodySha256(),
+]);
+runStep('installed runtime profile terminal chain', [
+  'protected-records-installed-runtime-profile-terminal-chain',
+  '--sample',
+]);
+runStep('installed runtime profile terminal chain artifact verification', [
+  'protected-records-installed-runtime-profile-terminal-chain',
+  'verify',
+  '--sample',
+  '--require-sha',
+  installedRuntimeProfileTerminalChainSampleArtifactBodySha256(),
+]);
+runStep('configured recognition consumer replay-store proof', [
+  'configured-recognition-consumer-replay-store-proof',
+]);
+runStep('source bridge window authority sample', [
+  'source-bridge-window',
+  '--sample',
+]);
+runStep('fixture-input coverage map', ['coverage', '--sample', '--require-governed']);
+
+process.stdout.write('\nResult: passed\n');
+process.stdout.write('Non-claims:\n');
+for (const nonClaim of PROOF_SMOKE_NON_CLAIMS) {
+  process.stdout.write(`- ${nonClaim}\n`);
+}

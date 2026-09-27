@@ -1,0 +1,141 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
+import {
+  BUILD_ROOT,
+  formatSourceMovementReportReview,
+  validateSourceMovementReport,
+  verifySourceTransportAuthorityPacket,
+  writeSourceMovementReportReview,
+} from '../lib/zlar-source-transport-movement-report.mjs';
+import { assertNoUnsafeTokenLifecycleText } from '../lib/zlar-github-app-token-lifecycle-wrapper.mjs';
+
+const UNSAFE_INPUT_PATH_PATTERN =
+  /(^|[/_. -])(custody|credential|credentials|token|jwt|pem|private|secret|key|authorization|auth|password|passwd|ssh)([/_. -]|$)/i;
+
+function usage() {
+  return `Usage: zlar-source-transport-proof (--report <file|-> | --authority-packet <file|->) [--json] [--json-out <file>]
+
+Verifies no-secret source-transport authority packets and redacted GitHub App
+source-movement reports. This command cannot read keys, mint tokens, call
+GitHub, read remote refs, push, or move source.
+
+Options:
+  --report <file|->            Verify a redacted source-movement report.
+  --authority-packet <file|->  Run the existing no-secret authority preflight.
+  --json                       Print JSON to stdout.
+  --json-out <file>            Write JSON under the ZLAR build scratch root.
+  --live                       Refuse live execution in this no-secret build.
+  --help                       Show this help.
+`;
+}
+
+function parseArgs(argv) {
+  try {
+    assertNoUnsafeTokenLifecycleText(argv.join('\n'));
+  } catch {
+    throw new Error('unsafe argument rejected');
+  }
+  const args = {
+    report: null,
+    authorityPacket: null,
+    json: false,
+    jsonOut: null,
+    help: false,
+    live: false,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--help' || arg === '-h') args.help = true;
+    else if (arg === '--json') args.json = true;
+    else if (arg === '--live') args.live = true;
+    else if (arg === '--report') args.report = argv[++i];
+    else if (arg === '--authority-packet') args.authorityPacket = argv[++i];
+    else if (arg === '--json-out') args.jsonOut = argv[++i];
+    else throw new Error('unsupported argument');
+  }
+  if (args.report === undefined || args.authorityPacket === undefined || args.jsonOut === undefined) {
+    throw new Error('missing argument value');
+  }
+  if (args.live) return args;
+  if (args.help) return args;
+  if (args.report && args.authorityPacket) throw new Error('choose one input mode');
+  if (!args.report && !args.authorityPacket) throw new Error('input is required');
+  return args;
+}
+
+function assertSafeInputPath(path) {
+  if (path === '-') return;
+  if (!path || typeof path !== 'string') throw new Error('input file could not be read');
+  try {
+    assertNoUnsafeTokenLifecycleText(path);
+  } catch {
+    throw new Error('unsafe input path rejected');
+  }
+  if (UNSAFE_INPUT_PATH_PATTERN.test(path)) {
+    throw new Error('unsafe input path rejected');
+  }
+  const root = resolve(BUILD_ROOT);
+  const target = resolve(path);
+  if (target !== root && !target.startsWith(root + sep)) {
+    throw new Error('input path must stay under build scratch root');
+  }
+}
+
+function readInput(path) {
+  if (path === '-') return readFileSync(0, 'utf8');
+  assertSafeInputPath(path);
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    throw new Error('input file could not be read');
+  }
+}
+
+function refusalReview(code) {
+  return {
+    report_type: 'zlar-source-transport-movement-report-review-v1',
+    proof_status: 'failed',
+    refusal_reason_code: code,
+    no_secret_verifier: true,
+    live_mode_supported: false,
+    source_movement: false,
+    remote_ref_write: false,
+  };
+}
+
+function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
+  if (args.help) {
+    process.stdout.write(usage());
+    return 0;
+  }
+  let review;
+  if (args.live) {
+    review = refusalReview('live_mode_disabled_in_no_secret_build');
+  } else if (args.report) {
+    const reportText = readInput(args.report);
+    let report;
+    try {
+      report = JSON.parse(reportText);
+    } catch {
+      throw new Error('input must be valid JSON');
+    }
+    review = validateSourceMovementReport(report);
+    if (args.jsonOut) writeSourceMovementReportReview(report, args.jsonOut);
+  } else {
+    review = verifySourceTransportAuthorityPacket(readInput(args.authorityPacket));
+    if (args.jsonOut) writeSourceMovementReportReview(review, args.jsonOut);
+  }
+  process.stdout.write(args.json || args.jsonOut
+    ? `${JSON.stringify(review, null, 2)}\n`
+    : formatSourceMovementReportReview(review));
+  return review.proof_status === 'passed' ? 0 : 2;
+}
+
+try {
+  process.exit(main());
+} catch (err) {
+  process.stderr.write(`${err?.message || 'source transport proof failed'}\n`);
+  process.exit(1);
+}

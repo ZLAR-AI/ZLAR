@@ -1,0 +1,81 @@
+#!/usr/bin/env node
+import { existsSync, readFileSync } from 'node:fs';
+import {
+  buildTrustedReceiptIssuerCompletionVerification,
+  formatTrustedReceiptIssuerCompletionVerification,
+} from '../lib/trusted-receipt-issuer-completion-proof.mjs';
+
+function usage() {
+  console.error('Usage: zlar trusted-receipt-issuer-completion-proof verify --input <file|-> [--json]');
+  console.error('Validates a bounded Trusted Receipt Issuer completion proof contract for the selected Star One surface.');
+  console.error('This verifier treats receipts as recognized authority events, not absolute human intention, legal consent, or production relying-party trust.');
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${message}`);
+  process.exit(code);
+}
+
+function readInput(path) {
+  if (path === '-') {
+    return readFileSync(0, 'utf8');
+  }
+  if (!existsSync(path)) {
+    die(`input file not found: ${path}`, 2);
+  }
+  return readFileSync(path, 'utf8');
+}
+
+function parseJson(text, label) {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    die(`${label} is not valid JSON: ${err.message}`, 2);
+  }
+}
+
+const args = process.argv.slice(2);
+if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  usage();
+  process.exit(args.length === 0 ? 2 : 0);
+}
+
+const command = args.shift();
+if (command !== 'verify') {
+  usage();
+  die('unsupported trusted-receipt-issuer-completion-proof command.', 2);
+}
+
+let inputPath = '';
+let asJson = false;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--input') {
+    inputPath = args[++i] || '';
+    if (!inputPath) {
+      usage();
+      die('--input requires <file|->.', 2);
+    }
+  } else if (arg === '--json') {
+    asJson = true;
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (!inputPath) {
+  usage();
+  die('--input <file|-> is required.', 2);
+}
+
+try {
+  const proof = parseJson(readInput(inputPath), 'trusted receipt issuer completion proof');
+  const verification = buildTrustedReceiptIssuerCompletionVerification(proof);
+  process.stdout.write(asJson
+    ? `${JSON.stringify(verification, null, 2)}\n`
+    : formatTrustedReceiptIssuerCompletionVerification(verification));
+} catch (err) {
+  die(err.message);
+}

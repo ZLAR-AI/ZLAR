@@ -1,0 +1,39 @@
+#!/usr/bin/env node
+import {
+  formatZlarRunnerReceiptIssuerRecognitionProof,
+  runZlarRunnerReceiptIssuerRecognitionProof
+} from '../lib/zlar-runner-receipt-issuer-recognition-proof.mjs';
+
+function usage() {
+  return `Usage: zlar-runner-receipt-issuer-recognition-proof [--json]
+
+Runs a local hermetic proof that zlar run receipt byte validity, fixture issuer
+recognition, and production issuer authority are separate states.
+
+Options:
+  --json   Print the proof report as JSON.
+  --help   Show this help.
+`;
+}
+
+function main(argv = process.argv.slice(2)) {
+  const json = argv.includes('--json');
+  const help = argv.includes('--help') || argv.includes('-h');
+  const unsupported = argv.filter((arg) => !['--json', '--help', '-h'].includes(arg));
+  if (unsupported.length > 0) {
+    throw new Error(`unsupported argument(s): ${unsupported.join(', ')}`);
+  }
+  if (help) {
+    process.stdout.write(usage());
+    return;
+  }
+  const report = runZlarRunnerReceiptIssuerRecognitionProof();
+  process.stdout.write(json ? `${JSON.stringify(report, null, 2)}\n` : formatZlarRunnerReceiptIssuerRecognitionProof(report));
+}
+
+try {
+  main();
+} catch (err) {
+  process.stderr.write(`${err?.message || err}\n`);
+  process.exit(1);
+}

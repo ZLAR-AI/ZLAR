@@ -1,0 +1,50 @@
+name: OpenSSF Scorecard
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: '17 7 * * 1'
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: "Run analysis"
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: false
+
+      - name: "Summarize private Scorecard evidence"
+        run: |
+          {
+            echo "### Private OpenSSF Scorecard evidence"
+            echo "- OpenSSF Scorecard analysis completed with \`publish_results: false\`."
+            echo "- GitHub code-scanning upload is disabled because this private repository does not have GitHub Code Security / Advanced Security enabled."
+            echo "- SARIF evidence is preserved as the private workflow artifact \`scorecard-sarif\`."
+            echo "- This is not GitHub code-scanning dashboard evidence and not public Scorecard publication."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Upload private Scorecard SARIF artifact"
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          if-no-files-found: error
+          retention-days: 30

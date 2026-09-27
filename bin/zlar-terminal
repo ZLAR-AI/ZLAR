@@ -1,0 +1,395 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZLAR — Terminal capability (on / off / status)
+#
+# The human-facing switch. Typed at any shell prompt:
+#
+#   ZLAR on       — enforcement ON  (removes the structural off-flag)
+#   ZLAR off      — enforcement OFF (writes the structural off-flag)
+#   ZLAR status   — what is actually true right now
+#   ZLAR lock     — deny everything until unlocked (step-away mode)
+#   ZLAR unlock   — release the lock
+#
+# Anything else is forwarded verbatim to the full ZLAR CLI (bin/zlar).
+#
+# Authority model — the state is carried by root-owned files the agent cannot
+# write, not by this script:
+#
+#   /etc/zlar/off-flag        root-owned. Present = gate OFF. The load-bearing
+#                             off state. Written/removed only via the two
+#                             NOPASSWD sudoers entries scoped to this exact
+#                             file. Checked at the top of bin/zlar-gate before
+#                             any policy load.
+#   ~/.claude/.gate-locked    user-owned. Present = deny everything.
+#   ~/.claude/.gate-disabled  legacy wrapper marker. Kept in sync for old
+#                             wrappers; NOT load-bearing for current installs.
+#
+# This script never decides the gate state on its own. It moves the flags,
+# then re-reads the filesystem and reports what the gate will actually do.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -uo pipefail
+
+# ── Locations ────────────────────────────────────────────────────────────────
+# Resolve through symlinks (~/.local/bin/zlar -> this file).
+_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "${_SOURCE}" ]; do
+    _DIR="$(cd -P "$(dirname "${_SOURCE}")" && pwd)"
+    _SOURCE="$(readlink "${_SOURCE}")"
+    [[ "${_SOURCE}" != /* ]] && _SOURCE="${_DIR}/${_SOURCE}"
+done
+BIN_DIR="$(cd -P "$(dirname "${_SOURCE}")" && pwd)"
+
+# Canonical source repo (this file's home) — owns the operator uptime ledger.
+REPO_DIR="$(dirname "${BIN_DIR}")"
+# Installed runtime — the copy the Claude Code hook actually executes.
+INSTALL_DIR="${ZLAR_INSTALL_DIR:-${HOME}/.zlar}"
+
+OFF_FLAG="/etc/zlar/off-flag"
+LOCK_FLAG="${HOME}/.claude/.gate-locked"
+LEGACY_FLAG="${HOME}/.claude/.gate-disabled"
+SETTINGS="${HOME}/.claude/settings.json"
+
+# ── Presentation ─────────────────────────────────────────────────────────────
+if [ -t 1 ]; then
+    R=$'\033[0;31m'; G=$'\033[0;32m'; Y=$'\033[0;33m'; B=$'\033[1m'; D=$'\033[2m'; N=$'\033[0m'
+else
+    R=""; G=""; Y=""; B=""; D=""; N=""
+fi
+
+say()  { printf '%s\n' "$*"; }
+warn() { printf '%s\n' "${Y}$*${N}" >&2; }
+
+# ── Ledger access ────────────────────────────────────────────────────────────
+# gu_* lives in lib/gate-uptime.sh and caches its project dir at source time,
+# so every call runs in its own subshell bound to one project dir.
+_ledger() {
+    local project_dir="$1" fn="$2"
+    [ -f "${project_dir}/lib/gate-uptime.sh" ] || return 1
+    (
+        set +eu
+        export _GU_PROJECT_DIR="${project_dir}"
+        # shellcheck source=../lib/gate-uptime.sh
+        source "${project_dir}/lib/gate-uptime.sh" 2>/dev/null || exit 1
+        "${fn}"
+    )
+}
+
+# One human action, one state — recorded in both ledgers so they cannot drift.
+# The source repo's ledger is the operator record; the installed runtime keeps
+# its own because the running gate heartbeats into it.
+_ledger_all() {
+    local fn="$1"
+    _ledger "${REPO_DIR}" "${fn}" >/dev/null 2>&1 || true
+    if [ "${INSTALL_DIR}" != "${REPO_DIR}" ]; then
+        _ledger "${INSTALL_DIR}" "${fn}" >/dev/null 2>&1 || true
+    fi
+}
+
+_ledger_field() {
+    local project_dir="$1" field="$2"
+    local file="${project_dir}/var/gate-uptime.json"
+    [ -f "${file}" ] || return 1
+    jq -r "${field} // empty" "${file}" 2>/dev/null
+}
+
+_fmt_duration() {
+    local s="${1:-0}"
+    [ -z "${s}" ] && s=0
+    [ "${s}" -lt 60 ] 2>/dev/null && { printf '< 1m'; return; }
+    local d=$(( s / 86400 )) h=$(( (s % 86400) / 3600 )) m=$(( (s % 3600) / 60 ))
+    if   [ "${d}" -gt 0 ]; then printf '%dd %dh %dm' "${d}" "${h}" "${m}"
+    elif [ "${h}" -gt 0 ]; then printf '%dh %dm' "${h}" "${m}"
+    else printf '%dm' "${m}"; fi
+}
+
+_fmt_epoch() {
+    local e="${1:-0}"
+    { [ -z "${e}" ] || [ "${e}" = "0" ] || [ "${e}" = "null" ]; } && { printf '—'; return; }
+    date -r "${e}" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || printf '—'
+}
+
+# ── Structural truth ─────────────────────────────────────────────────────────
+# Precedence mirrors bin/zlar-gate exactly: off-flag wins over lock.
+gate_state() {
+    if [ -f "${OFF_FLAG}" ]; then echo "off"
+    elif [ -f "${LOCK_FLAG}" ]; then echo "locked"
+    else echo "on"; fi
+}
+
+# ── Commands ─────────────────────────────────────────────────────────────────
+cmd_on() {
+    local before; before=$(gate_state)
+
+    if [ -f "${OFF_FLAG}" ]; then
+        if ! sudo -n /bin/rm -f "${OFF_FLAG}" 2>/dev/null; then
+            warn "Could not remove ${OFF_FLAG} without a password."
+            warn "Run this yourself and re-check:"
+            warn "    sudo rm -f ${OFF_FLAG}"
+            return 1
+        fi
+    fi
+    rm -f "${LEGACY_FLAG}" 2>/dev/null || true
+
+    if [ -f "${OFF_FLAG}" ]; then
+        say "${R}${B}ZLAR is still OFF${N} — ${OFF_FLAG} could not be removed."
+        return 1
+    fi
+
+    if [ "${before}" = "on" ]; then
+        say "${G}${B}ZLAR is ON${N} — already on. Nothing changed."
+    else
+        _ledger_all gu_record_enable
+        say "${G}${B}ZLAR is ON${N} — policy enforced. Governed actions route to you."
+    fi
+
+    if [ -f "${LOCK_FLAG}" ]; then
+        say "  ${Y}Note:${N} lock flag is set — every agent action is denied until 'ZLAR unlock'."
+    fi
+    _streak_line
+}
+
+cmd_off() {
+    local before; before=$(gate_state)
+
+    if ! sudo -n /usr/bin/touch "${OFF_FLAG}" 2>/dev/null; then
+        warn "Could not write ${OFF_FLAG} without a password."
+        warn "Gate is UNCHANGED (still ${before}). Run this yourself:"
+        warn "    sudo touch ${OFF_FLAG}"
+        return 1
+    fi
+    touch "${LEGACY_FLAG}" 2>/dev/null || true
+
+    if [ "${before}" != "off" ]; then
+        _ledger_all gu_record_disable
+    fi
+
+    say "${R}${B}ZLAR is OFF${N} — governed tool calls are no longer intercepted."
+    say "  Work done while OFF is ${B}not governed${N}. No approvals, no receipts."
+    say "  Turn it back on with: ${B}ZLAR on${N}"
+}
+
+cmd_lock() {
+    local ts; ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '%s\n' "${ts}" > "${LOCK_FLAG}"
+    if [ -f "${OFF_FLAG}" ]; then
+        say "${Y}${B}Lock set${N} at ${ts} — but the gate is OFF, and OFF wins."
+        say "  Run ${B}ZLAR on${N} for the lock to take effect."
+    else
+        say "${Y}${B}ZLAR is LOCKED${N} at ${ts} — every agent action is denied."
+        say "  Release with: ${B}ZLAR unlock${N}"
+    fi
+}
+
+cmd_unlock() {
+    if [ -f "${LOCK_FLAG}" ]; then
+        rm -f "${LOCK_FLAG}"
+        say "${G}Lock released${N} — gate state is now: $(_state_word "$(gate_state)")"
+    else
+        say "Not locked. Gate state: $(_state_word "$(gate_state)")"
+    fi
+}
+
+_state_word() {
+    case "$1" in
+        on)     printf '%s' "${G}${B}ON${N}" ;;
+        off)    printf '%s' "${R}${B}OFF${N}" ;;
+        locked) printf '%s' "${Y}${B}LOCKED${N}" ;;
+    esac
+}
+
+_streak_line() {
+    local state streak_start lifetime now
+    state=$(_ledger_field "${REPO_DIR}" '.state' 2>/dev/null || echo "")
+    [ -z "${state}" ] && return 0
+    streak_start=$(_ledger_field "${REPO_DIR}" '.current_streak_start_epoch' || echo 0)
+    lifetime=$(_ledger_field "${REPO_DIR}" '.lifetime_on_seconds' || echo 0)
+    now=$(date +%s)
+    if [ "${state}" = "on" ] && [ "${streak_start:-0}" -gt 0 ]; then
+        say "  ${D}Streak: $(_fmt_duration $(( now - streak_start )))   Lifetime on: $(_fmt_duration $(( lifetime + now - streak_start )))${N}"
+    else
+        say "  ${D}Lifetime on: $(_fmt_duration "${lifetime:-0}")${N}"
+    fi
+}
+
+cmd_status() {
+    local state; state=$(gate_state)
+
+    say ""
+    say "  ${B}ZLAR${N}  $(_state_word "${state}")"
+    say ""
+
+    # ── What that means, in one line ─────────────────────────────────────────
+    case "${state}" in
+        on)     say "  Governed tool calls are intercepted and routed to you before they act." ;;
+        off)    say "  ${R}Nothing is intercepted. Agent actions execute ungoverned.${N}" ;;
+        locked) say "  ${Y}Every agent action is denied. Nothing runs until 'ZLAR unlock'.${N}" ;;
+    esac
+    say ""
+
+    # ── Structural flags — the actual authority ──────────────────────────────
+    say "  ${B}Authority flags${N}"
+    if [ -f "${OFF_FLAG}" ]; then
+        say "    off-flag      ${R}present${N}  ${D}${OFF_FLAG} ($(_fmt_epoch "$(stat -f %m "${OFF_FLAG}" 2>/dev/null || echo 0)"))${N}"
+    else
+        say "    off-flag      ${G}absent${N}   ${D}${OFF_FLAG}${N}"
+    fi
+    if [ -f "${LOCK_FLAG}" ]; then
+        say "    lock          ${Y}present${N}  ${D}${LOCK_FLAG} — set $(tr -d '[:space:]' < "${LOCK_FLAG}" 2>/dev/null)${N}"
+    else
+        say "    lock          ${D}absent${N}"
+    fi
+    if [ -f "${LEGACY_FLAG}" ]; then
+        say "    legacy marker ${D}present (not load-bearing)${N}"
+    fi
+    say ""
+
+    # ── Enforcement path — is the gate even wired in? ────────────────────────
+    say "  ${B}Enforcement path${N}"
+    local hook=""
+    if [ -f "${SETTINGS}" ]; then
+        hook=$(jq -r '.hooks.PreToolUse[]?.hooks[]?.command // empty' "${SETTINGS}" 2>/dev/null | grep -i zlar | head -1)
+    fi
+    if [ -n "${hook}" ]; then
+        local hook_path="${hook##* }"
+        if [ -x "${hook_path}" ]; then
+            say "    hook          ${G}wired${N}    ${D}${hook_path}${N}"
+        else
+            say "    hook          ${R}BROKEN${N}   ${D}${hook_path} — not executable${N}"
+        fi
+    else
+        say "    hook          ${R}NOT WIRED${N} ${D}no ZLAR PreToolUse hook in ${SETTINGS}${N}"
+    fi
+
+    local runtime_gate="${INSTALL_DIR}/bin/zlar-gate"
+    if [ -x "${runtime_gate}" ]; then
+        say "    gate binary   ${G}present${N}  ${D}${runtime_gate} (v$(cat "${INSTALL_DIR}/VERSION" 2>/dev/null || echo '?'))${N}"
+    else
+        say "    gate binary   ${R}MISSING${N}  ${D}${runtime_gate}${N}"
+    fi
+    say "    source repo   ${D}${REPO_DIR} (v$(cat "${REPO_DIR}/VERSION" 2>/dev/null || echo '?'))${N}"
+    say ""
+
+    # ── Uptime ledger ────────────────────────────────────────────────────────
+    local l_state l_streak l_life l_longest l_disable now
+    l_state=$(_ledger_field "${REPO_DIR}" '.state' || echo "")
+    if [ -n "${l_state}" ]; then
+        l_streak=$(_ledger_field "${REPO_DIR}" '.current_streak_start_epoch' || echo 0)
+        l_life=$(_ledger_field "${REPO_DIR}" '.lifetime_on_seconds' || echo 0)
+        l_longest=$(_ledger_field "${REPO_DIR}" '.longest_streak_seconds' || echo 0)
+        l_disable=$(_ledger_field "${REPO_DIR}" '.last_disable_at_epoch' || echo 0)
+        now=$(date +%s)
+
+        say "  ${B}Uptime${N}"
+        if [ "${l_state}" = "on" ] && [ "${l_streak:-0}" -gt 0 ]; then
+            say "    current       $(_fmt_duration $(( now - l_streak ))) ${D}since $(_fmt_epoch "${l_streak}")${N}"
+            say "    lifetime on   $(_fmt_duration $(( l_life + now - l_streak )))"
+        else
+            say "    current       ${D}—  off since $(_fmt_epoch "${l_disable}")${N}"
+            say "    lifetime on   $(_fmt_duration "${l_life:-0}")"
+        fi
+        say "    longest       $(_fmt_duration "${l_longest:-0}")"
+
+        # Totals written before 2026-08-17 counted every silence as uptime: a
+        # streak closed only on an explicit `zlar off`, so the flag written
+        # directly, a reboot, an unwired hook or a crash all left it open and
+        # the next heartbeat absorbed the dark period. Those figures are an
+        # upper bound and must be labelled as one wherever they are shown.
+        local l_acct l_gaps l_unobs
+        l_acct=$(_ledger_field "${REPO_DIR}" '.accounting_version // 1' || echo 1)
+        l_gaps=$(_ledger_field "${REPO_DIR}" '.unobserved_gaps // 0' || echo 0)
+        l_unobs=$(_ledger_field "${REPO_DIR}" '.unobserved_seconds // 0' || echo 0)
+        if [ "${l_gaps:-0}" -gt 0 ]; then
+            say "    unobserved    $(_fmt_duration "${l_unobs:-0}") across ${l_gaps} gap(s) — state unknown, not counted"
+        fi
+        if [ "${l_acct:-1}" -lt 2 ]; then
+            say "    ${B}note${N}          totals above predate the 2026-08-17 accounting fix and"
+            say "                  counted gate-silent time as uptime. Upper bound, not a"
+            say "                  measurement. \`zlar uptime-reset\` starts a clean ledger."
+        fi
+
+        # Uptime without invocation evidence is an unbacked claim. A streak
+        # measures wall-clock time with the off-flag absent — it does not by
+        # itself prove the gate ever evaluated anything. Show the evidence
+        # next to the number so the claim can be defended on demand.
+        local audit="${INSTALL_DIR}/var/log/audit.jsonl"
+        [ -f "${audit}" ] || audit="${REPO_DIR}/var/log/audit.jsonl"
+        if [ -f "${audit}" ]; then
+            local last_ts records
+            last_ts=$(tail -1 "${audit}" 2>/dev/null | jq -r '.ts // .timestamp // empty' 2>/dev/null)
+            records=$(wc -l < "${audit}" 2>/dev/null | tr -d ' ')
+            say "    evidence      ${records:-0} decisions since last rotation${D}, last ${last_ts:-none}${N}"
+        else
+            say "    evidence      ${Y}no audit log found${N} ${D}— uptime is unbacked${N}"
+        fi
+
+        # Divergence between the flags and the ledger is worth shouting about:
+        # it means an on/off happened outside this path.
+        local expected="${state}"
+        [ "${expected}" = "locked" ] && expected="on"
+        if [ "${l_state}" != "${expected}" ]; then
+            say "    ${Y}ledger disagrees${N} ${D}— ledger says '${l_state}', flags say '${expected}'${N}"
+        fi
+
+        # The installed runtime keeps its own ledger; the gate heartbeats into it.
+        local i_state
+        i_state=$(_ledger_field "${INSTALL_DIR}" '.state' || echo "")
+        if [ -n "${i_state}" ] && [ "${i_state}" != "${l_state}" ]; then
+            say "    ${Y}runtime ledger${N} ${D}${INSTALL_DIR}/var/gate-uptime.json says '${i_state}' — diverged from source ledger${N}"
+        fi
+        say ""
+    fi
+}
+
+cmd_help() {
+    cat <<EOF
+
+  ${B}ZLAR${N} — human authority over agent actions
+
+  ${B}ZLAR on${N}        Enforcement ON. Governed actions route to you first.
+  ${B}ZLAR off${N}       Enforcement OFF. Nothing is intercepted.
+  ${B}ZLAR status${N}    What is true right now — flags, hook, uptime.
+  ${B}ZLAR lock${N}      Deny everything (step-away mode).
+  ${B}ZLAR uptime-reset${N}  Retire pre-2026-08-17 totals; archives the old ledger.
+  ${B}ZLAR unlock${N}    Release the lock.
+
+  Case does not matter: ${D}ZLAR / zlar / Zlar${N} all work.
+  Any other subcommand is passed through to the full CLI (${D}zlar help${N}).
+
+EOF
+}
+
+cmd_uptime_reset() {
+    # The ledger is bookkeeping, not evidence — but the old file is kept anyway.
+    # shellcheck source=../lib/gate-uptime.sh
+    source "${REPO_DIR}/lib/gate-uptime.sh"
+    local archive
+    archive=$(gu_reset) || { warn "Could not reset the uptime ledger."; exit 1; }
+    say ""
+    say "  ${B}Uptime ledger reset.${N}"
+    [ -n "${archive}" ] && say "  Previous totals archived: ${D}${archive}${N}"
+    say "  Counting resumes from now, excluding time the gate is silent."
+    say ""
+}
+
+# ── Dispatch ─────────────────────────────────────────────────────────────────
+CMD="${1:-status}"
+[ $# -gt 0 ] && shift
+
+case "$(printf '%s' "${CMD}" | tr '[:upper:]' '[:lower:]')" in
+    on|start|enable)    cmd_on ;;
+    off|stop|disable)   cmd_off ;;
+    status|state|"")    cmd_status ;;
+    lock)               cmd_lock ;;
+    uptime-reset)       cmd_uptime_reset ;;
+    unlock)             cmd_unlock ;;
+    help|--help|-h)     cmd_help ;;
+    *)
+        if [ -x "${REPO_DIR}/bin/zlar" ]; then
+            exec "${REPO_DIR}/bin/zlar" "${CMD}" "$@"
+        fi
+        warn "Unknown command: ${CMD}"
+        cmd_help
+        exit 1
+        ;;
+esac

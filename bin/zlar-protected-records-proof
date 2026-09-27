@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+
+console.error('ERROR: e1_positive_terminal_proof_generation_retired');
+process.exit(1);

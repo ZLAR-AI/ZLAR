@@ -1,0 +1,98 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import {
+  assertNoUnsafeTokenLifecycleText,
+  formatGithubAppTokenLifecycleReport,
+  runGithubAppTokenLifecycleWrapper,
+  writeGithubAppTokenLifecycleReport,
+} from '../lib/zlar-github-app-token-lifecycle-wrapper.mjs';
+
+function usage() {
+  return `Usage:
+  zlar-github-app-token-lifecycle --input <path|-> [--json] [--json-out <path>]
+  zlar-github-app-token-lifecycle --live [--authority-packet <path> --authority-sha256 <sha>] [--json]
+
+This build is no-secret only. Fake-fixture mode is the default. Live mode refuses.
+`;
+}
+
+function parseArgs(argv) {
+  assertNoUnsafeTokenLifecycleText(argv.join('\n'));
+  const args = {
+    input: null,
+    json: false,
+    jsonOut: null,
+    mode: null,
+    authorityPacketPath: null,
+    authorityPacketSha256: null,
+  };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--help' || arg === '-h') return { help: true };
+    if (arg === '--json') {
+      args.json = true;
+    } else if (arg === '--live') {
+      args.mode = 'live';
+    } else if (arg === '--input') {
+      args.input = argv[++index];
+    } else if (arg === '--json-out') {
+      args.jsonOut = argv[++index];
+    } else if (arg === '--authority-packet') {
+      args.authorityPacketPath = argv[++index];
+    } else if (arg === '--authority-sha256') {
+      args.authorityPacketSha256 = argv[++index];
+    } else {
+      throw new Error('Unsupported argument');
+    }
+    if (argv[index] === undefined) throw new Error('Missing argument value');
+  }
+  return args;
+}
+
+function readStdin() {
+  return readFileSync(0, 'utf8');
+}
+
+function readInput(args) {
+  if (args.mode === 'live') {
+    return JSON.stringify({
+      mode: 'live',
+      authority_packet_path: args.authorityPacketPath ?? null,
+      authority_packet_sha256: args.authorityPacketSha256 ?? null,
+    });
+  }
+  if (!args.input) throw new Error('Missing input');
+  if (args.input === '-') return readStdin();
+  assertNoUnsafeTokenLifecycleText(args.input);
+  try {
+    return readFileSync(args.input, 'utf8');
+  } catch {
+    throw new Error('Input file could not be read');
+  }
+}
+
+function main() {
+  try {
+    const args = parseArgs(process.argv.slice(2));
+    if (args.help) {
+      process.stdout.write(usage());
+      return 0;
+    }
+    const input = readInput(args);
+    const report = runGithubAppTokenLifecycleWrapper(input, {
+      mode: args.mode,
+      authorityPacketPath: args.authorityPacketPath,
+      authorityPacketSha256: args.authorityPacketSha256,
+    });
+    if (args.jsonOut && report.lifecycle_status === 'passed') {
+      writeGithubAppTokenLifecycleReport(report, args.jsonOut);
+    }
+    process.stdout.write(args.json ? `${JSON.stringify(report, null, 2)}\n` : formatGithubAppTokenLifecycleReport(report));
+    return report.lifecycle_status === 'passed' ? 0 : 2;
+  } catch {
+    process.stderr.write('zlar-github-app-token-lifecycle refused: unsafe or invalid request\n');
+    return 2;
+  }
+}
+
+process.exitCode = main();

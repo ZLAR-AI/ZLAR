@@ -1,0 +1,3 @@
+test-claude-code-receipt-bridge-proof.mjs
+test-protected-records-service-request-cli.mjs
+test-protected-records-service.mjs

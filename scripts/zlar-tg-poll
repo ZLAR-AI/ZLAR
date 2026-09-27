@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+# zlar-tg-poll — Shared Telegram callback dispatcher for ZLAR gates
+# Routes callback_query responses to per-gate inbox directories.
+# Only one instance should run at a time (enforced by PID file).
+set -euo pipefail
+
+readonly RUNTIME_DIR="/var/run/zlar-tg"
+readonly PIDFILE="${RUNTIME_DIR}/poll.pid"
+readonly INBOX_DIR="${RUNTIME_DIR}/inbox"
+readonly TOKEN_FILE="${RUNTIME_DIR}/token"
+readonly CHAT_ID_FILE="${RUNTIME_DIR}/chat-id"
+readonly LOG_FILE="/var/log/zlar-tg-poll.log"
+
+_installed_project_dir() {
+    local admin_user=""
+    if [ -f /etc/zlar/admin-user ]; then
+        admin_user=$(cat /etc/zlar/admin-user 2>/dev/null | tr -d '[:space:]')
+    fi
+    [ -n "${admin_user}" ] || return 1
+    [ "${admin_user}" != "root" ] || return 1
+    [ -d "/Users/${admin_user}/.zlar" ] || return 1
+    printf '%s' "/Users/${admin_user}/.zlar"
+}
+
+# Resolve project root. LaunchDaemon boot exports ZLAR_PROJECT_DIR so the
+# /usr/local/bin dispatcher copy uses the installed ~/.zlar tree for libraries.
+if [ -n "${ZLAR_PROJECT_DIR:-}" ]; then
+    PROJECT_DIR="${ZLAR_PROJECT_DIR}"
+else
+    _poll_self="$0"
+    if command -v readlink &>/dev/null; then
+        _poll_resolved=$(readlink -f "${_poll_self}" 2>/dev/null || readlink "${_poll_self}" 2>/dev/null || echo "${_poll_self}")
+    else
+        _poll_resolved="${_poll_self}"
+    fi
+    SCRIPT_DIR="$(cd "$(dirname "${_poll_resolved}")" && pwd)"
+    PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+    if [ ! -f "${PROJECT_DIR}/lib/hmac.sh" ]; then
+        _installed_dir="$(_installed_project_dir || true)"
+        [ -n "${_installed_dir}" ] && PROJECT_DIR="${_installed_dir}"
+    fi
+fi
+
+# Source shared HMAC library (die not yet defined, so use echo+exit)
+if [ -f "${PROJECT_DIR}/lib/hmac.sh" ]; then
+    # shellcheck source=../lib/hmac.sh
+    source "${PROJECT_DIR}/lib/hmac.sh"
+else
+    echo "FATAL: Cannot find lib/hmac.sh (tried ${PROJECT_DIR}/lib/)" >&2
+    exit 1
+fi
+
+# Source human-invariants for immediate H13 cleanup on deny (best-effort).
+_HI_PROJECT_DIR="${PROJECT_DIR}"
+[ -f "${PROJECT_DIR}/lib/human-invariants.sh" ] && source "${PROJECT_DIR}/lib/human-invariants.sh" 2>/dev/null || true
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+log_poll() {
+    printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "${LOG_FILE}" 2>/dev/null || true
+}
+
+die() {
+    log_poll "FATAL: $*"
+    echo "FATAL: $*" >&2
+    exit 1
+}
+
+cleanup() {
+    rm -f "${PIDFILE}" 2>/dev/null || true
+    log_poll "Dispatcher stopped (PID $$)"
+}
+trap cleanup EXIT INT TERM
+
+# ─── Preflight ────────────────────────────────────────────────────────────────
+
+[ -f "${TOKEN_FILE}" ] || die "Token file not found: ${TOKEN_FILE}"
+TELEGRAM_BOT_TOKEN=$(cat "${TOKEN_FILE}" | tr -d '[:space:]')
+[ -n "${TELEGRAM_BOT_TOKEN}" ] || die "Token file is empty: ${TOKEN_FILE}"
+
+zlar_hmac_load_secret
+[ -n "${ZLAR_INBOX_HMAC_SECRET}" ] || die "HMAC secret not loaded (check ${ZLAR_HMAC_SECRET_FILE})"
+
+if [ -n "${ZLAR_TELEGRAM_CHAT_ID:-}" ]; then
+    TELEGRAM_CHAT_ID="${ZLAR_TELEGRAM_CHAT_ID}"
+elif [ -f "${CHAT_ID_FILE}" ]; then
+    TELEGRAM_CHAT_ID=$(cat "${CHAT_ID_FILE}" 2>/dev/null | tr -d '[:space:]')
+else
+    TELEGRAM_CHAT_ID=""
+fi
+[ -n "${TELEGRAM_CHAT_ID}" ] || die "Telegram chat_id not configured (boot should load etc/gate.json)"
+
+mkdir -p "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" "${INBOX_DIR}/mcp" 2>/dev/null || true
+chmod 700 "${INBOX_DIR}/cc" "${INBOX_DIR}/oc" "${INBOX_DIR}/mcp" 2>/dev/null || true
+
+# PID file — check for stale
+if [ -f "${PIDFILE}" ]; then
+    old_pid=$(cat "${PIDFILE}" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null; then
+        die "Already running (PID ${old_pid})"
+    fi
+    rm -f "${PIDFILE}"
+fi
+echo $$ > "${PIDFILE}"
+
+log_poll "Dispatcher started (PID $$)"
+
+# ─── Telegram API ─────────────────────────────────────────────────────────────
+
+telegram_api() {
+    local method="$1" data="$2"
+    local response http_code
+    # Token passed via --config stdin so it never appears in ps/cmdline
+    response=$(curl -s -w '\n%{http_code}' -X POST \
+        -H "Content-Type: application/json" \
+        -d "${data}" \
+        --connect-timeout 5 \
+        --max-time 10 \
+        --config - 2>/dev/null <<EOF
+url = "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}"
+EOF
+    ) || { log_poll "CURL FAILED: ${method}"; return 1; }
+    http_code=$(echo "${response}" | tail -1)
+    response=$(echo "${response}" | sed '$d')
+    if [ "${http_code}" != "200" ]; then
+        log_poll "API ERROR: ${method} HTTP ${http_code}: ${response}"
+        return 1
+    fi
+    echo "${response}"
+}
+
+# ─── Main Loop ────────────────────────────────────────────────────────────────
+
+LAST_UPDATE_ID=0
+
+while true; do
+    poll_body=$(printf '{"offset":%d,"timeout":5,"allowed_updates":["callback_query"]}' \
+        "$((LAST_UPDATE_ID + 1))")
+
+        updates=$(telegram_api "getUpdates" "${poll_body}") || continue
+
+    # Heartbeat: prove this poll cycle completed (watchdog checks staleness)
+    date +%s > "${RUNTIME_DIR}/heartbeat" 2>/dev/null || true
+
+    [ -n "${updates}" ] || continue
+
+    count=$(echo "${updates}" | jq '.result | length' 2>/dev/null || echo 0)
+    [ "${count}" -gt 0 ] || continue
+
+    j=0
+    while [ "${j}" -lt "${count}" ]; do
+        update=$(echo "${updates}" | jq -c ".result[${j}]" 2>/dev/null)
+        update_id=$(echo "${update}" | jq -r '.update_id' 2>/dev/null)
+
+        # Advance offset
+        if [ -n "${update_id}" ] && [ "${update_id}" != "null" ]; then
+            LAST_UPDATE_ID="${update_id}"
+        fi
+
+        cb_data=$(echo "${update}" | jq -r '.callback_query.data // ""' 2>/dev/null)
+        cb_id=$(echo "${update}" | jq -r '.callback_query.id // ""' 2>/dev/null)
+        cb_from=$(echo "${update}" | jq -r '.callback_query.from.id // ""' 2>/dev/null)
+
+        # Skip if no callback data
+        if [ -z "${cb_data}" ] || [ "${cb_data}" = "noop" ]; then
+            j=$((j + 1))
+            continue
+        fi
+
+        # Verify sender
+        if [ "${cb_from}" != "${TELEGRAM_CHAT_ID}" ]; then
+            log_poll "UNAUTHORIZED callback from ${cb_from}"
+            telegram_api "answerCallbackQuery" \
+                "$(printf '{"callback_query_id":"%s","text":"Unauthorized"}' "${cb_id}")" >/dev/null 2>&1
+            j=$((j + 1))
+            continue
+        fi
+
+        # Answer callback immediately (clears loading spinner)
+        answer_text="Received"
+        case "${cb_data}" in
+            *:canary:approve:*) answer_text="⚠️ Canary — governance test" ;;
+            *:canary:deny:*)    answer_text="✅ Canary passed" ;;
+            *:pc_proceed:*)     answer_text="▶️ Proceeding to full ask" ;;
+            *:pc_block:*)       answer_text="🚫 Action blocked" ;;
+            *:approve:*)        answer_text="✅ Approved" ;;
+            *:deny:*)           answer_text="❌ Denied" ;;
+        esac
+        answer_body=$(jq -n -c --arg id "${cb_id}" --arg text "${answer_text}" \
+            '{callback_query_id: $id, text: $text}')
+        if ! telegram_api "answerCallbackQuery" "${answer_body}" >/dev/null; then
+            log_poll "answerCallbackQuery FAILED for cb_id=${cb_id}"
+        fi
+
+        # Update message to show result (immediate visual feedback)
+        cb_msg_id=$(echo "${update}" | jq -r '.callback_query.message.message_id // ""' 2>/dev/null)
+        cb_chat_id=$(echo "${update}" | jq -r '.callback_query.message.chat.id // ""' 2>/dev/null)
+        if [ -n "${cb_msg_id}" ] && [ -n "${cb_chat_id}" ]; then
+            case "${cb_data}" in
+                *:canary:approve:*)
+    edit_text="⚠️ CANARY FAILED — You approved a suspicious action. This was a governance health check."
+    ;;
+*:canary:deny:*)
+    edit_text="✅ Canary passed — governance check healthy"
+    ;;
+*:pc_proceed:*)
+    case "${cb_data}" in cc:*) pfx="🖥️";; mcp:*) pfx="🔷";; *) pfx="";; esac
+    edit_text="${pfx} ▶️ Tier 2 preconfirm cleared — full ask incoming"
+    ;;
+*:pc_block:*)
+    case "${cb_data}" in cc:*) pfx="🖥️";; mcp:*) pfx="🔷";; *) pfx="";; esac
+    edit_text="${pfx} 🚫 Tier 2 preconfirm — action blocked"
+    ;;
+*:approve:*)
+    case "${cb_data}" in cc:*) pfx="🖥️";; oc:*) pfx="🦞";; mcp:*) pfx="🔷";; *) pfx="";; esac
+    edit_text="${pfx} ☑️ Approved"
+    ;;
+*:deny:*)
+    case "${cb_data}" in cc:*) pfx="🖥️";; oc:*) pfx="🦞";; mcp:*) pfx="🔷";; *) pfx="";; esac
+    edit_text="${pfx} ▪️ Denied"
+    ;;
+*)
+    edit_text="▪️ Processed"
+    ;;
+            esac
+            edit_body=$(jq -n -c \
+                --arg chat_id "${cb_chat_id}" \
+                --argjson msg_id "${cb_msg_id}" \
+                --arg text "${edit_text}" \
+                '{chat_id: $chat_id, message_id: $msg_id, text: $text, parse_mode: ""}')
+            if ! telegram_api "editMessageText" "${edit_body}" >/dev/null; then
+                log_poll "editMessageText FAILED for msg_id=${cb_msg_id}"
+            fi
+        fi
+
+        # Route by prefix
+        target_dir=""
+        case "${cb_data}" in
+            cc:*) target_dir="${INBOX_DIR}/cc" ;;
+            oc:*) target_dir="${INBOX_DIR}/oc" ;;
+            mcp:*) target_dir="${INBOX_DIR}/mcp" ;;
+            *)
+                log_poll "Unknown callback prefix: ${cb_data}"
+                j=$((j + 1))
+                continue
+                ;;
+        esac
+
+        # Write callback to inbox with HMAC for integrity verification
+        cb_file="${target_dir}/${update_id}.json"
+        cb_hmac=$(zlar_hmac_compute "${cb_data}" "${cb_from}" "${cb_id}") || {
+            log_poll "ERROR: HMAC computation failed for update_id=${update_id}"
+            j=$((j + 1))
+            continue
+        }
+        jq -n -c \
+            --arg data "${cb_data}" \
+            --arg from_id "${cb_from}" \
+            --arg cb_id "${cb_id}" \
+            --arg hmac "${cb_hmac}" \
+            '{data: $data, from_id: $from_id, callback_query_id: $cb_id, hmac: $hmac}' \
+            > "${cb_file}"
+        chmod 640 "${cb_file}"
+
+        log_poll "Routed: ${cb_data} → ${cb_file}"
+
+        # H13 immediate cleanup (v2.8.1): when the human denies a CC request,
+        # immediately decrement the H13 pending count. Without this, the H13
+        # entry persists for the full TTL (6 min) because the gate only decrements
+        # when the agent retries — and denied actions are rarely retried.
+        # This prevents spurious H13 "overloaded" advisory messages during sessions
+        # where the human denies multiple requests without the agent retrying.
+        if [[ "${cb_data}" == cc:deny:* ]]; then
+            _denied_action_id="${cb_data#cc:deny:}"
+            _approval_dir="${PROJECT_DIR}/var/log/approvals"
+            _action_hash=""
+            # Scan pending files for the one containing this action_id.
+            for _pf in "${_approval_dir}"/*.pending; do
+                [ -f "${_pf}" ] || continue
+                _pf_action_id=$(head -n1 "${_pf}" 2>/dev/null || true)
+                if [ "${_pf_action_id}" = "${_denied_action_id}" ]; then
+                    _action_hash=$(sed -n '2p' "${_pf}" 2>/dev/null || true)
+                    break
+                fi
+            done
+            if [ -n "${_action_hash}" ] && command -v hi_decrement_pending &>/dev/null; then
+                hi_decrement_pending "${cb_from}" "${_action_hash}" 2>/dev/null || true
+                log_poll "H13 decremented: action_id=${_denied_action_id} hash=${_action_hash:0:8}..."
+            fi
+        fi
+
+        j=$((j + 1))
+    done
+done

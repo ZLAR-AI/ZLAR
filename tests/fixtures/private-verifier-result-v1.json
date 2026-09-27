@@ -1,0 +1,150 @@
+{
+  "report_type": "zlar-private-verifier-result-v1",
+  "schema_version": 1,
+  "generated_at": "2026-06-21T18:20:00Z",
+  "intake_class": "sample-fixture",
+  "target": {
+    "release_tag": "v3.3.103",
+    "expected_commit_sha": "b7f9029c763b418e4a81394fb54c20dd02fbd7a7",
+    "commit_sha": "b7f9029c763b418e4a81394fb54c20dd02fbd7a7",
+    "moving_target_used": false
+  },
+  "verifier": {
+    "public_label": "private-verifier-fixture",
+    "relationship_to_zlar": "sample fixture only; no real verifier identity or public attribution",
+    "identity_public": false,
+    "contact_public": false
+  },
+  "custody": {
+    "source_channel_recorded_privately": false,
+    "received_timestamp_recorded_privately": false,
+    "raw_reply_publicly_committed": false,
+    "private_storage_required": true,
+    "public_repo_material_contains_private_identity": false
+  },
+  "review_result": {
+    "verdict": "PASS",
+    "completed_by_non_operator": false,
+    "commands_completed_without_usage_coaching": true,
+    "used_explicit_release_tag": true,
+    "used_expected_commit_sha": true,
+    "used_latest": false,
+    "result_summary": "Sample fixture proving the private intake envelope only; it is not a real verifier reply."
+  },
+  "evidence": {
+    "evidence_model": "release-forward-dry-run-artifacts",
+    "received_bundle_sha256": "31a469bcb0aa7b646bae5ea7cebf04349b54be89235365c768db36179e38cea5",
+    "archive_integrity_checked": true,
+    "checksum_verification_checked": true,
+    "json_artifacts_validated": true,
+    "latest_substitution_scan_passed": true,
+    "identity_secret_scan_passed": true,
+    "artifact_hashes": [
+      {
+        "path": "DRY-RUN-MANIFEST.json",
+        "sha256": "1909351b5701e93e3af6da7de8133274c808f6373c47dd8d83ed19e7f3f8db04"
+      },
+      {
+        "path": "SHA256SUMS",
+        "sha256": "31a469bcb0aa7b646bae5ea7cebf04349b54be89235365c768db36179e38cea5"
+      },
+      {
+        "path": "RUN-SHA256SUMS",
+        "sha256": "a742f6f238aaef84e3e37dfbc858a581dcf09c73197f183bd1751dc6b73b0c4f"
+      },
+      {
+        "path": "ZLAR/zlar-verifier-env-report-v0.json",
+        "sha256": "7ad635617625acfd4ca639886f1bd36297b10b34112509a7d65d1a425dae4aa3"
+      },
+      {
+        "path": "ZLAR/zlar-proof-smoke-sample-verification.json",
+        "sha256": "3d68426cd577e662a4a9353cdd284a12056383716c553bf0fd7d2c152284e02e"
+      },
+      {
+        "path": "ZLAR/zlar-service-preflight-sample-verification.json",
+        "sha256": "2ceca754a4f1d0fdb294ff18290544adcb178a4821bd88c91502a8b2ed1435bb"
+      },
+      {
+        "path": "ZLAR/zlar-local-proof-pack-sample-verification.json",
+        "sha256": "e572143871e700d452e7ef41ad8125c7cbb3c26b3dcbb6073d38aef1bd11d99b"
+      },
+      {
+        "path": "ZLAR/zlar-issuer-status-proof.json",
+        "sha256": "7f3c8f47e3517c13c32149a6c0dd6cae5aef89d1c4939cda9376d6c50df8b0ef"
+      },
+      {
+        "path": "ZLAR/zlar-verifier-kit-issuer-status-fixture.json",
+        "sha256": "4f2cc1bca1d9b40bf41ef4f8c86f8cc5b6121bce02a1e1d43710decc75f1f0c4"
+      },
+      {
+        "path": "ZLAR/zlar-runtime-local-activation-sample-verification.json",
+        "sha256": "40c0c47c4ebb34daa77fdfdc0468391fc3dff620cda3909e922160844c2f69c9"
+      },
+      {
+        "path": "ZLAR/zlar-runtime-profile-installation-sample-verification.json",
+        "sha256": "b3f4016d05c7bfa95d852c767fe298802cf49e60073948a59c34f8a6ca0c177d"
+      },
+      {
+        "path": "ZLAR/zlar-trusted-receipt-issuer-recognition.json",
+        "sha256": "b89697dbcc142623739571ec90c7b7d8d84ff03d2ca22a76110dafbc05631a80"
+      },
+      {
+        "path": "ZLAR/zlar-trusted-receipt-issuer-recognition-malformed-registry.json",
+        "sha256": "dc820cbe78f7a7accf1253a085708d6919488a34488ec71b36fe505175afdc37"
+      },
+      {
+        "path": "ZLAR/zlar-trusted-receipt-issuer-recognition-malformed-registry-error.txt",
+        "sha256": "ef8feff5ec3153340117502260fda127ada43b8e0c6f1e1f7dad2c9ec63ea404"
+      },
+      {
+        "path": "ZLAR/zlar-coverage-map-sample.json",
+        "sha256": "3ea441d8d441ca44aa2478d736ad07898f2c95ce60c6df4341d77e6f926b5685"
+      },
+      {
+        "path": "ZLAR/zlar-north-star-readiness-v1.json",
+        "sha256": "a41e9bbe43ddc76297140c18594b293a3f724eb76672fd655f95220c2e2da912"
+      },
+      {
+        "path": "ZLAR/zlar-verifier-kit-reproducibility-v1.json",
+        "sha256": "3e67055bad399c91730f19273d6b92b49a7aee815a923239cb1e3c031bc74693"
+      }
+    ]
+  },
+  "privacy": {
+    "private_by_default": true,
+    "public_attribution_approved": false,
+    "public_external_attestation_approved": false,
+    "verifier_identity_public": false,
+    "verifier_contact_public": false,
+    "private_contact_included": false,
+    "private_paths_included": false,
+    "credentials_included": false
+  },
+  "claim_boundary": {
+    "private_intake_only": true,
+    "public_external_attestation": false,
+    "public_attribution": false,
+    "non_operator_review_publicly_claimed": false,
+    "production_authority": false,
+    "enterprise_readiness": false,
+    "sovereign_recognition": false,
+    "current_machine_governance": false,
+    "live_mcp_coverage": false,
+    "live_approval_channel_health": false,
+    "live_trust_registry_state": false,
+    "key_custody": false,
+    "revocation_truth": false,
+    "production_downstream_recognition": false,
+    "unrouted_surface_coverage": false,
+    "v3_4_0_readiness": false
+  },
+  "non_claims": [
+    "This result is private/internal intake only unless separate public disclosure is approved.",
+    "This result does not create public external attestation.",
+    "This result does not create public attribution.",
+    "This result does not prove production authority, enterprise readiness, or sovereign recognition.",
+    "This result does not prove current-machine governance, live MCP coverage, or approval-channel health.",
+    "This result does not prove key custody, revocation truth, live trust-registry state, or production downstream recognition.",
+    "This result does not prove v3.4.0 readiness or coverage of unrouted surfaces."
+  ]
+}

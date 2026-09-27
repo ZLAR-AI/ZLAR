@@ -1,0 +1,406 @@
+#!/bin/bash
+# zlar-witness — sequence detection for ZLAR gate audit trails
+#
+# Design principles (from the design notes):
+# - observation before interpretation
+# - fact before narrative
+# - the witness can be smart; the authorizer must remain simple
+# - the witness does not become sovereign
+# - uncertainty is a first-class output
+#
+# This tool reads the audit trail and detects candidate sequence patterns.
+# It REPORTS. It does not BLOCK. It does not ENFORCE.
+# The gate is the sole enforcement point.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# shellcheck source=../lib/audit-reader.sh
+source "${PROJECT_DIR}/lib/audit-reader.sh"
+
+SEQUENCES_FILE="${PROJECT_DIR}/etc/sequences.json"
+TIME_WINDOW="${ZLAR_WITNESS_WINDOW:-300}"  # default 5 minutes
+
+# ── Usage ──
+
+usage() {
+    cat <<'EOF'
+Usage: zlar-witness [command] [options]
+
+Commands:
+  scan              Scan recent audit trail for candidate sequences (default)
+  scan --since <N>  Scan last N seconds of audit trail
+  scan --session <id>  Scan a specific session
+  patterns          List defined sequence patterns
+  report            Generate structured report of detected sequences
+
+Options:
+  --format json     Output as JSON (default)
+  --format human    Output human-readable text
+  --quiet           Only output if sequences detected
+
+The witness observes. It does not enforce.
+EOF
+    exit 0
+}
+
+# ── Pattern detection ──
+
+# Detect SEQ-001: credential-adjacent file access followed by egress
+# Single jq pass — no bash loops
+detect_credential_egress() {
+    local events_file="$1"
+    local window="${2:-${TIME_WINDOW}}"
+
+    local all_events
+    all_events=$(jq -s '.' "${events_file}" 2>/dev/null) || return 0
+
+    echo "${all_events}" | jq -c --argjson window "${window}" '
+        # Inline epoch calculation
+        def epoch: .ts | split("T") |
+            (.[0] | split("-") | (.[0] | tonumber) * 31536000 + (.[1] | tonumber) * 2592000 + (.[2] | tonumber) * 86400) +
+            (.[1] | rtrimstr("Z") | split(":") | (.[0] | tonumber) * 3600 + (.[1] | tonumber) * 60 + (.[2] | tonumber));
+
+        [.[] | select(
+            (.detail.command // "" | test("\\.(env|key|pem|token|ssh)|/\\.(ssh|gnupg)/|credentials|secrets"; "i")) or
+            (.detail.path // "" | test("\\.(env|key|pem|token|ssh)|/\\.(ssh|gnupg)/|credentials|secrets"; "i")) or
+            (.action // "" | test("\\.(env|key|pem|token|ssh)|/\\.(ssh|gnupg)/|credentials|secrets"; "i"))
+        )] as $sensitive |
+
+        [.[] | select(
+            (.detail.command // "" | test("\\b(curl|wget|ssh|scp|rsync|nc|ncat|netcat)\\b")) or
+            (.domain == "webfetch")
+        )] as $egress |
+
+        [$sensitive[] as $s | ($s | epoch) as $s_epoch |
+            $egress[] as $e | ($e | epoch) as $e_epoch |
+            select(($e_epoch - $s_epoch) >= 0 and ($e_epoch - $s_epoch) <= $window) |
+            {
+                pattern: "SEQ-001",
+                name: "credential-adjacent-egress",
+                session: ($s.session_id // "unknown"),
+                steps: [
+                    {position: 1, timestamp: $s.ts, action: ($s.action // "unknown")},
+                    {position: 2, timestamp: $e.ts, action: ($e.action // "unknown")}
+                ],
+                delta_seconds: ($e_epoch - $s_epoch),
+                fact: "Sensitive file accessed at \($s.ts), followed by outbound network request at \($e.ts) (\($e_epoch - $s_epoch)s apart)",
+                note: "This is not labeled as exfiltration. It is a sequence of facts. The human interprets.",
+                severity: "notable",
+                type: "observation"
+            }
+        ] | .[]
+    ' 2>/dev/null || true
+}
+
+# Detect SEQ-002: denied request followed by schedule creation
+# Single jq pass — no bash loops
+detect_denied_then_scheduled() {
+    local events_file="$1"
+    local window="${2:-${TIME_WINDOW}}"
+
+    local all_events
+    all_events=$(jq -s '.' "${events_file}" 2>/dev/null) || return 0
+
+    echo "${all_events}" | jq -c --argjson window "${window}" '
+        def epoch: .ts | split("T") |
+            (.[0] | split("-") | (.[0] | tonumber) * 31536000 + (.[1] | tonumber) * 2592000 + (.[2] | tonumber) * 86400) +
+            (.[1] | rtrimstr("Z") | split(":") | (.[0] | tonumber) * 3600 + (.[1] | tonumber) * 60 + (.[2] | tonumber));
+
+        [.[] | select(.outcome == "deny")] as $denials |
+
+        [.[] | select(
+            (.detail.command // "" | test("\\b(crontab|cron|schedule|launchctl)\\b"; "i")) or
+            (.action // "" | test("CronCreate"; "i"))
+        )] as $schedules |
+
+        [$denials[] as $d | ($d | epoch) as $d_epoch |
+            $schedules[] as $s | ($s | epoch) as $s_epoch |
+            select(($s_epoch - $d_epoch) >= 0 and ($s_epoch - $d_epoch) <= $window) |
+            {
+                pattern: "SEQ-002",
+                name: "denied-then-scheduled",
+                session: ($d.session_id // "unknown"),
+                steps: [
+                    {position: 1, timestamp: $d.ts, action: ($d.action // "unknown"), rule: ($d.rule // "unknown")},
+                    {position: 2, timestamp: $s.ts, action: ($s.action // "unknown")}
+                ],
+                delta_seconds: ($s_epoch - $d_epoch),
+                fact: "Request denied at \($d.ts) (rule \($d.rule // "unknown")), followed by schedule creation at \($s.ts) (\($s_epoch - $d_epoch)s apart)",
+                note: "This is not labeled as evasion. It is a sequence of facts. The human interprets.",
+                severity: "notable",
+                type: "observation"
+            }
+        ] | .[]
+    ' 2>/dev/null || true
+}
+
+# Detect SEQ-005: approval latency drift
+# Uses pending→authorized timestamp pairs to calculate approval latency.
+# Flags when average latency drops below 2 seconds (possible rubber-stamping).
+detect_approval_drift() {
+    local events_file="$1"
+
+    # Count human-authorized approvals
+    local human_count
+    human_count=$(jq -c 'select(.authorizer // "" | startswith("human:"))' "${events_file}" 2>/dev/null | wc -l | tr -d ' ')
+
+    if [[ ${human_count} -lt 4 ]]; then
+        return
+    fi
+
+    # Calculate latencies from pending→authorized pairs
+    local latency_data
+    latency_data=$(audit_approval_latencies "${events_file}" 2>/dev/null || true)
+
+    if [[ -z "${latency_data}" ]]; then
+        jq -cn \
+            --argjson count "${human_count}" \
+            --arg fact "${human_count} human approvals in this period. No pending→authorized pairs found for latency measurement." \
+            --arg note "Approval events exist but latency pairing failed. This may indicate the gate is not recording seq numbers consistently." \
+            '{
+                pattern: "SEQ-005",
+                name: "approval-drift-incomplete",
+                approval_count: $count,
+                fact: $fact,
+                note: $note,
+                severity: "informational",
+                type: "gap"
+            }'
+        return
+    fi
+
+    local latency_count avg_latency min_latency max_latency fast_count
+    latency_count=$(echo "${latency_data}" | jq -s 'length')
+    if [[ -z "${latency_count}" || "${latency_count}" == "0" || "${latency_count}" == "null" ]]; then
+        return
+    fi
+    avg_latency=$(echo "${latency_data}" | jq -s '[.[].delta_seconds] | add / length | floor')
+    min_latency=$(echo "${latency_data}" | jq -s '[.[].delta_seconds] | min')
+    max_latency=$(echo "${latency_data}" | jq -s '[.[].delta_seconds] | max')
+    # Count approvals faster than 2 seconds (potential rubber-stamping)
+    fast_count=$(echo "${latency_data}" | jq -s '[.[] | select(.delta_seconds < 2)] | length')
+
+    local severity="informational"
+    local fact="Measured ${latency_count} approval latencies. Avg: ${avg_latency}s, Min: ${min_latency}s, Max: ${max_latency}s."
+    local note="Approval latency is observable. The human interprets whether the speed indicates confidence or inattention."
+
+    # Flag if average is very fast or most approvals are under 2s
+    if [[ ${avg_latency} -lt 2 || ( ${fast_count} -gt $(( latency_count / 2 )) && ${latency_count} -gt 5 ) ]]; then
+        severity="notable"
+        fact="${fact} ${fast_count} of ${latency_count} approvals were under 2 seconds."
+        note="Fast approvals may indicate governance intuition (the human recognizes safe patterns) or approval fatigue (the human taps without reading). The data alone cannot distinguish."
+    fi
+
+    jq -cn \
+        --argjson count "${latency_count}" \
+        --argjson avg "${avg_latency}" \
+        --argjson min "${min_latency}" \
+        --argjson max "${max_latency}" \
+        --argjson fast "${fast_count}" \
+        --arg fact "${fact}" \
+        --arg note "${note}" \
+        --arg severity "${severity}" \
+        '{
+            pattern: "SEQ-005",
+            name: "approval-latency-profile",
+            approval_count: $count,
+            avg_latency_seconds: $avg,
+            min_latency_seconds: $min,
+            max_latency_seconds: $max,
+            fast_approvals: $fast,
+            fact: $fact,
+            note: $note,
+            severity: $severity,
+            type: "observation"
+        }'
+}
+
+# Detect SEQ-006: repeated denial burst
+# Fires when the same rule denies 5+ times in a single session.
+# This is a pattern worth review, not evidence of malice.
+# Per Bohm: "repeated denial is a pattern worth review, not evidence of malice."
+detect_repeated_denials() {
+    local events_file="$1"
+    local threshold="${2:-5}"
+
+    local all_events
+    all_events=$(jq -s '.' "${events_file}" 2>/dev/null) || return 0
+
+    echo "${all_events}" | jq -c --argjson threshold "${threshold}" '
+        [.[] | select(.outcome == "deny")] |
+        group_by(.session_id + "|" + (.rule // "unknown")) |
+        map(select(length >= $threshold)) |
+        map(
+            (sort_by(.ts)) as $sorted |
+            {
+                pattern: "SEQ-006",
+                name: "repeated-denial-burst",
+                session: $sorted[0].session_id,
+                rule: ($sorted[0].rule // "unknown"),
+                count: length,
+                first_ts: $sorted[0].ts,
+                last_ts: $sorted[-1].ts,
+                actions: [$sorted[:5][] | (.detail.command // .detail.path // .action // "unknown")],
+                fact: "\(length) denials of rule \($sorted[0].rule // "unknown") in session \($sorted[0].session_id[0:8])..., from \($sorted[0].ts) to \($sorted[-1].ts)",
+                note: "Repeated denials may indicate the agent is probing boundaries, or the human is asking it to do something the policy prevents. This is a pattern worth review, not evidence of malice. The human interprets.",
+                severity: "informational",
+                type: "observation"
+            }
+        ) | .[]
+    ' 2>/dev/null || true
+}
+
+# ── Main scan ──
+
+scan() {
+    local since="${1:-$(seconds_in_day)}"
+    local session_filter="${2:-}"
+    local format="${3:-json}"
+
+    # Create temp file with relevant events
+    local tmp_events
+    tmp_events=$(mktemp)
+    trap "rm -f ${tmp_events}" EXIT
+
+    if [[ -n "${session_filter}" ]]; then
+        audit_events_for_session "${session_filter}" > "${tmp_events}"
+    else
+        audit_events_since "${since}" > "${tmp_events}"
+    fi
+
+    local event_count
+    event_count=$(wc -l < "${tmp_events}" | tr -d ' ')
+
+    if [[ ${event_count} -eq 0 ]]; then
+        if [[ "${format}" == "human" ]]; then
+            echo "No audit events found in the specified window."
+        else
+            echo '{"sequences":[],"event_count":0}'
+        fi
+        return
+    fi
+
+    # Run all detectors — each may return multiple compact JSON lines
+    local results=()
+    local seq
+
+    seq=$(detect_credential_egress "${tmp_events}" || true)
+    if [[ -n "${seq}" ]]; then
+        while IFS= read -r line; do
+            [[ -n "${line}" ]] && results+=("${line}")
+        done <<< "${seq}"
+    fi
+
+    seq=$(detect_denied_then_scheduled "${tmp_events}" || true)
+    if [[ -n "${seq}" ]]; then
+        while IFS= read -r line; do
+            [[ -n "${line}" ]] && results+=("${line}")
+        done <<< "${seq}"
+    fi
+
+    seq=$(detect_approval_drift "${tmp_events}" || true)
+    if [[ -n "${seq}" ]]; then
+        while IFS= read -r line; do
+            [[ -n "${line}" ]] && results+=("${line}")
+        done <<< "${seq}"
+    fi
+
+    seq=$(detect_repeated_denials "${tmp_events}" || true)
+    if [[ -n "${seq}" ]]; then
+        while IFS= read -r line; do
+            [[ -n "${line}" ]] && results+=("${line}")
+        done <<< "${seq}"
+    fi
+
+    # Output
+    if [[ "${format}" == "human" ]]; then
+        echo "═══════════════════════════════════════════"
+        echo "  ZLAR Witness — Sequence Scan"
+        echo "  Events examined: ${event_count}"
+        echo "  Sequences detected: ${#results[@]}"
+        echo "═══════════════════════════════════════════"
+        echo ""
+
+        if [[ ${#results[@]} -eq 0 ]]; then
+            echo "  No candidate sequences detected."
+            echo ""
+            echo "  This means no notable multi-step patterns were"
+            echo "  found in the audit trail for this window."
+            echo "  It does not mean nothing happened."
+            echo "  It means nothing matched the defined patterns."
+        else
+            for r in "${results[@]}"; do
+                echo "${r}" | jq -r '"  [\(.pattern)] \(.name)\n  Severity: \(.severity)\n  Fact: \(.fact)\n  Note: \(.note)\n"'
+            done
+        fi
+    else
+        local json_array="["
+        local first=true
+        for r in "${results[@]}"; do
+            # Compact each result to one line to avoid --argjson parse errors
+            local compact
+            compact=$(echo "${r}" | jq -c '.' 2>/dev/null) || compact="${r}"
+            if [[ "${first}" == "true" ]]; then
+                json_array+="${compact}"
+                first=false
+            else
+                json_array+=",${compact}"
+            fi
+        done
+        json_array+="]"
+
+        jq -n \
+            --argjson sequences "${json_array}" \
+            --argjson event_count "${event_count}" \
+            --arg scanned_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+                scanned_at: $scanned_at,
+                event_count: $event_count,
+                sequence_count: ($sequences | length),
+                sequences: $sequences,
+                note: "The witness observes and reports. It does not enforce. The human interprets."
+            }'
+    fi
+}
+
+# ── Command dispatch ──
+
+CMD="${1:-scan}"
+shift || true
+
+case "${CMD}" in
+    scan)
+        SINCE="$(seconds_in_day)"
+        SESSION=""
+        FORMAT="json"
+        QUIET=false
+
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --since) SINCE="$2"; shift 2 ;;
+                --session) SESSION="$2"; shift 2 ;;
+                --format) FORMAT="$2"; shift 2 ;;
+                --quiet) QUIET=true; shift ;;
+                *) echo "Unknown option: $1" >&2; exit 1 ;;
+            esac
+        done
+
+        scan "${SINCE}" "${SESSION}" "${FORMAT}"
+        ;;
+    patterns)
+        jq '.patterns[] | {id, name, description, severity}' "${SEQUENCES_FILE}"
+        ;;
+    report)
+        scan "$(seconds_in_week)" "" "${1:-human}"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unknown command: ${CMD}" >&2
+        usage
+        ;;
+esac

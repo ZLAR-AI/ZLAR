@@ -1,0 +1,477 @@
+{
+  "descriptor_type": "zlar.protected-records.no-reexecution-call-graph.v2",
+  "schema_version": 2,
+  "action_class": "records.write",
+  "consequence_path": "protected-records.installed-runtime-profile.terminal-chain.records.write",
+  "consequence_node": "runtime_service_v2",
+  "coverage_boundary": {
+    "authority_domain": "protected-records.local-disposable-fixture",
+    "included_positive_entrypoint": "bin/zlar-protected-records-replacement-crossing-v2",
+    "excluded_paths": [
+      {
+        "path": "direct-node-invocation-or-custom-import-of-lib/protected-records-replacement-runtime-child-v2.mjs",
+        "mapping": "outside-defined-governed-route",
+        "reason": "same-user source/module execution has no external capability boundary in this local fixture"
+      },
+      {
+        "path": "direct-custom-import-or-call-of-createProtectedRecordsRuntimeServiceV2-including-loader-preload",
+        "mapping": "outside-defined-governed-route",
+        "reason": "the source library is inspectable and callable by the same user outside the supported CLI route"
+      }
+    ],
+    "side_door_closure_proven": false
+  },
+  "nodes": [
+    {
+      "id": "replacement_crossing_driver_v2",
+      "kind": "authority-bound-single-attempt-orchestrator",
+      "source_symbol": "zlar-protected-records-replacement-crossing-v2",
+      "capability": "preflight exact authority, spawn one runtime request without retry, persist the accepted result, and pin the artifact set"
+    },
+    {
+      "id": "runtime_service_v2",
+      "kind": "source-consequence-boundary",
+      "source_symbol": "createProtectedRecordsRuntimeServiceV2",
+      "capability": "one separately authorized canonical effect under launcher-owned authority with runtime-process wall-clock evaluation"
+    },
+    {
+      "id": "general_runtime_service_cli_v2_refusal",
+      "kind": "pre-effect-refusal-only-entrypoint",
+      "source_symbol": "zlar-protected-records-runtime-service",
+      "capability": "refuse every direct v2 positive config before request reading or state-path mutation"
+    },
+    {
+      "id": "exact_source_materialization_v2",
+      "kind": "pre-effect-exact-source-boundary",
+      "source_symbol": "materializeProtectedRecordsReplacementSourceSnapshotV2",
+      "capability": "materialize a hook-disabled private detached clone of the packet-bound source commit, reject hidden index flags, recheck it, and remove write bits before the one runtime child imports it"
+    },
+    {
+      "id": "replacement_runtime_child_v2",
+      "kind": "non-dispatched-exact-source-child-entrypoint",
+      "source_symbol": "protected-records-replacement-runtime-child-v2.mjs",
+      "capability": "accept one driver-marked JSONL request from the rechecked read-only source snapshot; direct module invocation remains outside coverage"
+    },
+    {
+      "id": "authorized_crossing_result",
+      "kind": "immutable-value-boundary",
+      "source_symbol": null,
+      "capability": "immutable post-effect crossing evidence values"
+    },
+    {
+      "id": "accepted_result_persistence_v2",
+      "kind": "write-once-post-effect-evidence-boundary",
+      "source_symbol": "writeOnce",
+      "capability": "persist the canonical accepted result before artifact composition without retrying the consequence"
+    },
+    {
+      "id": "runtime_crossing_inputs_mapper_v2",
+      "kind": "pure-mapper",
+      "source_symbol": "protectedRecordsReplacementCrossingInputsFromRuntimeServiceResultV2",
+      "capability": "map one accepted runtime result to exact crossing inputs only"
+    },
+    {
+      "id": "runtime_source_binding_mapper_v2",
+      "kind": "pure-mapper",
+      "source_symbol": "protectedRecordsReplacementSourceBindingFromRuntimeServiceResultV2",
+      "capability": "map one accepted runtime result to exact source binding only"
+    },
+    {
+      "id": "service_artifact_builder_v2",
+      "kind": "pure-builder",
+      "source_symbol": "buildProtectedRecordsReplacementServiceArtifactV2",
+      "capability": "compose service artifact only"
+    },
+    {
+      "id": "service_artifact_raw_verifier_v2",
+      "kind": "verification-only",
+      "source_symbol": "verifyProtectedRecordsReplacementServiceArtifactV2RawBytes",
+      "capability": "verify canonical service artifact bytes only"
+    },
+    {
+      "id": "terminal_artifact_builder_v2",
+      "kind": "verification-only-builder",
+      "source_symbol": "buildProtectedRecordsReplacementTerminalArtifactV2",
+      "capability": "compose terminal artifact from verified service bytes only"
+    },
+    {
+      "id": "terminal_artifact_raw_verifier_v2",
+      "kind": "verification-only",
+      "source_symbol": "verifyProtectedRecordsReplacementTerminalArtifactV2RawBytes",
+      "capability": "verify canonical terminal artifact bytes only"
+    },
+    {
+      "id": "artifact_set_manifest_builder_v2",
+      "kind": "verification-only-builder",
+      "source_symbol": "buildProtectedRecordsReplacementArtifactSetManifestV2",
+      "capability": "compose one central artifact lineage from verified bytes only"
+    },
+    {
+      "id": "artifact_set_raw_verifier_v2",
+      "kind": "verification-only",
+      "source_symbol": "verifyProtectedRecordsReplacementArtifactSetV2FromRawBytes",
+      "capability": "verify the central manifest and its exact artifact bytes only"
+    },
+    {
+      "id": "independent_artifact_set_verifier_cli_v2",
+      "kind": "verification-only-entrypoint",
+      "source_symbol": "zlar-protected-records-replacement-artifact-set-v2",
+      "capability": "require external manifest, grant, and schema identities and verify raw artifact bytes without runtime imports"
+    },
+    {
+      "id": "exhausted_authority_status_closeout_v2",
+      "kind": "pure-post-effect-lifecycle-closeout-builder",
+      "source_symbol": "buildProtectedRecordsReplacementExhaustedStatusV2",
+      "capability": "bind the consumed crossing identity into a fresh-effect-forbidden exhausted status after artifact-set verification"
+    },
+    {
+      "id": "exhausted_authority_status_refresh_write_v2",
+      "kind": "post-effect-lifecycle-state-write",
+      "source_symbol": "replaceCanonical",
+      "capability": "replace the live mutable active status with the exact exhausted status before immutable closeout evidence"
+    },
+    {
+      "id": "crossing_route_closeout_record_v2",
+      "kind": "write-once-post-effect-evidence-boundary",
+      "source_symbol": "writeCanonical",
+      "capability": "persist route closeout only after manifest verification and exhausted live status"
+    },
+    {
+      "id": "exhausted_authority_status_evidence_v2",
+      "kind": "write-once-post-effect-evidence-boundary",
+      "source_symbol": "writeCanonical",
+      "capability": "persist immutable exhausted-status evidence after the live status replacement"
+    },
+    {
+      "id": "downstream_consequence_lifecycle_map_v2",
+      "kind": "declared-verification-only-consumer",
+      "source_symbol": "buildProtectedRecordsReplacementDownstreamProjectionV2",
+      "capability": "project verified central lineage for consequence-lifecycle-map only"
+    },
+    {
+      "id": "downstream_governed_surface_coverage_v2",
+      "kind": "declared-verification-only-consumer",
+      "source_symbol": "buildProtectedRecordsReplacementDownstreamProjectionV2",
+      "capability": "project verified central lineage for governed-surface-coverage only"
+    },
+    {
+      "id": "downstream_installed_runtime_profile_recognition_v2",
+      "kind": "declared-verification-only-consumer",
+      "source_symbol": "buildProtectedRecordsReplacementDownstreamProjectionV2",
+      "capability": "project verified central lineage for installed-runtime-profile-recognition only"
+    },
+    {
+      "id": "downstream_local_proof_pack_v2",
+      "kind": "declared-verification-only-consumer",
+      "source_symbol": "buildProtectedRecordsReplacementDownstreamProjectionV2",
+      "capability": "project verified central lineage for local-proof-pack only"
+    },
+    {
+      "id": "downstream_north_star_readiness_v2",
+      "kind": "declared-verification-only-consumer",
+      "source_symbol": "buildProtectedRecordsReplacementDownstreamProjectionV2",
+      "capability": "project verified central lineage for north-star-readiness only"
+    },
+    {
+      "id": "downstream_one_terminal_deployment_profile_v2",
+      "kind": "declared-verification-only-consumer",
+      "source_symbol": "buildProtectedRecordsReplacementDownstreamProjectionV2",
+      "capability": "project verified central lineage for one-terminal-deployment-profile only"
+    },
+    {
+      "id": "downstream_product_proof_path_v2",
+      "kind": "declared-verification-only-consumer",
+      "source_symbol": "buildProtectedRecordsReplacementDownstreamProjectionV2",
+      "capability": "project verified central lineage for product-proof-path only"
+    },
+    {
+      "id": "downstream_proof_smoke_v2",
+      "kind": "declared-verification-only-consumer",
+      "source_symbol": "buildProtectedRecordsReplacementDownstreamProjectionV2",
+      "capability": "project verified central lineage for proof-smoke only"
+    }
+  ],
+  "edges": [
+    {
+      "from": "replacement_crossing_driver_v2",
+      "to": "exact_source_materialization_v2",
+      "transport": "externally bound clean source commit identity"
+    },
+    {
+      "from": "exact_source_materialization_v2",
+      "to": "replacement_runtime_child_v2",
+      "transport": "one non-dispatched child path from the rechecked read-only detached source snapshot"
+    },
+    {
+      "from": "replacement_runtime_child_v2",
+      "to": "runtime_service_v2",
+      "transport": "exactly one driver-marked JSONL request with no automatic retry"
+    },
+    {
+      "from": "runtime_service_v2",
+      "to": "authorized_crossing_result",
+      "transport": "immutable result values"
+    },
+    {
+      "from": "authorized_crossing_result",
+      "to": "accepted_result_persistence_v2",
+      "transport": "canonical write-once accepted result bytes"
+    },
+    {
+      "from": "accepted_result_persistence_v2",
+      "to": "runtime_crossing_inputs_mapper_v2",
+      "transport": "strictly validated accepted runtime result"
+    },
+    {
+      "from": "accepted_result_persistence_v2",
+      "to": "runtime_source_binding_mapper_v2",
+      "transport": "strictly validated accepted runtime result"
+    },
+    {
+      "from": "runtime_crossing_inputs_mapper_v2",
+      "to": "service_artifact_builder_v2",
+      "transport": "exact crossing input hashes only"
+    },
+    {
+      "from": "runtime_source_binding_mapper_v2",
+      "to": "service_artifact_builder_v2",
+      "transport": "exact source binding only"
+    },
+    {
+      "from": "service_artifact_builder_v2",
+      "to": "service_artifact_raw_verifier_v2",
+      "transport": "canonical raw bytes plus exact expected SHA identities"
+    },
+    {
+      "from": "service_artifact_raw_verifier_v2",
+      "to": "terminal_artifact_builder_v2",
+      "transport": "verification projection only"
+    },
+    {
+      "from": "terminal_artifact_builder_v2",
+      "to": "terminal_artifact_raw_verifier_v2",
+      "transport": "canonical raw bytes plus exact expected SHA identities"
+    },
+    {
+      "from": "service_artifact_raw_verifier_v2",
+      "to": "artifact_set_manifest_builder_v2",
+      "transport": "verified service identity and binding projection"
+    },
+    {
+      "from": "terminal_artifact_raw_verifier_v2",
+      "to": "artifact_set_manifest_builder_v2",
+      "transport": "verified terminal identity and binding projection"
+    },
+    {
+      "from": "artifact_set_manifest_builder_v2",
+      "to": "artifact_set_raw_verifier_v2",
+      "transport": "canonical central manifest plus exact artifact bytes"
+    },
+    {
+      "from": "independent_artifact_set_verifier_cli_v2",
+      "to": "artifact_set_raw_verifier_v2",
+      "transport": "externally required manifest, grant, and schema identities plus canonical raw artifact bytes"
+    },
+    {
+      "from": "accepted_result_persistence_v2",
+      "to": "exhausted_authority_status_closeout_v2",
+      "transport": "accepted runtime authority-at-effect evidence only"
+    },
+    {
+      "from": "artifact_set_raw_verifier_v2",
+      "to": "exhausted_authority_status_closeout_v2",
+      "transport": "verified consumed crossing binding only"
+    },
+    {
+      "from": "exhausted_authority_status_closeout_v2",
+      "to": "exhausted_authority_status_refresh_write_v2",
+      "transport": "exact validated exhausted status bytes"
+    },
+    {
+      "from": "exhausted_authority_status_refresh_write_v2",
+      "to": "exhausted_authority_status_evidence_v2",
+      "transport": "observed exhausted live-status posture"
+    },
+    {
+      "from": "exhausted_authority_status_evidence_v2",
+      "to": "crossing_route_closeout_record_v2",
+      "transport": "immutable exhausted-status evidence identity"
+    },
+    {
+      "from": "artifact_set_raw_verifier_v2",
+      "to": "downstream_consequence_lifecycle_map_v2",
+      "transport": "verified central lineage projection with reexecution=false"
+    },
+    {
+      "from": "artifact_set_raw_verifier_v2",
+      "to": "downstream_governed_surface_coverage_v2",
+      "transport": "verified central lineage projection with reexecution=false"
+    },
+    {
+      "from": "artifact_set_raw_verifier_v2",
+      "to": "downstream_installed_runtime_profile_recognition_v2",
+      "transport": "verified central lineage projection with reexecution=false"
+    },
+    {
+      "from": "artifact_set_raw_verifier_v2",
+      "to": "downstream_local_proof_pack_v2",
+      "transport": "verified central lineage projection with reexecution=false"
+    },
+    {
+      "from": "artifact_set_raw_verifier_v2",
+      "to": "downstream_north_star_readiness_v2",
+      "transport": "verified central lineage projection with reexecution=false"
+    },
+    {
+      "from": "artifact_set_raw_verifier_v2",
+      "to": "downstream_one_terminal_deployment_profile_v2",
+      "transport": "verified central lineage projection with reexecution=false"
+    },
+    {
+      "from": "artifact_set_raw_verifier_v2",
+      "to": "downstream_product_proof_path_v2",
+      "transport": "verified central lineage projection with reexecution=false"
+    },
+    {
+      "from": "artifact_set_raw_verifier_v2",
+      "to": "downstream_proof_smoke_v2",
+      "transport": "verified central lineage projection with reexecution=false"
+    }
+  ],
+  "forbidden_edges": [
+    {
+      "from": "general_runtime_service_cli_v2_refusal",
+      "to": "runtime_service_v2",
+      "reason": "the supported general runtime-service CLI must not bypass the exact crossing driver, artifact pin, or exhausted-status closeout"
+    },
+    {
+      "from": "accepted_result_persistence_v2",
+      "to": "runtime_service_v2",
+      "reason": "recovery from result persistence must not re-execute consequence"
+    },
+    {
+      "from": "independent_artifact_set_verifier_cli_v2",
+      "to": "runtime_service_v2",
+      "reason": "the independent verifier must not import or execute runtime code"
+    },
+    {
+      "from": "exhausted_authority_status_closeout_v2",
+      "to": "runtime_service_v2",
+      "reason": "exhausted lifecycle closeout must not re-execute consequence"
+    },
+    {
+      "from": "exhausted_authority_status_refresh_write_v2",
+      "to": "runtime_service_v2",
+      "reason": "exhausted status application must not re-execute consequence"
+    },
+    {
+      "from": "crossing_route_closeout_record_v2",
+      "to": "runtime_service_v2",
+      "reason": "route closeout persistence must not re-execute consequence"
+    },
+    {
+      "from": "exhausted_authority_status_evidence_v2",
+      "to": "runtime_service_v2",
+      "reason": "exhausted status evidence must not re-execute consequence"
+    },
+    {
+      "from": "runtime_crossing_inputs_mapper_v2",
+      "to": "runtime_service_v2",
+      "reason": "artifact input mapping must not re-execute consequence"
+    },
+    {
+      "from": "runtime_source_binding_mapper_v2",
+      "to": "runtime_service_v2",
+      "reason": "source binding mapping must not re-execute consequence"
+    },
+    {
+      "from": "service_artifact_builder_v2",
+      "to": "runtime_service_v2",
+      "reason": "service artifact composition must not re-execute consequence"
+    },
+    {
+      "from": "service_artifact_raw_verifier_v2",
+      "to": "runtime_service_v2",
+      "reason": "verification must not execute consequence"
+    },
+    {
+      "from": "terminal_artifact_builder_v2",
+      "to": "runtime_service_v2",
+      "reason": "terminal composition must not re-execute consequence"
+    },
+    {
+      "from": "terminal_artifact_raw_verifier_v2",
+      "to": "runtime_service_v2",
+      "reason": "verification must not re-execute consequence"
+    },
+    {
+      "from": "artifact_set_manifest_builder_v2",
+      "to": "runtime_service_v2",
+      "reason": "manifest composition must not re-execute consequence"
+    },
+    {
+      "from": "artifact_set_raw_verifier_v2",
+      "to": "runtime_service_v2",
+      "reason": "downstream verification must not re-execute consequence"
+    },
+    {
+      "from": "downstream_consequence_lifecycle_map_v2",
+      "to": "runtime_service_v2",
+      "reason": "consequence-lifecycle-map projection must not re-execute consequence"
+    },
+    {
+      "from": "downstream_governed_surface_coverage_v2",
+      "to": "runtime_service_v2",
+      "reason": "governed-surface-coverage projection must not re-execute consequence"
+    },
+    {
+      "from": "downstream_installed_runtime_profile_recognition_v2",
+      "to": "runtime_service_v2",
+      "reason": "installed-runtime-profile-recognition projection must not re-execute consequence"
+    },
+    {
+      "from": "downstream_local_proof_pack_v2",
+      "to": "runtime_service_v2",
+      "reason": "local-proof-pack projection must not re-execute consequence"
+    },
+    {
+      "from": "downstream_north_star_readiness_v2",
+      "to": "runtime_service_v2",
+      "reason": "north-star-readiness projection must not re-execute consequence"
+    },
+    {
+      "from": "downstream_one_terminal_deployment_profile_v2",
+      "to": "runtime_service_v2",
+      "reason": "one-terminal-deployment-profile projection must not re-execute consequence"
+    },
+    {
+      "from": "downstream_product_proof_path_v2",
+      "to": "runtime_service_v2",
+      "reason": "product-proof-path projection must not re-execute consequence"
+    },
+    {
+      "from": "downstream_proof_smoke_v2",
+      "to": "runtime_service_v2",
+      "reason": "proof-smoke projection must not re-execute consequence"
+    }
+  ],
+  "invariants": [
+    "the runtime consequence boundary has exactly one outgoing result edge and no post-effect incoming edge",
+    "runtime-to-artifact bridges are pure mappers over one strictly validated accepted result",
+    "all post-crossing builders are pure or verification-only",
+    "all downstream consumers enter through one exact expected central manifest SHA-256",
+    "service and terminal artifact output SHA-256 values are computed, never caller nominated",
+    "no sample artifact identity or filesystem reader is embedded in the route",
+    "authority status at effect remains bound after the fresh-use status becomes exhausted",
+    "v2 config and request input cannot nominate consequence time; the effect gate binds the runtime-observed epoch while stronger clock custody remains unproven",
+    "the crossing binding carries confirmation-confirmed and holder-observed epochs and independently enforces their directional inclusive relay delay from 0 through 300 seconds",
+    "the crossing driver invokes one runtime child once, persists the accepted result before composition, and never retries an ambiguous or consumed route",
+    "the consequence child runs from a private detached materialization of the exact packet-bound source commit rather than the mutable controller worktree",
+    "the central manifest is the last artifact-set lineage file pinned by the crossing driver",
+    "the independent verifier imports no runtime or crossing driver module and requires external manifest, grant, and schema identities",
+    "post-effect closeout binds the consumed crossing into exhausted status and cannot reopen fresh-effect authority",
+    "the live status is replaced with exhausted state before immutable exhausted-status and route-closeout evidence is written",
+    "each named downstream consumer receives only the verified central lineage projection"
+  ],
+  "claim_boundary": "source-only runtime and no-reexecution topology; no active authority, executed consequence, production, or lifecycle closure claim"
+}

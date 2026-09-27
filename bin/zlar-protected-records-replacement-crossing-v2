@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+# Consequence-entry bootstrap. Resolve one executable Node path, then remove
+# inherited loader/search-path authority before any JavaScript module loads.
+# The selected host Node binary itself remains a named local-fixture trust
+# dependency and is not claimed as a tamper-resistant runtime root.
+NODE_BIN=$(command -v node || true)
+case "${NODE_BIN}" in
+  /*) ;;
+  *)
+    echo "ERROR: an absolute Node executable is required." >&2
+    exit 126
+    ;;
+esac
+if [ -L "${NODE_BIN}" ] || [ ! -f "${NODE_BIN}" ] || [ ! -x "${NODE_BIN}" ]; then
+  echo "ERROR: Node must resolve to an executable regular non-symlink file." >&2
+  exit 126
+fi
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(/usr/bin/dirname -- "$0")" && pwd -P)
+exec /usr/bin/env -i \
+  HOME=/var/empty \
+  LANG=C \
+  LC_ALL=C \
+  NO_COLOR=1 \
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  TZ=UTC \
+  "${NODE_BIN}" \
+  "${SCRIPT_DIR}/../lib/protected-records-replacement-crossing-cli-v2.mjs" \
+  "$@"

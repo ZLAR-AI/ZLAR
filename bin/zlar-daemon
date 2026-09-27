@@ -1,0 +1,14 @@
+#!/usr/bin/env node
+// zlar-daemon — ZLAR SDK Gate Daemon entry point
+// Persistent Unix domain socket server for Phase 2 SDK governance membrane.
+// Delegates to sdk/daemon/daemon.mjs relative to this script's location.
+
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { createRequire } from 'module';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const daemonPath = join(__dirname, '..', 'sdk', 'daemon', 'daemon.mjs');
+
+// Dynamic import ensures we run daemon.mjs as a module with its own main()
+await import(daemonPath);

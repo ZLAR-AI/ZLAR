@@ -1,0 +1,319 @@
+{
+  "artifact_type": "zlar.e1-positive-proof-generator-retirement.v0",
+  "schema_version": 0,
+  "verification_mode": "source-only-static-retirement-overlay",
+  "decision": "retire_positive_e1_terminal_and_conformance_generation_preserve_pinned_historical_verification",
+  "consequence_class": "protected-records local-fixture records.write",
+  "effect_node_id": "E1.adapter-ledger-append-v1",
+  "north_star_1_status": "historical",
+  "north_star_2_status": "mapped_open",
+  "source_checkpoint": {
+    "repository_id": "ZLAR_Repo",
+    "baseline_commit_oid": "e66748f5047ecb86e45a17f93cba861b50c962fd",
+    "baseline_private_remote_oid": "e66748f5047ecb86e45a17f93cba861b50c962fd",
+    "loaded_source_matches_inventory_by_exact_file_hashes": true,
+    "runtime_observation_performed": false,
+    "positive_e1_execution_performed": false,
+    "installation_performed": false,
+    "resulting_commit_recorded_after_commit": false
+  },
+  "source_inventory": [
+    {
+      "path": "lib/protected-records-adapter-verification.mjs",
+      "file_sha256": "d9c9dc869eae9bc057d93526c07b46b3813917554af59627faf8e473699b0ba1"
+    },
+    {
+      "path": "lib/protected-records-adapter.mjs",
+      "file_sha256": "f066dd3914619afba413c5926f17e162c117f1e6eb55d4fc0d7510e46d0e00e1"
+    },
+    {
+      "path": "lib/protected-records-terminal-proof.mjs",
+      "file_sha256": "28e1e2b88b2c0eb4d88c3fb26a51676701b45b5ee6208cd0f94d0a99a5e05ce7"
+    },
+    {
+      "path": "lib/protected-records-adapter-conformance.mjs",
+      "file_sha256": "4fd398063ca1db850be0c46f81e12c02aaeac2d14318da4e0f76b1a65d270206"
+    },
+    {
+      "path": "bin/zlar-protected-records-proof",
+      "file_sha256": "41b813d1adee2c5a6abc9cec9b6a390ebc044d41151163d9654a30c671bb31b3"
+    },
+    {
+      "path": "bin/zlar-protected-records-adapter-conformance",
+      "file_sha256": "5422ab216b68d336155c2de6606da4158ff3069aa6d17330fc3111b5d7450a28"
+    },
+    {
+      "path": "lib/local-proof-pack.mjs",
+      "file_sha256": "87ec1971fca1ea1924f95012978d20269c04ffe4be4b2abc37088ed2a58e150f"
+    },
+    {
+      "path": "bin/zlar",
+      "file_sha256": "fed44a02e946890a845cf4946987efdeae606a915f4c837ed9a6e9c748cb1b35"
+    },
+    {
+      "path": "README.md",
+      "file_sha256": "665c434fc2833f67cdc4f4b44ba5f72dd248ebf772ffc7fcee08c868573fc51a"
+    },
+    {
+      "path": "docs/cli-reference.md",
+      "file_sha256": "053b453cf0ddc37bd511dde58358bab6452ece242d13e4b2a2a4732f49739590"
+    },
+    {
+      "path": "docs/governed-surface-coverage-map.md",
+      "file_sha256": "ff3e71d31be22dcc04ea91310141bde42b451765603ca132ddf15657fa96034d"
+    },
+    {
+      "path": "docs/trusted-receipt-issuer.md",
+      "file_sha256": "fb646c52360e24a8cd34593e2ccc37e3e748d41a663506d7444b7edd75b97e66"
+    },
+    {
+      "path": "tests/count-assertions.sh",
+      "file_sha256": "04b0c11f19f8a9170fd4dbc0c44523adbaa0f9bed43ca4964d111f1327391442"
+    },
+    {
+      "path": "tests/retired-positive-generator-test-suites.txt",
+      "file_sha256": "3ebb9c484a96fbed0a31bfce1dbdb9047db74a1fb6a7631f7c4ffdc8ad0a18c1"
+    },
+    {
+      "path": "tests/current-positive-e1-direct-test-suites.txt",
+      "file_sha256": "836bcd446f630443ff22942191ff02deb98decf303ab7fe9b5f1ec25c52a742c"
+    },
+    {
+      "path": "tests/superseded-source-bound-test-suites.txt",
+      "file_sha256": "6afa937e32302ac3340479ceb7c4340336195749d8829bf2f0387ab7a5e17993"
+    },
+    {
+      "path": "tests/test-authority-inactive-test-routing.sh",
+      "file_sha256": "92b0df835a80d5aa6a2806f3d6e57a4ae4e7e8d45c864f29131067b11a3bb7fa"
+    }
+  ],
+  "retired_surfaces": [
+    {
+      "surface_id": "e1-terminal-proof-export",
+      "source_path": "lib/protected-records-terminal-proof.mjs",
+      "entrypoint": "runProtectedRecordsTerminalProof",
+      "reason_code": "e1_positive_terminal_proof_generation_retired",
+      "input_independent": true,
+      "positive_only_machinery_removed": true
+    },
+    {
+      "surface_id": "e1-terminal-proof-cli",
+      "source_path": "bin/zlar-protected-records-proof",
+      "entrypoint": "zlar protected-records-proof",
+      "reason_code": "e1_positive_terminal_proof_generation_retired",
+      "input_independent": true,
+      "positive_only_machinery_removed": true
+    },
+    {
+      "surface_id": "e1-adapter-conformance-export",
+      "source_path": "lib/protected-records-adapter-conformance.mjs",
+      "entrypoint": "runProtectedRecordsAdapterConformanceProof",
+      "reason_code": "e1_positive_adapter_conformance_generation_retired",
+      "input_independent": true,
+      "positive_only_machinery_removed": true
+    },
+    {
+      "surface_id": "e1-adapter-conformance-cli",
+      "source_path": "bin/zlar-protected-records-adapter-conformance",
+      "entrypoint": "zlar protected-records-adapter-conformance",
+      "reason_code": "e1_positive_adapter_conformance_generation_retired",
+      "input_independent": true,
+      "positive_only_machinery_removed": true
+    }
+  ],
+  "verification_decoupling": {
+    "module_path": "lib/protected-records-adapter-verification.mjs",
+    "module_has_imports": false,
+    "module_exports_positive_factory": false,
+    "terminal_verifier_imports_positive_adapter_module": false,
+    "conformance_verifier_imports_positive_adapter_module": false,
+    "local_proof_pack_imports_positive_e1_generators": false,
+    "historical_result_authentication_performed": false,
+    "fresh_effect_verification_performed": false
+  },
+  "consumer_inventory": [
+    {
+      "id": "terminal-proof-library-export",
+      "edge_chain": [
+        "importer -> runProtectedRecordsTerminalProof -> fixed refusal"
+      ],
+      "classification": "fixed-refusal"
+    },
+    {
+      "id": "terminal-proof-cli-and-main-dispatch",
+      "edge_chain": [
+        "bin/zlar protected-records-proof -> import-free wrapper -> fixed refusal"
+      ],
+      "classification": "fixed-refusal"
+    },
+    {
+      "id": "adapter-conformance-library-export",
+      "edge_chain": [
+        "importer -> runProtectedRecordsAdapterConformanceProof -> fixed refusal"
+      ],
+      "classification": "fixed-refusal"
+    },
+    {
+      "id": "adapter-conformance-cli-and-main-dispatch",
+      "edge_chain": [
+        "bin/zlar protected-records-adapter-conformance -> import-free wrapper -> fixed refusal"
+      ],
+      "classification": "fixed-refusal"
+    },
+    {
+      "id": "local-proof-pack-historical-consumer",
+      "edge_chain": [
+        "lib/local-proof-pack.mjs -> terminal/conformance structural validators -> committed historical report"
+      ],
+      "classification": "verification-only-import"
+    },
+    {
+      "id": "direct-e1-library-factory",
+      "edge_chain": [
+        "importer -> applyProtectedRecordsWrite -> consumed-store write -> ledger append"
+      ],
+      "classification": "current-positive-open"
+    },
+    {
+      "id": "direct-e1-cli-and-main-dispatch",
+      "edge_chain": [
+        "bin/zlar protected-records-write -> standalone wrapper -> applyProtectedRecordsWrite -> E1"
+      ],
+      "classification": "current-positive-open"
+    },
+    {
+      "id": "future-install-copy",
+      "edge_chain": [
+        "install.sh broad bin/lib copy loops -> E1 wrapper/module"
+      ],
+      "classification": "current-positive-open"
+    },
+    {
+      "id": "dynamic-old-installed-copied-or-mutated-source",
+      "edge_chain": [
+        "unbounded loader/interpreter/filesystem paths -> unknown positive route"
+      ],
+      "classification": "unknown-open"
+    }
+  ],
+  "historical_verification": {
+    "stage_3_overlay": {
+      "file_path": "spec/e2-direct-request-factory-source-retirement-v0.json",
+      "file_sha256": "2c0c02504abb709fb0a26b0d68386899a45264ba738e5b78a4799c8bdc24e17e",
+      "body_sha256": "6c27a0be8f447a96c369388d6c67d0795060fcf88a93c5855881beb0ced38b11"
+    },
+    "proof_smoke": {
+      "file_path": "tests/fixtures/proof-smoke-v1-report.json",
+      "file_sha256": "69d567c4708642393c470f3cffca015d1c39096a99191d720252aaf5a33b0635",
+      "canonical_report_sha256": "4e700bfeb3061589baa68071f534e1a74221a1b26e38100afdee62bbe6938c6f"
+    },
+    "local_proof_pack": {
+      "file_path": "tests/fixtures/local-proof-pack-artifact-v1.json",
+      "file_sha256": "7147445a29974c634d8574dd9eb8051ebed0541111ce4cb21b149282f9c8ebf8",
+      "body_sha256": "777f66be5c4c5d9dcf5c5555c4e80653231815db22a82adf056c0908cf890ac0",
+      "terminal_component_sha256": "85a8664703f2085bfd50a8958bbf8a00796151f771bd7060ac450a60e461be09",
+      "adapter_conformance_component_sha256": "5a58476c1a34eb5e0925cf4a4e6a3d31572da521c83018402a9727687dd2c7a4"
+    },
+    "fresh_generation_performed": false,
+    "current_authority_projected": false,
+    "fresh_effect_projected": false,
+    "lifecycle_closure_projected": false
+  },
+  "unchanged_direct_e1_boundary": {
+    "factory_path": "lib/protected-records-adapter.mjs",
+    "baseline_file_sha256": "23528ec5da579878f9092b4e9989abf7fbc523fff3801ad0a056bb1af18ce936",
+    "current_file_sha256": "f066dd3914619afba413c5926f17e162c117f1e6eb55d4fc0d7510e46d0e00e1",
+    "positive_factory_body_sha256": "d70a422343fd030bb921284b584d2ec157c2a8c32b17116def419c3230c07407",
+    "positive_factory_body_changed": false,
+    "verification_exports_moved_only": true,
+    "standalone_wrapper_path": "bin/zlar-protected-records-write",
+    "standalone_wrapper_sha256": "2ca5b80b552bd047be473a05fb9361f9faa268e278ac6f0b0c5c61e74044e169",
+    "future_installer_path": "install.sh",
+    "future_installer_sha256": "2e9b894eae1e2b99d1ebb323a7cd5c354847a889f1519ccafc0aae7078490d52",
+    "direct_factory_retired": false,
+    "direct_cli_retired": false,
+    "future_install_copy_excluded": false
+  },
+  "unchanged_e4_boundary": {
+    "driver_path": "lib/protected-records-replacement-crossing-driver-v2.mjs",
+    "driver_file_sha256": "caac0ed07d79bfb538671c6eda3bbe8d5f78fa374aa5d4c81c14c8a2898ce879",
+    "child_path": "lib/protected-records-replacement-runtime-child-v2.mjs",
+    "child_file_sha256": "00d43a598b85865600168db87e5b7aa742df3da3455dd6f1199e48b4f05acbcd",
+    "changed": false
+  },
+  "test_routing": {
+    "retired_positive_generator_inventory_path": "tests/retired-positive-generator-test-suites.txt",
+    "retired_positive_generator_suite_count": 8,
+    "retired_e1_generator_suite_count": 4,
+    "current_positive_direct_e1_inventory_path": "tests/current-positive-e1-direct-test-suites.txt",
+    "current_positive_direct_e1_suite_count": 2,
+    "broad_harness_executed": false,
+    "skip_status_proves_retirement": false,
+    "skip_status_proves_governance": false
+  },
+  "effect_node_topology_refresh": {
+    "canonical_e1_identity_preserved": true,
+    "named_positive_e1_generator_routes_found_before": 2,
+    "named_positive_e1_generator_routes_found_after": 0,
+    "named_static_current_source_positive_direct_e1_route_found_after": true,
+    "e1_effect_node_eliminated": false,
+    "e4_selected_route_changed": false,
+    "dynamic_external_old_installed_or_mutated_inventory_complete": false
+  },
+  "lifecycle_refresh": {
+    "map_status_before": "mapped_open",
+    "map_status_after": "mapped_open",
+    "coverage_disposition_changed": false,
+    "authority_domain_membership_assigned": false,
+    "authorized_outside_coverage_assigned": false,
+    "lifecycle_obligation_status_changes": []
+  },
+  "claim_boundary": {
+    "exact_checked_out_source_e1_generator_retirement": true,
+    "historical_verification_decoupled_from_positive_adapter_module": true,
+    "exact_historical_verification_preserved": true,
+    "direct_e1_factory_cli_retirement": false,
+    "future_installer_source_copy_exclusion": false,
+    "e1_runtime_unreachability": false,
+    "e1_elimination": false,
+    "e4_elimination": false,
+    "installed_copy_retirement": false,
+    "current_authority": false,
+    "fresh_proof_or_effect": false,
+    "authority_domain_membership": false,
+    "domain_inventory_complete": false,
+    "equivalent_route_closure": false,
+    "lifecycle_closure": false,
+    "side_door_closure": false,
+    "current_machine_governance": false,
+    "production_governance": false,
+    "public_attestation": false,
+    "all_surface_governance": false
+  },
+  "side_doors": [
+    "current-positive-direct-e1-adapter-cli",
+    "current-positive-exported-e1-factory",
+    "future-installer-copy-of-direct-e1-surfaces",
+    "selected-positive-e4-replacement-route",
+    "old-installed-copied-historical-or-mutated-positive-source",
+    "already-loaded-positive-function-object",
+    "raw-filesystem-writes",
+    "NODE_OPTIONS-loaders-preloads-and-interpreter-substitution",
+    "PATH-selected-or-alternate-interpreters",
+    "same-user-source-mutation",
+    "dynamic-generated-external-or-non-node-entrypoints",
+    "source-drift-after-checkpoint"
+  ],
+  "authority_status": {
+    "route_and_source_authority_present": true,
+    "private_branch_stabilization_authority_present": true,
+    "consequence_authority_used": false,
+    "key_signing_receipt_grant_or_effect_authority_used": false,
+    "install_machine_public_or_external_authority_used": false
+  },
+  "integrity": {
+    "algorithm": "SHA-256",
+    "scope": "canonical artifact body without integrity",
+    "body_sha256": "87e6918de9e5fe18ba1cffd5cb602fff30bba27680bfe682e17f801350ddc0d2"
+  }
+}

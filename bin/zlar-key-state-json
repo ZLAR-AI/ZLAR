@@ -1,0 +1,42 @@
+#!/usr/bin/env node
+
+import { buildKeyStateReport, buildSampleKeyStateReport } from '../lib/key-state-report.mjs';
+
+function usage() {
+  console.error('Usage: zlar key-state [--json]');
+  console.error('       zlar key-state --sample --json');
+  console.error('Prints a read-only key-state snapshot. No signing, no PINs, no private key bytes.');
+  console.error('Use --sample --json for the deterministic fixture report used by proof-smoke/local-proof-pack.');
+  console.error('JSON output is local evidence only: no key custody, revocation, production trust registry, external attestation, or current-machine governance claim.');
+}
+
+const args = process.argv.slice(2);
+let jsonMode = false;
+let sampleMode = false;
+for (const arg of args) {
+  if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  }
+  if (arg === '--json') {
+    jsonMode = true;
+  } else if (arg === '--sample') {
+    sampleMode = true;
+  } else {
+    console.error(`Unsupported option: ${arg}`);
+    usage();
+    process.exit(2);
+  }
+}
+
+if (!jsonMode) {
+  console.error('Unsupported option combination: key-state JSON helper requires --json');
+  usage();
+  process.exit(2);
+}
+
+const projectDir = process.env.ZLAR_PROJECT_DIR || process.cwd();
+const report = sampleMode
+  ? buildSampleKeyStateReport({ projectDir })
+  : buildKeyStateReport({ projectDir });
+console.log(JSON.stringify(report, null, 2));

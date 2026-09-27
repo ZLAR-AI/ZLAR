@@ -1,0 +1,62 @@
+;; =============================================================================
+;; ZLAR CC Gate -- Seatbelt Profile: Network Allowed (Tier 2b)
+;; Version: 1.0.0
+;;
+;; Per-command sandbox for Bash tool calls that legitimately need network
+;; (git push, gh, npm install, human-approved curl). Same filesystem and
+;; binary restrictions as Tier 2a -- only the network layer differs.
+;;
+;; Apply with:
+;;   sandbox-exec -f etc/sandbox/zlar-gate-net.sb \
+;;     -D HOME_DIR=/Users/username \
+;;     bash -c "<command>"
+;;
+;; =============================================================================
+
+(version 1)
+
+;; --- Base: allow everything, then deny what is dangerous --------------------
+(deny default)
+(allow process-exec)
+(allow process-fork)
+(allow signal)
+(allow file-read*)
+(allow file-write*)
+(allow sysctl-read)
+(allow ipc-posix-shm-read-data)
+(allow ipc-posix-shm-write-data)
+(allow ipc-posix-sem*)
+(allow mach-lookup)
+(allow system-audit)
+(allow network*)
+
+;; --- DENY: dangerous binaries (even with network, these are blocked) --------
+(deny process-exec
+  (literal "/usr/bin/security")
+  (literal "/usr/bin/osascript")
+  (literal "/usr/bin/nc")
+  (literal "/usr/bin/ncat")
+  (literal "/usr/local/bin/docker")
+  (literal "/opt/homebrew/bin/docker")
+)
+
+;; --- DENY: read secrets -----------------------------------------------------
+(deny file-read*
+  (subpath (string-append (param "HOME_DIR") "/.ssh"))
+  (subpath (string-append (param "HOME_DIR") "/.aws"))
+  (subpath (string-append (param "HOME_DIR") "/.gnupg"))
+  (literal (string-append (param "HOME_DIR") "/.zlar-signing.key"))
+)
+
+;; --- DENY: write governance infrastructure ----------------------------------
+(deny file-write*
+  (subpath (string-append (param "HOME_DIR") "/.claude"))
+  (subpath (string-append (param "HOME_DIR") "/.ssh"))
+  (subpath (string-append (param "HOME_DIR") "/.aws"))
+  (subpath (string-append (param "HOME_DIR") "/.gnupg"))
+  (subpath "/etc")
+  (subpath "/System")
+)
+
+;; --- DENY: sysctl write ----------------------------------------------------
+(deny sysctl-write)

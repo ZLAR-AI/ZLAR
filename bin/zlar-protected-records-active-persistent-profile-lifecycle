@@ -1,0 +1,235 @@
+#!/usr/bin/env node
+import {
+  assertNoUnsafeProtectedRecordsRuntimeProfileText,
+} from '../lib/protected-records-runtime-profile.mjs';
+import {
+  buildActivePersistentProfileLifecycleReportFromFiles,
+  formatActivePersistentProfileLifecycleRunResult,
+  formatActivePersistentProfileLifecycleReport,
+  runActivePersistentProfileLifecycleEvidence,
+  writeActivePersistentProfileLifecycleReport,
+} from '../lib/protected-records-active-persistent-profile-lifecycle.mjs';
+
+function usage() {
+  console.error('Usage: zlar protected-records-active-persistent-profile-lifecycle --install-report <file> --green-report <file> --red-report <file> --closeout-report <file> [--expected-install-report-sha256 <sha256> --expected-green-report-sha256 <sha256> --expected-red-report-sha256 <sha256> --expected-closeout-report-sha256 <sha256>] [--json] [--report <file>]');
+  console.error('       zlar protected-records-active-persistent-profile-lifecycle run --activation-root <dir> --output-dir <dir> --profile <file> --runtime-profile-id <id> --runtime-profile-sha256 <sha256> --expires-at <iso8601> [--allow-named-live-root] [--replace-closed-root] [--json]');
+  console.error('Verifies supplied active persistent profile lifecycle reports without reopening or reactivating the profile root.');
+  console.error('The run form generates fresh bounded lifecycle evidence and closes the root; it does not publish, release, attest externally, or claim general current-machine governance.');
+}
+
+function safeErrorMessage(message) {
+  try {
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(message);
+    return message;
+  } catch {
+    return 'Active persistent profile lifecycle verification failed; private path or credential details were suppressed.';
+  }
+}
+
+function die(message, code = 1) {
+  console.error(`ERROR: ${safeErrorMessage(message)}`);
+  process.exit(code);
+}
+
+let installReportPath = '';
+let greenReportPath = '';
+let redReportPath = '';
+let closeoutReportPath = '';
+let reportOutput = '';
+let asJson = false;
+const expectedInputReportHashes = {};
+
+const args = process.argv.slice(2);
+if (args[0] === 'run') {
+  let activationRoot = '';
+  let outputDir = '';
+  let profilePath = '';
+  let runtimeProfileId = '';
+  let runtimeProfileSha256 = '';
+  let expiresAt = '';
+  let allowNamedLiveRoot = false;
+  let replaceClosedRoot = false;
+  for (let index = 1; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--activation-root') {
+      activationRoot = args[++index] || '';
+      if (!activationRoot) {
+        usage();
+        die('Missing value for --activation-root.', 2);
+      }
+    } else if (arg === '--output-dir') {
+      outputDir = args[++index] || '';
+      if (!outputDir) {
+        usage();
+        die('Missing value for --output-dir.', 2);
+      }
+    } else if (arg === '--profile') {
+      profilePath = args[++index] || '';
+      if (!profilePath) {
+        usage();
+        die('Missing value for --profile.', 2);
+      }
+    } else if (arg === '--runtime-profile-id') {
+      runtimeProfileId = args[++index] || '';
+      if (!runtimeProfileId) {
+        usage();
+        die('Missing value for --runtime-profile-id.', 2);
+      }
+    } else if (arg === '--runtime-profile-sha256') {
+      runtimeProfileSha256 = args[++index] || '';
+      if (!runtimeProfileSha256) {
+        usage();
+        die('Missing value for --runtime-profile-sha256.', 2);
+      }
+    } else if (arg === '--expires-at') {
+      expiresAt = args[++index] || '';
+      if (!expiresAt) {
+        usage();
+        die('Missing value for --expires-at.', 2);
+      }
+    } else if (arg === '--allow-named-live-root') {
+      allowNamedLiveRoot = true;
+    } else if (arg === '--replace-closed-root') {
+      replaceClosedRoot = true;
+    } else if (arg === '--json') {
+      asJson = true;
+    } else if (arg === '--latest') {
+      die('--latest is not accepted for active persistent profile lifecycle generation.', 2);
+    } else if (arg === '--help' || arg === '-h') {
+      usage();
+      process.exit(0);
+    } else {
+      usage();
+      die('Unsupported option provided.', 2);
+    }
+  }
+  if (
+    !activationRoot ||
+    !outputDir ||
+    !profilePath ||
+    !runtimeProfileId ||
+    !runtimeProfileSha256 ||
+    !expiresAt
+  ) {
+    usage();
+    die('Run requires --activation-root, --output-dir, --profile, --runtime-profile-id, --runtime-profile-sha256, and --expires-at.', 2);
+  }
+  try {
+    const result = runActivePersistentProfileLifecycleEvidence({
+      activationRoot,
+      outputDir,
+      profilePath,
+      runtimeProfileId,
+      runtimeProfileSha256,
+      expiresAt,
+      allowNamedLiveRoot,
+      replaceClosedRoot,
+    });
+    const output = asJson
+      ? `${JSON.stringify(result, null, 2)}\n`
+      : formatActivePersistentProfileLifecycleRunResult(result);
+    assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+    process.stdout.write(output);
+    process.exit(0);
+  } catch (err) {
+    die(err.message);
+  }
+}
+
+for (let index = 0; index < args.length; index++) {
+  const arg = args[index];
+  if (arg === '--install-report') {
+    installReportPath = args[++index] || '';
+    if (!installReportPath) {
+      usage();
+      die('Missing value for --install-report.', 2);
+    }
+  } else if (arg === '--green-report') {
+    greenReportPath = args[++index] || '';
+    if (!greenReportPath) {
+      usage();
+      die('Missing value for --green-report.', 2);
+    }
+  } else if (arg === '--red-report') {
+    redReportPath = args[++index] || '';
+    if (!redReportPath) {
+      usage();
+      die('Missing value for --red-report.', 2);
+    }
+  } else if (arg === '--closeout-report') {
+    closeoutReportPath = args[++index] || '';
+    if (!closeoutReportPath) {
+      usage();
+      die('Missing value for --closeout-report.', 2);
+    }
+  } else if (arg === '--expected-install-report-sha256') {
+    expectedInputReportHashes.install_report_sha256 = args[++index] || '';
+    if (!expectedInputReportHashes.install_report_sha256) {
+      usage();
+      die('Missing value for --expected-install-report-sha256.', 2);
+    }
+  } else if (arg === '--expected-green-report-sha256') {
+    expectedInputReportHashes.green_report_sha256 = args[++index] || '';
+    if (!expectedInputReportHashes.green_report_sha256) {
+      usage();
+      die('Missing value for --expected-green-report-sha256.', 2);
+    }
+  } else if (arg === '--expected-red-report-sha256') {
+    expectedInputReportHashes.red_report_sha256 = args[++index] || '';
+    if (!expectedInputReportHashes.red_report_sha256) {
+      usage();
+      die('Missing value for --expected-red-report-sha256.', 2);
+    }
+  } else if (arg === '--expected-closeout-report-sha256') {
+    expectedInputReportHashes.closeout_report_sha256 = args[++index] || '';
+    if (!expectedInputReportHashes.closeout_report_sha256) {
+      usage();
+      die('Missing value for --expected-closeout-report-sha256.', 2);
+    }
+  } else if (arg === '--json') {
+    asJson = true;
+  } else if (arg === '--report') {
+    reportOutput = args[++index] || '';
+    if (!reportOutput) {
+      usage();
+      die('Missing value for --report.', 2);
+    }
+  } else if (arg === '--latest') {
+    die('--latest is not accepted for active persistent profile lifecycle verification.', 2);
+  } else if (arg === '--help' || arg === '-h') {
+    usage();
+    process.exit(0);
+  } else {
+    usage();
+    die('Unsupported option provided.', 2);
+  }
+}
+
+if (!installReportPath || !greenReportPath || !redReportPath || !closeoutReportPath) {
+  usage();
+  die('Required --install-report, --green-report, --red-report, and --closeout-report.', 2);
+}
+
+try {
+  const report = buildActivePersistentProfileLifecycleReportFromFiles({
+    installReportPath,
+    greenReportPath,
+    redReportPath,
+    closeoutReportPath,
+    expectedInputReportHashes,
+  });
+  let output = asJson
+    ? `${JSON.stringify(report, null, 2)}\n`
+    : formatActivePersistentProfileLifecycleReport(report);
+  if (reportOutput) {
+    const sha = writeActivePersistentProfileLifecycleReport({
+      report,
+      outputPath: reportOutput,
+    });
+    output += `report_written=true\nreport_sha256=${sha}\n`;
+  }
+  assertNoUnsafeProtectedRecordsRuntimeProfileText(output);
+  process.stdout.write(output);
+} catch (err) {
+  die(err.message);
+}

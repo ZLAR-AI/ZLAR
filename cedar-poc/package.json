@@ -1,0 +1,16 @@
+{
+  "name": "cedar-poc",
+  "version": "1.0.0",
+  "description": "Cedar formal policy verification for ZLAR",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test.mjs && node test-e23.mjs"
+  },
+  "keywords": [],
+  "author": "ZLAR Inc.",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@cedar-policy/cedar-wasm": "file:vendor/@cedar-policy/cedar-wasm"
+  }
+}
