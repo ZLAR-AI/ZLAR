@@ -249,6 +249,7 @@ It grew in layers, so here's the map.
 | Where | What it is |
 |---|---|
 | [`PRINCIPLES.md`](PRINCIPLES.md) | **ZLAR's Principles**: the properties every key follows. |
+| [`PROPOSITION.md`](PROPOSITION.md) | **The proposition**: what ZLAR claims, how to test it, and exactly how it fails. Starts with "isn't this just permissions?" |
 | [`cyan/`](cyan/) | **The heart.** The force field in code: one-use keys, the wallet, the signed records and the Demo 1 service. Start here. |
 | [`demos/zlar-destination-gate/`](demos/zlar-destination-gate/) | Demo 1: the installed version, plus the evidence from the August run. |
 | [`spec/`](spec/) | Written rules that an implementation has to meet. |
