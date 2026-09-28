@@ -1,5 +1,7 @@
 # ZLAR CLI Reference
 
+*Part of ZLAR's first design, the checkpoint that sits next to the AI, which is no longer the direction. ZLAR's current design, the force field, is in [cyan/](../cyan/). Start with the [README](../README.md) and [PROPOSITION.md](../PROPOSITION.md).*
+
 The `zlar` command is the operator's interface to the ZLAR governance system. It exposes the controls a human needs to administer the gate, inspect state, and respond to runtime issues.
 
 This document is the reference for **what each command does**. For symptom-based problem-solving, see [`troubleshooting.md`](troubleshooting.md). For architectural context, see [`architecture-map.md`](architecture-map.md). For the properties ZLAR holds, see [`../PRINCIPLES.md`](../PRINCIPLES.md).

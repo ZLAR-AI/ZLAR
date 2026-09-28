@@ -1,5 +1,7 @@
 # Cedar Policy Migration Guide
 
+*Part of ZLAR's first design, the checkpoint that sits next to the AI, which is no longer the direction. ZLAR's current design, the force field, is in [cyan/](../cyan/). Start with the [README](../README.md) and [PROPOSITION.md](../PROPOSITION.md).*
+
 ZLAR supports two policy engines: JSON regex (original) and Cedar (formal). Both produce the same audit entries and go through the same gate interface. Worker Receipt and Governed Action Receipt behavior stays attached to the gate/emission configuration, not to the policy engine choice.
 
 ## Policy Engines

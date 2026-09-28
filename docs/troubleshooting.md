@@ -5,6 +5,8 @@
 > config, secrets, or Telegram routing without explicit human authority. Current
 > Codex hook reality is governed by `AGENTS.md` and live machine checks.
 
+*Part of ZLAR's first design, the checkpoint that sits next to the AI, which is no longer the direction. ZLAR's current design, the force field, is in [cyan/](../cyan/). Start with the [README](../README.md) and [PROPOSITION.md](../PROPOSITION.md).*
+
 Run `zlar doctor` first. It checks dependencies, keys, hooks, policy, and the gate in one command:
 
 ```bash

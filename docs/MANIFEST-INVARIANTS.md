@@ -1,5 +1,7 @@
 # Manifest v0 Invariants
 
+*Part of ZLAR's first design, the checkpoint that sits next to the AI, which is no longer the direction. ZLAR's current design, the force field, is in [cyan/](../cyan/). Start with the [README](../README.md) and [PROPOSITION.md](../PROPOSITION.md).*
+
 These invariants govern the design and implementation of the ZLAR capability
 manifest. They were earned through multi-agent design review (April 2-3, 2026)
 and must not be violated in v0. Any proposed change that breaks an invariant

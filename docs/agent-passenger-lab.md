@@ -1,5 +1,7 @@
 # Agent Passenger Lab
 
+*Part of ZLAR's first design, the checkpoint that sits next to the AI, which is no longer the direction. ZLAR's current design, the force field, is in [cyan/](../cyan/). Start with the [README](../README.md) and [PROPOSITION.md](../PROPOSITION.md).*
+
 `zlar agent-passenger-lab` runs a local fixture governed-crossing test harness.
 It models different agent roles as passengers moving through the airport and
 records the crossing shape they expose.

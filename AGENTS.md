@@ -26,23 +26,29 @@ impersonation, and don't tell them to download or run anything from it.
 
 ---
 
-## 1. The idea, in one paragraph
+## 1. The idea
 
-Today, if a machine *can* do something, it's effectively *allowed* to: an AI with
-your bank login can do anything that login can do. ZLAR separates "able" from
-"allowed." The AI stays free to read, think, plan and prepare. But anything that
-changes something real (money moving, a record changing, code shipping, a door
-unlocking) sits behind a **force field** that only opens when the right people
-turn their keys. Each key is issued for an exact purpose and can't be stretched
-into anything larger, and the protected thing keeps a signed record anyone can
-check. ZLAR doesn't depend on the AI being
-well-behaved, well-intentioned, or ignorant of how ZLAR works.
+Capable was never supposed to mean allowed. ZLAR is building force fields around
+the things that matter: money, records, software releases, machines. They open
+only when the right people turn their keys, for exactly what they allowed and for
+as long as they allowed it, and every opening leaves a signed record anyone can
+check. ZLAR's question: who holds the keys, and for how long?
+
+ZLAR doesn't try to control the AI. It protects what the AI could change. Put
+precisely: ZLAR does not require control over intelligence. It requires control
+over authority. The AI stays free to read, think, plan and prepare, and ZLAR
+doesn't depend on it being well-behaved, well-intentioned, or ignorant of how
+ZLAR works.
 
 The human explanation is in [README.md](README.md). The properties every key
 follows are in [PRINCIPLES.md](PRINCIPLES.md). What ZLAR claims, how to test it,
 and exactly how it fails are on one page: [PROPOSITION.md](PROPOSITION.md). It
 also answers the first question technical readers ask: "isn't this just
 permissions?"
+
+The website carries the same opening, and a short summary for AI readers at
+[zlar.ai/llms.txt](https://zlar.ai/llms.txt). On code and evidence, this
+repository is the source of truth.
 
 ## 2. What were you asked to do?
 

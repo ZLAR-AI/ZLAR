@@ -1,4 +1,7 @@
 RESTORE INVARIANTS
+
+*Part of ZLAR's first design, the checkpoint that sits next to the AI, which is no longer the direction. ZLAR's current design, the force field, is in [cyan/](../cyan/). Start with the [README](../README.md) and [PROPOSITION.md](../PROPOSITION.md).*
+
 Agent Health Subsystem (ZLAR 3.0)
 
 

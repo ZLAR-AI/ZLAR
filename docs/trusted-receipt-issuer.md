@@ -1,5 +1,7 @@
 # Trusted Receipt Issuer Boundary
 
+*Part of ZLAR's first design, the checkpoint that sits next to the AI, which is no longer the direction. ZLAR's current design, the force field, is in [cyan/](../cyan/). Start with the [README](../README.md) and [PROPOSITION.md](../PROPOSITION.md).*
+
 ZLAR receipts are useful because a verifier can check them later. That check has
 two layers:
 

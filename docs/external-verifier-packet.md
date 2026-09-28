@@ -1,5 +1,7 @@
 # External Verifier Packet v0
 
+*Part of ZLAR's first design, the checkpoint that sits next to the AI, which is no longer the direction. ZLAR's current design, the force field, is in [cyan/](../cyan/). Start with the [README](../README.md) and [PROPOSITION.md](../PROPOSITION.md).*
+
 This packet prepares ZLAR evidence for a non-operator verifier. After Vincent
 authorized contact on 2026-06-20, a private-by-default non-Vincent verifier
 request was sent using this packet. The request does not appoint an independent

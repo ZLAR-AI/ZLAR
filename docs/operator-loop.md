@@ -5,6 +5,8 @@
 > Codex/ZLAR sessions. Current sessions use direct in-thread human authority
 > unless Vincent explicitly re-enables Telegram.
 
+*Part of ZLAR's first design, the checkpoint that sits next to the AI, which is no longer the direction. ZLAR's current design, the force field, is in [cyan/](../cyan/). Start with the [README](../README.md) and [PROPOSITION.md](../PROPOSITION.md).*
+
 This document defines how an agent, ZLAR, and a human collaborate on a single tool call. The loop exists so that human approvals carry authority over the *session*, not only over one individual action. A surprise card is not normal workflow — it is evidence that the agent's intent and the gate's classification diverged. The remedy is to deny, stop, and reconcile, not to route around the denial.
 
 This is a v0.1 spec. It captures contract and invariants. The reference implementation is `bin/zlar-classify` and the regression in `tests/test-zlar-classify.sh`.

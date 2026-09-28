@@ -5,6 +5,8 @@
 > Telegram, or change machine config unless explicit in-session authority grants
 > that exact action.
 
+*Part of ZLAR's first design, the checkpoint that sits next to the AI, which is no longer the direction. ZLAR's current design, the force field, is in [cyan/](../cyan/). Start with the [README](../README.md) and [PROPOSITION.md](../PROPOSITION.md).*
+
 Runbook for rotating ZLAR credentials. Each section is self-contained.
 
 ---

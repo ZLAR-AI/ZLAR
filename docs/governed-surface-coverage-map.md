@@ -1,5 +1,7 @@
 # Governed Surface Coverage Map
 
+*Part of ZLAR's first design, the checkpoint that sits next to the AI, which is no longer the direction. ZLAR's current design, the force field, is in [cyan/](../cyan/). Start with the [README](../README.md) and [PROPOSITION.md](../PROPOSITION.md).*
+
 `zlar coverage` builds a fixture-input coverage map for supplied action-surface
 evidence. It does not probe the local machine, inspect live hooks, read live
 audit stores, or claim live deployment coverage.
