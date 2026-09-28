@@ -298,3 +298,7 @@ products on it, or passing on changed copies needs a written yes from us. Write
 to **hello@zlar.ai**.
 
 — **Vincent Nijjar**, founder, ZLAR Inc.
+
+---
+
+**Who holds the keys, and for how long?**
