@@ -127,6 +127,10 @@ Some things are the point of ZLAR, and no feature is worth weakening them:
   impersonated. See the human invariants in
   [`lib/human-invariants.sh`](lib/human-invariants.sh).
 
+The ZLAR check, in section 10 of [AGENTS.md](AGENTS.md), turns these and ZLAR's
+Principles into ten questions anyone's AI can run on a proposal. The AI flags; a
+person decides.
+
 If one of these is wrong, argue it in an issue. Don't route around it in code.
 
 ## Code standards

@@ -286,10 +286,13 @@ There are two ways in:
 Found a security problem? Report it privately through [SECURITY.md](SECURITY.md).
 
 Want your AI to explain this repository to you? Point it here. There's a reading
-guide written for AI in [AGENTS.md](AGENTS.md).
+guide written for AI in [AGENTS.md](AGENTS.md), including the ZLAR check: ten
+questions any proposal should pass.
 
-**Where ZLAR lives:** only in this repository, github.com/ZLAR-AI/ZLAR, and at
-[zlar.ai](https://zlar.ai). ZLAR has never offered a Windows installer or a `.exe`
+Follow along on X: [@ZLAR_AI](https://x.com/ZLAR_AI).
+
+**Where ZLAR lives:** only in this repository, github.com/ZLAR-AI/ZLAR, at
+[zlar.ai](https://zlar.ai), and on X as [@ZLAR_AI](https://x.com/ZLAR_AI). ZLAR has never offered a Windows installer or a `.exe`
 file. Anything else using the name, especially a copy that asks you to download
 and run something, isn't us. Please report it to **security@zlar.ai**.
 

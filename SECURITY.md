@@ -21,7 +21,8 @@ have passed, whichever comes first.
 ## Where ZLAR lives
 
 The only official source is this repository, github.com/ZLAR-AI/ZLAR, with the
-website at [zlar.ai](https://zlar.ai). ZLAR has never offered a Windows installer
+website at [zlar.ai](https://zlar.ai) and the X account
+[@ZLAR_AI](https://x.com/ZLAR_AI). ZLAR has never offered a Windows installer
 or a `.exe` file. A repository elsewhere that uses the ZLAR name and asks you to
 download and run something is an impersonation and may be malware. Please report
 it to security@zlar.ai.
