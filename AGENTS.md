@@ -112,7 +112,7 @@ question nobody has answered.
   [`grant.mjs`](cyan/grant.mjs) and [`credential.mjs`](cyan/credential.mjs)
   (the keys), [`guard.mjs`](cyan/guard.mjs) (the force field),
   [`replay-store.mjs`](cyan/replay-store.mjs) (one use only),
-  [`lattice.mjs`](cyan/lattice.mjs) (permissions only narrow when handed on, and
+  [`lattice.mjs`](cyan/lattice.mjs) (authority only narrows when handed on, and
   combinations the owner declared are refused),
   [`receipt.mjs`](cyan/receipt.mjs) (the signed record),
   [`wallet.mjs`](cyan/wallet.mjs) and [`cosigner.mjs`](cyan/cosigner.mjs)
@@ -142,7 +142,7 @@ question nobody has answered.
 
 **Step 4: the decisions and the rules an implementation must meet.**
 - [`docs/FOUNDER-DECISIONS.md`](docs/FOUNDER-DECISIONS.md): the design decisions
-  the code relies on (how permission flows, what counts as proof, what may never
+  the code relies on (how authority flows, what counts as proof, what may never
   be claimed).
 - [`spec/CONFORMANCE.md`](spec/CONFORMANCE.md) and
   [`spec/governed-action-receipt-v1.md`](spec/governed-action-receipt-v1.md): the
@@ -175,7 +175,7 @@ issues are the live list. In short:
   rules about keys.
 - **Open questions:** catching combinations nobody declared in advance;
   combinations spread across different houses; a proof that no chain of steps can
-  create permission nobody granted; real systems to protect.
+  create authority nobody granted; real systems to protect.
 
 ## 6. What's old
 
@@ -194,10 +194,13 @@ The repository uses vocabulary from several phases. Here's how to translate:
 | You'll see | It means |
 |---|---|
 | **force field**, destination guard, consequence layer, "Cyan" | The protection that lives *with the thing being protected*. The heart of ZLAR. In [`cyan/`](cyan/). |
-| key, authorization | Everyday words for permission. The code uses the two precise terms below. |
-| **grant** | The permission a person gives, bounded by what, where, how much and until when. It can be standing (covering many actions up to a limit) or tied to one action. In Demo 1 it is "Grant G". |
+| **allowed** | The plain outcome. Being able to do something is not the same as being allowed to. |
+| **key** | What a person holds and turns. The everyday word. |
+| **authority** | The precise word: a control right, held by whoever lives with the consequence, issued for one exact action or a set budget, with an expiry, and checked by the protected thing. The AI can carry it; it can't create it, stretch it or use it twice. The code carries it as the two terms below. |
+| permission | Used only for what ZLAR is not: standing access attached to a login or identity (see [PROPOSITION.md](PROPOSITION.md), "Isn't this just permissions?"), and in its ordinary legal sense in the license. Don't use it for ZLAR's own idea. |
+| **grant** | The authority a person gives, bounded by what, where, how much and until when. It can be standing (covering many actions up to a limit) or tied to one action. In Demo 1 it is "Grant G". |
 | **credential** | A narrower slice of a grant, presented for one exact action and usable once. It can never be bigger than the grant it came from. In Demo 1 it is "Boarding Credential A". |
-| **receipt** | The protected thing's own signed record of what it allowed or refused. It records permission; it never grants any. |
+| **receipt** | The protected thing's own signed record of what it allowed or refused. It records what was allowed or refused; it never grants authority. |
 | **gate**, checkpoint, "Orange", hook, adapter | ZLAR's **first design**: a checkpoint that sits next to the AI and checks its actions. It works on paths routed through it, but it sits next to the AI rather than with the thing being protected, so this is no longer the direction. |
 | tiers 1, 2, 3 | How absolute a protection is. Tier 1: the guard refuses without a key. Tier 2: only keys held exclusively by the force field work at all. Tier 3: the action *can't even be formed* without the key-holders' part. The wallet demo is tier 3. Its second key is a cosigner's; in a real house it belongs to whoever runs that house's force field. ZLAR can be one option, never the requirement. |
 | human invariants, H1–H17 | Rules that protect the *people* holding keys: not flooded, not rushed, not impersonated. |
@@ -249,8 +252,8 @@ one pass, fail or unclear, and cite the file that shows it.
    add up past its limit?
 5. **No answer means no.** Can silence, a timeout, an error or an unreachable
    record ever count as a yes?
-6. **Permission comes from a person.** Can an AI's output, a log entry or a signed
-   record count as permission for what happens next?
+6. **Authority comes from a person.** Can an AI's output, a log entry or a signed
+   record count as authority for what happens next?
 7. **The rules about keys are behind the force field too.** Can the rules, or the
    list of keys a house accepts, change without the right keys?
 8. **Thought is free.** Does it read, score or watch what an AI is thinking,

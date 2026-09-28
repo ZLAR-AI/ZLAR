@@ -45,7 +45,7 @@ thing you care about is a light bulb. ZLAR keeps the wire cut until the right
 people close it. A billion volts across an open circuit lights exactly as many
 bulbs as one volt: none.
 
-**Most of what AI does needs no permission at all.**
+**Most of what AI does needs no key at all.**
 Reading, thinking, planning, comparing and drafting all run untouched and at full
 speed. ZLAR only stands at the few moments where something real changes: money
 moves, a record is rewritten, code ships, a door unlocks.
@@ -58,7 +58,7 @@ and they turn them only for the moments that truly need a person.
 
 **A missed call isn't a yes.**
 If the person with the key doesn't answer, nothing happens. Silence never turns
-into permission. And in ZLAR's design, a key that isn't renewed simply stops
+into a yes. And in ZLAR's design, a key that isn't renewed simply stops
 working.
 
 **Good behavior isn't a credential.**
@@ -139,11 +139,11 @@ These pieces are real, and deliberately small. Each one proves one part of the i
   This is a model wallet in code, not a real bank or blockchain.
 
 - **One protected action, installed and live.** In August 2026, on my own
-  computer, an AI with every permission tried to promote a software release and
-  was refused. I then approved it once, with a hardware key that needs a PIN and a
-  physical touch, and it happened exactly once. Reusing that same approval was
-  refused. The protected service signed a record of all three outcomes, and the
-  record can be checked offline. That's one harmless action on one machine. The
+  computer, an AI with every permission tried to put a new software release live
+  and was refused. I then approved it once, with a hardware key that needs a PIN
+  and a physical touch, and it happened exactly once. Reusing that same approval
+  was refused. The protected service signed a record of all three outcomes, and
+  the record can be checked offline. That's one harmless action on one machine. The
   details are in [demos/zlar-destination-gate](demos/zlar-destination-gate/).
 
 - **This repository protects itself.** Pushing changes to it from my computer
@@ -151,7 +151,7 @@ These pieces are real, and deliberately small. Each one proves one part of the i
   computer, with every permission, gets turned away. The first thing ZLAR
   protected was ZLAR.
 
-- **Budgets and combinations, in the reference code.** Standing permission with a
+- **Budgets and combinations, in the reference code.** Standing authority with a
   budget: many separately allowed actions can't add up past the limit. Two steps
   that are each harmless are refused when, together, they cross a line the owner
   declared. A key handed on can only shrink, and every key must expire. These are
@@ -189,7 +189,7 @@ This is the honest gap between the idea and the code. It's also the work.
 **Proof**
 
 Here is the big claim: no chain of steps, however long or clever, can add up to
-permission that nobody granted. Right now that's a conjecture, not a theorem, and
+authority that nobody granted. Right now that's a conjecture, not a theorem, and
 it needs to be proven or broken. Mathematicians, cryptographers, and people who
 enjoy finding holes are especially welcome.
 

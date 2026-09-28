@@ -1,7 +1,7 @@
 # Contributing to ZLAR
 
 ZLAR is building a way for AI to become as capable as it likes without that
-capability quietly turning into permission. The [README](README.md) explains the
+capability quietly turning into authority. The [README](README.md) explains the
 idea. This page explains how to help.
 
 You don't have to arrive convinced. A clear argument that something doesn't hold
@@ -44,7 +44,7 @@ that one of them fails, you may be the contributor we most need.
 - **Security engineers:** look for side doors, meaning any way to reach a
   protected thing without its key.
 - **Mathematicians and formal-methods people:** prove or break the conjecture that
-  no chain of permitted steps can add up to permission nobody granted.
+  no chain of allowed steps can add up to authority nobody granted.
 - **Systems and product engineers:** bring a real system (a payment flow, a
   release pipeline, a record store) and work out where its force field belongs.
 - **Human-factors researchers:** can the people holding keys keep real authority
@@ -72,7 +72,7 @@ find a way, report it privately (see below). That's a very big deal.
 
 1. What real-world consequence it protects (money, records, code, access, a
    machine).
-2. Where the permission comes from today, and who holds it.
+2. Where the authority comes from today, and who holds it.
 3. Exactly which path the change protects.
 4. Which other paths to the same consequence would still be open.
 5. What evidence would show it works, and what evidence would show it doesn't.
@@ -87,7 +87,7 @@ node cyan/demo-theft.mjs                 # the stolen-key wallet demo
 node cyan/test-cyan.mjs                  # one-use keys and the guard
 node cyan/test-cyan-theft.mjs            # theft scenarios
 node cyan/test-cyan-receipts.mjs         # the signed record
-node cyan/test-cyan-composition.mjs      # combining permissions
+node cyan/test-cyan-composition.mjs      # combining authority
 node cyan/test-cyan-negative-vectors.mjs # known open problems, reported on purpose
 node cyan/test-demo1-destination.mjs     # the Demo 1 protected service
 ```
@@ -117,10 +117,10 @@ and never describes the new version.
 
 Some things are the point of ZLAR, and no feature is worth weakening them:
 
-- Missing, invalid, expired, reused or mismatched permission means **no**.
+- Missing, invalid, expired, reused or mismatched authority means **no**.
 - Silence is never a yes.
-- A record of what happened never grants permission for what happens next.
-- Nothing an AI produces can count as a person's permission.
+- A record of what happened never grants authority for what happens next.
+- Nothing an AI produces can count as a person's authority.
 - **When two paths exist, the stricter one wins.** If a path with fewer checks
   disagrees with a stricter one, it must refuse, or it must be removed.
 - The people holding keys stay protected too: not flooded, not rushed, not

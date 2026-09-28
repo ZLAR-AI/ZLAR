@@ -104,7 +104,7 @@ attack, and if any of them fails, the claim fails with it.
    be changed quietly, someone can add a key. That's issue 6.
 6. **Time can be trusted.** Expiry is only as good as the clock that checks it.
 
-The bigger claim, that no chain of permitted steps can add up to permission
+The bigger claim, that no chain of allowed steps can add up to authority
 nobody granted, is a conjecture, not a theorem. Issue 8 asks for a proof or a
 counterexample.
 
