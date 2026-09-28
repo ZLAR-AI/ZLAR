@@ -3,7 +3,7 @@
 *Updated 2026-09-28. One page: what ZLAR claims, how to test it, and exactly how
 it fails.*
 
-**ZLAR doesn't try to control the AI. It controls who can make things real.**
+**ZLAR doesn't try to control the AI. It protects what the AI could change.**
 
 Put another way: ZLAR does not require control over intelligence. It requires
 control over authority.
