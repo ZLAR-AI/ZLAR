@@ -21,6 +21,9 @@ something anyone is going to put on a leash. ZLAR doesn't try to control it or
 change its mind. ZLAR is a third option, and it turns out to be surprisingly
 simple.
 
+*Free to read, run and try to break. Real use needs a written yes from us. The
+tools that check ZLAR's records are open to everyone.* ([License](LICENSE))
+
 ---
 
 ## A few things that turn out to be simple
@@ -209,7 +212,7 @@ they hold the keys: a payment flow, a software release pipeline, a record store.
 Engineers can build a perfect force field, but only the owner of the thing can
 install it. If you own or run something worth protecting, you're who we most want
 to meet. Reply on the issue
-[Bring a real system to protect](https://github.com/ZLAR-AI/ZLAR/issues?q=%22Bring+a+real+system+to+protect%22),
+[Bring a real system to protect](https://github.com/ZLAR-AI/ZLAR/issues/11),
 or write to **hello@zlar.ai** for anything that shouldn't be said in public.
 
 ---
@@ -293,9 +296,11 @@ and run something, isn't us. Please report it to **security@zlar.ai**.
 **About the license:** read it, download it, run it, try to break it: all
 welcome, and the [LICENSE](LICENSE) says so. The tools that check ZLAR's records,
 and the written rules they check against, are open under Apache 2.0: anyone may
-use them for anything. Using it for real work, building
-products on it, or passing on changed copies needs a written yes from us. Write
-to **hello@zlar.ai**.
+use them for anything, because anyone should be able to check what a protected
+thing says happened without trusting us. The force field itself, the part that
+decides what gets through, stays under our license.
+Using it for real work, building products on it, or passing on changed copies
+needs a written yes from us. Write to **hello@zlar.ai**.
 
 — **Vincent Nijjar**, founder, ZLAR Inc.
 

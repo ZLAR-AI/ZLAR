@@ -4,7 +4,7 @@
 // for permission and is not consulting a policy. It has one rule about what a
 // transaction IS, and anything failing that rule was never a transaction.
 //
-// Tier 3: the rule requires two signatures — the owner's and ZLAR's. Possession
+// Tier 3: the rule requires two signatures — the owner's and the cosigner's. Possession
 // of the owner key makes you a participant, not an authority.
 //
 // Note the three outcomes. Most systems have two, and that is the confusion the

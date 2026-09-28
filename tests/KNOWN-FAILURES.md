@@ -38,6 +38,13 @@ it and says so.
 
 None of the 35 points at a file that was removed from this repository.
 
+## A failure your own change may cause
+
+If you change a file in `cyan/` or in `demos/zlar-destination-gate/`,
+`tests/test-file-identity-agreement.mjs` fails on Demo 1's identity record until
+you re-record it. That's expected. [CONTRIBUTING.md](../CONTRIBUTING.md), under
+"Changing the force field", explains how.
+
 ## Checks that skip instead of failing
 
 - **`cedar-poc/test.mjs` and `cedar-poc/test-e23.mjs`** need

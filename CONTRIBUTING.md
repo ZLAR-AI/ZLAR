@@ -96,6 +96,23 @@ ZLAR's first design, the checkpoint that sits next to the AI, has its own instal
 and test instructions in
 [`docs/first-design-install.md`](docs/first-design-install.md).
 
+**Changing the force field.** Demo 1's identity record,
+[`demos/zlar-destination-gate/PRODUCT-MANIFEST.json`](demos/zlar-destination-gate/PRODUCT-MANIFEST.json),
+fixes the exact bytes of every file in `cyan/` and in the Demo 1 folder. If your
+change touches them, which most of the open issues will, the identity check fails
+until you re-record it:
+
+```bash
+python3 -B demos/zlar-destination-gate/product_identity.py --write
+python3 -B demos/zlar-destination-gate/product_identity.py --verify
+```
+
+Commit the updated record with your change and say so in the pull request. A
+re-recorded identity is a new version of Demo 1. The August 2026 installed
+evidence stays tied to what was installed then, in
+[`demos/zlar-destination-gate/INSTALLED-MANIFEST-20260822.json`](demos/zlar-destination-gate/INSTALLED-MANIFEST-20260822.json),
+and never describes the new version.
+
 ## What the code must protect
 
 Some things are the point of ZLAR, and no feature is worth weakening them:

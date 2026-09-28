@@ -19,6 +19,11 @@ retired. The earlier version is still in this repository's history.
   the Apache License 2.0 before the license changed remains under that license.
   The text is kept at
   [`LICENSES/Apache-2.0-prior-public.txt`](LICENSES/Apache-2.0-prior-public.txt).
+- **The checking tools are open.** Since 2026-09-27 the [LICENSE](LICENSE) puts
+  the checking tool, the written rules it checks against, and the force field's
+  record format under the Apache License 2.0, so anyone can check ZLAR's records
+  without trusting ZLAR. The LICENSE lists the exact files. Everything else stays
+  under the evaluation license.
 - **The verifier kit is still built and published separately.**
   [`tools/build-verifier-kit.sh`](tools/build-verifier-kit.sh) packages the files
   someone needs to check a ZLAR receipt without trusting ZLAR. The kit states its

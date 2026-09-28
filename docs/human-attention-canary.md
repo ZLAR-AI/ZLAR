@@ -185,6 +185,8 @@ Recognized-duplicate (superseded draft, not shipped): abandoned. What was propos
 
 10. Status and implementation scope
 
+*Note added 2026-09-27: this section is the original April status. The design was built on 2026-04-25 and 2026-04-26; see the status at the top of this page.*
+
 Not shipped. Design complete at the level documented here. Implementation waits for a focused session with separate review. Code paths are known:
 - lib/human-invariants.sh: hi_check_deliberation, hi_check_response_variance.
 - lib/human-invariants.mjs: checkDeliberation, checkResponseVariance.

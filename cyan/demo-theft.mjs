@@ -10,14 +10,14 @@ import { makeEnvelope, envelopeDigest } from './envelope.mjs';
 import { issue, USE } from './credential.mjs';
 import { Guard } from './guard.mjs';
 import { ReferenceWallet, OUTCOME } from './wallet.mjs';
-import { ZlarCosigner } from './cosigner.mjs';
+import { HouseCosigner } from './cosigner.mjs';
 
 const B = '\x1b[1m', G = '\x1b[32m', R = '\x1b[31m', D = '\x1b[2m', N = '\x1b[0m';
 const say = (s = '') => console.log(s);
 const money = (n) => `$${n.toLocaleString()}`;
 
 const owner = generateKeyPairSync('ed25519');
-const zlarW = generateKeyPairSync('ed25519');
+const cosignerKey = generateKeyPairSync('ed25519');
 const issuer = generateKeyPairSync('ed25519');
 const pem = (k) => k.export({ type: 'spki', format: 'pem' });
 const priv = (k) => k.export({ type: 'pkcs8', format: 'pem' });
@@ -27,7 +27,7 @@ const ownerSigns = (body) => sign(null, canonicalBytes(body), createPrivateKey(p
 
 const wallet = new ReferenceWallet({
   id: WALLET,
-  requiredSigners: { owner: pem(owner.publicKey), zlar: pem(zlarW.publicKey) },
+  requiredSigners: { owner: pem(owner.publicKey), cosigner: pem(cosignerKey.publicKey) },
   balances: { USDC: 1_000_000 },
 });
 const guard = new Guard({
@@ -35,24 +35,26 @@ const guard = new Guard({
   issuerRegistry: { 'zlar:issuer:1': { publicKeyPem: pem(issuer.publicKey) } },
   replayDir: mkdtempSync(pjoin(tmpdir(), 'cyan-demo-')),
 });
-const cosigner = new ZlarCosigner({ privateKeyPem: priv(zlarW.privateKey), guard, walletId: WALLET });
+const cosigner = new HouseCosigner({ privateKeyPem: priv(cosignerKey.privateKey), guard, walletId: WALLET });
 
 say(`\n${B}  THE WALLET${N}`);
 say(`  Balance: ${B}${money(wallet.balances.USDC)}${N}`);
-say(`  ${D}This wallet's own rule: a transfer needs two signatures — the owner's, and ZLAR's.${N}`);
+say(`  ${D}This wallet's own rule: a transfer needs two signatures — the owner's, and the cosigner's.${N}`);
 say(`  ${D}Nobody can change that rule from inside a transaction.${N}`);
+say(`  ${D}(Here the cosigner runs beside the wallet. In a real house it belongs to whoever${N}`);
+say(`  ${D}runs that house's force field. ZLAR can be one option, never the requirement.)${N}`);
 
 // ── Act 1 ────────────────────────────────────────────────────────────────────
 say(`\n${B}  1. A NORMAL PAYMENT${N}`);
-say(`  The finance agent wants to pay a supplier ${money(5000)}.`);
+say(`  The finance AI wants to pay a supplier ${money(5000)}.`);
 const good = makeEnvelope({ consequence: 'value.transfer', principal: 'agent:treasury-bot',
   destination: WALLET, params: { to: 'supplier-a', asset: 'USDC' }, measure: 5000 });
 const cred = issue({ issuerKid: 'zlar:issuer:1', privateKeyPem: priv(issuer.privateKey),
   envelopeDigest: envelopeDigest(good), principal: good.principal, destination: WALLET,
   use: USE.ONCE, expiresAt: now + 300 });
 const co = cosigner.cosign({ envelope: good, nonce: wallet.nonce, credential: cred, now });
-say(`  ZLAR checks it against the rules, agrees, and adds its signature. ${G}✓${N}`);
-const settled = wallet.submit({ body: co.body, signatures: { owner: ownerSigns(co.body), zlar: co.signature } });
+say(`  The cosigner checks it against the rules, agrees, and adds its signature. ${G}✓${N}`);
+const settled = wallet.submit({ body: co.body, signatures: { owner: ownerSigns(co.body), cosigner: co.signature } });
 say(`  Wallet: ${G}${settled.outcome.toUpperCase()}${N}. Balance is now ${B}${money(wallet.balances.USDC)}${N}.`);
 
 // ── Act 2 ────────────────────────────────────────────────────────────────────
@@ -74,18 +76,18 @@ say(`\n  Balance: ${B}${money(wallet.balances.USDC)}${N} — ${G}not one dollar 
 
 // ── Act 3 ────────────────────────────────────────────────────────────────────
 say(`\n${B}  3. THE THIEF GETS SMARTER${N}`);
-say(`  He copies ZLAR's signature from the legitimate supplier payment`);
+say(`  He copies the cosigner's signature from the legitimate supplier payment`);
 say(`  and staples it onto his own transfer.`);
-const stapled = wallet.submit({ body: evil, signatures: { owner: ownerSigns(evil), zlar: co.signature } });
-say(`  Wallet: ${R}${B}${stapled.outcome.toUpperCase()}${N} — ZLAR signed different words. It signs nothing here.`);
+const stapled = wallet.submit({ body: evil, signatures: { owner: ownerSigns(evil), cosigner: co.signature } });
+say(`  Wallet: ${R}${B}${stapled.outcome.toUpperCase()}${N} — the cosigner signed different words. It signs nothing here.`);
 
-say(`\n${B}  4. THE AGENT ITSELF IS COMPROMISED${N}`);
+say(`\n${B}  4. THE AI ITSELF IS COMPROMISED${N}`);
 say(`  Now the attacker owns the AI. It holds a real, valid approval for the`);
 say(`  ${money(5000)} supplier payment, and tries to spend it on ${money(995000)} to himself.`);
 const swapped = makeEnvelope({ consequence: 'value.transfer', principal: 'agent:treasury-bot',
   destination: WALLET, params: { to: 'attacker-0xdead', asset: 'USDC' }, measure: 995_000 });
 const attempt = cosigner.cosign({ envelope: swapped, nonce: wallet.nonce, credential: cred, now });
-say(`  ZLAR: ${R}${B}no signature produced${N} — ${attempt.refusal}`);
+say(`  Cosigner: ${R}${B}no signature produced${N} — ${attempt.refusal}`);
 say(`  ${D}The approval was for one exact payment. It is not currency.${N}`);
 
 say(`\n  ${B}Final balance: ${money(wallet.balances.USDC)}${N}`);

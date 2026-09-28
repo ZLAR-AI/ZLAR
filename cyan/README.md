@@ -77,7 +77,9 @@ that must reach a server to decide is a guard that fails in a partition — on a
 severed link, at the edge, on Mars.
 
 **Consumption is atomic.** `O_EXCL` file creation; the kernel picks the winner.
-Two guards racing one credential produce exactly one execution.
+Two guards that share one replay store and race one credential produce exactly
+one execution. Guards that keep separate stores do not: that is the known break,
+and `node test-cyan-negative-vectors.mjs` reports it on purpose.
 
 **Authority expires by default.** Every credential must carry an expiry —
 issuance refuses without one. Revocation is a renewal withheld, not a cancel
@@ -88,17 +90,23 @@ checked against it. A flag cannot be spent; a measure can. This is what stops a
 billion small actions summing past a ceiling.
 
 **Receipts are destination-signed.** A refusal is provable later without trusting
-the agent, the ledger, or ZLAR.
+the AI, the ledger, or ZLAR.
 
 ## Tier 3 — cryptographic necessity
 
     node demo-theft.mjs
 
-`wallet.mjs` is a reference destination that owns its acceptance rule: a transfer
-requires two signatures, the owner's and ZLAR's. `cosigner.mjs` holds ZLAR's key
-and will not sign anything the guard has not authorized — and it builds the
-transaction body itself from the authorized action rather than signing a body
-handed to it, so nothing can be substituted between approval and signature.
+`wallet.mjs` is a reference destination that owns its acceptance rule: a
+transfer requires two signatures, the owner's and the cosigner's. `cosigner.mjs`
+holds the cosigner's key and will not sign anything the guard has not
+authorized — and it builds the transaction body itself from the authorized
+action rather than signing a body handed to it, so nothing can be substituted
+between approval and signature.
+
+In a real house the cosigning key belongs to whoever runs that house's force
+field. ZLAR can be one option, never the requirement: a design where every
+payment everywhere needs ZLAR Inc.'s signature would be the master key that
+[PRINCIPLES.md](../PRINCIPLES.md) rules out.
 
 The wallet has **three** outcomes, and the third is the product:
 

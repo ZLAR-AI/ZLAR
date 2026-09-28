@@ -1,6 +1,11 @@
-// ZLAR's signing side — the second key.
+// The cosigner — the second key.
 //
-// This is the only place ZLAR's wallet key is used, and it will not sign
+// In a real house this key belongs to whoever runs that house's force field.
+// ZLAR can be one option, never the requirement: a design where every payment
+// everywhere needs ZLAR Inc.'s signature would be the master key PRINCIPLES.md
+// rules out.
+//
+// This is the only place the cosigning key is used, and it will not sign
 // anything the guard has not authorized.
 //
 // It BUILDS the transaction body itself from the authorized envelope. It never
@@ -22,7 +27,7 @@ export function bodyFromEnvelope(envelope, nonce, walletId) {
   };
 }
 
-export class ZlarCosigner {
+export class HouseCosigner {
   constructor({ privateKeyPem, guard, walletId }) {
     this.privateKeyPem = privateKeyPem;
     this.guard = guard;
@@ -48,3 +53,6 @@ export class ZlarCosigner {
     return { signed: true, ...result.effect, receipt: result.receipt };
   }
 }
+
+// Earlier name, kept so older references still resolve.
+export { HouseCosigner as ZlarCosigner };
