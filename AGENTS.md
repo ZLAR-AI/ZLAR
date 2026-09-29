@@ -229,8 +229,12 @@ The repository uses vocabulary from several phases. Here's how to translate:
 
 The repository is public to read. The [LICENSE](LICENSE) lets anyone download it
 and run it on their own computer, including with AI tools, to study and evaluate
-it. Using it for real work, providing it as a service, or distributing changed
-copies needs written permission. The exception is the checking tool and the
+it. Anyone may also test it, attack it and publish what they find, including
+benchmarks and ways to break it, without asking; the LICENSE's "Permission to
+Test and Publish" section has the details, and SECURITY.md asks (without
+requiring) for a private heads-up before a way to break it is published. Using
+it for real work, providing it as a service, or distributing changed copies
+needs written permission. The exception is the checking tool and the
 written rules (the verifier kit, the receipt specification and conformance rules,
 and the force field's record format), which are under Apache 2.0 so anyone can
 check ZLAR's records without asking; the LICENSE lists the exact files. People who

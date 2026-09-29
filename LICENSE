@@ -8,9 +8,10 @@ Current Private-Core Source
 The current private-core ZLAR source tree is proprietary and commercial source
 of ZLAR Inc. It is published so that anyone can read it. Unless ZLAR Inc. or
 Vincent Nijjar grants written permission (including the Permission to Evaluate
-below) or a separate written agreement applies, no rights are granted to use, copy, modify, distribute, sublicense, publish, host,
-provide as a service, benchmark for publication, or create derivative works
-from current private-core source.
+and the Permission to Test and Publish below) or a separate written agreement
+applies, no rights are granted to use, copy, modify, distribute, sublicense,
+publish, host, provide as a service, or create derivative works from current
+private-core source.
 
 Paid support, enterprise features, hosted service access, customer
 distribution, or any use beyond the Permission to Evaluate require separate
@@ -30,9 +31,30 @@ is also permitted.
 
 This permission does not extend to using the source in production or for any
 other purpose, providing it as a service, distributing it or any changed version
-of it, publishing benchmarks of it, or creating derivative works for any purpose
-other than evaluation. Those require separate written permission. This
-permission may be withdrawn for future use by updating this notice.
+of it, or creating derivative works for any purpose other than evaluation. Those
+require separate written permission. This permission may be withdrawn for future
+use by updating this notice.
+
+Permission to Test and Publish
+------------------------------
+
+Anyone may test ZLAR, attack it, measure it, and publish what they find,
+including benchmarks, weaknesses and ways to break it, without asking first.
+
+When publishing a finding, you may include the short excerpts of ZLAR's source,
+and the small changes to it, that are needed to show or reproduce the finding.
+This permission does not cover publishing or distributing the source as a whole
+or in substantial part.
+
+It covers your own copies and systems you are authorized to test. It does not
+authorize attacking anyone else's systems, or ZLAR's website, accounts or
+infrastructure.
+
+We ask, but do not require, that you tell us privately before publishing a way
+to break ZLAR, so it can be fixed first. See SECURITY.md.
+
+Findings published under this permission stay publishable even if this notice
+changes later.
 
 Prior Apache-2.0 Public Distributions
 -------------------------------------

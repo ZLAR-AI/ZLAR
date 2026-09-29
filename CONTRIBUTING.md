@@ -166,7 +166,9 @@ for new features that don't break anything, the first for changes that do.
 
 The code is published to read, and the [LICENSE](LICENSE) lets anyone download it
 and run it on their own computer to study and try it, including offering changes
-back as a pull request. Anything beyond that needs written permission.
+back as a pull request. Anyone may also test it, attack it and publish what they
+find, without asking; for a way to break it, we ask for a private heads-up first
+([SECURITY.md](SECURITY.md)). Anything beyond that needs written permission.
 
 Before we can merge a code contribution, you accept the
 [contributor agreement](CLA/INDIVIDUAL.md). It's in French and English, and each

@@ -21,8 +21,9 @@ something anyone is going to put on a leash. ZLAR doesn't try to control it or
 change its mind. ZLAR is a third option, and it turns out to be surprisingly
 simple.
 
-*Free to read, run and try to break. Real use needs a written yes from us. The
-tools that check ZLAR's records are open to everyone.* ([License](LICENSE))
+*Free to read, run, try to break, and publish what you find. Real use needs a
+written yes from us. The tools that check ZLAR's records are open to everyone.*
+([License](LICENSE))
 
 ---
 
@@ -297,8 +298,10 @@ Follow along on X: [@ZLAR_AI](https://x.com/ZLAR_AI).
 file. Anything else using the name, especially a copy that asks you to download
 and run something, isn't us. Please report it to **security@zlar.ai**.
 
-**About the license:** read it, download it, run it, try to break it: all
-welcome, and the [LICENSE](LICENSE) says so. The tools that check ZLAR's records,
+**About the license:** read it, download it, run it, try to break it, and
+publish what you find: all welcome, and the [LICENSE](LICENSE) says so. If you
+find a way to break it, we ask for a private heads-up first
+([SECURITY.md](SECURITY.md)); it's a request, not a condition. The tools that check ZLAR's records,
 and the written rules they check against, are open under Apache 2.0: anyone may
 use them for anything, because anyone should be able to check what a protected
 thing says happened without trusting us. The force field itself, the part that

@@ -5,7 +5,8 @@
 **Email:** security@zlar.ai
 **GitHub:** [Private vulnerability reporting](https://github.com/ZLAR-AI/ZLAR/security/advisories/new)
 
-Do not open a public issue for security vulnerabilities.
+Please use these private routes rather than a public issue, so a way to break
+ZLAR can be fixed before it's widely known.
 
 **Response timeline:**
 - Acknowledgment: within 48 hours
@@ -15,8 +16,15 @@ Do not open a public issue for security vulnerabilities.
 We credit reporters in the advisory unless they prefer anonymity.
 
 **Publishing your findings.** Breaking ZLAR is welcome, and so is publishing what
-you found, once you've reported it to us privately and it's been fixed or 90 days
-have passed, whichever comes first.
+you found. The [LICENSE](LICENSE) allows it, and you don't need to ask. We make
+one request, not a condition: if you've found a way to break ZLAR, tell us
+privately first and give us a fair chance to fix it (we suggest 90 days). The
+reason isn't control. It's the people a force field protects: publishing how to
+get through it before it's fixed puts them at risk. Benchmarks and other
+findings need no notice at all.
+
+Test your own copies, or systems you're authorized to test. Please don't attack
+anyone else's systems, or ZLAR's website or accounts.
 
 ## Where ZLAR lives
 
