@@ -46,6 +46,11 @@ and exactly how it fails are on one page: [PROPOSITION.md](PROPOSITION.md). It
 also answers the first question technical readers ask: "isn't this just
 permissions?"
 
+For prospective cofounders, CTOs, and engineers, the [ZLAR FAQ](docs/FAQ.md)
+answers 83 questions about the technology, evidence, business, and collaboration.
+Its numbered answers have stable links and cite a specific public source revision;
+check current code and evidence before repeating a time-sensitive answer.
+
 The website carries the same opening, and a short summary for AI readers at
 [zlar.ai/llms.txt](https://zlar.ai/llms.txt). On code and evidence, this
 repository is the source of truth.

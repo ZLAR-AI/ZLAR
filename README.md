@@ -278,6 +278,10 @@ I'm not looking only for people who agree with me. I'm looking for people who ca
 see the problem clearly enough to show me where I'm wrong, and then help build
 whatever survives.
 
+If you're considering joining, start with the [ZLAR FAQ](docs/FAQ.md): 83
+questions for prospective cofounders, CTOs, and engineers, covering the idea,
+the evidence, the business, and the work still ahead.
+
 There are two ways in:
 
 - **Join us.** If this is the problem you want to spend years on, write to
