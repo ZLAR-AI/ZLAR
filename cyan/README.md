@@ -22,13 +22,22 @@ PromotionCommit P, and terminal receipt R.
 | `test-demo1-destination.mjs` | refusal, exact effect, allocation, concurrency, replay, restart, fault rollback, abrupt pre/post-commit process loss |
 | `test-demo1-receipts.mjs` | offline P/R verification, canonical signature identity, chain integrity, evidence-is-not-authority |
 
+Caution first: the end-to-end test,
+`demos/zlar-destination-gate/test-demo1-e2e.mjs`, is withheld from the commands
+below because its host isolation remains unresolved (issue 12). Its last check
+runs the installed Demo 1 client in a health subprocess, and as UID 501 that
+subprocess attempts the host's fixed socket, including from a disposable
+checkout on the same computer. The
+[Demo 1 README](../demos/zlar-destination-gate/README.md#source-verification)
+has the detail. Withholding this one test doesn't certify the others as safe on
+every computer.
+
 Run the software-key profile from the repository root:
 
 ```sh
 node cyan/test-demo1-protocol.mjs
 node cyan/test-demo1-destination.mjs
 node cyan/test-demo1-receipts.mjs
-node demos/zlar-destination-gate/test-demo1-e2e.mjs
 ```
 
 Prerequisite: the exact Node runtime must expose `node:sqlite`; the current
@@ -56,11 +65,11 @@ file stores cannot atomically bind debit, effect, P, and R.
 | `replay-store.mjs` | what a guard holds to refuse a credential it already honoured |
 | `guard.mjs` | the destination-owned verifier. Refusal is the default |
 | `lattice.mjs` | the consequence lattice — join, elevations, constitutional prohibitions |
-| `grant.mjs` | standing authority, and delegation as a meet |
+| `grant.mjs` | standing authority and the delegation helper |
 | `grant-store.mjs` | destination-side running debit and the composition window |
 | `receipt.mjs` | what the destination signs, and how a third party checks it |
 | `receipt-log.mjs` | the destination's own chain — where omission becomes visible |
-| `test-cyan.mjs` | slice one propositions — the atomic crossing |
+| `test-cyan.mjs` | slice one checks — single-credential authorization and replay |
 | `test-cyan-composition.mjs` | slice two propositions — composition and cumulative effect |
 | `test-cyan-receipts.mjs` | slice three propositions — proof after the fact |
 
@@ -76,18 +85,38 @@ matches nothing. This is the defence against semantic escape.
 that must reach a server to decide is a guard that fails in a partition — on a
 severed link, at the edge, on Mars.
 
-**Consumption is atomic.** `O_EXCL` file creation; the kernel picks the winner.
-Two guards that share one replay store and race one credential produce exactly
-one execution. Guards that keep separate stores do not: that is the known break,
-and `node test-cyan-negative-vectors.mjs` reports it on purpose.
+**One claim per credential within one replay store.**
+[`replay-store.mjs`](replay-store.mjs) uses exclusive file creation (`O_EXCL`)
+to claim a single-use credential. The two-guard check in
+[`test-cyan.mjs`](test-cyan.mjs) calls `authorize()` twice sequentially and
+asserts one authorization. It does not demonstrate a concurrent execution.
+[`Guard.perform()`](guard.mjs) consumes authority before calling a separate
+effect function; these generic files do not commit consumption, effect and
+receipt in one transaction. Two guards for the same destination with separate
+replay stores can each accept the same credential:
+`node test-cyan-negative-vectors.mjs` reports that known break on purpose.
+
+The exact Demo 1 profile above uses a different mechanism. Its destination
+issues and stores a signed challenge, and every grant binds that challenge.
+A database that doesn't
+hold the challenge refuses with `challenge_unrecognized`, and debit,
+consumption, effect, P and R commit in one SQLite transaction
+(`demo1-destination.mjs`, `demo1-store.mjs`). So Demo 1 prevents reuse within
+its authoritative destination database. Rollback by an excluded administrator
+is outside Demo 1's claim, and copied databases, replicas, backups and failover
+haven't been shown safe.
 
 **Authority expires by default.** Every credential must carry an expiry —
 issuance refuses without one. Revocation is a renewal withheld, not a cancel
 message that has to arrive.
 
-**Measure, not flag.** Budget is an integer in smallest units and the effect is
-checked against it. A flag cannot be spent; a measure can. This is what stops a
-billion small actions summing past a ceiling.
+**Measure, not flag.** Budget is an integer in smallest units. For each
+configured grant ceiling, the guard checks the requested action together with
+that grant's spending history in one store over its configured window.
+This bounds cumulative authorization within that accounting scope; it does
+not share spending between parent and child grants or across independent
+stores. A credential's own `budget` caps a single action, and a `lease`
+credential repeats its one exact action until it expires.
 
 **Receipts are destination-signed.** A refusal is provable later without trusting
 the AI, the ledger, or ZLAR.
@@ -136,23 +165,33 @@ exceed any part of it. Per class the measures sum; declared elevation rules add
 what the combination produces that no single step declared. Read access to PII
 plus disclosure of PII elevates to an irreversible effect neither step admitted.
 
-**Enforced over what executed, not over a declared plan.** An agent that simply
-never declares a plan must not thereby escape. The guard joins the bounded recent
-history at the destination with the step in front of it.
+**Composition uses recorded authorizations.** For one grant in one spending
+store, the guard joins the requested action with the recent authorization
+history over that grant's window. These entries are recorded before the
+separate effect function runs; they do not establish completed effects.
 
-**Delegation is a meet.** A child grant is the greatest lower bound of what the
-parent held and what was asked for. Ceilings take the minimum, allow-lists
-intersect, prohibitions and elevations union, expiry takes the earlier. A child
-that asks for 999,999 against a parent ceiling of 10,000 receives 10,000. No
-enlargement is algebra here, not a rule anyone is asked to follow.
+**Delegation is meant to be a meet.** A child grant should be the greatest lower
+bound of what the parent held and what was asked for. `delegate()` applies that
+to these fields: ceilings take the minimum, allow-lists intersect, prohibitions
+and elevations union, expiry takes the earlier. A child that asks for 999,999
+against a parent ceiling of 10,000 receives 10,000. The meet is not yet
+complete, so no enlargement is the target, not a proven property. Three gaps
+remain:
+
+- `delegate()` takes the *shorter* composition window. Ceilings are summed over
+  the window, so a child's allowance can refill faster than its parent's.
+- Parent and child keep separate spending histories in `grant-store.mjs`.
+- The guard doesn't verify the delegation chain. A recognized issuer can sign a
+  wider "child" directly, and the guard accepts it.
 
 **Constitutional prohibitions.** Combinations no ordinary grant can permit,
 regardless of available budget. Deploy code, then activate the machine it drives:
 refused with ceilings to spare.
 
-**Debits are atomic with the decision.** The ceiling check runs inside the lock
-that commits the execution, so two concurrent actions cannot both pass a limit
-they jointly exceed.
+**The grant store records spending with the decision.** The ceiling check and
+spending-record update run under the same per-grant lock in
+[`grant-store.mjs`](grant-store.mjs). This records an authorization before the
+separate effect function runs; it is not an atomic commit of the protected effect.
 
 ## Slice three — receipts, and what proof after the fact actually requires
 
@@ -215,3 +254,6 @@ Renewal protocol for leases. Multi-destination grants and cross-guard debit.
 Quorum and separation of duties. A transport for published heads — the mechanism
 exists, where the heads go is a deployment question and is unanswered. Tier 2
 exclusive custody and Tier 3 cryptographic necessity beyond the reference wallet.
+One-use across separately recorded guards in these generic slices (issue 1).
+Delegation that keeps the parent's window, shares its spending, and is verified
+at the guard.

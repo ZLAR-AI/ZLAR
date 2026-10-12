@@ -1,8 +1,9 @@
 # What's public
 
-**Updated 2026-09-27.** This replaces an August 2026 draft that planned to
+**Updated 2026-10-12.** This replaces an August 2026 draft that planned to
 publish only a small verifier kit and keep everything else closed. That plan is
-retired. The earlier version is still in this repository's history.
+retired. The earlier draft belongs to private development history and is not
+available in this public repository's history.
 
 ## Today
 
@@ -23,7 +24,11 @@ retired. The earlier version is still in this repository's history.
   the checking tool, the written rules it checks against, and the force field's
   record format under the Apache License 2.0, so anyone can check ZLAR's records
   without trusting ZLAR. The LICENSE lists the exact files. Everything else stays
-  under the evaluation license.
+  under the evaluation license. One gap is open: the checker for Demo 1's
+  installed evidence (`demos/zlar-destination-gate/demo1-verify.mjs`) and the
+  protocol file it uses (`cyan/demo1-protocol.mjs`) are not on that list.
+  They can be read and run to evaluate, and whether to add them is an unresolved
+  licensing decision.
 - **The verifier kit is still built and published separately.**
   [`tools/build-verifier-kit.sh`](tools/build-verifier-kit.sh) packages the files
   someone needs to check a ZLAR receipt without trusting ZLAR. The kit states its

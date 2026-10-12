@@ -1,6 +1,6 @@
 # The proposition
 
-*Updated 2026-09-28. One page: what ZLAR claims, how to test it, and exactly how
+*Updated 2026-10-12. One page: what ZLAR claims, how to test it, and exactly how
 it fails.*
 
 **ZLAR doesn't try to control the AI. It protects what the AI could change.**
@@ -97,12 +97,27 @@ attack, and if any of them fails, the claim fails with it.
    authority in the wrong hands.
 3. **The code is correct.** A bug in the check, the signature verification or the
    record breaks the promise.
-4. **One key, one use, at every door.** Today a one-time key can work once at each
-   of two separate checkpoints guarding the same thing. That's the known break,
-   issue 1, reported on purpose by `cyan/test-cyan-negative-vectors.mjs`.
+4. **One key, one use, at every door.** Demo 1 commits consumption and the
+   protected change together within one authoritative database. The protected
+   service also refuses keys tied to challenges that database doesn't hold.
+   See its [destination](cyan/demo1-destination.mjs) and
+   [transactional store](cyan/demo1-store.mjs). In the general reference code,
+   two checkpoints for the same protected thing, each with its own record of
+   spent keys, can each accept the same one-time key. That's the known break,
+   issue 1, reported on purpose by
+   `cyan/test-cyan-negative-vectors.mjs`. Rollback of Demo 1's database by an
+   excluded administrator is outside its claim, and copied databases, replicas,
+   backups and failover haven't been shown safe.
 5. **The rules about keys are protected.** If the list of keys a house accepts can
    be changed quietly, someone can add a key. That's issue 6.
 6. **Time can be trusted.** Expiry is only as good as the clock that checks it.
+7. **Handing a key on never enlarges it.** The reference code narrows what a
+   handed-on key may do, how much and until when, but three gaps remain. A
+   shorter time window lets its allowance refill faster, it keeps its own
+   spending tally apart from the original, and the protected thing doesn't yet
+   check the chain back to the original. See the
+   [delegation helper](cyan/grant.mjs), [spending store](cyan/grant-store.mjs),
+   and [guard](cyan/guard.mjs).
 
 The bigger claim, that no chain of allowed steps can add up to authority
 nobody granted, is a conjecture, not a theorem. Issue 8 asks for a proof or a
@@ -120,8 +135,8 @@ What ZLAR adds is putting them together around one question:
 - authority taken out of the AI's identity entirely, and held by whoever lives
   with the consequence;
 - checked by the protected thing itself;
-- keys that only narrow when handed on, expire by default, and can't be spent
-  twice;
+- keys built to only narrow when handed on (with the gaps in item 7 still to
+  close), to expire by default, and to never be spent twice;
 - and the claim above, stated so it can be proven or broken.
 
 ## Test it yourself

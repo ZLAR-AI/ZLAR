@@ -22,7 +22,8 @@ change its mind. ZLAR is a third option, and it turns out to be surprisingly
 simple.
 
 *Free to read, run, try to break, and publish what you find. Real use needs a
-written yes from us. The tools that check ZLAR's records are open to everyone.*
+written yes from us. The checking tools and specifications listed in the LICENSE
+are available under Apache 2.0.*
 ([License](LICENSE))
 
 ---
@@ -64,9 +65,9 @@ working.
 
 **Good behavior isn't a credential.**
 Some systems give an AI a trust score and let it do more as it behaves well.
-That's also exactly how a patient con artist works. ZLAR doesn't keep score.
-Either the right people turned their keys for this exact thing, or it doesn't
-happen.
+That's also exactly how a patient con artist works. ZLAR's force field doesn't
+keep score. Either the right people turned their keys for this exact thing, or
+it doesn't happen.
 
 **Watching isn't stopping.**
 Much of today's AI safety is monitoring: logs, dashboards, alerts. A security
@@ -105,14 +106,22 @@ most persuasive AI ever built.
 
 Each key is issued for an exact purpose, either one action or a set budget, and it
 can't be stretched to cover anything bigger. Copy it all you like: a copy can never
-do more than the original was allowed to, and a one-time key works only once. (Today
-that holds at a single checkpoint. Two checkpoints guarding the same thing is a
-known break, listed below.) To a thief, a spent key is worth nothing.
+do more than the original was allowed to, and a one-time key works only once. (Demo
+1 commits consumption and the protected change together in one authoritative
+database; it also refuses keys tied to challenges that database doesn't hold.
+The general reference code still lets two checkpoints for the same protected
+thing, each with its own record of spent keys, accept the same one-time key.
+That's a known break, listed below.) To
+a thief, a spent key is worth nothing.
 
-The protected thing signs its own record of what it allowed and what it refused,
-each entry chained to the one before, so an entry removed or altered afterwards
-shows. Anyone can check that record without taking our word for it. You
-don't have to trust the AI, and you don't have to trust us either.
+The protected thing signs its own record of what it allowed and what it refused.
+Its receipt chain can expose altered entries and gaps between retained records.
+To detect a shortened ending, a reviewer needs a separately retained signed
+checkpoint of the chain's length and final hash; it can expose a history cut
+below that point. Records cannot reveal an event the destination never recorded.
+Anyone can check the signed records against independently obtained public keys.
+The [receipt explanation](cyan/README.md#slice-three--receipts-and-what-proof-after-the-fact-actually-requires)
+sets out the mechanism and its limits.
 
 The force field lives with the thing being protected, not next to the AI. That
 detail is the whole trick. A guard standing next to the AI can be argued with,
@@ -139,23 +148,28 @@ These pieces are real, and deliberately small. Each one proves one part of the i
 
   This is a model wallet in code, not a real bank or blockchain.
 
-- **One protected action, installed and live.** In August 2026, on my own
-  computer, an AI with every permission tried to put a new software release live
-  and was refused. I then approved it once, with a hardware key that needs a PIN
-  and a physical touch, and it happened exactly once. Reusing that same approval
-  was refused. The protected service signed a record of all three outcomes, and
-  the record can be checked offline. That's one harmless action on one machine. The
-  details are in [demos/zlar-destination-gate](demos/zlar-destination-gate/).
+- **One protected action, demonstrated on August 22, 2026.** On my computer,
+  an AI with ordinary execution capability could reach the protected service,
+  but a harmless local release promotion was refused without authority. I then
+  authorized that exact action with a hardware key requiring a PIN and physical
+  touch. The destination recorded one execution and refused reuse. The
+  [preserved evidence](demos/zlar-destination-gate/INSTALLED-VERIFICATION-20260822.md)
+  can be checked offline and describes that historical candidate. Its
+  [claim ceiling](demos/zlar-destination-gate/CLAIM-CEILING.md) excludes
+  unrestricted host control and separation between human and AI processes
+  sharing one operating-system account. It does not establish today's installation.
 
-- **This repository protects itself.** Pushing changes to it from my computer
-  takes a hardware key, a PIN and a physical touch, every time. An AI on the same
-  computer, with every permission, gets turned away. The first thing ZLAR
-  protected was ZLAR.
+- **Hardware-key protection for my Git push route.** My Git push setup has
+  required a hardware key, a PIN and physical touch. That is a report about one
+  authentication route. The files here do not establish its current
+  configuration or protection of every path to changing the repository.
 
-- **Budgets and combinations, in the reference code.** Standing authority with a
-  budget: many separately allowed actions can't add up past the limit. Two steps
-  that are each harmless are refused when, together, they cross a line the owner
-  declared. A key handed on can only shrink, and every key must expire. These are
+- **Budgets and combinations, in the reference code.** Within one grant's
+  configured time window and spending store, separately allowed actions are
+  checked against its budget. Two steps that are each harmless are refused
+  when, together, they cross a line the owner declared. Handing a key on narrows
+  what it may do, how much, and until when, with gaps still to close (listed
+  below). Every key must expire. These are
   tested in code (`node cyan/test-cyan-composition.mjs` prints what it proves),
   not yet installed or used in a real system.
 
@@ -167,17 +181,35 @@ This is the honest gap between the idea and the code. It's also the work.
 
 **Engineering**
 
-- **More than one key-holder.** "Any two of Alex, Ben and Cole," or "all three."
-  Today the rule is one person, or one fixed pair.
+- **Flexible key-holder combinations.** "Any two of Alex, Ben and Cole," or "all
+  three." Today the code does one person, or one fixed pair.
 - **Budgets in real use.** "Up to $100 in total, across as many purchases as
   needed" works in the reference code. The installed demonstration still uses
   one-time keys. Budgets haven't been installed or tried on a real system.
 - **Small steps that add up, in general.** The reference code refuses combinations
   the owner declared in advance. Catching combinations nobody thought to declare,
   or combinations spread across different houses, isn't solved.
-- **One key, two doors.** This is a known break. In testing, one key worked at two
-  separate checkpoints guarding the same thing, and it needs closing. You can watch
-  it happen: `node cyan/test-cyan-negative-vectors.mjs` reports it on purpose.
+- **One key, two doors, in general.** Demo 1 commits consumption and the protected
+  change together in one authoritative database; it also refuses keys tied to
+  challenges that database doesn't hold. The general reference code still lets
+  two checkpoints guarding the same thing, each with its own record of spent
+  keys, accept the same one-time key. You can watch it happen:
+  `node cyan/test-cyan-negative-vectors.mjs` reports it on purpose.
+  Turning Demo 1's approach, or a record of spent keys shared by one house's
+  checkpoints, into the general fix is the work.
+- **Handing keys on, safely.** In the reference code, a key handed on narrows
+  what it may do, how much, and until when. Three gaps remain. A shorter time
+  window lets its allowance refill faster than the original's. It keeps its own
+  spending tally apart from the original. And the protected thing doesn't yet
+  check the chain back to the original. The [delegation helper](cyan/grant.mjs),
+  [spending store](cyan/grant-store.mjs), and [guard](cyan/guard.mjs) show these
+  limits. They need closing before delegated budgets go into real use.
+- **Copied or restored records.** Demo 1 keeps one authoritative database. An
+  excluded administrator rolling that database back is explicitly outside what
+  Demo 1 claims. Copies, backups, ordinary replicas, failover and other layouts
+  are outside that established boundary. Challenge binding alone does not
+  establish their safety; see Demo 1's
+  [claim ceiling](demos/zlar-destination-gate/CLAIM-CEILING.md).
 - **Renewal in practice.** In the reference code every key must expire, and an
   expired key simply stops, with no cancel message needed. Renewing keys smoothly
   on a real system isn't built. It's what makes the whole thing hold when people
@@ -206,9 +238,9 @@ is still ahead.
 
 ## The piece we can't build alone
 
-Every real thing ZLAR protects today is mine: one action on my own computer, and
-this repository. The next proof needs a real system that someone else owns, where
-they hold the keys: a payment flow, a software release pipeline, a record store.
+The examples here concern one action on my own computer and my Git push route.
+The next proof needs a real system that someone else owns, where they hold the
+keys: a payment flow, a software release pipeline, a record store.
 
 Engineers can build a perfect force field, but only the owner of the thing can
 install it. If you own or run something worth protecting, you're who we most want
@@ -252,9 +284,9 @@ It grew in layers, so here's the map.
 | [`PRINCIPLES.md`](PRINCIPLES.md) | **ZLAR's Principles**: the properties every key follows. |
 | [`PROPOSITION.md`](PROPOSITION.md) | **The proposition**: what ZLAR claims, how to test it, and exactly how it fails. Starts with "isn't this just permissions?" |
 | [`cyan/`](cyan/) | **The heart.** The force field in code: one-use keys, the wallet, the signed records and the Demo 1 service. Start here. |
-| [`demos/zlar-destination-gate/`](demos/zlar-destination-gate/) | Demo 1: the installed version, plus the evidence from the August run. |
+| [`demos/zlar-destination-gate/`](demos/zlar-destination-gate/) | Demo 1: current source for a local release promotion, plus preserved evidence from August 22, 2026. |
 | [`spec/`](spec/) | Written rules that an implementation has to meet. |
-| `bin/`, `lib/`, `adapters/`, `mcp-gate/`, `sdk/`, `tests/` | **ZLAR's first design**: a checkpoint that sits next to the AI and asks a person before its actions go through. It works, and it taught us the most important lesson here: the protection belongs with the thing being protected, not next to the AI. It's worth reading, but it isn't where things are heading. How to install and test it: [`docs/first-design-install.md`](docs/first-design-install.md). |
+| `bin/`, `lib/`, `adapters/`, `mcp-gate/`, `sdk/`, `tests/` | **ZLAR's first design**: a checkpoint that sits next to the AI and asks a person before its actions go through. It works, and it taught us the most important lesson here: the protection belongs with the thing being protected, not next to the AI. It still includes an older "karma" option that, once applied, lets it auto-allow more while you're away; the force field takes no input from any score. It's worth reading, but it isn't where things are heading. How to install and test it: [`docs/first-design-install.md`](docs/first-design-install.md). |
 | [`docs/`](docs/) | Deeper material, including the full technical manual for the first design ([`docs/technical-reference.md`](docs/technical-reference.md)). |
 | Everything else | Earlier experiments. |
 
@@ -305,10 +337,14 @@ and run something, isn't us. Please report it to **security@zlar.ai**.
 **About the license:** read it, download it, run it, try to break it, and
 publish what you find: all welcome, and the [LICENSE](LICENSE) says so. If you
 find a way to break it, we ask for a private heads-up first
-([SECURITY.md](SECURITY.md)); it's a request, not a condition. The tools that check ZLAR's records,
+([SECURITY.md](SECURITY.md)); it's a request, not a condition. The record-checking tools listed in the LICENSE,
 and the written rules they check against, are open under Apache 2.0: anyone may
 use them for anything, because anyone should be able to check what a protected
-thing says happened without trusting us. The force field itself, the part that
+thing says happened without trusting us. One gap is still open: the checker for
+Demo 1's installed evidence (`demos/zlar-destination-gate/demo1-verify.mjs`) and
+the protocol file it uses aren't on that list. You can read and run them to
+evaluate, but not reuse them freely, and whether to add them is an open
+licensing decision. The force field itself, the part that
 decides what gets through, stays under our license.
 Using it for real work, building products on it, or passing on changed copies
 needs a written yes from us. Write to **hello@zlar.ai**.

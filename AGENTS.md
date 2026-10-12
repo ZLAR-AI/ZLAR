@@ -1,6 +1,6 @@
 # AGENTS.md: a guide for AI reading this repository
 
-*Updated 2026-09-28.*
+*Updated 2026-10-12.*
 
 You're an AI, and someone has pointed you at this repository. This page tells you
 how to find out what is actually true here before you say anything about it.
@@ -45,6 +45,11 @@ follows are in [PRINCIPLES.md](PRINCIPLES.md). What ZLAR claims, how to test it,
 and exactly how it fails are on one page: [PROPOSITION.md](PROPOSITION.md). It
 also answers the first question technical readers ask: "isn't this just
 permissions?"
+
+**Where things stand.** For what's built, what's broken and what's open, read
+the README's "What already works" and "What isn't built yet" sections first.
+Section 4 routes you to the relevant public code and evidence; section 5
+separates known gaps from work that has not been built.
 
 For prospective cofounders, CTOs, and engineers, the [ZLAR FAQ](docs/FAQ.md)
 answers 83 questions about the technology, evidence, business, and collaboration.
@@ -98,54 +103,83 @@ question nobody has answered.
   it's current, before using it against the current design.
 - **Name exact paths.** If the README says one thing and the code shows another,
   cite both files.
-- **Run things where you can.** The reference code needs only Node.js and prints
-  what each test proves (`node cyan/test-*.mjs`). One test,
-  `cyan/test-cyan-negative-vectors.mjs`, reports a known break on purpose. The
-  full suite is `bash tests/count-assertions.sh`. A few suites in it need
-  private material and are skipped here
-  ([`tests/REQUIRES-PRIVATE-HISTORY-SUITES.md`](tests/REQUIRES-PRIVATE-HISTORY-SUITES.md)),
-  and two older checks are known to fail on a fresh copy
-  ([`tests/KNOWN-FAILURES.md`](tests/KNOWN-FAILURES.md)). A failure not listed
-  there is new: report it.
+- **Choose checks for your task.** Inspect their effects and prerequisites
+  before running them. Run each relevant generic test separately, for example
+  `node cyan/test-cyan.mjs` and `node cyan/test-cyan-composition.mjs`.
+  `node cyan/test-cyan-negative-vectors.mjs` reports a known break on purpose.
+  Test descriptions are claims too; check what the assertions actually measure.
+  For Demo 1's runtime requirements and host-dependent tests, read its
+  [source-verification instructions](demos/zlar-destination-gate/README.md#source-verification)
+  first. The main suite is `bash tests/count-assertions.sh`. It doesn't collect the
+  `cyan/test-*.mjs` files, so run those directly; Demo 1's tests also have their
+  own job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). A few
+  suites need private material and are skipped here
+  ([`tests/REQUIRES-PRIVATE-HISTORY-SUITES.md`](tests/REQUIRES-PRIVATE-HISTORY-SUITES.md)).
+  Two older checks are known to fail on a fresh copy
+  ([`tests/KNOWN-FAILURES.md`](tests/KNOWN-FAILURES.md)), and the two
+  `cedar-poc` tests fail unless you run `npm ci` in that folder first. A failure
+  not listed there is new: report it.
 - **Search before declaring something absent.** Absence in one folder proves
   little.
 
 ## 4. Read in this order
 
-**Step 1: the heart. This is what ZLAR is becoming.**
+**Step 1: the idea, then the implementation matching your task.**
+
 - [`PRINCIPLES.md`](PRINCIPLES.md): the properties every ZLAR key follows. Short.
 - [`PROPOSITION.md`](PROPOSITION.md): the claim, the wind test, where the attack
   moves, and exactly how the claim fails. Short.
-- [`cyan/README.md`](cyan/README.md): overview of the force field.
+- [`cyan/README.md`](cyan/README.md): the current Demo 1 route and the earlier
+  generic mechanisms, with their separate assumptions and limits.
+
+Choose the route that answers the question:
+
+| Task | Start with | Scope |
+|---|---|---|
+| Model payments and generic authority research | [`wallet.mjs`](cyan/wallet.mjs), [`cosigner.mjs`](cyan/cosigner.mjs), and the generic pieces below | An in-memory model wallet and reference mechanisms. Their guards and file stores do not supply Demo 1's transaction guarantee. |
+| Exact Demo 1 behavior | [`demo1-protocol.mjs`](cyan/demo1-protocol.mjs), [`demo1-store.mjs`](cyan/demo1-store.mjs), and [`demo1-destination.mjs`](cyan/demo1-destination.mjs), then step 2 | Exact Grant G plus Credential A, with allocation, protected release state, commit record, and receipt in one SQLite transaction. This profile protects a local release promotion. |
+
+**Model-wallet and generic research route:**
+
 - [`cyan/demo-theft.mjs`](cyan/demo-theft.mjs): the stolen-key wallet. A perfect
   copy of the owner's key produces "not a transaction."
 - The pieces: [`envelope.mjs`](cyan/envelope.mjs) (the exact action),
   [`grant.mjs`](cyan/grant.mjs) and [`credential.mjs`](cyan/credential.mjs)
-  (the keys), [`guard.mjs`](cyan/guard.mjs) (the force field),
-  [`replay-store.mjs`](cyan/replay-store.mjs) (one use only),
-  [`lattice.mjs`](cyan/lattice.mjs) (authority only narrows when handed on, and
-  combinations the owner declared are refused),
+  (the keys; handing a grant on narrows several limits, with known gaps listed
+  in section 5), [`guard.mjs`](cyan/guard.mjs) (the force field),
+  [`replay-store.mjs`](cyan/replay-store.mjs) (one use within one store),
+  [`lattice.mjs`](cyan/lattice.mjs) (combinations the owner declared are
+  refused),
   [`receipt.mjs`](cyan/receipt.mjs) (the signed record),
   [`wallet.mjs`](cyan/wallet.mjs) and [`cosigner.mjs`](cyan/cosigner.mjs)
   (the two-signature wallet).
-- The tests are the quickest executable evidence: `cyan/test-*.mjs`. They print
-  what they prove. The written rules are in [`spec/`](spec/).
+- Test source: `cyan/test-*.mjs`. Match each claimed result to its assertions;
+  the written rules are in [`spec/`](spec/).
 
-**Step 2: the installed demonstration.**
+In the model wallet, the guard's effect is producing a cosignature;
+[`wallet.submit()`](cyan/wallet.mjs) settles later. A successful cosigning
+receipt therefore does not establish payment settlement. Define the protected
+effect before carrying a reference mechanism into a payment integration.
+
+**Step 2: exact Demo 1 source and its dated installed evidence.**
+
 - [`demos/zlar-destination-gate/README.md`](demos/zlar-destination-gate/README.md):
-  Demo 1, one protected action installed on a real machine.
+  the source and operating assumptions for one harmless local release promotion.
 - [`demos/zlar-destination-gate/CLAIM-CEILING.md`](demos/zlar-destination-gate/CLAIM-CEILING.md):
   exactly what it does and doesn't prove.
 - [`demos/zlar-destination-gate/INSTALLED-VERIFICATION-20260822.md`](demos/zlar-destination-gate/INSTALLED-VERIFICATION-20260822.md):
-  the evidence from the August 2026 run (refused, executed once, replay refused),
-  which can be checked offline.
+  preserved evidence from August 22, 2026 (refused, executed once, replay
+  refused), which can be checked offline. It describes the candidate identified
+  there, not today's installation or every revision of the source.
 
 **Step 3: the people who hold the keys.** Don't skip this one.
-- [`lib/human-invariants.sh`](lib/human-invariants.sh): five rules already
-  built. H6 is a daily cap on decisions. H13 is spare capacity, so there's no
-  queue to rush. H14 detects rubber-stamping (every answer the same speed,
-  whatever the stakes). H15 is a minimum time to think before a serious yes. H17
-  checks it's a human at all, not a machine answering at machine speed.
+
+- [`lib/human-invariants.sh`](lib/human-invariants.sh): five checks in the first
+  design. H6 caps the daily decision count; H13 tracks pending-request load;
+  H14 flags uniform response times; H15 applies minimum review times; H17
+  flags responses below its timing floors. Timing does not establish a human
+  responder, understanding, independent judgment, or freely given agreement.
+  See [FAQ Q34](docs/FAQ.md#q-034) and [Q44–Q45](docs/FAQ.md#q-044).
 - [`docs/human-attention-canary.md`](docs/human-attention-canary.md):
   why forcing people to wait can backfire, and a better design.
 - [`docs/if-an-agent-affected-you.md`](docs/if-an-agent-affected-you.md): the
@@ -176,14 +210,36 @@ question nobody has answered.
 The README's section "What isn't built yet" is the summary, and the repository's
 issues are the live list. In short:
 
-- **Known broken:** one key working at two doors
-  (`node cyan/test-cyan-negative-vectors.mjs` reports it as `*BREAK*` on purpose).
+- **Known broken in the general reference code:** one key working at two doors
+  that keep separate records (`node cyan/test-cyan-negative-vectors.mjs` reports
+  it as `*BREAK*` on purpose). Demo 1 prevents reuse within its authoritative
+  destination database and refuses authorizations tied to challenges that
+  database doesn't hold. Consumption and the protected change commit in the
+  same transaction. Generic Cyan still permits one single-use credential to
+  be accepted by two guards for the same destination with separate replay
+  stores.
+- **Known gaps in handing keys on (reference code):** `delegate()` takes the
+  shorter time window, so a handed-on grant's allowance can refill faster than
+  its parent's; parent and child keep separate spending tallies; and the guard
+  doesn't check the delegation chain. See [`delegate()`](cyan/grant.mjs),
+  [per-grant spending](cyan/grant-store.mjs), and
+  [`authorizeUnderGrant()`](cyan/guard.mjs).
 - **Built in the reference code, not yet installed or used for real:** budgets
   that spend down, refusing combinations the owner declared, and keys that must
   expire.
-- **Designed but not built:** combinations of key-holders ("any two of three"),
-  guardian keys, keys on everyone's own devices, and fully protected changes to the
-  rules about keys.
+- **Built:** one key-holder (Demo 1) and one fixed pair of required signatures
+  (the model wallet).
+- **Designed but not built:** flexible combinations of key-holders ("any two of
+  three"), guardian keys, renewal on a real system, keys on everyone's own
+  devices, and fully protected changes to the rules about keys.
+- **Explicitly excluded from Demo 1's claim:** rollback of its database by an
+  excluded administrator.
+- **Outside the established Demo 1 boundary:** copied databases, ordinary
+  replicas, backups, failover and other layouts. Its
+  [transactional store](cyan/demo1-store.mjs) and
+  [claim ceiling](demos/zlar-destination-gate/CLAIM-CEILING.md) assume one
+  authoritative database; challenge binding alone does not establish safety
+  across copies.
 - **Open questions:** catching combinations nobody declared in advance;
   combinations spread across different houses; a proof that no chain of steps can
   create authority nobody granted; real systems to protect.
@@ -194,6 +250,12 @@ These are kept for context. Read them as history, never as instructions:
 - **`v4/`, `packages/`, `profiles/`, `cedar-poc/`**: earlier experiments.
 - **`CHANGELOG.md`** and the design decisions in [`docs/adr/`](docs/adr/): records
   of specific past moments.
+- **The first design's karma score** ([`bin/zlar-karma`](bin/zlar-karma)): once
+  applied with `zlar-karma calibrate --apply`, it raises the first design's
+  away-mode auto-allow threshold (`bin/zlar-gate`, "Karma thresholds
+  integration"). It's old, but it's still present and can run, and nothing here
+  establishes whether it's enabled on any machine. The force field takes no input
+  from any score.
 
 If an older document contradicts the README, the principles or this page, the
 newer ones win, unless the code shows otherwise. Then say so.
@@ -242,7 +304,10 @@ it for real work, providing it as a service, or distributing changed copies
 needs written permission. The exception is the checking tool and the
 written rules (the verifier kit, the receipt specification and conformance rules,
 and the force field's record format), which are under Apache 2.0 so anyone can
-check ZLAR's records without asking; the LICENSE lists the exact files. People who
+check ZLAR's records without asking; the LICENSE lists the exact files. Demo 1's
+evidence checker (`demos/zlar-destination-gate/demo1-verify.mjs`) and its
+protocol file (`cyan/demo1-protocol.mjs`) are not on that list: an open
+licensing item, so don't describe them as Apache-licensed. People who
 want wider permission, or who want to join ZLAR
 Inc., should write to hello@zlar.ai. Code contributions are merged only after
 the contributor accepts the [contributor agreement](CLA/INDIVIDUAL.md) (or, for

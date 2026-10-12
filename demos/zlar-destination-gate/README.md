@@ -33,31 +33,68 @@ destination-signed N, transport exact signed G/A, and request promotion. It
 cannot select a path, key, policy, database, clock, identity, fault hook, or
 software profile.
 
-The client surface is [demo1.mjs](demo1.mjs). In the current uninstalled source
-checkout it refuses because no protected socket exists. It never opens the
-destination in process.
+The client surface is [demo1.mjs](demo1.mjs). It never opens the destination in
+process. It checks its user first and refuses any user other than UID 501
+before attempting a connection. A UID 501 client then uses the host's fixed
+paths, whichever checkout it runs from, a fresh clone included: `stage` writes
+the fixed staging path, and every other operation attempts the fixed socket,
+`/var/run/zlar-demo1.sock`. A source checkout is not an isolated environment.
+Installed and reachable are different things: a request reaches a destination
+only if something is listening on that socket. When the socket is missing
+(`ENOENT`) or refuses the connection (`ECONNREFUSED`), the client reports
+`REFUSED_NOT_INSTALLED`. That label describes the failed connection; on its own
+it doesn't establish that no installation exists. Other connection failures,
+such as a permission error, report `REFUSED`.
 
 ## Source verification
 
-Prerequisite: Node `v22.22.1` with `node:sqlite`. From the repository root:
+Caution first. `test-demo1-e2e.mjs` is withheld from the commands below because
+its host isolation remains unresolved (issue 12). The test's last check runs
+this client in a health subprocess. As UID 501, that subprocess attempts the
+host's fixed socket, including from a disposable checkout on the same
+computer, so if a Demo 1 service is listening on that computer, the disposable
+test reaches it. An isolated test must keep this subprocess away from the live
+socket; the current test does not. Identifying this one test doesn't certify the
+remaining commands as safe on every computer.
+
+Portable source checks. Prerequisite: Node `v22.22.1` with `node:sqlite`. These
+are the Demo 1 commands the repository's CI runs on Ubuntu and macOS. From the
+repository root:
 
 ```sh
 node cyan/test-demo1-protocol.mjs
 node cyan/test-demo1-destination.mjs
 node cyan/test-demo1-receipts.mjs
-node demos/zlar-destination-gate/test-demo1-e2e.mjs
 node demos/zlar-destination-gate/test-demo1-installed.mjs
-python3 -B demos/zlar-destination-gate/test_demo1_installation.py
 python3 -B demos/zlar-destination-gate/product_identity.py --verify
 ```
 
-These tests establish source and disposable-software plumbing only. They cover
-strict schemas, exact G-to-A linkage, destination refusal, one grant-level
-allocation across multiple A, atomic effect/P/R formation, concurrent and
-restart replay refusal, fault rollback, abrupt process loss, exact signed
-N/G/A preservation, offline evidence verification, fail-closed missing-state
-startup, native broker compilation, kernel peer-credential availability, and a
-read-only installation collision check.
+Host-specific installation preflight. `test_demo1_installation.py` stays out of
+the portable block. It is an installation preflight and source test for the
+founder's Mac: it calls the installer's real host precondition checks, which
+inspect the client account and `admin` group, protected parent directories,
+every installed target path, connected USB devices and launchd registration. On
+a computer where Demo 1 is installed, those checks refuse by design.
+Prerequisites: macOS before installation; the founder's account with UID 501, in
+an `admin` group of exactly `root` and that account; no Demo 1 service account,
+group, target path or launchd label; no YubiKey connected; the digest-pinned
+`/usr/bin/clang`, compiling a byte-identical broker; Node `v22.22.1` at a fixed
+path in the founder's home directory; and digest-pinned Homebrew builds of
+OpenSC, yubico-piv-tool and OpenSSL, owned by UID 501. Run it only deliberately,
+on a computer prepared that way:
+
+```sh
+python3 -B demos/zlar-destination-gate/test_demo1_installation.py
+```
+
+These tests, counting the withheld end-to-end test, establish source and
+disposable-software plumbing only. They cover strict schemas, exact G-to-A
+linkage, destination refusal, one grant-level allocation across multiple A,
+atomic effect/P/R formation, concurrent and restart replay refusal, fault
+rollback, abrupt process loss, exact signed N/G/A preservation, offline
+evidence verification, fail-closed missing-state startup, native broker
+compilation, kernel peer-credential availability, and a read-only installation
+collision check.
 
 They do not establish an installed service, actual visible Claude/Codex
 execution under UID 501,
